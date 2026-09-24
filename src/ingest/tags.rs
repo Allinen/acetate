@@ -1,0 +1,663 @@
+//! Reading embedded tags, cover art and lyrics via lofty. Read-only, always.
+//!
+//! Two views of the same tags are read:
+//! * `raw`: every item of every tag in the file, verbatim, using lofty's format-specific
+//!   tag types (Vorbis comments, MP4 atoms, APE items) and the `id3` crate for ID3v2
+//!   (lofty parses ID3v2 timestamps and loses the original text, e.g. a trailing "Z").
+//!   This includes custom keys like ORIGINALFILENAME that lofty's generic `Tag` would drop.
+//! * The handful of mapped fields (title, artist, ...) via lofty's generic `Tag`,
+//!   which knows e.g. that TIT2, TITLE and ©nam all mean "title".
+//!
+//! Values are never parsed, trimmed or normalized. What the tags say is what we store.
+
+use std::fs::File;
+use std::path::Path;
+
+use lofty::config::ParseOptions;
+use lofty::file::{AudioFile, FileType, TaggedFileExt};
+use lofty::id3::v2::{Frame, Id3v2Tag};
+use lofty::mp4::{AtomData, AtomIdent, Ilst};
+use lofty::ogg::tag::VorbisComments;
+use lofty::picture::PictureType;
+use lofty::probe::Probe;
+use lofty::tag::{Accessor, ItemKey, ItemValue, Tag, TagType};
+use serde::Serialize;
+use serde_json::json;
+
+#[derive(Debug, Clone, Default)]
+pub struct TagInfo {
+    /// Every tag in the file, verbatim.
+    pub raw: Vec<RawTag>,
+
+    pub title: Option<String>,
+    /// Each artist tag value exactly as written.
+    pub artists: Vec<String>,
+    pub album: Option<String>,
+    pub album_artists: Vec<String>,
+    pub track_number: Option<u32>,
+    pub disc_number: Option<u32>,
+    pub date: Option<String>,
+    pub genres: Vec<String>,
+    pub comment: Option<String>,
+    pub lyrics: Vec<String>,
+    pub pictures: Vec<EmbeddedPicture>,
+    /// From an ORIGINALFILENAME / TOFN / ... tag, verbatim.
+    pub original_filename: Option<String>,
+
+    /// From the audio properties lofty reads alongside the tags.
+    pub bitrate_kbps: Option<u32>,
+    pub duration_ms: Option<u64>,
+}
+
+/// One tag block in the file (a file can have several, e.g. ID3v2 and APE on an MP3).
+#[derive(Debug, Clone, Serialize)]
+pub struct RawTag {
+    /// "vorbis_comments", "id3v2", "mp4_ilst", "ape" or "generic".
+    pub format: &'static str,
+    pub items: Vec<RawItem>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RawItem {
+    /// The key exactly as in the file: "TITLE", "TPE1", "TXXX", "©nam", "----:com.apple.iTunes:FOO"...
+    pub key: String,
+    /// Usually a string; numbers, booleans, lists and binary data are kept in their own shape.
+    pub value: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+}
+
+impl RawItem {
+    fn new(key: impl Into<String>, value: serde_json::Value) -> Self {
+        RawItem {
+            key: key.into(),
+            value,
+            description: None,
+            language: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct EmbeddedPicture {
+    pub data: Vec<u8>,
+    pub mime: Option<String>,
+    pub is_front_cover: bool,
+}
+
+/// Blocking: call from `spawn_blocking`.
+///
+/// `extension` is the original file's extension. Stored/temp files have none, so
+/// it's used as a fallback when the format can't be recognized from the content.
+pub fn read_tags(path: &Path, extension: Option<&str>) -> anyhow::Result<TagInfo> {
+    let mut probe = Probe::open(path)?.guess_file_type()?;
+    if probe.file_type().is_none() {
+        if let Some(file_type) = extension.and_then(FileType::from_ext) {
+            probe = probe.set_file_type(file_type);
+        }
+    }
+    let tagged_file = probe.read()?;
+
+    let props = tagged_file.properties();
+    let mut info = TagInfo {
+        bitrate_kbps: props.audio_bitrate().or(props.overall_bitrate()),
+        duration_ms: Some(props.duration().as_millis() as u64).filter(|ms| *ms > 0),
+        ..Default::default()
+    };
+
+    info.raw = match read_raw_tags(path, tagged_file.file_type()) {
+        Ok(Some(raw)) => raw,
+        // Formats without a format-specific reader below: dump the generic tags instead.
+        Ok(None) => tagged_file.tags().iter().map(generic_dump).collect(),
+        Err(err) => {
+            tracing::warn!("reading raw tags failed, falling back to generic dump: {err:#}");
+            tagged_file.tags().iter().map(generic_dump).collect()
+        }
+    };
+    info.original_filename = find_original_filename(&info.raw);
+    let primary_format = raw_format_name(tagged_file.primary_tag_type());
+
+    // The "primary" tag is the preferred one for the format (e.g. Vorbis comments for
+    // FLAC). Fall back to whatever tag exists (e.g. an ID3v2 tag stuck on a FLAC file).
+    let Some(tag) = tagged_file.primary_tag().or(tagged_file.first_tag()) else {
+        return Ok(info);
+    };
+
+    info.title = tag.title().map(|s| s.to_string()).filter(|s| !s.trim().is_empty());
+    info.artists = strings(tag, ItemKey::TrackArtist);
+    if info.artists.is_empty() {
+        info.artists = strings(tag, ItemKey::TrackArtists);
+    }
+    info.album = tag.album().map(|s| s.to_string()).filter(|s| !s.trim().is_empty());
+    info.album_artists = strings(tag, ItemKey::AlbumArtist);
+    info.track_number = tag.track();
+    info.disc_number = tag.disk();
+    // Dates come from the raw tags: lofty's generic view of ID3v2 dates is re-rendered
+    // from a parsed timestamp and not verbatim.
+    info.date = find_date(&info.raw, primary_format).or_else(|| {
+        [ItemKey::ReleaseDate, ItemKey::RecordingDate, ItemKey::Year]
+            .into_iter()
+            .filter_map(|key| tag.get_string(key))
+            .find(|s| !s.trim().is_empty())
+            .map(str::to_string)
+    });
+    info.genres = strings(tag, ItemKey::Genre);
+    info.comment = tag.comment().map(|s| s.to_string()).filter(|s| !s.trim().is_empty());
+    info.lyrics = strings(tag, ItemKey::Lyrics);
+    for lyrics in strings(tag, ItemKey::UnsyncLyrics) {
+        if !info.lyrics.contains(&lyrics) {
+            info.lyrics.push(lyrics);
+        }
+    }
+
+    info.pictures = tag
+        .pictures()
+        .iter()
+        .map(|pic| EmbeddedPicture {
+            data: pic.data().to_vec(),
+            mime: pic.mime_type().map(|m| m.as_str().to_string()),
+            is_front_cover: pic.pic_type() == PictureType::CoverFront,
+        })
+        .collect();
+    // Front cover first.
+    info.pictures.sort_by_key(|p| !p.is_front_cover);
+
+    Ok(info)
+}
+
+/// All values for a key, verbatim. Values that are empty or only whitespace are skipped.
+fn strings(tag: &Tag, key: ItemKey) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for value in tag.get_strings(key) {
+        if !value.trim().is_empty() && !out.iter().any(|v| v == value) {
+            out.push(value.to_string());
+        }
+    }
+    out
+}
+
+/// Keys that hold a file's original name, compared case-insensitively.
+const ORIGINAL_FILENAME_KEYS: [&str; 4] = [
+    "ORIGINALFILENAME",
+    "ORIGINAL_FILENAME",
+    "ORIGINAL FILENAME",
+    "TOFN", // ID3v2 "Original filename" frame
+];
+
+/// Looks through all raw tags for an original filename.
+fn find_original_filename(raw: &[RawTag]) -> Option<String> {
+    let is_filename_key = |k: &str| {
+        ORIGINAL_FILENAME_KEYS
+            .iter()
+            .any(|known| known.eq_ignore_ascii_case(k))
+    };
+
+    for tag in raw {
+        for item in &tag.items {
+            let Some(value) = first_text(&item.value) else {
+                continue;
+            };
+            let is_match = match (item.key.as_str(), &item.description) {
+                // ID3v2 user-defined frames: key "TXXX", the real name is in the description.
+                ("TXXX", Some(desc)) => is_filename_key(desc),
+                // MP4 freeform atoms: "----:com.apple.iTunes:ORIGINALFILENAME"
+                (key, _) if key.starts_with("----:") => {
+                    key.rsplit(':').next().is_some_and(is_filename_key)
+                }
+                (key, _) => is_filename_key(key),
+            };
+            if is_match {
+                return Some(value.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Date keys per raw tag format, most preferred first (release date, then recording date,
+/// then year). Compared case-insensitively.
+const DATE_KEYS: [(&str, &[&str]); 4] = [
+    ("vorbis_comments", &["RELEASEDATE", "DATE", "YEAR"]),
+    ("id3v2", &["TDRL", "TDRC", "TYER"]),
+    ("mp4_ilst", &["©day"]),
+    ("ape", &["RELEASEDATE", "YEAR"]),
+];
+
+/// Finds the date verbatim in the raw tags, looking at the file's primary tag format first.
+fn find_date(raw: &[RawTag], primary_format: Option<&str>) -> Option<String> {
+    // Primary format first, then the rest in file order.
+    let ordered = raw
+        .iter()
+        .filter(|t| Some(t.format) == primary_format)
+        .chain(raw.iter().filter(|t| Some(t.format) != primary_format));
+
+    for tag in ordered {
+        let Some((_, keys)) = DATE_KEYS.iter().find(|(format, _)| *format == tag.format) else {
+            continue;
+        };
+        for wanted in keys.iter() {
+            let found = tag
+                .items
+                .iter()
+                .filter(|item| item.key.eq_ignore_ascii_case(wanted))
+                .find_map(|item| first_text(&item.value));
+            if let Some(date) = found {
+                return Some(date.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// The text of a value; for multi-value arrays, the first entry. Blank text counts as none.
+fn first_text(value: &serde_json::Value) -> Option<&str> {
+    let text = match value {
+        serde_json::Value::Array(values) => values.first()?.as_str()?,
+        other => other.as_str()?,
+    };
+    Some(text).filter(|t| !t.trim().is_empty())
+}
+
+/// The name used in `RawTag::format` for a lofty tag type.
+fn raw_format_name(tag_type: TagType) -> Option<&'static str> {
+    match tag_type {
+        TagType::VorbisComments => Some("vorbis_comments"),
+        TagType::Id3v2 => Some("id3v2"),
+        TagType::Mp4Ilst => Some("mp4_ilst"),
+        TagType::Ape => Some("ape"),
+        _ => None,
+    }
+}
+
+/// A text value as JSON. Some formats (ID3v2.4) separate multiple values with NUL
+/// characters; those become an array, since Postgres can't store NUL in text/jsonb.
+/// A single trailing NUL is the string terminator some writers add, not a value.
+fn text_value(text: &str) -> serde_json::Value {
+    let text = text.strip_suffix('\0').unwrap_or(text);
+    if text.contains('\0') {
+        json!(text.split('\0').collect::<Vec<_>>())
+    } else {
+        json!(text)
+    }
+}
+
+/// Reads the format-specific tags. Returns Ok(None) for formats not handled here.
+fn read_raw_tags(path: &Path, file_type: FileType) -> anyhow::Result<Option<Vec<RawTag>>> {
+    // Properties were already read by the generic pass.
+    let options = ParseOptions::new().read_properties(false);
+    let mut file = File::open(path)?;
+    let mut tags = Vec::new();
+
+    match file_type {
+        FileType::Flac => {
+            let f = lofty::flac::FlacFile::read_from(&mut file, options)?;
+            tags.extend(f.vorbis_comments().map(vorbis_dump));
+            tags.extend(f.id3v2().map(|t| id3v2_raw(path, t)));
+        }
+        FileType::Opus => {
+            let f = lofty::ogg::OpusFile::read_from(&mut file, options)?;
+            tags.push(vorbis_dump(f.vorbis_comments()));
+        }
+        FileType::Vorbis => {
+            let f = lofty::ogg::VorbisFile::read_from(&mut file, options)?;
+            tags.push(vorbis_dump(f.vorbis_comments()));
+        }
+        FileType::Speex => {
+            let f = lofty::ogg::SpeexFile::read_from(&mut file, options)?;
+            tags.push(vorbis_dump(f.vorbis_comments()));
+        }
+        FileType::Mpeg => {
+            let f = lofty::mpeg::MpegFile::read_from(&mut file, options)?;
+            tags.extend(f.id3v2().map(|t| id3v2_raw(path, t)));
+            tags.extend(f.ape().map(ape_dump));
+        }
+        FileType::Aac => {
+            let f = lofty::aac::AacFile::read_from(&mut file, options)?;
+            tags.extend(f.id3v2().map(|t| id3v2_raw(path, t)));
+        }
+        FileType::Mp4 => {
+            let f = lofty::mp4::Mp4File::read_from(&mut file, options)?;
+            tags.extend(f.ilst().map(ilst_dump));
+        }
+        FileType::Wav => {
+            let f = lofty::iff::wav::WavFile::read_from(&mut file, options)?;
+            tags.extend(f.id3v2().map(|t| id3v2_raw(path, t)));
+        }
+        FileType::Aiff => {
+            let f = lofty::iff::aiff::AiffFile::read_from(&mut file, options)?;
+            tags.extend(f.id3v2().map(|t| id3v2_raw(path, t)));
+        }
+        FileType::Ape => {
+            let f = lofty::ape::ApeFile::read_from(&mut file, options)?;
+            tags.extend(f.ape().map(ape_dump));
+            tags.extend(f.id3v2().map(|t| id3v2_raw(path, t)));
+        }
+        FileType::WavPack => {
+            let f = lofty::wavpack::WavPackFile::read_from(&mut file, options)?;
+            tags.extend(f.ape().map(ape_dump));
+        }
+        _ => return Ok(None),
+    }
+    Ok(Some(tags))
+}
+
+fn vorbis_dump(tag: &VorbisComments) -> RawTag {
+    RawTag {
+        format: "vorbis_comments",
+        items: tag
+            .items()
+            .map(|(key, value)| RawItem::new(key, text_value(value)))
+            .collect(),
+    }
+}
+
+/// Dumps the ID3v2 tag with the `id3` crate, which keeps every text frame verbatim.
+/// Falls back to lofty's (slightly lossy) view if the `id3` crate can't read it.
+fn id3v2_raw(path: &Path, lofty_tag: &Id3v2Tag) -> RawTag {
+    // Handles plain ID3v2 at the start of the file as well as WAV/AIFF chunks.
+    match id3::Tag::read_from_path(path) {
+        Ok(tag) => id3_crate_dump(&tag),
+        Err(err) => {
+            tracing::warn!("id3 crate couldn't read the ID3v2 tag, using lofty's view: {err}");
+            lofty_id3v2_dump(lofty_tag)
+        }
+    }
+}
+
+fn id3_crate_dump(tag: &id3::Tag) -> RawTag {
+    use id3::Content;
+
+    let items = tag
+        .frames()
+        .map(|frame| {
+            let id = frame.id().to_string();
+            match frame.content() {
+                Content::Text(text) => RawItem::new(id, text_value(text)),
+                Content::Link(url) => RawItem::new(id, json!(url)),
+                Content::ExtendedText(t) => RawItem {
+                    description: Some(t.description.clone()),
+                    ..RawItem::new(id, text_value(&t.value))
+                },
+                Content::ExtendedLink(l) => RawItem {
+                    description: Some(l.description.clone()),
+                    ..RawItem::new(id, json!(l.link))
+                },
+                Content::Comment(c) => RawItem {
+                    description: Some(c.description.clone()).filter(|d| !d.is_empty()),
+                    language: Some(c.lang.clone()),
+                    ..RawItem::new(id, text_value(&c.text))
+                },
+                Content::Lyrics(l) => RawItem {
+                    description: Some(l.description.clone()).filter(|d| !d.is_empty()),
+                    language: Some(l.lang.clone()),
+                    ..RawItem::new(id, text_value(&l.text))
+                },
+                Content::SynchronisedLyrics(l) => RawItem {
+                    description: Some(l.description.clone()).filter(|d| !d.is_empty()),
+                    language: Some(l.lang.clone()),
+                    ..RawItem::new(
+                        id,
+                        json!({
+                            "timestamp_format": format!("{:?}", l.timestamp_format),
+                            "content_type": format!("{:?}", l.content_type),
+                            "lines": l.content,
+                        }),
+                    )
+                },
+                Content::InvolvedPeopleList(list) => {
+                    let pairs: Vec<[&str; 2]> = list
+                        .items
+                        .iter()
+                        .map(|i| [i.involvement.as_str(), i.involvee.as_str()])
+                        .collect();
+                    RawItem::new(id, json!(pairs))
+                }
+                Content::Picture(p) => {
+                    RawItem::new(id, json!(format!("<picture, {} bytes>", p.data.len())))
+                }
+                Content::Unknown(u) => {
+                    RawItem::new(id, json!({ "type": "binary", "hex": hex::encode(&u.data) }))
+                }
+                _ => RawItem::new(id, json!("<frame not decoded>")),
+            }
+        })
+        .collect();
+    RawTag {
+        format: "id3v2",
+        items,
+    }
+}
+
+fn lofty_id3v2_dump(tag: &Id3v2Tag) -> RawTag {
+    let items = tag
+        .into_iter()
+        .map(|frame| {
+            let id = frame.id_str().to_string();
+            match frame {
+                Frame::Text(f) => RawItem::new(id, text_value(&f.value)),
+                Frame::UserText(f) => RawItem {
+                    description: Some(f.description.to_string()),
+                    ..RawItem::new(id, json!(f.content))
+                },
+                Frame::Comment(f) => RawItem {
+                    description: Some(f.description.to_string()).filter(|d| !d.is_empty()),
+                    language: Some(String::from_utf8_lossy(&f.language).to_string()),
+                    ..RawItem::new(id, json!(f.content))
+                },
+                Frame::UnsynchronizedText(f) => RawItem {
+                    description: Some(f.description.to_string()).filter(|d| !d.is_empty()),
+                    language: Some(String::from_utf8_lossy(&f.language).to_string()),
+                    ..RawItem::new(id, json!(f.content))
+                },
+                Frame::Url(f) => RawItem::new(id, json!(f.url())),
+                Frame::UserUrl(f) => RawItem {
+                    description: Some(f.description.to_string()),
+                    ..RawItem::new(id, json!(f.content))
+                },
+                // lofty parses timestamp frames (TDRC etc.); this renders it back as text.
+                Frame::Timestamp(f) => RawItem::new(id, json!(f.timestamp.to_string())),
+                Frame::KeyValue(f) => {
+                    let pairs: Vec<[&str; 2]> = f
+                        .key_value_pairs
+                        .iter()
+                        .map(|(k, v)| [k.as_ref(), v.as_ref()])
+                        .collect();
+                    RawItem::new(id, json!(pairs))
+                }
+                Frame::Picture(f) => RawItem::new(
+                    id,
+                    json!(format!("<picture, {} bytes>", f.picture.data().len())),
+                ),
+                _ => RawItem::new(id, json!("<frame not decoded>")),
+            }
+        })
+        .collect();
+    RawTag {
+        format: "id3v2",
+        items,
+    }
+}
+
+fn ilst_dump(tag: &Ilst) -> RawTag {
+    let mut items = Vec::new();
+    for atom in tag {
+        let key = match atom.ident() {
+            AtomIdent::Fourcc(code) => fourcc_to_string(code),
+            AtomIdent::Freeform { mean, name } => format!("----:{mean}:{name}"),
+        };
+        for data in atom.data() {
+            let value = match data {
+                AtomData::UTF8(s) | AtomData::UTF16(s) => json!(s),
+                AtomData::SignedInteger(n) => json!(n),
+                AtomData::UnsignedInteger(n) => json!(n),
+                AtomData::Bool(b) => json!(b),
+                AtomData::Picture(p) => json!(format!("<picture, {} bytes>", p.data().len())),
+                // e.g. track/disc numbers ("trkn", "disk") are binary.
+                AtomData::Unknown { code, data } => {
+                    json!({ "type": format!("{code:?}"), "hex": hex::encode(data) })
+                }
+            };
+            items.push(RawItem::new(key.clone(), value));
+        }
+    }
+    RawTag {
+        format: "mp4_ilst",
+        items,
+    }
+}
+
+/// MP4 atom names are 4 bytes of Latin-1, e.g. [0xA9, b'n', b'a', b'm'] is "©nam".
+fn fourcc_to_string(code: &[u8; 4]) -> String {
+    code.iter().map(|&b| b as char).collect()
+}
+
+fn ape_dump(tag: &lofty::ape::ApeTag) -> RawTag {
+    RawTag {
+        format: "ape",
+        items: tag
+            .into_iter()
+            .map(|item| RawItem::new(item.key(), item_value_json(item.value())))
+            .collect(),
+    }
+}
+
+/// For formats without a specific reader. Only includes keys lofty knows.
+fn generic_dump(tag: &Tag) -> RawTag {
+    let tag_type = tag.tag_type();
+    RawTag {
+        format: "generic",
+        items: tag
+            .items()
+            .map(|item| {
+                let key = item
+                    .key()
+                    .map_key(tag_type)
+                    .map(str::to_string)
+                    .unwrap_or_else(|| format!("{:?}", item.key()));
+                RawItem {
+                    description: Some(item.description().to_string()).filter(|d| !d.is_empty()),
+                    ..RawItem::new(key, item_value_json(item.value()))
+                }
+            })
+            .collect(),
+    }
+}
+
+fn item_value_json(value: &ItemValue) -> serde_json::Value {
+    match value {
+        ItemValue::Text(s) | ItemValue::Locator(s) => text_value(s),
+        ItemValue::Binary(b) => json!({ "type": "binary", "hex": hex::encode(b) }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tag(format: &'static str, items: Vec<RawItem>) -> RawTag {
+        RawTag { format, items }
+    }
+
+    #[test]
+    fn original_filename_from_vorbis() {
+        let raw = vec![tag(
+            "vorbis_comments",
+            vec![
+                RawItem::new("TITLE", json!("Song")),
+                RawItem::new("originalfilename", json!("Song (master v2).wav")),
+            ],
+        )];
+        assert_eq!(
+            find_original_filename(&raw),
+            Some("Song (master v2).wav".into())
+        );
+    }
+
+    #[test]
+    fn original_filename_from_id3() {
+        let txxx = RawItem {
+            description: Some("ORIGINALFILENAME".into()),
+            ..RawItem::new("TXXX", json!("a.wav"))
+        };
+        let raw = vec![tag("id3v2", vec![txxx])];
+        assert_eq!(
+            find_original_filename(&raw),
+            Some("a.wav".into())
+        );
+
+        let raw = vec![tag("id3v2", vec![RawItem::new("TOFN", json!("b.wav"))])];
+        assert_eq!(
+            find_original_filename(&raw),
+            Some("b.wav".into())
+        );
+    }
+
+    #[test]
+    fn original_filename_from_mp4_freeform() {
+        let key = "----:com.apple.iTunes:ORIGINALFILENAME";
+        let raw = vec![tag("mp4_ilst", vec![RawItem::new(key, json!("c.wav"))])];
+        assert_eq!(
+            find_original_filename(&raw),
+            Some("c.wav".into())
+        );
+    }
+
+    #[test]
+    fn original_filename_ignores_empty_and_unrelated() {
+        let raw = vec![tag(
+            "vorbis_comments",
+            vec![
+                RawItem::new("ORIGINALFILENAME", json!("  ")),
+                RawItem::new("FILENAME_NOTE", json!("x")),
+            ],
+        )];
+        assert_eq!(find_original_filename(&raw), None);
+    }
+
+    #[test]
+    fn dates_are_verbatim_and_prefer_primary_format() {
+        let raw = vec![
+            tag("id3v2", vec![RawItem::new("TDRC", json!("2001"))]),
+            tag(
+                "vorbis_comments",
+                vec![
+                    RawItem::new("date", json!("2019-05-12T11:11:11Z")),
+                    RawItem::new("YEAR", json!("2019")),
+                ],
+            ),
+        ];
+        assert_eq!(
+            find_date(&raw, Some("vorbis_comments")).as_deref(),
+            Some("2019-05-12T11:11:11Z")
+        );
+        assert_eq!(find_date(&raw, Some("id3v2")).as_deref(), Some("2001"));
+
+        // Release date beats recording date.
+        let raw = vec![tag(
+            "id3v2",
+            vec![
+                RawItem::new("TDRC", json!("2018-01-01 10:00")),
+                RawItem::new("TDRL", json!("2019-05-12T11:11:11Z")),
+            ],
+        )];
+        assert_eq!(
+            find_date(&raw, Some("id3v2")).as_deref(),
+            Some("2019-05-12T11:11:11Z")
+        );
+    }
+
+    #[test]
+    fn nul_separated_values_become_arrays() {
+        assert_eq!(text_value("A\0B"), json!(["A", "B"]));
+        assert_eq!(text_value("a.wav\0"), json!("a.wav"));
+        assert_eq!(text_value("A, B"), json!("A, B"));
+    }
+
+    #[test]
+    fn fourcc() {
+        assert_eq!(fourcc_to_string(&[0xA9, b'n', b'a', b'm']), "©nam");
+        assert_eq!(fourcc_to_string(b"trkn"), "trkn");
+    }
+}
