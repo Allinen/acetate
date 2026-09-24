@@ -4,6 +4,7 @@ use serde::Serialize;
 use uuid::Uuid;
 
 use super::{AppError, AppState};
+use crate::auth::CurrentUser;
 use crate::ingest::{self, IngestOptions, IngestOutcome, Rejected, ReplaceOptions};
 use crate::model::sources::{self, Kind, NewSource, ValidSource};
 
@@ -35,9 +36,9 @@ pub struct UploadResult {
 ///      -F 'sources=[{"platform":"netease","data":{"song_id":123}}]' -F file=@song.flac \
 ///      localhost:3000/api/upload
 /// ```
-// TODO(Phase 1): require the `upload` permission.
 pub async fn upload(
     State(state): State<AppState>,
+    user: CurrentUser,
     mut multipart: Multipart,
 ) -> Result<Json<Vec<UploadResult>>, AppError> {
     let mut status = "released".to_string();
@@ -81,6 +82,7 @@ pub async fn upload(
         let pending = writer.finish().await?;
 
         let options = IngestOptions {
+            user: user.id(),
             uploaded_filename: filename.clone(),
             status: status.clone(),
             origin,
@@ -123,9 +125,9 @@ pub struct ReplaceResult {
 /// (optional), then one file field.
 ///
 /// Example: `curl -F reason="flac upgrade" -F file=@song.flac localhost:3000/api/tracks/<id>/file`
-// TODO(Phase 1): require the `replace_file` permission.
 pub async fn replace_file(
     State(state): State<AppState>,
+    user: CurrentUser,
     Path(track_id): Path<Uuid>,
     mut multipart: Multipart,
 ) -> Result<Json<ReplaceResult>, AppError> {
@@ -158,6 +160,7 @@ pub async fn replace_file(
         let pending = writer.finish().await?;
 
         let options = ReplaceOptions {
+            user: user.id(),
             uploaded_filename: filename,
             origin,
             reason,

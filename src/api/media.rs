@@ -10,45 +10,82 @@ use tower_http::services::ServeFile;
 use uuid::Uuid;
 
 use super::{AppError, AppState};
+use crate::auth::{CurrentUser, Permission};
+
+// Files and covers are found through the tracks they belong to, never on their own. So
+// once row-level security (Phase 3) hides a track, its files and covers are hidden too,
+// and asking for them is a plain 404, the same as for an id that doesn't exist.
 
 /// `GET /api/files/{id}/stream`: the file as stored. Supports `Range` requests, so
-/// browsers can seek. Works for replaced (older) files too.
-// TODO(Phase 1): require the `stream` permission.
+/// browsers can seek. Previous (replaced) files of a track need `view_history`.
 pub async fn stream_file(
     State(state): State<AppState>,
+    user: CurrentUser,
     Path(file_id): Path<Uuid>,
     request: Request,
 ) -> Result<Response, AppError> {
-    let Some(file) = sqlx::query!(
-        "SELECT sha256, container, codec FROM files WHERE id = $1",
+    let mut tx = state.db(&user).await?;
+    let file = sqlx::query!(
+        r#"
+        SELECT f.sha256, f.container, f.codec,
+               EXISTS (SELECT 1 FROM tracks t WHERE t.file_id = f.id) AS "is_current!",
+               EXISTS (
+                   SELECT 1 FROM track_file_history h
+                   JOIN tracks t ON t.id = h.track_id
+                   WHERE h.old_file_id = f.id
+               ) AS "is_previous!"
+        FROM files f
+        WHERE f.id = $1
+        "#,
         file_id
     )
-    .fetch_optional(&state.pool)
-    .await?
-    else {
+    .fetch_optional(&mut *tx)
+    .await?;
+    // Done with the database; don't hold a connection while the file is sent.
+    drop(tx);
+
+    let Some(file) = file else {
         return Err(AppError::NotFound);
     };
+    let visible = file.is_current || (file.is_previous && user.has(Permission::ViewHistory));
+    if !visible {
+        return Err(AppError::NotFound);
+    }
 
     let mime = audio_mime(file.container.as_deref(), file.codec.as_deref());
     serve_blob(state.store.path_for(&file.sha256), &mime, request).await
 }
 
-/// `GET /api/covers/{id}`: a cover image.
+/// `GET /api/covers/{id}`: a cover image of a track or album.
 pub async fn cover(
     State(state): State<AppState>,
+    user: CurrentUser,
     Path(cover_id): Path<Uuid>,
     request: Request,
 ) -> Result<Response, AppError> {
-    let Some(cover) = sqlx::query!(
-        "SELECT blob_sha256, mime FROM covers WHERE id = $1",
+    let mut tx = state.db(&user).await?;
+    // An album cover is visible if any of the album's tracks is.
+    let cover = sqlx::query!(
+        r#"
+        SELECT c.blob_sha256, c.mime
+        FROM covers c
+        WHERE c.id = $1
+          AND (EXISTS (SELECT 1 FROM tracks t WHERE t.id = c.track_id)
+               OR EXISTS (
+                   SELECT 1 FROM album_tracks at
+                   JOIN tracks t ON t.id = at.track_id
+                   WHERE at.album_id = c.album_id
+               ))
+        "#,
         cover_id
     )
-    .fetch_optional(&state.pool)
-    .await?
-    else {
+    .fetch_optional(&mut *tx)
+    .await?;
+    drop(tx);
+
+    let Some(cover) = cover else {
         return Err(AppError::NotFound);
     };
-
     let mime = cover
         .mime
         .and_then(|m| m.parse().ok())
@@ -58,7 +95,7 @@ pub async fn cover(
 
 /// Serves a file from disk using tower-http's `ServeFile`, which handles `Range`,
 /// `If-Modified-Since` etc. for us.
-async fn serve_blob(
+pub(super) async fn serve_blob(
     path: std::path::PathBuf,
     mime: &mime::Mime,
     request: Request,
@@ -69,7 +106,7 @@ async fn serve_blob(
 }
 
 /// The content type browsers need to play the file, from what symphonia detected.
-fn audio_mime(container: Option<&str>, codec: Option<&str>) -> mime::Mime {
+pub(super) fn audio_mime(container: Option<&str>, codec: Option<&str>) -> mime::Mime {
     let name = match (container, codec) {
         (Some("flac"), _) => "audio/flac",
         (Some("mp3"), _) | (_, Some("mp3")) => "audio/mpeg",

@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
 use serde::Serialize;
-use sqlx::{PgConnection, PgPool};
+use sqlx::PgConnection;
 use uuid::Uuid;
 
 use crate::model::sources::{InvalidSource, SourceOwner, ValidSource};
@@ -187,7 +187,7 @@ pub struct Snapshot {
 }
 
 /// All sources of a track, album or artist, each with its snapshots.
-pub async fn list_for(pool: &PgPool, owner_id: Uuid) -> sqlx::Result<Vec<Source>> {
+pub async fn list_for(conn: &mut PgConnection, owner_id: Uuid) -> sqlx::Result<Vec<Source>> {
     let sources = sqlx::query!(
         r#"
         SELECT id, platform, external_id FROM sources
@@ -196,7 +196,7 @@ pub async fn list_for(pool: &PgPool, owner_id: Uuid) -> sqlx::Result<Vec<Source>
         "#,
         owner_id
     )
-    .fetch_all(pool)
+    .fetch_all(&mut *conn)
     .await?;
 
     let source_ids: Vec<Uuid> = sources.iter().map(|s| s.id).collect();
@@ -208,7 +208,7 @@ pub async fn list_for(pool: &PgPool, owner_id: Uuid) -> sqlx::Result<Vec<Source>
         "#,
         &source_ids
     )
-    .fetch_all(pool)
+    .fetch_all(&mut *conn)
     .await?;
 
     // Group snapshots by source.
@@ -245,7 +245,7 @@ pub struct Origin {
 
 /// Origins of the given files, keyed by file id. Files without an origin are left out.
 pub async fn origins_of_files(
-    pool: &PgPool,
+    conn: &mut PgConnection,
     file_ids: &[Uuid],
 ) -> sqlx::Result<HashMap<Uuid, Origin>> {
     let rows = sqlx::query!(
@@ -259,7 +259,7 @@ pub async fn origins_of_files(
         "#,
         file_ids
     )
-    .fetch_all(pool)
+    .fetch_all(&mut *conn)
     .await?;
 
     Ok(rows
@@ -281,21 +281,21 @@ pub async fn origins_of_files(
 }
 
 /// Whether the track / album / artist exists.
-pub async fn owner_exists(pool: &PgPool, owner: SourceOwner) -> sqlx::Result<bool> {
+pub async fn owner_exists(conn: &mut PgConnection, owner: SourceOwner) -> sqlx::Result<bool> {
     let exists = match owner {
         SourceOwner::Track(id) => {
             sqlx::query_scalar!(r#"SELECT EXISTS (SELECT 1 FROM tracks WHERE id = $1) AS "e!""#, id)
-                .fetch_one(pool)
+                .fetch_one(&mut *conn)
                 .await?
         }
         SourceOwner::Album(id) => {
             sqlx::query_scalar!(r#"SELECT EXISTS (SELECT 1 FROM albums WHERE id = $1) AS "e!""#, id)
-                .fetch_one(pool)
+                .fetch_one(&mut *conn)
                 .await?
         }
         SourceOwner::Artist(id) => {
             sqlx::query_scalar!(r#"SELECT EXISTS (SELECT 1 FROM artists WHERE id = $1) AS "e!""#, id)
-                .fetch_one(pool)
+                .fetch_one(&mut *conn)
                 .await?
         }
     };

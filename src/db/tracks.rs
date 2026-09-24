@@ -1,7 +1,7 @@
 //! Read queries for tracks.
 
 use serde::Serialize;
-use sqlx::PgPool;
+use sqlx::PgConnection;
 use uuid::Uuid;
 
 #[derive(Debug, Serialize)]
@@ -21,7 +21,7 @@ pub struct TrackSummary {
 /// Unlike OFFSET, this stays fast at any depth because it's a single index range scan.
 /// (UUIDv7 ids are time-ordered, so ordering by id means ordering by creation time.)
 pub async fn list_tracks(
-    pool: &PgPool,
+    conn: &mut PgConnection,
     before: Option<Uuid>,
     limit: i64,
 ) -> sqlx::Result<Vec<TrackSummary>> {
@@ -39,14 +39,14 @@ pub async fn list_tracks(
         before,
         limit,
     )
-    .fetch_all(pool)
+    .fetch_all(&mut *conn)
     .await
 }
 
 /// Like `list_tracks`, filtered to tracks whose title or artist contains `query`
 /// (case-insensitive). The trigram indexes make `ILIKE '%...%'` fast.
 pub async fn search_tracks(
-    pool: &PgPool,
+    conn: &mut PgConnection,
     query: &str,
     before: Option<Uuid>,
     limit: i64,
@@ -73,7 +73,7 @@ pub async fn search_tracks(
         before,
         limit,
     )
-    .fetch_all(pool)
+    .fetch_all(&mut *conn)
     .await
 }
 
@@ -90,12 +90,16 @@ pub struct TrackDetail {
     pub primary_variant_id: Option<Uuid>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub file: FileInfo,
-    pub file_history: Vec<FileChange>,
+    /// Previous files. Only included for users allowed to view history.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file_history: Option<Vec<FileChange>>,
     pub sources: Vec<super::sources::Source>,
     pub credits: Vec<Credit>,
     pub albums: Vec<AlbumEntry>,
     pub variants: Vec<Variant>,
-    pub revisions: Vec<Revision>,
+    /// Only included for users allowed to view history.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub revisions: Option<Vec<Revision>>,
     pub lyrics: Vec<Lyrics>,
     pub covers: Vec<Cover>,
 }
@@ -185,8 +189,13 @@ pub struct Cover {
     pub source: String,
 }
 
-/// Everything about one track. Returns None if it doesn't exist.
-pub async fn get_track(pool: &PgPool, id: Uuid) -> sqlx::Result<Option<TrackDetail>> {
+/// Everything about one track. Returns None if it doesn't exist. Revisions and previous
+/// files are only loaded if `with_history`.
+pub async fn get_track(
+    conn: &mut PgConnection,
+    id: Uuid,
+    with_history: bool,
+) -> sqlx::Result<Option<TrackDetail>> {
     let Some(row) = sqlx::query!(
         r#"
         SELECT t.id, t.title, t.artist_display, t.status, t.is_restricted, t.release_date,
@@ -200,30 +209,34 @@ pub async fn get_track(pool: &PgPool, id: Uuid) -> sqlx::Result<Option<TrackDeta
         "#,
         id
     )
-    .fetch_optional(pool)
+    .fetch_optional(&mut *conn)
     .await?
     else {
         return Ok(None);
     };
 
-    let history_rows = sqlx::query!(
-        r#"
-        SELECT h.replaced_at, h.reason, h.old_file_id, f.original_filename AS old_original_filename,
-               f.codec AS old_codec, f.bitrate AS old_bitrate, h.new_file_id
-        FROM track_file_history h
-        JOIN files f ON f.id = h.old_file_id
-        WHERE h.track_id = $1
-        ORDER BY h.id DESC
-        "#,
-        id
-    )
-    .fetch_all(pool)
-    .await?;
+    let history_rows = if !with_history {
+        Vec::new()
+    } else {
+        sqlx::query!(
+            r#"
+            SELECT h.replaced_at, h.reason, h.old_file_id, f.original_filename AS old_original_filename,
+                   f.codec AS old_codec, f.bitrate AS old_bitrate, h.new_file_id
+            FROM track_file_history h
+            JOIN files f ON f.id = h.old_file_id
+            WHERE h.track_id = $1
+            ORDER BY h.id DESC
+            "#,
+            id
+        )
+        .fetch_all(&mut *conn)
+        .await?
+    };
 
     // Origins of the current file and all previous files, in one query.
     let mut file_ids: Vec<Uuid> = history_rows.iter().map(|h| h.old_file_id).collect();
     file_ids.push(row.file_id);
-    let mut origins = super::sources::origins_of_files(pool, &file_ids).await?;
+    let mut origins = super::sources::origins_of_files(conn, &file_ids).await?;
 
     let file_history = history_rows
         .into_iter()
@@ -238,8 +251,9 @@ pub async fn get_track(pool: &PgPool, id: Uuid) -> sqlx::Result<Option<TrackDeta
             new_file_id: h.new_file_id,
         })
         .collect();
+    let file_history = with_history.then_some(file_history);
 
-    let sources = super::sources::list_for(pool, id).await?;
+    let sources = super::sources::list_for(conn, id).await?;
 
     let credits = sqlx::query_as!(
         Credit,
@@ -252,7 +266,7 @@ pub async fn get_track(pool: &PgPool, id: Uuid) -> sqlx::Result<Option<TrackDeta
         "#,
         id
     )
-    .fetch_all(pool)
+    .fetch_all(&mut *conn)
     .await?;
 
     let albums = sqlx::query_as!(
@@ -266,7 +280,7 @@ pub async fn get_track(pool: &PgPool, id: Uuid) -> sqlx::Result<Option<TrackDeta
         "#,
         id
     )
-    .fetch_all(pool)
+    .fetch_all(&mut *conn)
     .await?;
 
     let variants = sqlx::query_as!(
@@ -274,21 +288,26 @@ pub async fn get_track(pool: &PgPool, id: Uuid) -> sqlx::Result<Option<TrackDeta
         "SELECT id, label FROM track_variants WHERE track_id = $1 ORDER BY id",
         id
     )
-    .fetch_all(pool)
+    .fetch_all(&mut *conn)
     .await?;
 
-    let revisions = sqlx::query_as!(
-        Revision,
-        r#"
-        SELECT id, variant_id, created_at, author_id, source, reason, is_canon, data
-        FROM track_revisions
-        WHERE track_id = $1
-        ORDER BY id DESC
-        "#,
-        id
-    )
-    .fetch_all(pool)
-    .await?;
+    let revisions = if !with_history {
+        None
+    } else {
+        let revisions = sqlx::query_as!(
+            Revision,
+            r#"
+            SELECT id, variant_id, created_at, author_id, source, reason, is_canon, data
+            FROM track_revisions
+            WHERE track_id = $1
+            ORDER BY id DESC
+            "#,
+            id
+        )
+        .fetch_all(&mut *conn)
+        .await?;
+        Some(revisions)
+    };
 
     let lyrics = sqlx::query_as!(
         Lyrics,
@@ -299,7 +318,7 @@ pub async fn get_track(pool: &PgPool, id: Uuid) -> sqlx::Result<Option<TrackDeta
         "#,
         id
     )
-    .fetch_all(pool)
+    .fetch_all(&mut *conn)
     .await?;
 
     let covers = sqlx::query_as!(
@@ -311,7 +330,7 @@ pub async fn get_track(pool: &PgPool, id: Uuid) -> sqlx::Result<Option<TrackDeta
         "#,
         id
     )
-    .fetch_all(pool)
+    .fetch_all(&mut *conn)
     .await?;
 
     Ok(Some(TrackDetail {

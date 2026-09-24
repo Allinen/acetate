@@ -26,6 +26,8 @@ async function api(path, options = {}) {
   const text = await response.text();
   let body;
   try { body = text ? JSON.parse(text) : null; } catch { body = text; }
+  // Session gone (expired, logged out elsewhere, password changed): back to the login form.
+  if (response.status === 401 && path !== "/api/auth/login") showLogin();
   if (!response.ok) {
     const message = body && body.error ? body.error : `${response.status} ${response.statusText}`;
     throw new Error(message);
@@ -200,15 +202,20 @@ const playerInfo = document.getElementById("player-info");
 const playerCover = document.getElementById("player-cover");
 
 function play(fileId, title, artist, coverId, note) {
-  audio.src = `/api/files/${fileId}/stream`;
+  playSrc(`/api/files/${fileId}/stream`, title, artist, coverId && `/api/covers/${coverId}`, note);
+}
+
+// Plays any stream URL (normal files, or through a share link).
+function playSrc(src, title, artist, coverSrc, note) {
+  audio.src = src;
   audio.play().catch((err) => {
     playerInfo.replaceChildren(errorBox(`Can't play: ${err.message}`));
   });
   playerInfo.replaceChildren(
     h("div", {}, h("strong", {}, title)),
     h("div", { class: "muted" }, artist, note ? ` · ${note}` : ""));
-  playerCover.hidden = !coverId;
-  if (coverId) playerCover.src = `/api/covers/${coverId}`;
+  playerCover.hidden = !coverSrc;
+  if (coverSrc) playerCover.src = coverSrc;
 }
 
 async function playTrackById(id) {
@@ -323,8 +330,11 @@ async function showTrack(id) {
           t.is_restricted ? h("span", { class: "tag" }, "restricted") : null,
           t.genres.map((g) => h("span", { class: "tag" }, g))),
         h("div", { class: "row" },
-          h("button", { onclick: () => play(f.id, t.title, t.artist_display, cover?.id) }, "▶ Play"),
-          h("a", { href: `/api/files/${f.id}/stream`, download: f.original_filename }, "Download original")))),
+          can("stream") ? h("button", { onclick: () => play(f.id, t.title, t.artist_display, cover?.id) }, "▶ Play") : null,
+          can("download_original")
+            ? h("a", { href: `/api/files/${f.id}/stream`, download: f.original_filename }, "Download original")
+            : null),
+        can("share") ? shareForm("track", id) : null)),
 
     h("h3", {}, "Metadata"),
     kv([
@@ -368,18 +378,19 @@ async function showTrack(id) {
         ["uploaded", fmtTime(f.uploaded_at)],
         ["origin", originView(f.origin)],
       ])),
-    await replaceFileForm(id, reload),
+    can("replace_file") ? await replaceFileForm(id, reload) : null,
 
-    t.file_history.length ? [
+    // Only there with the `view_history` permission.
+    t.file_history?.length ? [
       h("h3", {}, "Previous files"),
       t.file_history.map((c) => h("div", { class: "box" },
         h("div", { class: "row" },
           h("strong", {}, c.old_original_filename),
           h("span", { class: "muted" }, [c.old_codec, c.old_bitrate && `${c.old_bitrate} kbps`].filter(Boolean).join(" ")),
-          h("button", {
+          can("stream") ? h("button", {
             class: "small",
             onclick: () => play(c.old_file_id, t.title, t.artist_display, cover?.id, "previous file"),
-          }, "▶")),
+          }, "▶") : null),
         kv([
           ["replaced", fmtTime(c.replaced_at)],
           ["reason", c.reason],
@@ -389,7 +400,7 @@ async function showTrack(id) {
 
     h("h3", {}, "Sources"),
     sourcesView(t.sources),
-    await addSourceForm("track", id, reload),
+    can("edit_sources") ? await addSourceForm("track", id, reload) : null,
 
     t.lyrics.length ? [
       h("h3", {}, "Lyrics"),
@@ -401,13 +412,15 @@ async function showTrack(id) {
         h("pre", {}, l.body))),
     ] : null,
 
-    h("h3", {}, "Revisions"),
-    t.revisions.map((r) => h("details", {},
-      h("summary", {},
-        fmtTime(r.created_at), " · ",
-        t.variants.find((v) => v.id === r.variant_id)?.label ?? "?", " · ",
-        r.source, r.reason ? ` · ${r.reason}` : "", r.is_canon ? " · canon" : ""),
-      h("pre", {}, JSON.stringify(r.data, null, 2)))),
+    t.revisions ? [
+      h("h3", {}, "Revisions"),
+      t.revisions.map((r) => h("details", {},
+        h("summary", {},
+          fmtTime(r.created_at), " · ",
+          t.variants.find((v) => v.id === r.variant_id)?.label ?? "?", " · ",
+          r.source, r.reason ? ` · ${r.reason}` : "", r.is_canon ? " · canon" : ""),
+        h("pre", {}, JSON.stringify(r.data, null, 2)))),
+    ] : null,
 
     h("h3", {}, "Embedded tags (verbatim)"),
     (f.embedded_tags.tags || []).map((tag) => h("details", {},
@@ -435,7 +448,7 @@ async function showArtist(id) {
           "Search tracks by this name")),
       h("h3", {}, "Sources"),
       sourcesView(a.sources),
-      await addSourceForm("artist", id, () => showArtist(id)));
+      can("edit_sources") ? await addSourceForm("artist", id, () => showArtist(id)) : null);
   } catch (err) {
     setDetail(errorBox(err));
   }
@@ -448,13 +461,14 @@ async function showAlbum(id) {
     setDetail(
       h("h2", {}, a.title),
       h("div", { class: "row" }, h("span", { class: "tag" }, a.kind)),
+      can("share") ? shareForm("album", id) : null,
       kv([
         ["release date", a.release_date && h("span", { class: "mono" }, a.release_date)],
         ["album id", h("span", { class: "mono" }, a.id)],
       ]),
       h("h3", {}, "Sources"),
       sourcesView(a.sources),
-      await addSourceForm("album", id, () => showAlbum(id)));
+      can("edit_sources") ? await addSourceForm("album", id, () => showAlbum(id)) : null);
   } catch (err) {
     setDetail(errorBox(err));
   }
@@ -548,9 +562,183 @@ function route() {
   if (kind === "track" && id) showTrack(id);
   else if (kind === "artist" && id) showArtist(id);
   else if (kind === "album" && id) showAlbum(id);
+  else if (kind === "shares") showShares();
   else setDetail(h("p", { class: "muted" }, "Select a track. Double-click to play."));
 }
 
-window.addEventListener("hashchange", route);
-loadTracks(true);
-route();
+// ---------------------------------------------------------------------------
+// Login
+// ---------------------------------------------------------------------------
+
+// Who we are: {id, username, permissions}, or just {permissions} for a guest (not logged in).
+let me = null;
+
+// Whether the user has a permission. Only decides what's shown; the server checks for real.
+function can(permission) {
+  return !!me && (me.permissions.includes("admin") || me.permissions.includes(permission));
+}
+
+function showLogin() {
+  audio.pause();
+  document.body.classList.add("logged-out");
+  document.getElementById("login").hidden = false;
+}
+
+document.getElementById("login-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const form = event.target;
+  const error = document.getElementById("login-error");
+  error.textContent = "";
+  try {
+    // Sets the session cookie, which the browser then sends with every request.
+    await postJson("/api/auth/login", {
+      username: form.username.value,
+      password: form.password.value,
+    });
+    location.reload(); // start fresh as the new user
+  } catch (err) {
+    error.textContent = err.message;
+  }
+});
+
+const accountButton = document.getElementById("account");
+accountButton.addEventListener("click", async () => {
+  await api("/api/auth/logout", { method: "POST" }).catch(() => {});
+  location.reload(); // back to the login form
+});
+
+async function start() {
+  try {
+    me = await api("/api/auth/me");
+  } catch {
+    return; // stale session: `api` has shown the login form
+  }
+  // Guests (not logged in) can't do anything but log in.
+  if (!me.username) {
+    showLogin();
+    return;
+  }
+  document.getElementById("whoami").textContent = me.username;
+  accountButton.textContent = "Log out";
+  document.getElementById("upload-toggle").hidden = !can("upload");
+  document.getElementById("shares-link").hidden = !can("share");
+  window.addEventListener("hashchange", route);
+  loadTracks(true);
+  route();
+}
+
+// ---------------------------------------------------------------------------
+// Sharing
+// ---------------------------------------------------------------------------
+
+// "Share…" on a track or album page: creates a link, optionally expiring.
+function shareForm(kind, id) {
+  const expiry = h("select", {},
+    h("option", { value: "" }, "never expires"),
+    h("option", { value: "1" }, "expires in 1 day"),
+    h("option", { value: "7" }, "expires in 7 days"),
+    h("option", { value: "30" }, "expires in 30 days"));
+  const result = h("div", {});
+  const form = h("form", { class: "row" }, expiry, h("button", { type: "submit" }, "Create link"), result);
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const body = { [`${kind}_id`]: id };
+    if (expiry.value) body.expires_at = new Date(Date.now() + expiry.value * 86400000).toISOString();
+    try {
+      const share = await postJson("/api/shares", body);
+      const url = location.origin + share.path;
+      const input = h("input", { class: "share-link mono", readonly: true, value: url, onclick: (e) => e.target.select() });
+      result.replaceChildren(input, h("span", { class: "muted" }, "Copy it now: it can't be shown again."));
+      input.select();
+    } catch (err) {
+      result.replaceChildren(errorBox(err));
+    }
+  });
+  return h("details", {}, h("summary", {}, "Share…"), form);
+}
+
+// #/shares: your share links, with revoke buttons.
+async function showShares() {
+  selectedId = null;
+  markSelected();
+  setDetail(h("p", { class: "muted" }, "Loading…"));
+  try {
+    const shares = await api("/api/shares");
+    setDetail(
+      h("h2", {}, "Shares"),
+      shares.length ? shares.map((s) => {
+        const state = s.revoked_at ? "revoked"
+          : s.expires_at && new Date(s.expires_at) < new Date() ? "expired" : "active";
+        return h("div", { class: "box" },
+          h("div", { class: "row" },
+            h("a", { href: s.track_id ? `#/track/${s.track_id}` : `#/album/${s.album_id}` }, s.title),
+            h("span", { class: "tag" }, s.track_id ? "track" : "album"),
+            h("span", { class: state === "active" ? "ok" : "muted" }, state),
+            state === "active" ? h("button", {
+              class: "small",
+              onclick: async () => { await api(`/api/shares/${s.id}`, { method: "DELETE" }); showShares(); },
+            }, "Revoke") : null),
+          kv([
+            ["by", s.created_by],
+            ["created", fmtTime(s.created_at)],
+            ["expires", s.expires_at ? fmtTime(s.expires_at) : "never"],
+          ]));
+      }) : h("p", { class: "muted" }, "No shares yet. Share a track or album from its page."));
+  } catch (err) {
+    setDetail(errorBox(err));
+  }
+}
+
+// /s/<token>: a share link. Logged-in users who can see the shared thing get its normal
+// page; everyone else gets the share view (title, artist, cover, player).
+async function startShare(token) {
+  const shareView = document.getElementById("share-view");
+  document.body.classList.add("share-mode");
+  shareView.hidden = false;
+
+  // Plain `fetch`, not `api`: a 401 here just means "not logged in", not "show login".
+  const response = await fetch(`/api/share/${token}`);
+  if (!response.ok) {
+    shareView.replaceChildren(h("div", { class: "share" },
+      h("h2", {}, "This link doesn't work"),
+      h("p", { class: "muted" }, "It may have been revoked or expired.")));
+    return;
+  }
+  const share = await response.json();
+
+  const meResponse = await fetch("/api/auth/me");
+  const user = meResponse.ok ? await meResponse.json() : null;
+  if (user?.username) {
+    // Can we see it the normal way? Then go there instead.
+    const normal = await fetch(`/api/${share.kind}s/${share.id}`);
+    if (normal.ok) {
+      location.replace(`/#/${share.kind}/${share.id}`);
+      return;
+    }
+  }
+
+  const base = `/api/share/${token}`;
+  const coverSrc = (coverId) => coverId && `${base}/covers/${coverId}`;
+  const playTrack = (t) =>
+    playSrc(`${base}/tracks/${t.id}/stream`, t.title, t.artist_display, coverSrc(t.cover_id ?? share.cover_id));
+
+  shareView.replaceChildren(h("div", { class: "share" },
+    h("div", { class: "share-head" },
+      share.cover_id ? h("img", { src: coverSrc(share.cover_id), alt: "" }) : null,
+      h("div", {},
+        h("h2", {}, share.title),
+        h("div", {}, share.artist),
+        share.kind === "track"
+          ? h("div", { class: "row" }, h("button", { onclick: () => playTrack(share.tracks[0]) }, "▶ Play"))
+          : null)),
+    share.kind === "album"
+      ? share.tracks.map((t) => h("div", { class: "share-track" },
+          h("button", { class: "small", onclick: () => playTrack(t) }, "▶"),
+          h("div", { class: "grow" }, h("div", {}, t.title), h("div", { class: "muted" }, t.artist_display)),
+          h("span", { class: "muted" }, fmtDuration(t.duration_ms))))
+      : null));
+}
+
+const shareMatch = location.pathname.match(/^\/s\/([0-9a-f]+)$/);
+if (shareMatch) startShare(shareMatch[1]);
+else start();

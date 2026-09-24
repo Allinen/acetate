@@ -1,9 +1,11 @@
 mod api;
+mod auth;
 mod config;
 mod db;
 mod ingest;
 mod model;
 mod storage;
+mod user_commands;
 
 use std::path::PathBuf;
 
@@ -60,6 +62,11 @@ enum Command {
         #[arg(long)]
         origin: String,
     },
+    /// Manage users (e.g. create the first admin: `acetate user create alice --group admin`).
+    User {
+        #[command(subcommand)]
+        command: user_commands::UserCommand,
+    },
 }
 
 #[tokio::main]
@@ -91,6 +98,7 @@ async fn main() -> anyhow::Result<()> {
 
     match cli.command {
         Command::Serve => serve(config, pool, store).await,
+        Command::User { command } => user_commands::run(&pool, command).await,
         Command::Import {
             paths,
             origin,
@@ -116,6 +124,7 @@ async fn main() -> anyhow::Result<()> {
             let origin = parse_source(&origin)?;
             let pending = ingest::receive_path(&store, &path).await?;
             let options = ReplaceOptions {
+                user: None, // the CLI acts as the system
                 uploaded_filename: file_name(&path),
                 origin,
                 reason,
@@ -131,10 +140,12 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn serve(config: Config, pool: sqlx::PgPool, store: BlobStore) -> anyhow::Result<()> {
+    auth::check_permissions_table(&pool).await?;
     let app = api::router(api::AppState {
         pool,
         store,
         web_dir: config.web_dir.clone(),
+        secure_cookies: config.secure_cookies,
     });
     let listener = tokio::net::TcpListener::bind(&config.bind)
         .await
@@ -156,6 +167,7 @@ async fn import(
 
     for path in paths {
         let options = IngestOptions {
+            user: None, // the CLI acts as the system
             uploaded_filename: file_name(&path),
             origin: origin.clone(),
             status: status.clone(),

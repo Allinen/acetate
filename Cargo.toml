@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.104"
+argon2 = "0.6.0"
 axum = { version = "0.8.9", features = ["multipart"] }
 chrono = { version = "0.4.45", features = ["serde"] }
 clap = { version = "4.6.7", features = ["derive"] }
@@ -13,6 +14,8 @@ hex = "0.4.3"
 id3 = "1.17.2"
 lofty = "0.25.4"
 mime = "0.3.17"
+rand = "0.10.3"
+rpassword = "7.5.4"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 sha2 = "0.11.0"
@@ -25,3 +28,11 @@ tower-http = { version = "0.7.1", features = ["trace", "limit", "fs"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 uuid = { version = "1.26.1", features = ["v7", "serde"] }
+
+# Password hashing is deliberately slow; unoptimized (debug builds) it's many times slower
+# still, making logins sluggish during development. Optimize just those crates.
+[profile.dev.package.argon2]
+opt-level = 3
+
+[profile.dev.package.blake2]
+opt-level = 3

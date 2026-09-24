@@ -28,6 +28,8 @@ use tags::TagInfo;
 
 #[derive(Debug, Clone)]
 pub struct IngestOptions {
+    /// Who is uploading. None = the system (CLI import).
+    pub user: Option<Uuid>,
     /// The literal filename the file was uploaded / imported with.
     pub uploaded_filename: String,
     /// Where this file came from, as a source snapshot (e.g. the SoundCloud upload, or a
@@ -110,7 +112,7 @@ pub async fn ingest(
 ) -> anyhow::Result<IngestOutcome> {
     // 1. Same bytes already stored? Then there's nothing to do.
     //    Returning early drops `pending`, which deletes the temp file.
-    if let Some(existing) = find_file(pool, &pending.sha256).await? {
+    if let Some(existing) = find_file(pool, options.user, &pending.sha256).await? {
         let Some(track_id) = existing.track_id else {
             return Err(Rejected::AlreadyStored { track_id: None }.into());
         };
@@ -144,7 +146,7 @@ pub async fn ingest(
 
     // 4. Everything in the database happens in one transaction: either the whole track
     //    shows up, or nothing does.
-    let mut tx = pool.begin().await?;
+    let mut tx = db::begin(pool, options.user).await?;
     let result = create_track_rows(&mut tx, &options, &sha256, size_bytes, &probe, &tags, &covers)
         .await;
     match result {
@@ -157,7 +159,7 @@ pub async fn ingest(
             // Two uploads of the same file at the same time: the second one loses the race on
             // the unique sha256 constraint. Treat that as a duplicate rather than an error.
             if is_unique_violation(&err, "files_sha256_key") {
-                if let Some(existing) = find_file(pool, &sha256).await? {
+                if let Some(existing) = find_file(pool, options.user, &sha256).await? {
                     if let Some(id) = existing.track_id {
                         add_to_existing(pool, id, &options).await?;
                         return Ok(IngestOutcome::Duplicate(id));
@@ -171,6 +173,8 @@ pub async fn ingest(
 
 #[derive(Debug, Clone)]
 pub struct ReplaceOptions {
+    /// Who is replacing the file. None = the system (CLI).
+    pub user: Option<Uuid>,
     pub uploaded_filename: String,
     /// Where the new file came from (required, see `IngestOptions::origin`).
     pub origin: ValidSource,
@@ -194,19 +198,17 @@ pub async fn replace_file(
     pending: PendingBlob,
     options: ReplaceOptions,
 ) -> anyhow::Result<ReplaceOutcome> {
-    if let Some(existing) = find_file(pool, &pending.sha256).await? {
+    if let Some(existing) = find_file(pool, options.user, &pending.sha256).await? {
         return Err(Rejected::AlreadyStored {
             track_id: existing.track_id,
         }
         .into());
     }
     // Check before storing anything, so a typo in the id doesn't leave a stray blob.
-    let track_exists = sqlx::query_scalar!(
-        r#"SELECT EXISTS (SELECT 1 FROM tracks WHERE id = $1) AS "exists!""#,
-        track_id
-    )
-    .fetch_one(pool)
-    .await?;
+    let mut tx = db::begin(pool, options.user).await?;
+    let track_exists =
+        db::sources::owner_exists(&mut tx, SourceOwner::Track(track_id)).await?;
+    drop(tx);
     if !track_exists {
         return Err(Rejected::TrackNotFound(track_id).into());
     }
@@ -216,7 +218,7 @@ pub async fn replace_file(
     let size_bytes = pending.size as i64;
     store.commit(pending).await?;
 
-    let mut tx = pool.begin().await?;
+    let mut tx = db::begin(pool, options.user).await?;
     // Locking the row means two replacements of the same track can't interleave.
     let Some(old_file_id) = db::ingest::lock_track_file(&mut tx, track_id).await? else {
         return Err(Rejected::TrackNotFound(track_id).into());
@@ -252,7 +254,7 @@ async fn add_to_existing(
     track_id: Uuid,
     options: &IngestOptions,
 ) -> anyhow::Result<()> {
-    let mut tx = pool.begin().await?;
+    let mut tx = db::begin(pool, options.user).await?;
     db::sources::add_snapshot(&mut tx, SourceOwner::Track(track_id), &options.origin).await?;
     for source in &options.sources {
         db::sources::add_snapshot(&mut tx, SourceOwner::Track(track_id), source).await?;
@@ -261,9 +263,13 @@ async fn add_to_existing(
     Ok(())
 }
 
-async fn find_file(pool: &PgPool, sha256: &str) -> anyhow::Result<Option<StoredFile>> {
-    let mut conn = pool.acquire().await?;
-    Ok(db::ingest::find_file_by_sha256(&mut conn, sha256).await?)
+async fn find_file(
+    pool: &PgPool,
+    user: Option<Uuid>,
+    sha256: &str,
+) -> anyhow::Result<Option<StoredFile>> {
+    let mut tx = db::begin(pool, user).await?;
+    Ok(db::ingest::find_file_by_sha256(&mut tx, sha256).await?)
 }
 
 /// Probes and reads tags on tokio's blocking thread pool (both are blocking,

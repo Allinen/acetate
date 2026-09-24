@@ -30,6 +30,25 @@ a:hover { text-decoration: underline; }
 code, pre, .mono { font-family: ui-monospace, monospace; font-size: 12px; }
 pre { white-space: pre-wrap; margin: 0; }
 
+/* Logged out: only the login form. */
+body.logged-out > :not(#login, script) { display: none; }
+body.logged-out { display: block; }
+/* `:not([hidden])`: a plain `display` here would override the `hidden` attribute. */
+#login:not([hidden]) { display: grid; place-items: center; height: 100vh; }
+#login form { width: 280px; padding: 20px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; }
+#whoami { margin-left: auto; }
+
+/* Share link view: just the shared thing and the player. */
+body.share-mode > :not(#share-view, #player, script) { display: none; }
+body.share-mode { grid-template-rows: 1fr auto; }
+#share-view { overflow: auto; padding: 32px 16px; }
+#share-view .share { max-width: 560px; margin: 0 auto; }
+#share-view .share-head { display: flex; gap: 16px; align-items: center; margin-bottom: 16px; }
+#share-view .share-head img { width: 160px; height: 160px; object-fit: cover; border-radius: 4px; }
+#share-view .share-track { display: flex; gap: 10px; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--line); }
+#share-view .share-track .grow { flex: 1; }
+.share-link { width: 100%; }
+
 header {
   display: flex;
   gap: 12px;

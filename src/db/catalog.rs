@@ -1,7 +1,7 @@
 //! Read queries for artists and albums.
 
 use serde::Serialize;
-use sqlx::PgPool;
+use sqlx::PgConnection;
 use uuid::Uuid;
 
 use super::sources::Source;
@@ -15,7 +15,7 @@ pub struct ArtistDetail {
     pub sources: Vec<Source>,
 }
 
-pub async fn get_artist(pool: &PgPool, id: Uuid) -> sqlx::Result<Option<ArtistDetail>> {
+pub async fn get_artist(conn: &mut PgConnection, id: Uuid) -> sqlx::Result<Option<ArtistDetail>> {
     let Some(row) = sqlx::query!(
         r#"
         SELECT a.id, a.name, a.disambiguation,
@@ -28,7 +28,7 @@ pub async fn get_artist(pool: &PgPool, id: Uuid) -> sqlx::Result<Option<ArtistDe
         "#,
         id
     )
-    .fetch_optional(pool)
+    .fetch_optional(&mut *conn)
     .await?
     else {
         return Ok(None);
@@ -39,7 +39,7 @@ pub async fn get_artist(pool: &PgPool, id: Uuid) -> sqlx::Result<Option<ArtistDe
         name: row.name,
         disambiguation: row.disambiguation,
         aliases: row.aliases,
-        sources: super::sources::list_for(pool, id).await?,
+        sources: super::sources::list_for(conn, id).await?,
     }))
 }
 
@@ -52,12 +52,12 @@ pub struct AlbumDetail {
     pub sources: Vec<Source>,
 }
 
-pub async fn get_album(pool: &PgPool, id: Uuid) -> sqlx::Result<Option<AlbumDetail>> {
+pub async fn get_album(conn: &mut PgConnection, id: Uuid) -> sqlx::Result<Option<AlbumDetail>> {
     let Some(row) = sqlx::query!(
         "SELECT id, title, kind, release_date FROM albums WHERE id = $1",
         id
     )
-    .fetch_optional(pool)
+    .fetch_optional(&mut *conn)
     .await?
     else {
         return Ok(None);
@@ -68,6 +68,6 @@ pub async fn get_album(pool: &PgPool, id: Uuid) -> sqlx::Result<Option<AlbumDeta
         title: row.title,
         kind: row.kind,
         release_date: row.release_date,
-        sources: super::sources::list_for(pool, id).await?,
+        sources: super::sources::list_for(conn, id).await?,
     }))
 }

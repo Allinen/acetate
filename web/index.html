@@ -10,10 +10,26 @@
   <header>
     <a href="#/" class="logo">Acetate</a>
     <input id="search" type="search" placeholder="Search title or artist…" autocomplete="off">
-    <button id="upload-toggle">Upload</button>
+    <button id="upload-toggle" hidden>Upload</button>
+    <a id="shares-link" href="#/shares" hidden>Shares</a>
+    <span id="whoami" class="muted"></span>
+    <button id="account" class="small"></button>
   </header>
 
+  <section id="login" hidden>
+    <form id="login-form" class="stack">
+      <strong>Acetate</strong>
+      <label>username <input name="username" autocomplete="username" required autofocus></label>
+      <label>password <input name="password" type="password" autocomplete="current-password" required></label>
+      <button type="submit">Log in</button>
+      <div id="login-error" class="error"></div>
+    </form>
+  </section>
+
   <section id="upload-panel" hidden></section>
+
+  <!-- What a share link (/s/<token>) shows to someone who isn't logged in. -->
+  <section id="share-view" hidden></section>
 
   <main>
     <section id="list-pane">

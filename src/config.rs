@@ -11,6 +11,9 @@ pub struct Config {
     pub bind: String,
     /// Directory with the web UI's static files.
     pub web_dir: PathBuf,
+    /// Only send the session cookie over HTTPS. Turn on when serving over HTTPS
+    /// (e.g. behind a reverse proxy); it breaks logging in over plain HTTP.
+    pub secure_cookies: bool,
 }
 
 impl Config {
@@ -28,6 +31,7 @@ impl Config {
             web_dir: std::env::var("ACETATE_WEB_DIR")
                 .unwrap_or_else(|_| "./web".to_string())
                 .into(),
+            secure_cookies: std::env::var("ACETATE_SECURE_COOKIES").is_ok_and(|v| v == "true"),
         })
     }
 }
