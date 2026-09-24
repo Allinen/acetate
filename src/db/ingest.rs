@@ -10,11 +10,9 @@ use uuid::Uuid;
 use crate::model::TrackMetadata;
 
 pub struct StoredFile {
-    pub file_id: Uuid,
     /// The track currently using this file, or the track it used to belong to
     /// before being replaced by another file.
     pub track_id: Option<Uuid>,
-    pub origin_snapshot_id: Option<Uuid>,
 }
 
 /// Looks up a file by hash, including files that were replaced (e.g. by an upgrade).
@@ -22,9 +20,9 @@ pub async fn find_file_by_sha256(
     conn: &mut PgConnection,
     sha256: &str,
 ) -> sqlx::Result<Option<StoredFile>> {
-    let row = sqlx::query!(
+    let row = sqlx::query_scalar!(
         r#"
-        SELECT f.id AS file_id, COALESCE(t.id, h.track_id) AS track_id, f.origin_snapshot_id
+        SELECT COALESCE(t.id, h.track_id) AS track_id
         FROM files f
         LEFT JOIN tracks t ON t.file_id = f.id
         LEFT JOIN LATERAL (
@@ -36,14 +34,13 @@ pub async fn find_file_by_sha256(
     )
     .fetch_optional(conn)
     .await?;
-    Ok(row.map(|r| StoredFile {
-        file_id: r.file_id,
-        track_id: r.track_id,
-        origin_snapshot_id: r.origin_snapshot_id,
-    }))
+    Ok(row.map(|track_id| StoredFile { track_id }))
 }
 
 pub struct NewFile<'a> {
+    pub id: Uuid,
+    /// Where the file came from (required).
+    pub origin_snapshot_id: Uuid,
     pub sha256: &'a str,
     pub original_filename: &'a str,
     pub uploaded_filename: &'a str,
@@ -58,15 +55,16 @@ pub struct NewFile<'a> {
     pub embedded_tags: &'a serde_json::Value,
 }
 
-pub async fn insert_file(conn: &mut PgConnection, f: &NewFile<'_>) -> sqlx::Result<Uuid> {
-    sqlx::query_scalar!(
+pub async fn insert_file(conn: &mut PgConnection, f: &NewFile<'_>) -> sqlx::Result<()> {
+    sqlx::query!(
         r#"
-        INSERT INTO files (sha256, original_filename, uploaded_filename, size_bytes, container,
-                           codec, bitrate, sample_rate, channels, bit_depth, duration_ms,
-                           embedded_tags)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-        RETURNING id
+        INSERT INTO files (id, origin_snapshot_id, sha256, original_filename, uploaded_filename,
+                           size_bytes, container, codec, bitrate, sample_rate, channels,
+                           bit_depth, duration_ms, embedded_tags)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
         "#,
+        f.id,
+        f.origin_snapshot_id,
         f.sha256,
         f.original_filename,
         f.uploaded_filename,
@@ -80,8 +78,9 @@ pub async fn insert_file(conn: &mut PgConnection, f: &NewFile<'_>) -> sqlx::Resu
         f.duration_ms,
         f.embedded_tags,
     )
-    .fetch_one(conn)
-    .await
+    .execute(conn)
+    .await?;
+    Ok(())
 }
 
 /// Creates a track together with its first variant and revision 0.
@@ -98,7 +97,8 @@ pub async fn create_track(
 ) -> anyhow::Result<Uuid> {
     // Generate the ids up front: the track points at its variant and the variant points
     // at the track. The FK from tracks to track_variants is DEFERRABLE, so it's only
-    // checked at COMMIT, by which point both rows exist.
+    // checked at COMMIT, by which point both rows exist. (Same for `file_id`: the file
+    // row is inserted later in the transaction.)
     let track_id = Uuid::now_v7();
     let variant_id = Uuid::now_v7();
     let data = serde_json::to_value(meta)?;
@@ -391,18 +391,3 @@ pub async fn replace_track_file(
     Ok(())
 }
 
-/// Records where a file came from: a snapshot of one of its track's sources.
-pub async fn set_file_origin(
-    conn: &mut PgConnection,
-    file_id: Uuid,
-    snapshot_id: Uuid,
-) -> sqlx::Result<()> {
-    sqlx::query!(
-        "UPDATE files SET origin_snapshot_id = $2 WHERE id = $1",
-        file_id,
-        snapshot_id
-    )
-    .execute(conn)
-    .await?;
-    Ok(())
-}

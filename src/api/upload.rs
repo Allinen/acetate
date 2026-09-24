@@ -20,8 +20,9 @@ pub struct UploadResult {
 ///
 /// Text fields, before the file(s) they apply to:
 /// * `status`: initial track status; applies to all following files.
-/// * `origin`: where the next file came from, one source snapshot as JSON (see `NewSource`),
-///   e.g. `{"platform":"custom","data":{"label":"discord","description":"sent by X"}}`.
+/// * `origin` (required for every file): where the next file came from, one source snapshot
+///   as JSON (see `NewSource`), e.g.
+///   `{"platform":"custom","data":{"label":"discord","description":"sent by X"}}`.
 /// * `sources`: other places the next file's track can be found, a JSON array of snapshots.
 ///
 /// `origin` and `sources` apply to the next file only. Then any number of file fields
@@ -59,6 +60,20 @@ pub async fn upload(
             continue;
         };
 
+        // `take` moves the value out and leaves None / an empty Vec behind,
+        // so these only apply to this one file.
+        let sources = std::mem::take(&mut next_sources);
+        let Some(origin) = next_origin.take() else {
+            // Not reading the field's data; the next `next_field` call skips past it.
+            results.push(UploadResult {
+                filename,
+                status: "skipped",
+                track_id: None,
+                error: Some("`origin` is required: where did this file come from?".to_string()),
+            });
+            continue;
+        };
+
         let mut writer = state.store.writer().await?;
         while let Some(chunk) = field.chunk().await.map_err(bad_request)? {
             writer.write(&chunk).await?;
@@ -68,10 +83,8 @@ pub async fn upload(
         let options = IngestOptions {
             uploaded_filename: filename.clone(),
             status: status.clone(),
-            // `take` moves the value out and leaves None / an empty Vec behind,
-            // so these only apply to this one file.
-            origin: next_origin.take(),
-            sources: std::mem::take(&mut next_sources),
+            origin,
+            sources,
         };
         // One bad file shouldn't fail the whole batch, so errors are reported per file.
         let (status, track_id, error) =
@@ -106,8 +119,8 @@ pub struct ReplaceResult {
 }
 
 /// `POST /api/tracks/{id}/file`, multipart form: replace the track's file, e.g. with a
-/// higher quality version. Optional text fields `reason` and `origin` (as for uploads),
-/// then one file field.
+/// higher quality version. Text fields `origin` (required, as for uploads) and `reason`
+/// (optional), then one file field.
 ///
 /// Example: `curl -F reason="flac upgrade" -F file=@song.flac localhost:3000/api/tracks/<id>/file`
 // TODO(Phase 1): require the `replace_file` permission.
@@ -129,6 +142,13 @@ pub async fn replace_file(
                 other => return Err(AppError::BadRequest(format!("unknown field '{other}'"))),
             }
             continue;
+        };
+
+        let Some(origin) = origin else {
+            return Err(AppError::BadRequest(
+                "`origin` is required (before the file field): where did this file come from?"
+                    .to_string(),
+            ));
         };
 
         let mut writer = state.store.writer().await?;

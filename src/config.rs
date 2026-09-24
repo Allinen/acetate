@@ -9,6 +9,8 @@ pub struct Config {
     pub data_dir: PathBuf,
     /// Address the HTTP server listens on, e.g. `127.0.0.1:3000`.
     pub bind: String,
+    /// Directory with the web UI's static files.
+    pub web_dir: PathBuf,
 }
 
 impl Config {
@@ -23,6 +25,9 @@ impl Config {
                 .unwrap_or_else(|_| "./data".to_string())
                 .into(),
             bind: std::env::var("ACETATE_BIND").unwrap_or_else(|_| "127.0.0.1:3000".to_string()),
+            web_dir: std::env::var("ACETATE_WEB_DIR")
+                .unwrap_or_else(|_| "./web".to_string())
+                .into(),
         })
     }
 }

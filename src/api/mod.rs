@@ -1,5 +1,6 @@
 //! HTTP API. One module per resource.
 
+mod media;
 mod sources;
 mod tracks;
 mod upload;
@@ -11,6 +12,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::json;
 use sqlx::PgPool;
+use tower_http::services::ServeDir;
 use tower_http::trace::TraceLayer;
 
 use crate::ingest::Rejected;
@@ -23,6 +25,8 @@ use crate::storage::BlobStore;
 pub struct AppState {
     pub pool: PgPool,
     pub store: BlobStore,
+    /// Directory with the web UI's static files.
+    pub web_dir: std::path::PathBuf,
 }
 
 const UPLOAD_LIMIT: usize = 4 * 1024 * 1024 * 1024;
@@ -32,6 +36,9 @@ pub fn router(state: AppState) -> Router {
         .route("/api/tracks", get(tracks::list))
         .route("/api/tracks/{id}", get(tracks::get))
         .route("/api/tracks/{id}/sources", post(sources::add_track_source))
+        .route("/api/source-shapes", get(sources::shapes))
+        .route("/api/files/{id}/stream", get(media::stream_file))
+        .route("/api/covers/{id}", get(media::cover))
         .route("/api/albums/{id}", get(sources::get_album))
         .route("/api/albums/{id}/sources", post(sources::add_album_source))
         .route("/api/artists/{id}", get(sources::get_artist))
@@ -45,6 +52,8 @@ pub fn router(state: AppState) -> Router {
             "/api/tracks/{id}/file",
             post(upload::replace_file).layer(DefaultBodyLimit::max(UPLOAD_LIMIT)),
         )
+        // Everything that isn't an API route: the web UI's static files.
+        .fallback_service(ServeDir::new(&state.web_dir))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
 }

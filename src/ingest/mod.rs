@@ -31,9 +31,10 @@ pub struct IngestOptions {
     /// The literal filename the file was uploaded / imported with.
     pub uploaded_filename: String,
     /// Where this file came from, as a source snapshot (e.g. the SoundCloud upload, or a
-    /// custom "sent on Discord" source). It's added to the track's sources and the file
-    /// points at it.
-    pub origin: Option<ValidSource>,
+    /// custom "sent on Discord" source). Required. It's added to the track's sources and
+    /// the file points at it. For a duplicate, it's added to the existing track's sources
+    /// (the stored file keeps its original origin).
+    pub origin: ValidSource,
     /// Initial track status, e.g. "released" or "unreleased".
     pub status: String,
     /// External source data for the track (already validated), supplied by the uploader.
@@ -113,7 +114,7 @@ pub async fn ingest(
         let Some(track_id) = existing.track_id else {
             return Err(Rejected::AlreadyStored { track_id: None }.into());
         };
-        add_to_existing(pool, &existing, track_id, &options).await?;
+        add_to_existing(pool, track_id, &options).await?;
         return Ok(IngestOutcome::Duplicate(track_id));
     }
 
@@ -158,7 +159,7 @@ pub async fn ingest(
             if is_unique_violation(&err, "files_sha256_key") {
                 if let Some(existing) = find_file(pool, &sha256).await? {
                     if let Some(id) = existing.track_id {
-                        add_to_existing(pool, &existing, id, &options).await?;
+                        add_to_existing(pool, id, &options).await?;
                         return Ok(IngestOutcome::Duplicate(id));
                     }
                 }
@@ -171,8 +172,8 @@ pub async fn ingest(
 #[derive(Debug, Clone)]
 pub struct ReplaceOptions {
     pub uploaded_filename: String,
-    /// Where the new file came from (see `IngestOptions::origin`).
-    pub origin: Option<ValidSource>,
+    /// Where the new file came from (required, see `IngestOptions::origin`).
+    pub origin: ValidSource,
     /// Why the file was replaced, e.g. "upgrade: 320k mp3 -> flac".
     pub reason: String,
 }
@@ -220,18 +221,20 @@ pub async fn replace_file(
     let Some(old_file_id) = db::ingest::lock_track_file(&mut tx, track_id).await? else {
         return Err(Rejected::TrackNotFound(track_id).into());
     };
-    let ingest_options = IngestOptions {
-        uploaded_filename: options.uploaded_filename.clone(),
-        origin: None, // set below, once the file row exists
-        status: String::new(), // not used for files
-        sources: Vec::new(),
-    };
-    let new_file_id =
-        insert_file_row(&mut tx, &ingest_options, &sha256, size_bytes, &probe, &tags).await?;
-    if let Some(origin) = &options.origin {
-        let added = db::sources::add_snapshot(&mut tx, SourceOwner::Track(track_id), origin).await?;
-        db::ingest::set_file_origin(&mut tx, new_file_id, added.snapshot_id).await?;
-    }
+    let origin =
+        db::sources::add_snapshot(&mut tx, SourceOwner::Track(track_id), &options.origin).await?;
+    let new_file_id = Uuid::now_v7();
+    insert_file_row(
+        &mut tx,
+        new_file_id,
+        origin.snapshot_id,
+        &options.uploaded_filename,
+        &sha256,
+        size_bytes,
+        &probe,
+        &tags,
+    )
+    .await?;
     db::ingest::replace_track_file(&mut tx, track_id, old_file_id, new_file_id, &options.reason)
         .await?;
     tx.commit().await?;
@@ -242,27 +245,17 @@ pub async fn replace_file(
     })
 }
 
-/// For a duplicate upload: adds the given sources to the existing track, and the origin
-/// too. The origin is only recorded as the file's origin if it didn't have one yet;
-/// an existing origin is never overwritten.
+/// For a duplicate upload: adds the origin and the given sources to the existing track's
+/// sources. The stored file keeps the origin it was first uploaded with.
 async fn add_to_existing(
     pool: &PgPool,
-    existing: &StoredFile,
     track_id: Uuid,
     options: &IngestOptions,
 ) -> anyhow::Result<()> {
-    if options.sources.is_empty() && options.origin.is_none() {
-        return Ok(());
-    }
     let mut tx = pool.begin().await?;
+    db::sources::add_snapshot(&mut tx, SourceOwner::Track(track_id), &options.origin).await?;
     for source in &options.sources {
         db::sources::add_snapshot(&mut tx, SourceOwner::Track(track_id), source).await?;
-    }
-    if let Some(origin) = &options.origin {
-        let added = db::sources::add_snapshot(&mut tx, SourceOwner::Track(track_id), origin).await?;
-        if existing.origin_snapshot_id.is_none() {
-            db::ingest::set_file_origin(&mut tx, existing.file_id, added.snapshot_id).await?;
-        }
     }
     tx.commit().await?;
     Ok(())
@@ -309,28 +302,34 @@ async fn read_file_info(
     .await?
 }
 
+// Many arguments, but each is a distinct piece of the file row; a struct wouldn't be clearer.
+#[allow(clippy::too_many_arguments)]
 async fn insert_file_row(
     conn: &mut PgConnection,
-    options: &IngestOptions,
+    file_id: Uuid,
+    origin_snapshot_id: Uuid,
+    uploaded_filename: &str,
     sha256: &str,
     size_bytes: i64,
     probe: &ProbeInfo,
     tags: &TagInfo,
-) -> anyhow::Result<Uuid> {
+) -> anyhow::Result<()> {
     // The original filename comes from the file's own tags if it has one there,
     // otherwise it's the name it was uploaded with.
     let original_filename = tags
         .original_filename
         .as_deref()
-        .unwrap_or(&options.uploaded_filename);
+        .unwrap_or(uploaded_filename);
     let embedded_tags = json!({ "tags": tags.raw });
 
-    let file_id = db::ingest::insert_file(
+    db::ingest::insert_file(
         conn,
         &db::ingest::NewFile {
+            id: file_id,
+            origin_snapshot_id,
             sha256,
             original_filename,
-            uploaded_filename: &options.uploaded_filename,
+            uploaded_filename,
             size_bytes,
             container: probe.container.as_deref(),
             codec: probe.codec.as_deref(),
@@ -346,7 +345,7 @@ async fn insert_file_row(
         },
     )
     .await?;
-    Ok(file_id)
+    Ok(())
 }
 
 async fn create_track_rows(
@@ -358,7 +357,9 @@ async fn create_track_rows(
     tags: &TagInfo,
     covers: &[(String, Option<String>)],
 ) -> anyhow::Result<Uuid> {
-    let file_id = insert_file_row(conn, options, sha256, size_bytes, probe, tags).await?;
+    // The file row is written last (see the comment on tracks.file_id in the schema),
+    // so its id is generated up front.
+    let file_id = Uuid::now_v7();
 
     // Revision 0: exactly what the tags said. (Title presence was checked by the caller.)
     let metadata = TrackMetadata {
@@ -445,10 +446,19 @@ async fn create_track_rows(
     for source in &options.sources {
         db::sources::add_snapshot(conn, SourceOwner::Track(track_id), source).await?;
     }
-    if let Some(origin) = &options.origin {
-        let added = db::sources::add_snapshot(conn, SourceOwner::Track(track_id), origin).await?;
-        db::ingest::set_file_origin(conn, file_id, added.snapshot_id).await?;
-    }
+    let origin =
+        db::sources::add_snapshot(conn, SourceOwner::Track(track_id), &options.origin).await?;
+    insert_file_row(
+        conn,
+        file_id,
+        origin.snapshot_id,
+        &options.uploaded_filename,
+        sha256,
+        size_bytes,
+        probe,
+        tags,
+    )
+    .await?;
 
     // TODO(Phase 2): fuzzy-match title/artists against existing tracks (pg_trgm) and flag
     // likely duplicates and artist matches for review.

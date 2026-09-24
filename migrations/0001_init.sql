@@ -25,15 +25,13 @@ INSERT INTO track_statuses (status, description) VALUES
     ('deleted',    'Was released, later removed from official platforms');
 
 CREATE TABLE credit_roles (
-    role        text PRIMARY KEY,
-    description text NOT NULL DEFAULT ''
+    role text PRIMARY KEY
 );
 
 INSERT INTO credit_roles (role) VALUES ('primary'), ('featured'), ('producer');
 
 CREATE TABLE album_kinds (
-    kind        text PRIMARY KEY,
-    description text NOT NULL DEFAULT ''
+    kind text PRIMARY KEY
 );
 
 INSERT INTO album_kinds (kind) VALUES
@@ -43,31 +41,34 @@ INSERT INTO album_kinds (kind) VALUES
 -- (remix_of <-> remix_to); symmetric kinds are their own inverse (alternate).
 -- The composite FK guarantees the pairing is consistent: if X's inverse is Y,
 -- then Y's inverse must be X.
+--
+-- `template` is the sentence for a relation row, for display: the frontend
+-- replaces %A with the row's from_track and %B with its to_track.
 CREATE TABLE relation_kinds (
     kind         text PRIMARY KEY,
     inverse_kind text NOT NULL,
-    description  text NOT NULL DEFAULT '',
+    template     text NOT NULL CHECK (template LIKE '%\%A%' AND template LIKE '%\%B%'),
     UNIQUE (kind, inverse_kind),
     FOREIGN KEY (inverse_kind, kind) REFERENCES relation_kinds (kind, inverse_kind)
         DEFERRABLE INITIALLY DEFERRED
 );
 
-INSERT INTO relation_kinds (kind, inverse_kind, description) VALUES
-    ('remix_of',        'remix_to',        'A is a remix of B'),
-    ('remix_to',        'remix_of',        'A has B as a remix'),
-    ('instrumental_of', 'instrumental_to', 'A is the instrumental of B'),
-    ('instrumental_to', 'instrumental_of', 'A has B as its instrumental'),
-    ('acapella_of',     'acapella_to',     'A is the acapella of B'),
-    ('acapella_to',     'acapella_of',     'A has B as its acapella'),
-    ('live_of',         'live_to',         'A is a live version of B'),
-    ('live_to',         'live_of',         'A has B as a live version'),
-    ('edit_of',         'edit_to',         'A is an edit of B'),
-    ('edit_to',         'edit_of',         'A has B as an edit'),
-    ('sped_up_of',      'sped_up_to',      'A is a sped-up version of B'),
-    ('sped_up_to',      'sped_up_of',      'A has B as a sped-up version'),
-    ('slowed_of',       'slowed_to',       'A is a slowed version of B'),
-    ('slowed_to',       'slowed_of',       'A has B as a slowed version'),
-    ('alternate',       'alternate',       'A and B are alternate versions of each other');
+INSERT INTO relation_kinds (kind, inverse_kind, template) VALUES
+    ('remix_of',        'remix_to',        '%A is a remix of %B'),
+    ('remix_to',        'remix_of',        '%B is a remix of %A'),
+    ('instrumental_of', 'instrumental_to', '%A is the instrumental of %B'),
+    ('instrumental_to', 'instrumental_of', '%B is the instrumental of %A'),
+    ('acapella_of',     'acapella_to',     '%A is the acapella of %B'),
+    ('acapella_to',     'acapella_of',     '%B is the acapella of %A'),
+    ('live_of',         'live_to',         '%A is a live version of %B'),
+    ('live_to',         'live_of',         '%B is a live version of %A'),
+    ('edit_of',         'edit_to',         '%A is an edit of %B'),
+    ('edit_to',         'edit_of',         '%B is an edit of %A'),
+    ('sped_up_of',      'sped_up_to',      '%A is a sped-up version of %B'),
+    ('sped_up_to',      'sped_up_of',      '%B is a sped-up version of %A'),
+    ('slowed_of',       'slowed_to',       '%A is a slowed version of %B'),
+    ('slowed_to',       'slowed_of',       '%B is a slowed version of %A'),
+    ('alternate',       'alternate',       '%A and %B are alternate versions of each other');
 
 -- ============================================================================
 -- Users, groups, permissions
@@ -160,8 +161,8 @@ CREATE TABLE files (
     embedded_tags     jsonb NOT NULL DEFAULT '{}',  -- verbatim dump of every tag in the file, never edited
     -- Where this exact file came from: a snapshot of one of its track's sources (e.g. the
     -- SoundCloud upload as it was when downloaded, or a custom "sent on Discord" source).
-    -- FK added below, after source_snapshots exists.
-    origin_snapshot_id uuid,
+    -- Required: every file has a known origin. FK added below, after source_snapshots exists.
+    origin_snapshot_id uuid NOT NULL,
     uploaded_at       timestamptz NOT NULL DEFAULT now(),
     uploaded_by       uuid REFERENCES users (id) ON DELETE SET NULL
 );
@@ -172,7 +173,10 @@ CREATE TABLE files (
 
 CREATE TABLE tracks (
     id                 uuid PRIMARY KEY DEFAULT uuidv7(),
-    file_id            uuid NOT NULL UNIQUE REFERENCES files (id),  -- current file; history in track_file_history
+    -- Current file; history in track_file_history. DEFERRABLE because of a cycle on insert:
+    -- the file's origin snapshot belongs to a source of this track, so the track row is
+    -- written first and the file row last, in the same transaction.
+    file_id            uuid NOT NULL UNIQUE REFERENCES files (id) DEFERRABLE INITIALLY DEFERRED,
     status             text NOT NULL DEFAULT 'released' REFERENCES track_statuses (status),
     is_restricted      boolean NOT NULL DEFAULT false,  -- if true, only groups in track_access can see it
     primary_variant_id uuid,                            -- FK added below (circular reference)

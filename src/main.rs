@@ -35,11 +35,11 @@ enum Command {
         /// Files to import.
         #[arg(required = true)]
         paths: Vec<PathBuf>,
-        /// Where the files came from: one source snapshot as JSON (same format as the upload
-        /// API's `origin` field), e.g. '{"platform":"custom","data":{"label":"discord"}}'.
-        /// Applies to every imported file.
+        /// Where the files came from (required): one source snapshot as JSON (same format as
+        /// the upload API's `origin` field), e.g.
+        /// '{"platform":"custom","data":{"label":"discord"}}'. Applies to every imported file.
         #[arg(long)]
-        origin: Option<String>,
+        origin: String,
         /// Initial status for the new tracks.
         #[arg(long, default_value = "released")]
         status: String,
@@ -55,9 +55,10 @@ enum Command {
         /// Why the file is being replaced, e.g. "flac upgrade".
         #[arg(long, default_value = "")]
         reason: String,
-        /// Where the new file came from: one source snapshot as JSON (see `import --origin`).
+        /// Where the new file came from (required): one source snapshot as JSON
+        /// (see `import --origin`).
         #[arg(long)]
-        origin: Option<String>,
+        origin: String,
     },
 }
 
@@ -96,7 +97,7 @@ async fn main() -> anyhow::Result<()> {
             status,
             sources,
         } => {
-            let origin = origin.map(|json| parse_source(&json)).transpose()?;
+            let origin = parse_source(&origin)?;
             let sources = match sources {
                 Some(_) if paths.len() != 1 => {
                     anyhow::bail!("--sources can only be used when importing a single file")
@@ -112,7 +113,7 @@ async fn main() -> anyhow::Result<()> {
             reason,
             origin,
         } => {
-            let origin = origin.map(|json| parse_source(&json)).transpose()?;
+            let origin = parse_source(&origin)?;
             let pending = ingest::receive_path(&store, &path).await?;
             let options = ReplaceOptions {
                 uploaded_filename: file_name(&path),
@@ -130,7 +131,11 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn serve(config: Config, pool: sqlx::PgPool, store: BlobStore) -> anyhow::Result<()> {
-    let app = api::router(api::AppState { pool, store });
+    let app = api::router(api::AppState {
+        pool,
+        store,
+        web_dir: config.web_dir.clone(),
+    });
     let listener = tokio::net::TcpListener::bind(&config.bind)
         .await
         .with_context(|| format!("binding {}", config.bind))?;
@@ -143,7 +148,7 @@ async fn import(
     pool: sqlx::PgPool,
     store: BlobStore,
     paths: Vec<PathBuf>,
-    origin: Option<ValidSource>,
+    origin: ValidSource,
     status: String,
     sources: Vec<ValidSource>,
 ) -> anyhow::Result<()> {

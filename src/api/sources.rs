@@ -74,3 +74,38 @@ pub async fn get_album(
         .map(Json)
         .ok_or(AppError::NotFound)
 }
+
+/// `GET /api/source-shapes`: every supported platform/kind and its fields, so clients
+/// (like the web UI) can build forms without hard-coding them.
+pub async fn shapes() -> Json<serde_json::Value> {
+    use crate::model::sources::{FieldType, Kind, SHAPES};
+
+    let shapes: Vec<serde_json::Value> = SHAPES
+        .iter()
+        .map(|shape| {
+            let kind = match shape.kind {
+                Kind::Track => "track",
+                Kind::Album => "album",
+                Kind::Artist => "artist",
+            };
+            let fields: Vec<serde_json::Value> = shape
+                .fields
+                .iter()
+                .map(|f| {
+                    serde_json::json!({
+                        "name": f.name,
+                        "type": match f.field_type { FieldType::Int => "int", FieldType::Str => "str" },
+                        "required": f.required,
+                    })
+                })
+                .collect();
+            serde_json::json!({
+                "platform": shape.platform,
+                "kind": kind,
+                "id_field": shape.id_field,
+                "fields": fields,
+            })
+        })
+        .collect();
+    Json(serde_json::Value::Array(shapes))
+}

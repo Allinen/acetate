@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Acetate</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header>
+    <a href="#/" class="logo">Acetate</a>
+    <input id="search" type="search" placeholder="Search title or artist…" autocomplete="off">
+    <button id="upload-toggle">Upload</button>
+  </header>
+
+  <section id="upload-panel" hidden></section>
+
+  <main>
+    <section id="list-pane">
+      <table id="track-list">
+        <thead>
+          <tr><th>Title</th><th>Artist</th><th>Status</th><th>Date</th><th>Codec</th><th>Length</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+      <button id="load-more" hidden>Load more</button>
+    </section>
+    <section id="detail-pane">
+      <p class="muted">Select a track.</p>
+    </section>
+  </main>
+
+  <footer id="player">
+    <img id="player-cover" alt="" hidden>
+    <div id="player-info"><span class="muted">Nothing playing</span></div>
+    <audio id="audio" controls preload="none"></audio>
+  </footer>
+
+  <script src="/app.js"></script>
+</body>
+</html>

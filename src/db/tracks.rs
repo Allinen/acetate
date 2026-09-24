@@ -43,6 +43,40 @@ pub async fn list_tracks(
     .await
 }
 
+/// Like `list_tracks`, filtered to tracks whose title or artist contains `query`
+/// (case-insensitive). The trigram indexes make `ILIKE '%...%'` fast.
+pub async fn search_tracks(
+    pool: &PgPool,
+    query: &str,
+    before: Option<Uuid>,
+    limit: i64,
+) -> sqlx::Result<Vec<TrackSummary>> {
+    // Escape LIKE's special characters so they match literally.
+    let escaped = query
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_");
+    let pattern = format!("%{escaped}%");
+    sqlx::query_as!(
+        TrackSummary,
+        r#"
+        SELECT t.id, t.title, t.artist_display, t.status, t.release_date,
+               f.duration_ms, f.codec
+        FROM tracks t
+        JOIN files f ON f.id = t.file_id
+        WHERE (t.title ILIKE $1 OR t.artist_display ILIKE $1)
+          AND t.id < COALESCE($2, 'ffffffff-ffff-ffff-ffff-ffffffffffff'::uuid)
+        ORDER BY t.id DESC
+        LIMIT $3
+        "#,
+        pattern,
+        before,
+        limit,
+    )
+    .fetch_all(pool)
+    .await
+}
+
 #[derive(Debug, Serialize)]
 pub struct TrackDetail {
     pub id: Uuid,
