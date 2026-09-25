@@ -146,6 +146,10 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/tracks/{id}/covers/copy", require(&[EditMetadata], post(covers::copy_to_track)))
         .route("/api/albums/{id}/covers/copy", require(&[EditMetadata], post(covers::copy_to_album)))
+        .route(
+            "/api/albums/{id}/covers/apply-to-tracks",
+            require(&[EditMetadata], post(covers::apply_to_album_tracks)),
+        )
         .route("/api/tracks/{id}/covers/order", require(&[EditMetadata], put(covers::order_track)))
         .route("/api/albums/{id}/covers/order", require(&[EditMetadata], put(covers::order_album)))
         // Trash. Restoring checks per kind (covers: edit_metadata, sources: edit_sources,

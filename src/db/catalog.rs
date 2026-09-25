@@ -152,6 +152,9 @@ pub struct AlbumDetail {
     pub revision_id: Option<Uuid>,
     /// The album's own covers, main one first.
     pub covers: Vec<super::tracks::Cover>,
+    /// The cover to show for the album: its own main cover, else the main cover of the
+    /// first track (in track order) that has one.
+    pub display_cover_id: Option<Uuid>,
     pub sources: Vec<Source>,
     pub tracks: Vec<AlbumTrack>,
     /// Only included for users allowed to view history.
@@ -176,6 +179,8 @@ pub struct AlbumTrack {
     pub disc_number: Option<i16>,
     pub track_number: Option<i16>,
     pub duration_ms: Option<i64>,
+    /// The track's main cover, if it has one.
+    pub cover_id: Option<Uuid>,
 }
 
 pub async fn get_album(
@@ -217,7 +222,9 @@ pub async fn get_album(
     let tracks = sqlx::query_as!(
         AlbumTrack,
         r#"
-        SELECT t.id, t.title, t.artist_display, at.disc_number, at.track_number, f.duration_ms
+        SELECT t.id, t.title, t.artist_display, at.disc_number, at.track_number, f.duration_ms,
+               (SELECT c.id FROM covers c WHERE c.track_id = t.id AND c.trashed_at IS NULL
+                ORDER BY c.position, c.id LIMIT 1) AS cover_id
         FROM album_tracks at
         JOIN tracks t ON t.id = at.track_id
         JOIN files f ON f.id = t.file_id
@@ -249,6 +256,7 @@ pub async fn get_album(
         None
     };
 
+    let covers = super::tracks::covers_of(conn, id).await?;
     Ok(Some(AlbumDetail {
         id: row.id,
         title: row.title,
@@ -256,7 +264,11 @@ pub async fn get_album(
         release_date: row.release_date,
         credits,
         revision_id: row.revision_id,
-        covers: super::tracks::covers_of(conn, id).await?,
+        display_cover_id: covers
+            .first()
+            .map(|c| c.id)
+            .or_else(|| tracks.iter().find_map(|t| t.cover_id)),
+        covers,
         sources: super::sources::list_for(conn, id).await?,
         tracks,
         revisions,

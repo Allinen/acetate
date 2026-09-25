@@ -169,3 +169,21 @@ pub async fn trash(
     tx.commit().await?;
     Ok(Json(serde_json::json!({ "trashed": id })))
 }
+
+/// `POST /api/albums/{id}/covers/apply-to-tracks`, JSON `{"cover_id": "..."}`: adds the
+/// cover to every track of the album that doesn't have that image yet (see
+/// `db::covers::apply_to_album_tracks`).
+pub async fn apply_to_album_tracks(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(album_id): Path<Uuid>,
+    Json(body): Json<CopyCover>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let mut tx = state.db(&user).await?;
+    if !db::sources::owner_exists(&mut tx, SourceOwner::Album(album_id)).await? {
+        return Err(AppError::NotFound);
+    }
+    let (added, skipped) = db::covers::apply_to_album_tracks(&mut tx, album_id, body.cover_id).await?;
+    tx.commit().await?;
+    Ok(Json(serde_json::json!({ "added": added, "skipped": skipped })))
+}

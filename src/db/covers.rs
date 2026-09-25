@@ -159,3 +159,47 @@ pub async fn trash(conn: &mut PgConnection, cover_id: Uuid) -> sqlx::Result<bool
     .await?;
     Ok(result.rows_affected() > 0)
 }
+
+/// "Use this cover on all its tracks": adds a copy of the cover (same blob, so nothing is
+/// stored twice) to every track of the album the user can see, except tracks that already
+/// have that exact image. A track without covers gets it as its main cover (the first one
+/// added is main). Returns (added, skipped).
+pub async fn apply_to_album_tracks(
+    conn: &mut PgConnection,
+    album_id: Uuid,
+    cover_id: Uuid,
+) -> anyhow::Result<(usize, usize)> {
+    let Some(blob) = sqlx::query_scalar!(
+        "SELECT blob_sha256 FROM covers WHERE id = $1 AND trashed_at IS NULL",
+        cover_id
+    )
+    .fetch_optional(&mut *conn)
+    .await?
+    else {
+        return Err(EditRejected::NotFound("cover").into());
+    };
+    let tracks = sqlx::query!(
+        r#"
+        SELECT at.track_id,
+               EXISTS (SELECT 1 FROM covers c WHERE c.track_id = at.track_id
+                       AND c.blob_sha256 = $2 AND c.trashed_at IS NULL) AS "has_it!"
+        FROM album_tracks at
+        WHERE at.album_id = $1
+        ORDER BY at.track_id
+        "#,
+        album_id,
+        blob
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    let (mut added, mut skipped) = (0, 0);
+    for track in tracks {
+        if track.has_it {
+            skipped += 1;
+        } else {
+            copy(conn, CoverOwner::Track(track.track_id), cover_id).await?;
+            added += 1;
+        }
+    }
+    Ok((added, skipped))
+}

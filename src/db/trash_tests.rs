@@ -242,3 +242,30 @@ async fn trash_respects_visibility(_: PgPoolOptions, connect: PgConnectOptions) 
     assert!(rejected_message(&err).contains("came from"), "{err}");
     Ok(())
 }
+
+#[sqlx::test]
+async fn album_cover_goes_on_its_tracks_once(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
+    let lib = setup(connect).await?;
+    let sha = "b".repeat(64);
+    let cover = NewCover { blob_sha256: &sha, mime: None, width: None, height: None, source: "upload" };
+
+    // carol can see V but not H (both on the album).
+    let mut tx = db::begin(&lib.app, Some(lib.carol)).await?;
+    let album_cover = db::covers::add(&mut tx, CoverOwner::Album(lib.album), &cover).await?;
+    assert_eq!(db::covers::apply_to_album_tracks(&mut tx, lib.album, album_cover).await?, (1, 0));
+    assert_eq!(db::covers::apply_to_album_tracks(&mut tx, lib.album, album_cover).await?, (0, 1), "V has it now");
+    let v_covers = db::tracks::covers_of(&mut tx, lib.v).await?;
+    assert_eq!(v_covers.len(), 1);
+    assert_eq!(v_covers[0].position, 0, "V had none, so it's the main cover");
+    assert_eq!(v_covers[0].blob_sha256, sha, "the same image, not a new one");
+    let album = db::catalog::get_album(&mut tx, lib.album, false).await?.unwrap();
+    assert_eq!(album.display_cover_id, Some(album_cover));
+    tx.commit().await?;
+
+    let h_covers: i64 = sqlx::query_scalar("SELECT count(*) FROM covers WHERE track_id = $1")
+        .bind(lib.h)
+        .fetch_one(&lib.owner)
+        .await?;
+    assert_eq!(h_covers, 0, "tracks carol can't see are left alone");
+    Ok(())
+}
