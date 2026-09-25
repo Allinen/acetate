@@ -14,6 +14,9 @@ pub struct Config {
     /// Only send the session cookie over HTTPS. Turn on when serving over HTTPS
     /// (e.g. behind a reverse proxy); it breaks logging in over plain HTTP.
     pub secure_cookies: bool,
+    /// Behind a reverse proxy: take the client's address from `X-Forwarded-For`. Only
+    /// turn on if a proxy always sets it, or clients can claim any address they like.
+    pub trust_proxy: bool,
 }
 
 impl Config {
@@ -32,6 +35,7 @@ impl Config {
                 .unwrap_or_else(|_| "./web".to_string())
                 .into(),
             secure_cookies: std::env::var("ACETATE_SECURE_COOKIES").is_ok_and(|v| v == "true"),
+            trust_proxy: std::env::var("ACETATE_TRUST_PROXY").is_ok_and(|v| v == "true"),
         })
     }
 }

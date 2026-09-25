@@ -166,8 +166,10 @@ pub async fn album(conn: &mut PgConnection, album_id: Uuid) -> sqlx::Result<Opti
         r#"
         SELECT al.title,
                COALESCE((
-                   SELECT string_agg(COALESCE(ac.credited_as, a.name), ', ' ORDER BY ac.position)
-                   FROM album_credits ac JOIN artists a ON a.id = ac.artist_id
+                   SELECT string_agg(COALESCE(aa.alias, a.name), ', ' ORDER BY ac.position)
+                   FROM album_credits ac
+                   JOIN artists a ON a.id = ac.artist_id
+                   LEFT JOIN artist_aliases aa ON aa.id = ac.alias_id
                    WHERE ac.album_id = al.id
                ), '') AS "artist!"
         FROM albums al

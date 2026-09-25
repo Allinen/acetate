@@ -13,7 +13,9 @@
 //! trigger (forms, fetches), which is what stops them from acting as you (CSRF).
 
 use anyhow::Context;
-use axum::extract::{FromRequestParts, Request, State};
+use std::net::SocketAddr;
+
+use axum::extract::{ConnectInfo, FromRequestParts, Path, Request, State};
 use axum::http::header::{AUTHORIZATION, COOKIE, SET_COOKIE, USER_AGENT};
 use axum::http::request::Parts;
 use axum::http::{HeaderMap, StatusCode};
@@ -22,7 +24,9 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::MethodRouter;
 use axum::Json;
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
+use super::rate_limit::client_ip;
 use super::{AppError, AppState};
 use crate::auth::{self, CurrentUser, Login, Permission};
 use crate::db;
@@ -173,24 +177,34 @@ pub struct LoginResponse {
 }
 
 /// `POST /api/auth/login`, JSON `{"username": "...", "password": "..."}`. Sets the session
-/// cookie and returns the token and user.
+/// cookie and returns the token and user. Too many failures give 429 (see `rate_limit`).
 pub async fn login(
     State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Json(body): Json<LoginRequest>,
 ) -> Result<Response, AppError> {
-    let login = db::users::find_login(&state.pool, body.username.trim()).await?;
+    let ip = client_ip(&headers, peer, state.trust_proxy);
+    let username = body.username.trim();
+    if let Some(wait) = state.rate_limits.check_login(ip, username) {
+        return Err(AppError::TooManyRequests(wait));
+    }
+
+    let login = db::users::find_login(&state.pool, username).await?;
     let hash = login.as_ref().and_then(|l| l.password_hash.clone());
     let valid = auth::verify_password_async(body.password, hash).await;
     // Same answer for "no such user" and "wrong password".
     let Some(login) = login.filter(|_| valid) else {
+        state.rate_limits.login_failed(ip, username);
         return Err(AppError::Unauthorized("wrong username or password"));
     };
+    state.rate_limits.login_succeeded(username);
 
     let token = auth::new_token();
     let token_hash = auth::token_hash(&token);
     let user_agent = headers.get(USER_AGENT).and_then(|v| v.to_str().ok());
-    db::users::create_session(&state.pool, login.user_id, &token_hash, user_agent).await?;
+    let ip_text = ip.to_string();
+    db::users::create_session(&state.pool, login.user_id, &token_hash, user_agent, &ip_text).await?;
     let session = db::users::find_session(&state.pool, &token_hash)
         .await?
         .context("new session not found")?;
@@ -203,10 +217,15 @@ pub async fn login(
     Ok(([(SET_COOKIE, cookie)], Json(body)).into_response())
 }
 
+/// Returns the login, or 401 for guests. For routes that only make sense logged in.
+fn logged_in(user: &CurrentUser) -> Result<&Login, AppError> {
+    user.login.as_ref().ok_or(AppError::Unauthorized("not logged in"))
+}
+
 /// `POST /api/auth/logout`: ends the current session (other devices stay logged in).
 pub async fn logout(State(state): State<AppState>, user: CurrentUser) -> Result<Response, AppError> {
     if let Some(login) = &user.login {
-        db::users::delete_session(&state.pool, login.session_id).await?;
+        db::users::delete_session(&state.pool, login.id, login.session_id).await?;
     }
     let cookie = session_cookie("", state.secure_cookies, 0);
     Ok((StatusCode::NO_CONTENT, [(SET_COOKIE, cookie)]).into_response())
@@ -225,26 +244,66 @@ pub struct ChangePassword {
 }
 
 /// `POST /api/auth/password`, JSON `{"current_password": "...", "new_password": "..."}`.
-/// Logs out all your other sessions.
+/// Logs out all your other sessions. Wrong current passwords count towards the same limit
+/// as failed logins (a stolen session shouldn't allow guessing the password).
 pub async fn change_password(
     State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     user: CurrentUser,
     Json(body): Json<ChangePassword>,
 ) -> Result<StatusCode, AppError> {
-    let Some(login) = &user.login else {
-        return Err(AppError::Unauthorized("not logged in"));
-    };
+    let login = logged_in(&user)?;
+    let ip = client_ip(&headers, peer, state.trust_proxy);
+    if let Some(wait) = state.rate_limits.check_login(ip, &login.username) {
+        return Err(AppError::TooManyRequests(wait));
+    }
     check_password(&body.new_password)?;
 
     let mut tx = state.db(&user).await?;
     let current_hash = db::users::password_hash(&mut tx, login.id).await?;
     if !auth::verify_password_async(body.current_password, current_hash).await {
+        state.rate_limits.login_failed(ip, &login.username);
         return Err(AppError::BadRequest("current password is wrong".to_string()));
     }
     let new_hash = auth::hash_password_async(body.new_password).await?;
     db::users::set_password(&mut tx, login.id, &new_hash).await?;
     tx.commit().await?;
 
+    db::users::delete_sessions_of(&state.pool, login.id, Some(login.session_id)).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `GET /api/auth/sessions`: your sessions (devices you're logged in on), newest first.
+pub async fn sessions(
+    State(state): State<AppState>,
+    user: CurrentUser,
+) -> Result<Json<Vec<db::users::SessionInfo>>, AppError> {
+    let login = logged_in(&user)?;
+    let list = db::users::list_sessions(&state.pool, login.id, login.session_id).await?;
+    Ok(Json(list))
+}
+
+/// `DELETE /api/auth/sessions/{id}`: logs out one of your sessions.
+pub async fn end_session(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(session_id): Path<Uuid>,
+) -> Result<StatusCode, AppError> {
+    let login = logged_in(&user)?;
+    // Only deletes it if it's yours; someone else's id is a plain 404.
+    if !db::users::delete_session(&state.pool, login.id, session_id).await? {
+        return Err(AppError::NotFound);
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `DELETE /api/auth/sessions`: logs out all your sessions except this one.
+pub async fn end_other_sessions(
+    State(state): State<AppState>,
+    user: CurrentUser,
+) -> Result<StatusCode, AppError> {
+    let login = logged_in(&user)?;
     db::users::delete_sessions_of(&state.pool, login.id, Some(login.session_id)).await?;
     Ok(StatusCode::NO_CONTENT)
 }

@@ -7,7 +7,8 @@
 use sqlx::PgConnection;
 use uuid::Uuid;
 
-use crate::model::TrackMetadata;
+use super::revisions::{self, Source};
+use crate::model::{AlbumData, ArtistData, Credit};
 
 pub struct StoredFile {
     /// The track currently using this file, or the track it used to belong to
@@ -83,152 +84,97 @@ pub async fn insert_file(conn: &mut PgConnection, f: &NewFile<'_>) -> sqlx::Resu
     Ok(())
 }
 
-/// Creates a track together with its first variant and revision 0.
-///
-/// This (and later the metadata edit code) is the only place that writes the
-/// denormalized metadata columns on `tracks`.
-pub async fn create_track(
-    conn: &mut PgConnection,
-    file_id: Uuid,
-    status: &str,
-    meta: &TrackMetadata,
-    variant_label: &str,
-    revision_reason: &str,
-) -> anyhow::Result<Uuid> {
-    // Generate the ids up front: the track points at its variant and the variant points
-    // at the track. The FK from tracks to track_variants is DEFERRABLE, so it's only
-    // checked at COMMIT, by which point both rows exist. (Same for `file_id`: the file
-    // row is inserted later in the transaction.)
-    let track_id = Uuid::now_v7();
-    let variant_id = Uuid::now_v7();
-    let data = serde_json::to_value(meta)?;
-
-    sqlx::query!(
-        r#"
-        INSERT INTO tracks (id, file_id, status, primary_variant_id, title, release_date, genres)
-        VALUES ($1, $2, $3, $4, $5, $6, $7)
-        "#,
-        track_id,
-        file_id,
-        status,
-        variant_id,
-        meta.title,
-        meta.release_date,
-        &meta.genres,
-    )
-    .execute(&mut *conn)
-    .await?;
-
-    sqlx::query!(
-        "INSERT INTO track_variants (id, track_id, label) VALUES ($1, $2, $3)",
-        variant_id,
-        track_id,
-        variant_label,
-    )
-    .execute(&mut *conn)
-    .await?;
-
-    sqlx::query!(
-        r#"
-        INSERT INTO track_revisions (track_id, variant_id, source, reason, data)
-        VALUES ($1, $2, 'import', $3, $4)
-        "#,
-        track_id,
-        variant_id,
-        revision_reason,
-        data,
-    )
-    .execute(&mut *conn)
-    .await?;
-
-    Ok(track_id)
+/// An artist found (or created) for a name from the tags, and how to credit it.
+pub struct FoundArtist {
+    pub id: Uuid,
+    /// The alias the name is (None = the artist's own name).
+    pub alias_id: Option<Uuid>,
+    /// All artists the name matched, if more than one (then the best match was used, and
+    /// ingest flags it for review).
+    pub ambiguous: Vec<Uuid>,
 }
 
-/// Finds an artist by exact (case-insensitive) name or alias, or creates a new one.
-/// Returns the artist id and its canonical name.
+/// Finds the artist a name from the tags refers to, creating what's missing:
+/// * exactly an artist's name or listed alias: that (a merged artist's name leads to the
+///   artist it was merged into);
+/// * the same apart from case ("mira vale" for "Mira Vale"): that artist, with the
+///   spelling added as a new alias, so the tags' exact spelling is kept;
+/// * otherwise a new artist.
 ///
-/// TODO(Phase 2): when several artists share a name, flag the credit for review
-/// instead of silently picking the oldest one.
+/// If several artists match, exact spellings win, then names over aliases, then the oldest.
 pub async fn find_or_create_artist(
     conn: &mut PgConnection,
     name: &str,
-) -> sqlx::Result<(Uuid, String)> {
-    let existing = sqlx::query!(
+) -> anyhow::Result<FoundArtist> {
+    let matches = sqlx::query!(
         r#"
-        SELECT id AS "id!", name AS "name!" FROM (
-            SELECT a.id, a.name, 0 AS rank FROM artists a WHERE lower(a.name) = lower($1)
+        SELECT artist_id AS "artist_id!", alias_id, exact AS "exact!" FROM (
+            SELECT COALESCE(a.merged_into, a.id) AS artist_id,
+                   CASE WHEN a.merged_into IS NOT NULL THEN a.merged_alias_id END AS alias_id,
+                   a.name = $1 AS exact, 0 AS rank, a.id AS ord
+            FROM artists a
+            WHERE lower(a.name) = lower($1)
             UNION ALL
-            SELECT a.id, a.name, 1 AS rank FROM artist_aliases al
-            JOIN artists a ON a.id = al.artist_id
-            WHERE lower(al.alias) = lower($1)
+            SELECT al.artist_id, al.id, al.alias = $1, 1, al.id
+            FROM artist_aliases al
+            WHERE lower(al.alias) = lower($1) AND al.listed
         ) matches
-        ORDER BY rank, id
-        LIMIT 1
+        ORDER BY exact DESC, rank, ord
         "#,
         name
     )
-    .fetch_optional(&mut *conn)
+    .fetch_all(&mut *conn)
     .await?;
 
-    if let Some(row) = existing {
-        return Ok((row.id, row.name));
-    }
+    let Some(best) = matches.first() else {
+        let data = ArtistData {
+            name: name.to_string(),
+            ..Default::default()
+        };
+        let id =
+            revisions::create_artist(conn, &data, Source::Import, "imported_from_file").await?;
+        return Ok(FoundArtist {
+            id,
+            alias_id: None,
+            ambiguous: Vec::new(),
+        });
+    };
 
-    let id = sqlx::query_scalar!("INSERT INTO artists (name) VALUES ($1) RETURNING id", name)
-        .fetch_one(&mut *conn)
+    let mut ids: Vec<Uuid> = matches.iter().map(|m| m.artist_id).collect();
+    ids.sort();
+    ids.dedup(); // an artist can match by name and by alias
+    let ambiguous = if ids.len() > 1 { ids } else { Vec::new() };
+
+    let alias_id = if best.exact {
+        best.alias_id
+    } else {
+        let alias = revisions::ensure_alias(
+            conn,
+            best.artist_id,
+            name,
+            Source::Import,
+            "spelling from the tags",
+        )
         .await?;
-    Ok((id, name.to_string()))
-}
-
-pub async fn insert_track_credit(
-    conn: &mut PgConnection,
-    track_id: Uuid,
-    artist_id: Uuid,
-    role: &str,
-    credited_as: Option<&str>,
-    position: i16,
-) -> sqlx::Result<()> {
-    sqlx::query!(
-        r#"
-        INSERT INTO track_credits (track_id, artist_id, role, credited_as, position)
-        VALUES ($1, $2, $3, $4, $5)
-        ON CONFLICT DO NOTHING
-        "#,
-        track_id,
-        artist_id,
-        role,
-        credited_as,
-        position,
-    )
-    .execute(conn)
-    .await?;
-    Ok(())
-}
-
-pub async fn set_artist_display(
-    conn: &mut PgConnection,
-    track_id: Uuid,
-    artist_display: &str,
-) -> sqlx::Result<()> {
-    sqlx::query!(
-        "UPDATE tracks SET artist_display = $2, updated_at = now() WHERE id = $1",
-        track_id,
-        artist_display
-    )
-    .execute(conn)
-    .await?;
-    Ok(())
+        Some(alias)
+    };
+    Ok(FoundArtist {
+        id: best.artist_id,
+        alias_id,
+        ambiguous,
+    })
 }
 
 /// Finds an album with the same title (case-insensitive) credited to the same primary
-/// artist, or to no artist if `album_artists` is empty. Creates it if there's none.
+/// artist, or to no artist if `album_artists` is empty. Creates it (with album revision 0)
+/// if there's none.
 pub async fn find_or_create_album(
     conn: &mut PgConnection,
     title: &str,
-    album_artists: &[Uuid],
+    album_artists: &[FoundArtist],
     release_date: Option<&str>,
-) -> sqlx::Result<Uuid> {
-    let primary_artist = album_artists.first().copied();
+) -> anyhow::Result<Uuid> {
+    let primary_artist = album_artists.first().map(|a| a.id);
 
     let existing = sqlx::query_scalar!(
         r#"
@@ -252,53 +198,24 @@ pub async fn find_or_create_album(
         return Ok(id);
     }
 
-    let album_id = sqlx::query_scalar!(
-        "INSERT INTO albums (title, release_date) VALUES ($1, $2) RETURNING id",
-        title,
-        release_date,
-    )
-    .fetch_one(&mut *conn)
-    .await?;
-
-    for (position, artist_id) in album_artists.iter().enumerate() {
-        sqlx::query!(
-            r#"
-            INSERT INTO album_credits (album_id, artist_id, role, position)
-            VALUES ($1, $2, 'primary', $3)
-            ON CONFLICT DO NOTHING
-            "#,
-            album_id,
-            artist_id,
-            position as i16,
-        )
-        .execute(&mut *conn)
-        .await?;
+    let mut credits: Vec<Credit> = Vec::new();
+    for artist in album_artists {
+        // The same artist twice in the tag would be a duplicate credit.
+        if !credits.iter().any(|c| c.artist_id == artist.id) {
+            credits.push(Credit {
+                artist_id: artist.id,
+                role: "primary".to_string(),
+                alias_id: artist.alias_id,
+            });
+        }
     }
-
-    Ok(album_id)
-}
-
-pub async fn add_album_track(
-    conn: &mut PgConnection,
-    album_id: Uuid,
-    track_id: Uuid,
-    disc_number: Option<i16>,
-    track_number: Option<i16>,
-) -> sqlx::Result<()> {
-    sqlx::query!(
-        r#"
-        INSERT INTO album_tracks (album_id, track_id, disc_number, track_number)
-        VALUES ($1, $2, $3, $4)
-        ON CONFLICT DO NOTHING
-        "#,
-        album_id,
-        track_id,
-        disc_number,
-        track_number,
-    )
-    .execute(conn)
-    .await?;
-    Ok(())
+    let data = AlbumData {
+        title: title.to_string(),
+        release_date: release_date.map(str::to_string),
+        credits,
+        ..Default::default()
+    };
+    revisions::create_album(conn, &data, Source::Import, "imported_from_file").await
 }
 
 pub async fn insert_track_cover(

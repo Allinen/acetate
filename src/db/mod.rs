@@ -7,6 +7,8 @@
 
 pub mod catalog;
 pub mod ingest;
+pub mod review;
+pub mod revisions;
 pub mod shares;
 pub mod sources;
 pub mod tracks;

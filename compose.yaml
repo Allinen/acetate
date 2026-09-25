@@ -1,6 +1,8 @@
 services:
   postgres:
     image: postgres:18
+    # Start again after a reboot (as long as Docker itself starts at boot).
+    restart: unless-stopped
     environment:
       POSTGRES_USER: acetate
       POSTGRES_PASSWORD: acetate

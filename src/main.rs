@@ -81,11 +81,21 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let config = Config::from_env()?;
 
+    // Without a limit, an unreachable database means half a minute of silence before
+    // an unhelpful "pool timed out". Say what's happening, and fail fast and clearly.
+    let db_host = database_host(&config.database_url);
+    tracing::info!("connecting to the database at {db_host}");
     let pool = PgPoolOptions::new()
         .max_connections(10)
+        .acquire_timeout(std::time::Duration::from_secs(5))
         .connect(&config.database_url)
         .await
-        .context("connecting to the database")?;
+        .with_context(|| {
+            format!(
+                "can't reach the database at {db_host}. Is Postgres running? \
+                 (`docker compose up -d`, check with `docker compose ps`)"
+            )
+        })?;
 
     // Applies any migrations in ./migrations that haven't run yet.
     // `migrate!` embeds the SQL files into the binary at compile time.
@@ -146,11 +156,15 @@ async fn serve(config: Config, pool: sqlx::PgPool, store: BlobStore) -> anyhow::
         store,
         web_dir: config.web_dir.clone(),
         secure_cookies: config.secure_cookies,
+        trust_proxy: config.trust_proxy,
+        rate_limits: std::sync::Arc::new(api::RateLimits::new()),
     });
     let listener = tokio::net::TcpListener::bind(&config.bind)
         .await
         .with_context(|| format!("binding {}", config.bind))?;
     tracing::info!("listening on http://{}", config.bind);
+    // `with_connect_info`: lets handlers see the client's address (for rate limiting).
+    let app = app.into_make_service_with_connect_info::<std::net::SocketAddr>();
     axum::serve(listener, app).await?;
     Ok(())
 }
@@ -214,6 +228,11 @@ fn parse_sources(json: &str) -> anyhow::Result<Vec<ValidSource>> {
         valid.push(sources::validate(Kind::Track, source)?);
     }
     Ok(valid)
+}
+
+/// The host:port/database part of a database URL, without the username and password.
+fn database_host(url: &str) -> &str {
+    url.rsplit_once('@').map_or(url, |(_, host)| host)
 }
 
 fn file_name(path: &std::path::Path) -> String {

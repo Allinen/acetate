@@ -96,7 +96,11 @@ pub struct TrackDetail {
     pub sources: Vec<super::sources::Source>,
     pub credits: Vec<Credit>,
     pub albums: Vec<AlbumEntry>,
+    /// Seen from this track.
+    pub relations: Vec<RelationEntry>,
     pub variants: Vec<Variant>,
+    /// The latest external revision (status, albums, relations): the base for editing them.
+    pub external_revision_id: Option<Uuid>,
     /// Only included for users allowed to view history.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub revisions: Option<Vec<Revision>>,
@@ -141,7 +145,9 @@ pub struct Credit {
     pub artist_id: Uuid,
     pub artist_name: String,
     pub role: String,
-    pub credited_as: Option<String>,
+    /// The alias it's credited under (None = the artist's name).
+    pub alias_id: Option<Uuid>,
+    pub alias: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -154,17 +160,35 @@ pub struct AlbumEntry {
 }
 
 #[derive(Debug, Serialize)]
+pub struct RelationEntry {
+    pub kind: String,
+    pub track_id: Uuid,
+    pub title: String,
+    pub artist_display: String,
+    /// How to say it, e.g. "%A is a remix of %B": %A is this track, %B the other one.
+    pub template: String,
+}
+
+#[derive(Debug, Serialize)]
 pub struct Variant {
     pub id: Uuid,
     pub label: String,
+    /// The variant's latest internal revision: the base for editing it.
+    pub revision_id: Uuid,
+    /// Its current metadata (`model::TrackMetadata`).
+    pub data: serde_json::Value,
 }
 
 #[derive(Debug, Serialize)]
 pub struct Revision {
     pub id: Uuid,
-    pub variant_id: Uuid,
+    /// "internal" (a variant's metadata) or "external" (status, albums, relations).
+    pub kind: String,
+    /// Set for internal revisions.
+    pub variant_id: Option<Uuid>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub author_id: Option<Uuid>,
+    pub author: Option<String>,
     pub source: String,
     pub reason: String,
     pub is_canon: bool,
@@ -258,9 +282,10 @@ pub async fn get_track(
     let credits = sqlx::query_as!(
         Credit,
         r#"
-        SELECT c.artist_id, a.name AS artist_name, c.role, c.credited_as
+        SELECT c.artist_id, a.name AS artist_name, c.role, c.alias_id, al.alias AS "alias?"
         FROM track_credits c
         JOIN artists a ON a.id = c.artist_id
+        LEFT JOIN artist_aliases al ON al.id = c.alias_id
         WHERE c.track_id = $1
         ORDER BY c.position, a.name
         "#,
@@ -283,12 +308,47 @@ pub async fn get_track(
     .fetch_all(&mut *conn)
     .await?;
 
-    let variants = sqlx::query_as!(
-        Variant,
-        "SELECT id, label FROM track_variants WHERE track_id = $1 ORDER BY id",
+    let relations = sqlx::query_as!(
+        RelationEntry,
+        r#"
+        SELECT r.kind, r.to_track_id AS track_id, t.title, t.artist_display, k.template
+        FROM track_relations r
+        JOIN tracks t ON t.id = r.to_track_id
+        JOIN relation_kinds k ON k.kind = r.kind
+        WHERE r.from_track_id = $1
+        ORDER BY r.kind, t.title
+        "#,
         id
     )
     .fetch_all(&mut *conn)
+    .await?;
+
+    let variants = sqlx::query_as!(
+        Variant,
+        r#"
+        SELECT v.id, v.label, latest.id AS "revision_id!", latest.data AS "data!"
+        FROM track_variants v
+        CROSS JOIN LATERAL (
+            SELECT r.id, r.data FROM track_revisions r
+            WHERE r.variant_id = v.id ORDER BY r.id DESC LIMIT 1
+        ) latest
+        WHERE v.track_id = $1
+        ORDER BY v.id
+        "#,
+        id
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+
+    let external_revision_id = sqlx::query_scalar!(
+        r#"
+        SELECT id FROM track_revisions
+        WHERE track_id = $1 AND kind = 'external'
+        ORDER BY id DESC LIMIT 1
+        "#,
+        id
+    )
+    .fetch_optional(&mut *conn)
     .await?;
 
     let revisions = if !with_history {
@@ -297,10 +357,12 @@ pub async fn get_track(
         let revisions = sqlx::query_as!(
             Revision,
             r#"
-            SELECT id, variant_id, created_at, author_id, source, reason, is_canon, data
-            FROM track_revisions
-            WHERE track_id = $1
-            ORDER BY id DESC
+            SELECT r.id, r.kind, r.variant_id, r.created_at, r.author_id,
+                   u.username AS "author?", r.source, r.reason, r.is_canon, r.data
+            FROM track_revisions r
+            LEFT JOIN users u ON u.id = r.author_id
+            WHERE r.track_id = $1
+            ORDER BY r.id DESC
             "#,
             id
         )
@@ -365,7 +427,9 @@ pub async fn get_track(
         sources,
         credits,
         albums,
+        relations,
         variants,
+        external_revision_id,
         revisions,
         lyrics,
         covers,

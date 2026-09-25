@@ -20,7 +20,7 @@ use uuid::Uuid;
 
 use crate::db;
 use crate::db::ingest::StoredFile;
-use crate::model::TrackMetadata;
+use crate::model::{AlbumMembership, Credit, TrackFacts, TrackMetadata};
 use crate::model::sources::{SourceOwner, ValidSource};
 use crate::storage::{BlobStore, PendingBlob};
 use probe::ProbeInfo;
@@ -59,6 +59,8 @@ pub enum Rejected {
     /// The tags lack fields we require. Lists the missing ones.
     MissingTags(Vec<&'static str>),
     TrackNotFound(Uuid),
+    /// The metadata or options don't fit (e.g. an unknown status).
+    Invalid(String),
     /// This exact file is already stored (as the current or a previous file of `track_id`).
     AlreadyStored { track_id: Option<Uuid> },
 }
@@ -71,6 +73,7 @@ impl fmt::Display for Rejected {
                 write!(f, "missing required tags: {}", missing.join(", "))
             }
             Rejected::TrackNotFound(id) => write!(f, "track {id} not found"),
+            Rejected::Invalid(msg) => write!(f, "{msg}"),
             Rejected::AlreadyStored { track_id: Some(id) } => {
                 write!(f, "this exact file is already stored (track {id})")
             }
@@ -156,6 +159,9 @@ pub async fn ingest(
         }
         Err(err) => {
             drop(tx); // rolls back
+            if let Some(db::revisions::EditRejected::Invalid(msg)) = err.downcast_ref() {
+                return Err(Rejected::Invalid(msg.clone()).into());
+            }
             // Two uploads of the same file at the same time: the second one loses the race on
             // the unique sha256 constraint. Treat that as a duplicate rather than an error.
             if is_unique_violation(&err, "files_sha256_key") {
@@ -367,69 +373,76 @@ async fn create_track_rows(
     // so its id is generated up front.
     let file_id = Uuid::now_v7();
 
+    // Credits: one primary credit per artist tag value, exactly as written.
+    // A value like "A feat. B" is NOT split; it's one credit. Fixing that is an edit.
+    let mut credits: Vec<Credit> = Vec::new();
+    let mut ambiguous = Vec::new();
+    for name in &tags.artists {
+        let artist = db::ingest::find_or_create_artist(conn, name).await?;
+        // The same artist twice in the tag would be a duplicate credit.
+        if credits.iter().any(|c| c.artist_id == artist.id) {
+            continue;
+        }
+        if !artist.ambiguous.is_empty() {
+            ambiguous.push((name.clone(), artist.id, artist.ambiguous));
+        }
+        // Credited under the alias with the tag's exact spelling, if it's not the name.
+        credits.push(Credit {
+            artist_id: artist.id,
+            role: "primary".to_string(),
+            alias_id: artist.alias_id,
+        });
+    }
+
     // Revision 0: exactly what the tags said. (Title presence was checked by the caller.)
     let metadata = TrackMetadata {
         title: tags.title.clone().context("title is required")?,
         release_date: tags.date.clone(),
         genres: tags.genres.clone(),
         comment: tags.comment.clone(),
+        credits,
     };
-    let track_id = db::ingest::create_track(
-        conn,
-        file_id,
-        &options.status,
-        &metadata,
-        "File tags",
-        "imported_from_file",
-    )
-    .await?;
-
-    // Credits: one primary credit per artist tag value, exactly as written.
-    // A value like "A feat. B" is NOT split; it's one credit. Fixing that is an edit.
-    for (position, name) in tags.artists.iter().enumerate() {
-        let (artist_id, canonical_name) = db::ingest::find_or_create_artist(conn, name).await?;
-        // Remember the exact spelling used on this track if it differs from the artist's name.
-        let credited_as = (canonical_name != *name).then_some(name.as_str());
-        db::ingest::insert_track_credit(
-            conn,
-            track_id,
-            artist_id,
-            "primary",
-            credited_as,
-            position as i16,
-        )
-        .await?;
-    }
-    db::ingest::set_artist_display(conn, track_id, &tags.artists.join(", ")).await?;
 
     // Album. Album artists come from the album artist tag, falling back to the track's artists.
+    let mut albums = Vec::new();
     if let Some(album_title) = &tags.album {
         let album_artist_names = if tags.album_artists.is_empty() {
             &tags.artists
         } else {
             &tags.album_artists
         };
-        let mut album_artist_ids = Vec::new();
+        let mut album_artists = Vec::new();
         for name in album_artist_names {
-            let (artist_id, _) = db::ingest::find_or_create_artist(conn, name).await?;
-            album_artist_ids.push(artist_id);
+            album_artists.push(db::ingest::find_or_create_artist(conn, name).await?);
         }
         let album_id = db::ingest::find_or_create_album(
             conn,
             album_title,
-            &album_artist_ids,
+            &album_artists,
             tags.date.as_deref(),
         )
         .await?;
-        db::ingest::add_album_track(
-            conn,
+        albums.push(AlbumMembership {
             album_id,
-            track_id,
-            tags.disc_number.and_then(|n| i16::try_from(n).ok()),
-            tags.track_number.and_then(|n| i16::try_from(n).ok()),
-        )
-        .await?;
+            disc_number: tags.disc_number.and_then(|n| i16::try_from(n).ok()),
+            track_number: tags.track_number.and_then(|n| i16::try_from(n).ok()),
+        });
     }
+    let facts = TrackFacts {
+        status: options.status.clone(),
+        albums,
+        relations: Vec::new(),
+    };
+
+    let track_id = db::revisions::create_track(
+        conn,
+        file_id,
+        &metadata,
+        &facts,
+        "File tags",
+        "imported_from_file",
+    )
+    .await?;
 
     for (position, (cover_sha, mime)) in covers.iter().enumerate() {
         db::ingest::insert_track_cover(
@@ -466,8 +479,13 @@ async fn create_track_rows(
     )
     .await?;
 
-    // TODO(Phase 2): fuzzy-match title/artists against existing tracks (pg_trgm) and flag
-    // likely duplicates and artist matches for review.
+    // Things a person should look at: an artist name that matched several artists, and
+    // tracks by the same artists with a similar title. Nothing is merged automatically.
+    for (name, chosen, artists) in &ambiguous {
+        db::review::flag_ambiguous_artist(conn, track_id, name, *chosen, artists).await?;
+    }
+    let artist_ids: Vec<Uuid> = metadata.credits.iter().map(|c| c.artist_id).collect();
+    db::review::flag_possible_duplicates(conn, track_id, &metadata.title, &artist_ids).await?;
 
     Ok(track_id)
 }

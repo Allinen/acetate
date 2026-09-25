@@ -6,7 +6,10 @@
 //! permissions.
 
 mod auth;
+mod catalog;
 mod media;
+mod rate_limit;
+mod review;
 mod shares;
 mod sources;
 mod tracks;
@@ -20,6 +23,8 @@ use axum::routing::{delete, get, post, put};
 use axum::{Json, Router, middleware};
 use serde_json::json;
 use sqlx::{PgPool, Postgres, Transaction};
+use std::sync::Arc;
+
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
 
@@ -27,10 +32,12 @@ use crate::auth::CurrentUser;
 // Lets the router say `Upload` instead of `Permission::Upload`.
 use crate::auth::Permission::*;
 use crate::db;
+use crate::db::revisions::EditRejected;
 use crate::ingest::Rejected;
 use crate::model::sources::InvalidSource;
 use crate::storage::BlobStore;
 use auth::require;
+pub use rate_limit::RateLimits;
 
 /// Shared state handed to every handler. Cloning it is cheap: `PgPool` is a
 /// reference-counted handle, and `BlobStore` is just two paths.
@@ -42,6 +49,11 @@ pub struct AppState {
     pub web_dir: std::path::PathBuf,
     /// Mark the session cookie `Secure` (only sent over HTTPS).
     pub secure_cookies: bool,
+    /// Take the client's address from `X-Forwarded-For` (set by a reverse proxy).
+    pub trust_proxy: bool,
+    /// Rate limits for logins and share links. `Arc`: shared by all clones of the state,
+    /// i.e. all requests, instead of each clone getting its own copy.
+    pub rate_limits: Arc<RateLimits>,
 }
 
 impl AppState {
@@ -62,20 +74,66 @@ pub fn router(state: AppState) -> Router {
         .route("/api/auth/logout", post(auth::logout))
         .route("/api/auth/me", get(auth::me))
         .route("/api/auth/password", post(auth::change_password))
+        .route("/api/auth/sessions", get(auth::sessions).delete(auth::end_other_sessions))
+        .route("/api/auth/sessions/{id}", delete(auth::end_session))
         .route("/api/users", require(&[ManageUsers], get(users::list).post(users::create)))
         .route("/api/users/{id}/groups", require(&[ManageUsers], put(users::set_user_groups)))
         .route("/api/shares", require(&[Share], get(shares::list).post(shares::create)))
         .route("/api/shares/{id}", require(&[Share], delete(shares::revoke)))
+        .route("/api/search", require(&[Browse], get(catalog::search)))
+        .route("/api/vocab", require(&[Browse], get(catalog::vocab)))
         .route("/api/tracks", require(&[Browse], get(tracks::list)))
         .route("/api/tracks/{id}", require(&[Browse], get(tracks::get)))
+        // Editing. Changing relations also needs `edit_relations` (checked in the handler).
+        .route("/api/tracks/{id}/facts", require(&[EditMetadata], put(tracks::edit_facts)))
+        .route("/api/tracks/{id}/variants", require(&[EditMetadata], post(tracks::create_variant)))
+        .route(
+            "/api/tracks/{id}/variants/{variant_id}",
+            require(&[EditMetadata], put(tracks::edit_variant).patch(tracks::rename_variant)),
+        )
+        .route(
+            "/api/tracks/{id}/primary-variant",
+            require(&[EditMetadata], put(tracks::set_primary_variant)),
+        )
+        .route("/api/revisions/{id}/restore", require(&[RestoreRevision], post(tracks::restore)))
+        .route(
+            "/api/artist-revisions/{id}/restore",
+            require(&[RestoreRevision], post(catalog::restore_artist)),
+        )
+        .route(
+            "/api/album-revisions/{id}/restore",
+            require(&[RestoreRevision], post(catalog::restore_album)),
+        )
+        .route("/api/review", require(&[EditMetadata], get(review::list)))
+        .route("/api/review/{id}/resolve", require(&[EditMetadata], post(review::resolve)))
         .route("/api/tracks/{id}/sources", require(&[EditSources], post(sources::add_track_source)))
         .route("/api/source-shapes", require(&[Browse], get(sources::shapes)))
         // Previous (replaced) files additionally need `view_history`, checked in the handler.
         .route("/api/files/{id}/stream", require(&[Stream], get(media::stream_file)))
         .route("/api/covers/{id}", require(&[Browse], get(media::cover)))
-        .route("/api/albums/{id}", require(&[Browse], get(sources::get_album)))
+        .route(
+            "/api/albums",
+            require(&[Browse], get(catalog::search_albums))
+                .merge(require(&[EditMetadata], post(catalog::create_album))),
+        )
+        .route(
+            "/api/albums/{id}",
+            require(&[Browse], get(catalog::get_album))
+                .merge(require(&[EditMetadata], put(catalog::edit_album))),
+        )
         .route("/api/albums/{id}/sources", require(&[EditSources], post(sources::add_album_source)))
-        .route("/api/artists/{id}", require(&[Browse], get(sources::get_artist)))
+        .route(
+            "/api/artists",
+            require(&[Browse], get(catalog::search_artists))
+                .merge(require(&[EditMetadata], post(catalog::create_artist))),
+        )
+        .route(
+            "/api/artists/{id}",
+            require(&[Browse], get(catalog::get_artist))
+                .merge(require(&[EditMetadata], put(catalog::edit_artist))),
+        )
+        .route("/api/artists/{id}/tracks", require(&[Browse], get(catalog::artist_tracks)))
+        .route("/api/artists/{id}/merge", require(&[EditMetadata], post(catalog::merge_artist)))
         .route("/api/artists/{id}/sources", require(&[EditSources], post(sources::add_artist_source)))
         // Uploads are streamed to disk, so a large limit doesn't mean large memory use.
         .route(
@@ -94,11 +152,14 @@ pub fn router(state: AppState) -> Router {
 
     // Public: no session needed, and a stale session cookie doesn't get in the way.
     // A share link's token is its own authorization.
-    let public = Router::new()
-        .route("/api/auth/login", post(auth::login))
+    let share_links = Router::new()
         .route("/api/share/{token}", get(shares::view))
         .route("/api/share/{token}/tracks/{track_id}/stream", get(shares::stream))
         .route("/api/share/{token}/covers/{cover_id}", get(shares::cover))
+        .route_layer(middleware::from_fn_with_state(state.clone(), rate_limit::limit_shares));
+    let public = Router::new()
+        .route("/api/auth/login", post(auth::login))
+        .merge(share_links)
         // The web UI's page for a share link; the page itself reads the token from the URL.
         .route_service("/s/{token}", ServeFile::new(state.web_dir.join("index.html")));
 
@@ -120,6 +181,8 @@ pub enum AppError {
     Unauthorized(&'static str),
     /// Logged in, but not allowed: 403.
     Forbidden(String),
+    /// Rate limited: 429, try again after this long.
+    TooManyRequests(std::time::Duration),
     Conflict(String),
     Internal(anyhow::Error),
 }
@@ -127,6 +190,17 @@ pub enum AppError {
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let (status, message) = match self {
+            AppError::TooManyRequests(wait) => {
+                // Round up, so "try again in 0 seconds" never happens.
+                let secs = wait.as_secs() + 1;
+                let body = json!({ "error": format!("too many requests, try again in {secs} seconds") });
+                return (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    [(axum::http::header::RETRY_AFTER, secs.to_string())],
+                    Json(body),
+                )
+                    .into_response();
+            }
             AppError::NotFound => (StatusCode::NOT_FOUND, "not found".to_string()),
             AppError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg),
             AppError::Unauthorized(msg) => (StatusCode::UNAUTHORIZED, msg.to_string()),
@@ -139,6 +213,13 @@ impl IntoResponse for AppError {
                         Rejected::TrackNotFound(_) => StatusCode::NOT_FOUND,
                         Rejected::AlreadyStored { .. } => StatusCode::CONFLICT,
                         _ => StatusCode::UNPROCESSABLE_ENTITY,
+                    };
+                    (status, rejected.to_string())
+                } else if let Some(rejected) = err.downcast_ref::<EditRejected>() {
+                    let status = match rejected {
+                        EditRejected::Stale { .. } => StatusCode::CONFLICT,
+                        EditRejected::Invalid(_) => StatusCode::BAD_REQUEST,
+                        EditRejected::NotFound(_) => StatusCode::NOT_FOUND,
                     };
                     (status, rejected.to_string())
                 } else if let Some(invalid) = err.downcast_ref::<InvalidSource>() {

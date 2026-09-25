@@ -118,3 +118,12 @@ form.stack label { display: grid; grid-template-columns: 150px 1fr; gap: 8px; al
 #player-cover { width: 40px; height: 40px; object-fit: cover; border-radius: 3px; }
 #player-info { min-width: 220px; }
 #audio { flex: 1; }
+
+/* Editing */
+.picker { position: relative; }
+.picker-results { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+button.selected { border-color: var(--accent); color: var(--accent); }
+table.diff { border-collapse: collapse; margin: 6px 0; }
+table.diff td, table.diff th { border: 1px solid var(--line); padding: 3px 8px; vertical-align: top; text-align: left; }
+table.diff td.old { color: var(--bad); }
+table.diff td.new { color: var(--good); }

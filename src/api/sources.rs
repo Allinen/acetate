@@ -1,5 +1,4 @@
-//! Adding external source snapshots to tracks, albums and artists, and viewing
-//! artists/albums with their sources.
+//! Adding external source snapshots to tracks, albums and artists.
 
 use axum::Json;
 use axum::extract::{Path, State};
@@ -57,30 +56,6 @@ async fn add(
     let added = db::sources::add_snapshot(&mut tx, owner, &source).await?;
     tx.commit().await?;
     Ok(Json(added))
-}
-
-pub async fn get_artist(
-    State(state): State<AppState>,
-    user: CurrentUser,
-    Path(id): Path<Uuid>,
-) -> Result<Json<db::catalog::ArtistDetail>, AppError> {
-    let mut tx = state.db(&user).await?;
-    db::catalog::get_artist(&mut tx, id)
-        .await?
-        .map(Json)
-        .ok_or(AppError::NotFound)
-}
-
-pub async fn get_album(
-    State(state): State<AppState>,
-    user: CurrentUser,
-    Path(id): Path<Uuid>,
-) -> Result<Json<db::catalog::AlbumDetail>, AppError> {
-    let mut tx = state.db(&user).await?;
-    db::catalog::get_album(&mut tx, id)
-        .await?
-        .map(Json)
-        .ok_or(AppError::NotFound)
 }
 
 /// `GET /api/source-shapes`: every supported platform/kind and its fields, so clients

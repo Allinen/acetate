@@ -68,27 +68,69 @@ pub async fn create_session(
     user_id: Uuid,
     token_sha256: &str,
     user_agent: Option<&str>,
+    ip: &str,
 ) -> sqlx::Result<Uuid> {
     sqlx::query_scalar!(
         r#"
-        INSERT INTO sessions (user_id, token_sha256, user_agent, expires_at)
-        VALUES ($1, $2, $3, now() + make_interval(days => $4))
+        INSERT INTO sessions (user_id, token_sha256, user_agent, ip, expires_at)
+        VALUES ($1, $2, $3, $4, now() + make_interval(days => $5))
         RETURNING id
         "#,
         user_id,
         token_sha256,
         user_agent,
+        ip,
         SESSION_DAYS
     )
     .fetch_one(pool)
     .await
 }
 
-pub async fn delete_session(pool: &PgPool, session_id: Uuid) -> sqlx::Result<()> {
-    sqlx::query!("DELETE FROM sessions WHERE id = $1", session_id)
-        .execute(pool)
-        .await?;
-    Ok(())
+/// Deletes one of `user_id`'s sessions. Returns false if they have no such session.
+pub async fn delete_session(pool: &PgPool, user_id: Uuid, session_id: Uuid) -> sqlx::Result<bool> {
+    let result = sqlx::query!(
+        "DELETE FROM sessions WHERE id = $1 AND user_id = $2",
+        session_id,
+        user_id
+    )
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+#[derive(Debug, Serialize)]
+pub struct SessionInfo {
+    pub id: Uuid,
+    pub user_agent: Option<String>,
+    pub ip: Option<String>,
+    pub created_at: DateTime<Utc>,
+    /// Updated at most every few minutes (see `touch_session`).
+    pub last_used_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+    /// The session this request was made with.
+    pub current: bool,
+}
+
+/// A user's live sessions, newest first. `current` marks the one making the request.
+pub async fn list_sessions(
+    pool: &PgPool,
+    user_id: Uuid,
+    current: Uuid,
+) -> sqlx::Result<Vec<SessionInfo>> {
+    sqlx::query_as!(
+        SessionInfo,
+        r#"
+        SELECT id, user_agent, ip, created_at, last_used_at, expires_at,
+               id = $2 AS "current!"
+        FROM sessions
+        WHERE user_id = $1 AND expires_at > now()
+        ORDER BY id DESC
+        "#,
+        user_id,
+        current
+    )
+    .fetch_all(pool)
+    .await
 }
 
 /// Logs a user out everywhere, except (optionally) the session `keep`.
