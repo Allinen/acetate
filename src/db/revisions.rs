@@ -25,8 +25,8 @@ use sqlx::PgConnection;
 use uuid::Uuid;
 
 use crate::model::{
-    AlbumData, AlbumMembership, Alias, ArtistData, Credit, Relation, TrackFacts, TrackMetadata,
-    diff_relations,
+    AlbumData, AlbumMembership, Alias, ArtistData, Credit, LyricsData, Relation, TrackFacts,
+    TrackMetadata, diff_relations,
 };
 
 /// Where a revision comes from.
@@ -771,6 +771,153 @@ fn restore_reason(reason: &str, revision_id: Uuid) -> String {
     } else {
         reason.to_string()
     }
+}
+
+// ============================================================================
+// Lyrics
+// ============================================================================
+//
+// A track can have several lyrics entries (e.g. official and a fan transcription, or two
+// languages). Each has its own history, like an artist or album; `lyrics` holds the
+// current state.
+
+/// Adds a lyrics entry to a track, with its first revision. `origin` says where the
+/// entry came from ("embedded" in the file, "manual"). Returns (lyrics id, revision).
+pub async fn create_lyrics(
+    conn: &mut PgConnection,
+    track_id: Uuid,
+    origin: &str,
+    data: &LyricsData,
+    source: Source,
+    reason: &str,
+) -> anyhow::Result<(Uuid, Written)> {
+    data.validate().map_err(invalid)?;
+    let track_exists = sqlx::query_scalar!(
+        r#"SELECT EXISTS (SELECT 1 FROM tracks WHERE id = $1) AS "exists!""#,
+        track_id
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    if !track_exists {
+        return Err(EditRejected::NotFound("track").into());
+    }
+    let lyrics_id = sqlx::query_scalar!(
+        r#"
+        INSERT INTO lyrics (track_id, is_official, is_synced, language, source, body)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        RETURNING id
+        "#,
+        track_id,
+        data.is_official,
+        data.is_synced(),
+        data.language,
+        origin,
+        data.body
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    let revision_id = insert_lyrics_revision(conn, lyrics_id, data, source, reason).await?;
+    Ok((
+        lyrics_id,
+        Written {
+            revision_id,
+            changed: true,
+        },
+    ))
+}
+
+/// Writes a new revision of a lyrics entry.
+pub async fn write_lyrics(
+    conn: &mut PgConnection,
+    lyrics_id: Uuid,
+    base: Option<Uuid>,
+    data: &LyricsData,
+    source: Source,
+    reason: &str,
+) -> anyhow::Result<Written> {
+    data.validate().map_err(invalid)?;
+    // Locked, so the base check below can't be raced.
+    let found = sqlx::query_scalar!("SELECT id FROM lyrics WHERE id = $1 FOR UPDATE", lyrics_id)
+        .fetch_optional(&mut *conn)
+        .await?;
+    if found.is_none() {
+        return Err(EditRejected::NotFound("lyrics").into());
+    }
+    let latest = sqlx::query!(
+        "SELECT id, data FROM lyrics_revisions WHERE lyrics_id = $1 ORDER BY id DESC LIMIT 1",
+        lyrics_id
+    )
+    .fetch_optional(&mut *conn)
+    .await?;
+    check_base(base, latest.as_ref().map(|r| r.id))?;
+    if let Some(latest) = &latest
+        && same_data(&latest.data, data)
+    {
+        return Ok(Written {
+            revision_id: latest.id,
+            changed: false,
+        });
+    }
+
+    sqlx::query!(
+        r#"
+        UPDATE lyrics SET body = $2, is_official = $3, is_synced = $4, language = $5
+        WHERE id = $1
+        "#,
+        lyrics_id,
+        data.body,
+        data.is_official,
+        data.is_synced(),
+        data.language
+    )
+    .execute(&mut *conn)
+    .await?;
+    let revision_id = insert_lyrics_revision(conn, lyrics_id, data, source, reason).await?;
+    Ok(Written {
+        revision_id,
+        changed: true,
+    })
+}
+
+async fn insert_lyrics_revision(
+    conn: &mut PgConnection,
+    lyrics_id: Uuid,
+    data: &LyricsData,
+    source: Source,
+    reason: &str,
+) -> anyhow::Result<Uuid> {
+    Ok(sqlx::query_scalar!(
+        r#"
+        INSERT INTO lyrics_revisions (lyrics_id, source, reason, data)
+        VALUES ($1, $2, $3, $4)
+        RETURNING id
+        "#,
+        lyrics_id,
+        source.as_str(),
+        reason,
+        serde_json::to_value(data)?,
+    )
+    .fetch_one(&mut *conn)
+    .await?)
+}
+
+pub async fn restore_lyrics_revision(
+    conn: &mut PgConnection,
+    revision_id: Uuid,
+    reason: &str,
+) -> anyhow::Result<Written> {
+    let Some(old) = sqlx::query!(
+        "SELECT lyrics_id, data FROM lyrics_revisions WHERE id = $1",
+        revision_id
+    )
+    .fetch_optional(&mut *conn)
+    .await?
+    else {
+        return Err(EditRejected::NotFound("revision").into());
+    };
+    let data: LyricsData = serde_json::from_value(old.data)?;
+    let reason = restore_reason(reason, revision_id);
+    write_lyrics(conn, old.lyrics_id, None, &data, Source::Restore, &reason).await
 }
 
 // ============================================================================

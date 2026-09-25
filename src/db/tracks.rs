@@ -137,6 +137,12 @@ pub struct FileChange {
     pub old_codec: Option<String>,
     pub old_bitrate: Option<i32>,
     pub old_origin: Option<super::sources::Origin>,
+    pub old_size_bytes: i64,
+    /// The old file is in the trash (and can be purged after the grace period).
+    pub old_trashed_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// The old file's bytes were deleted; only its record is left.
+    pub old_purged_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub old_purged_by: Option<String>,
     pub new_file_id: Uuid,
 }
 
@@ -200,16 +206,27 @@ pub struct Lyrics {
     pub id: Uuid,
     pub is_official: bool,
     pub is_synced: bool,
+    pub language: Option<String>,
+    /// Where the entry came from: "embedded" (in the file), "manual".
     pub source: String,
     pub body: String,
+    /// The latest revision: the base for editing.
+    pub revision_id: Uuid,
+    /// With `view_history` only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub revisions: Option<Vec<super::catalog::EntityRevision>>,
 }
 
+/// A cover of a track or album (not in the trash). The first one is the main cover.
 #[derive(Debug, Serialize)]
 pub struct Cover {
     pub id: Uuid,
     pub blob_sha256: String,
     pub mime: Option<String>,
+    pub width: Option<i32>,
+    pub height: Option<i32>,
     pub position: i16,
+    /// "embedded" (in the file), "upload", "copied".
     pub source: String,
 }
 
@@ -245,9 +262,12 @@ pub async fn get_track(
         sqlx::query!(
             r#"
             SELECT h.replaced_at, h.reason, h.old_file_id, f.original_filename AS old_original_filename,
-                   f.codec AS old_codec, f.bitrate AS old_bitrate, h.new_file_id
+                   f.codec AS old_codec, f.bitrate AS old_bitrate, f.size_bytes AS old_size_bytes,
+                   f.trashed_at AS old_trashed_at, f.purged_at AS old_purged_at,
+                   pu.username AS "old_purged_by?", h.new_file_id
             FROM track_file_history h
             JOIN files f ON f.id = h.old_file_id
+            LEFT JOIN users pu ON pu.id = f.purged_by
             WHERE h.track_id = $1
             ORDER BY h.id DESC
             "#,
@@ -272,6 +292,10 @@ pub async fn get_track(
             old_original_filename: h.old_original_filename,
             old_codec: h.old_codec,
             old_bitrate: h.old_bitrate,
+            old_size_bytes: h.old_size_bytes,
+            old_trashed_at: h.old_trashed_at,
+            old_purged_at: h.old_purged_at,
+            old_purged_by: h.old_purged_by,
             new_file_id: h.new_file_id,
         })
         .collect();
@@ -376,29 +400,8 @@ pub async fn get_track(
         Some(revisions)
     };
 
-    let lyrics = sqlx::query_as!(
-        Lyrics,
-        r#"
-        SELECT id, is_official, is_synced, source, body
-        FROM lyrics WHERE track_id = $1
-        ORDER BY is_official DESC, id
-        "#,
-        id
-    )
-    .fetch_all(&mut *conn)
-    .await?;
-
-    let covers = sqlx::query_as!(
-        Cover,
-        r#"
-        SELECT id, blob_sha256, mime, position, source
-        FROM covers WHERE track_id = $1
-        ORDER BY position, id
-        "#,
-        id
-    )
-    .fetch_all(&mut *conn)
-    .await?;
+    let lyrics = lyrics_of(conn, id, with_history).await?;
+    let covers = covers_of(conn, id).await?;
 
     Ok(Some(TrackDetail {
         id: row.id,
@@ -505,4 +508,69 @@ async fn strip_hidden<'a>(
         keep_visible(data, "credits", "artist_id", &artists);
     }
     Ok(())
+}
+
+/// A track's lyrics entries, official ones first; with their history if `with_history`.
+async fn lyrics_of(conn: &mut PgConnection, track_id: Uuid, with_history: bool) -> sqlx::Result<Vec<Lyrics>> {
+    let rows = sqlx::query!(
+        r#"
+        SELECT l.id, l.is_official, l.is_synced, l.language, l.source, l.body,
+               (SELECT r.id FROM lyrics_revisions r
+                WHERE r.lyrics_id = l.id ORDER BY r.id DESC LIMIT 1) AS "revision_id!"
+        FROM lyrics l WHERE l.track_id = $1
+        ORDER BY l.is_official DESC, l.id
+        "#,
+        track_id
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    let mut lyrics: Vec<Lyrics> = rows
+        .into_iter()
+        .map(|r| Lyrics {
+            id: r.id,
+            is_official: r.is_official,
+            is_synced: r.is_synced,
+            language: r.language,
+            source: r.source,
+            body: r.body,
+            revision_id: r.revision_id,
+            revisions: None, // filled in below, if asked for
+        })
+        .collect();
+    if with_history {
+        for entry in &mut lyrics {
+            let revisions = sqlx::query_as!(
+                super::catalog::EntityRevision,
+                r#"
+                SELECT r.id, r.created_at, u.username AS "author?", r.source, r.reason, r.data
+                FROM lyrics_revisions r
+                LEFT JOIN users u ON u.id = r.author_id
+                WHERE r.lyrics_id = $1
+                ORDER BY r.id DESC
+                "#,
+                entry.id
+            )
+            .fetch_all(&mut *conn)
+            .await?;
+            entry.revisions = Some(revisions);
+        }
+    }
+    Ok(lyrics)
+}
+
+/// The covers of a track or an album (by the owner's id), main cover first, without
+/// the ones in the trash.
+pub async fn covers_of(conn: &mut PgConnection, owner_id: Uuid) -> sqlx::Result<Vec<Cover>> {
+    sqlx::query_as!(
+        Cover,
+        r#"
+        SELECT id, blob_sha256, mime, width, height, position, source
+        FROM covers
+        WHERE (track_id = $1 OR album_id = $1) AND trashed_at IS NULL
+        ORDER BY position, id
+        "#,
+        owner_id
+    )
+    .fetch_all(conn)
+    .await
 }

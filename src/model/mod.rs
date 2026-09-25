@@ -133,6 +133,35 @@ impl Default for AlbumData {
     }
 }
 
+/// The data of a lyrics revision: one lyrics entry of a track.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LyricsData {
+    pub body: String,
+    /// From the artist/label, as opposed to transcribed by someone.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub is_official: bool,
+    /// e.g. "en", "ja". Free text.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+}
+
+impl LyricsData {
+    /// LRC-style synced lyrics (lines like "[01:23.45] text"). Derived from the body rather
+    /// than stored, so it can't disagree with it.
+    pub fn is_synced(&self) -> bool {
+        looks_synced(&self.body)
+    }
+}
+
+/// Whether lyrics have LRC-style timestamps: lines like "[01:23.45] text".
+pub fn looks_synced(body: &str) -> bool {
+    body.lines().any(|line| {
+        let line = line.trim_start();
+        line.starts_with('[') && line[1..].chars().next().is_some_and(|c| c.is_ascii_digit())
+    })
+}
+
 // ---- Validation ----
 //
 // Checks that need no database. Whether ids and vocabulary values (roles, statuses,
@@ -199,6 +228,15 @@ impl ArtistData {
             {
                 return Err(format!("alias {id} is listed twice"));
             }
+        }
+        Ok(())
+    }
+}
+
+impl LyricsData {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.body.trim().is_empty() {
+            return Err("lyrics can't be empty".to_string());
         }
         Ok(())
     }
@@ -319,6 +357,13 @@ mod tests {
         assert!(artist.validate().is_err(), "exact duplicate");
         artist.aliases = vec![alias("A")];
         assert!(artist.validate().is_err(), "the name itself");
+    }
+
+    #[test]
+    fn synced_detection() {
+        assert!(looks_synced("[00:12.34] hello\n[00:15.00] world"));
+        assert!(!looks_synced("hello\nworld"));
+        assert!(!looks_synced("[Chorus]\nla la la"));
     }
 
     #[test]

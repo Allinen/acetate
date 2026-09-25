@@ -158,7 +158,8 @@ pub async fn view(
                 id: album_id,
                 title: album.title,
                 artist: album.artist,
-                cover_id,
+                // The album's own cover, else the first track's.
+                cover_id: album.cover_id.or(cover_id),
                 tracks,
             }
         }

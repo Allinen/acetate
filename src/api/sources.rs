@@ -1,4 +1,6 @@
-//! Adding external source snapshots to tracks, albums and artists.
+//! External sources of tracks, albums and artists: adding snapshots (which is also how a
+//! source is corrected: a new snapshot, the old one stays), and moving a wrong source to
+//! the trash.
 
 use axum::Json;
 use axum::extract::{Path, State};
@@ -9,6 +11,21 @@ use crate::auth::CurrentUser;
 use crate::db;
 use crate::db::sources::AddedSnapshot;
 use crate::model::sources::{self, NewSource, SourceOwner};
+
+/// `DELETE /api/sources/{id}`: moves a source to the trash (see `api::trash`). Refused for
+/// a source that is where one of the files came from.
+pub async fn trash(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<Uuid>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let mut tx = state.db(&user).await?;
+    if !db::sources::trash(&mut tx, id).await? {
+        return Err(AppError::NotFound);
+    }
+    tx.commit().await?;
+    Ok(Json(serde_json::json!({ "trashed": id })))
+}
 
 /// `POST /api/tracks/{id}/sources`, JSON body, e.g.
 /// `{"platform": "soundcloud", "captured_at": "2024-01-01T00:00:00Z",

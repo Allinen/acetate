@@ -88,7 +88,9 @@ function getShapes() {
 // A widget to fill in one source snapshot for `kind` ("track" / "album" / "artist").
 // The platform must be chosen before the form can be submitted.
 // Returns { element, read() } where read() returns the JSON to send.
-async function sourceWidget(kind) {
+// `initial` ({id, platform, data}): pre-filled from an existing source, to correct it
+// (the result is a new snapshot of that source; the old one stays).
+async function sourceWidget(kind, initial = null) {
   const shapes = (await getShapes()).filter((s) => s.kind === kind);
   const platform = h("select", { required: true },
     h("option", { value: "" }, "— choose —"),
@@ -115,7 +117,16 @@ async function sourceWidget(kind) {
     fieldsBox.append(h("label", {}, "captured at", capturedAt));
   }
   platform.addEventListener("change", render);
+  if (initial) {
+    platform.value = initial.platform;
+    platform.disabled = true; // a correction stays on the same platform
+  }
   render();
+  if (initial) {
+    for (const [name, value] of Object.entries(initial.data ?? {})) {
+      if (inputs[name]) inputs[name].input.value = Array.isArray(value) ? value[0] ?? "" : value;
+    }
+  }
 
   const element = h("div", { class: "stack" }, h("label", {}, "platform", platform), fieldsBox);
 
@@ -127,6 +138,7 @@ async function sourceWidget(kind) {
       data[name] = field.type === "int" ? Number(input.value) : input.value;
     }
     const source = { platform: platform.value, data };
+    if (initial) source.source_id = initial.id;
     if (capturedAt.value) source.captured_at = new Date(capturedAt.value).toISOString();
     return source;
   }
@@ -271,16 +283,42 @@ function originView(origin) {
     snapshotData(origin.data));
 }
 
-function sourcesView(sources) {
+// `kind`/`ownerId`/`reload`: with `edit_sources`, each source gets "Correct…" (a new
+// snapshot, pre-filled from the latest) and "Trash".
+async function sourcesView(sources, kind, ownerId, reload) {
   if (!sources.length) return h("p", { class: "muted" }, "None.");
-  return sources.map((s) => h("div", { class: "box" },
-    h("div", { class: "row" },
-      h("span", { class: "tag" }, s.platform),
-      s.external_id ? h("span", { class: "mono" }, s.external_id) : null,
-      h("span", { class: "muted mono" }, `source ${s.id}`)),
-    s.snapshots.map((snap, i) => h("details", { open: i === 0 },
-      h("summary", {}, fmtTime(snap.captured_at), i === 0 ? " (latest)" : ""),
-      snapshotData(snap.data)))));
+  const editable = can("edit_sources");
+  return Promise.all(sources.map(async (s) => {
+    const status = h("span", {});
+    let correct = null;
+    if (editable) {
+      const widget = await sourceWidget(kind, { id: s.id, platform: s.platform, data: s.snapshots[0]?.data });
+      const form = h("form", { class: "stack" }, widget.element,
+        h("div", { class: "row" }, h("button", { type: "submit" }, "Save as new snapshot"), status));
+      form.addEventListener("submit", (event) => {
+        event.preventDefault();
+        save(status, () => postJson(`/api/${kind}s/${ownerId}/sources`, widget.read()), reload);
+      });
+      correct = h("details", {}, h("summary", {}, "Correct…"), form);
+    }
+    return h("div", { class: "box" },
+      h("div", { class: "row" },
+        h("span", { class: "tag" }, s.platform),
+        s.external_id ? h("span", { class: "mono" }, s.external_id) : null,
+        h("span", { class: "muted mono" }, `source ${s.id}`),
+        editable ? h("button", {
+          type: "button", class: "small",
+          onclick: () => {
+            if (!confirm("Move this source to the trash? It can be taken back out for 7 days.")) return;
+            save(status, () => api(`/api/sources/${s.id}`, { method: "DELETE" }), reload);
+          },
+        }, "Trash") : null,
+        editable ? null : status),
+      s.snapshots.map((snap, i) => h("details", { open: i === 0 },
+        h("summary", {}, fmtTime(snap.captured_at), i === 0 ? " (latest)" : ""),
+        snapshotData(snap.data))),
+      correct);
+  }));
 }
 
 // "Add source" form for a track / album / artist.
@@ -613,6 +651,8 @@ async function showTrack(id) {
 
     can("manage_access") ? [h("h3", {}, "Access"), await trackAccessBox(id, reload)] : null,
 
+    t.covers.length || can("edit_metadata") ? [h("h3", {}, "Covers"), coverGallery("track", id, t.covers, reload)] : null,
+
     h("h3", {}, "Metadata"),
     kv([
       ["release date", t.release_date && h("span", { class: "mono" }, t.release_date)],
@@ -670,11 +710,21 @@ async function showTrack(id) {
       t.file_history.map((c) => h("div", { class: "box" },
         h("div", { class: "row" },
           h("strong", {}, c.old_original_filename),
-          h("span", { class: "muted" }, [c.old_codec, c.old_bitrate && `${c.old_bitrate} kbps`].filter(Boolean).join(" ")),
-          can("stream") ? h("button", {
+          h("span", { class: "muted" }, [c.old_codec, c.old_bitrate && `${c.old_bitrate} kbps`, fmtSize(c.old_size_bytes)].filter(Boolean).join(" · ")),
+          c.old_purged_at
+            ? h("span", { class: "tag" }, `purged ${fmtTime(c.old_purged_at)}${c.old_purged_by ? ` by ${c.old_purged_by}` : ""}`)
+            : c.old_trashed_at ? h("a", { href: "#/trash", class: "tag" }, "in the trash") : null,
+          can("stream") && !c.old_purged_at ? h("button", {
             class: "small",
             onclick: () => play(c.old_file_id, t.title, t.artist_display, cover?.id, "previous file"),
-          }, "▶") : null),
+          }, "▶") : null,
+          can("admin") && !c.old_trashed_at ? h("button", {
+            class: "small",
+            onclick: async () => {
+              if (!confirm(`Move "${c.old_original_filename}" to the trash? After 7 days an admin can purge it (its audio is then deleted for good).`)) return;
+              try { await postJson("/api/files/trash", { file_ids: [c.old_file_id] }); reload(); } catch (err) { alert(err.message); }
+            },
+          }, "Trash") : null),
         kv([
           ["replaced", fmtTime(c.replaced_at)],
           ["reason", c.reason],
@@ -683,18 +733,10 @@ async function showTrack(id) {
     ] : null,
 
     h("h3", {}, "Sources"),
-    sourcesView(t.sources),
+    await sourcesView(t.sources, "track", id, reload),
     can("edit_sources") ? await addSourceForm("track", id, reload) : null,
 
-    t.lyrics.length ? [
-      h("h3", {}, "Lyrics"),
-      t.lyrics.map((l) => h("div", { class: "box" },
-        h("div", { class: "row" },
-          h("span", { class: "tag" }, l.is_official ? "official" : "unofficial"),
-          h("span", { class: "tag" }, l.is_synced ? "synced" : "plain"),
-          h("span", { class: "muted" }, l.source)),
-        h("pre", {}, l.body))),
-    ] : null,
+    t.lyrics.length || can("edit_metadata") ? [h("h3", {}, "Lyrics"), await lyricsView(t, reload)] : null,
 
     t.revisions ? [
       h("h3", {}, "History"),
@@ -973,7 +1015,7 @@ async function showArtist(id) {
     h("h3", {}, "Tracks"),
     a.tracks.length ? [trackRows, more] : h("p", { class: "muted" }, "None."),
     h("h3", {}, "Sources"),
-    sourcesView(a.sources),
+    await sourcesView(a.sources, "artist", id, reload),
     can("edit_sources") ? await addSourceForm("artist", id, reload) : null,
     a.revisions ? [h("h3", {}, "History"),
       await historyView(a.revisions, () => "artist", (r) => `/api/artist-revisions/${r.id}/restore`, reload)] : null);
@@ -1025,6 +1067,11 @@ async function showAlbum(id) {
     h("div", { class: "row" }, h("span", { class: "tag" }, a.kind)),
     can("share") ? shareForm("album", id) : null,
     can("manage_access") ? await albumAccessBox(id, reload) : null,
+    a.covers.length || can("edit_metadata") ? [
+      h("h3", {}, "Covers"),
+      coverGallery("album", id, a.covers, reload),
+      can("edit_metadata") && a.tracks.length ? copyCoverPicker(id, a.tracks, reload) : null,
+    ] : null,
     kv([
       ["release date", a.release_date && h("span", { class: "mono" }, a.release_date)],
       ["album id", h("span", { class: "mono" }, a.id)],
@@ -1037,7 +1084,7 @@ async function showAlbum(id) {
       : h("p", { class: "muted" }, "None."),
     editor ? [h("h3", {}, "Edit"), editor] : null,
     h("h3", {}, "Sources"),
-    sourcesView(a.sources),
+    await sourcesView(a.sources, "album", id, reload),
     can("edit_sources") ? await addSourceForm("album", id, reload) : null,
     a.revisions ? [h("h3", {}, "History"),
       await historyView(a.revisions, () => "album", (r) => `/api/album-revisions/${r.id}/restore`, reload)] : null);
@@ -1180,6 +1227,7 @@ function route() {
   else if (kind === "account") showAccount();
   else if (kind === "review") showReview();
   else if (kind === "groups") showGroups();
+  else if (kind === "trash") showTrash();
   else setDetail(h("p", { class: "muted" }, "Select a track. Double-click to play."));
 }
 
@@ -1241,6 +1289,7 @@ async function start() {
   document.getElementById("shares-link").hidden = !can("share");
   document.getElementById("review-link").hidden = !can("edit_metadata");
   document.getElementById("groups-link").hidden = !can("manage_users");
+  document.getElementById("trash-link").hidden = !(can("edit_metadata") || can("edit_sources"));
   window.addEventListener("hashchange", route);
   loadTracks(true);
   route();
@@ -1249,6 +1298,105 @@ async function start() {
 // ---------------------------------------------------------------------------
 // Sharing
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Lyrics and covers
+// ---------------------------------------------------------------------------
+
+// A track's lyrics entries: each with an editor and its history. Entries are edited, never
+// deleted.
+async function lyricsView(t, reload) {
+  const entries = await Promise.all(t.lyrics.map(async (l) => h("div", { class: "box" },
+    h("div", { class: "row" },
+      h("span", { class: "tag" }, l.is_official ? "official" : "unofficial"),
+      h("span", { class: "tag" }, l.is_synced ? "synced" : "plain"),
+      l.language ? h("span", { class: "tag" }, l.language) : null,
+      h("span", { class: "muted" }, l.source)),
+    h("pre", {}, l.body),
+    can("edit_metadata") ? h("details", {}, h("summary", {}, "Edit…"), lyricsForm(t.id, l, reload)) : null,
+    l.revisions ? h("details", {}, h("summary", {}, `History (${l.revisions.length})`),
+      await historyView(l.revisions, () => "lyrics", (r) => `/api/lyrics-revisions/${r.id}/restore`, reload)) : null)));
+  return [
+    entries.length ? entries : h("p", { class: "muted" }, "None."),
+    can("edit_metadata") ? h("details", {}, h("summary", {}, "Add lyrics…"), lyricsForm(t.id, null, reload)) : null,
+  ];
+}
+
+// Form for a new lyrics entry (`l` = null) or a new revision of one.
+function lyricsForm(trackId, l, reload) {
+  const body = h("textarea", { rows: 10, required: true });
+  body.value = l?.body ?? "";
+  const official = h("input", { type: "checkbox", checked: l?.is_official ?? false });
+  const language = h("input", { value: l?.language ?? "", placeholder: "e.g. en (optional)" });
+  const reason = h("input", { placeholder: "why (optional)" });
+  const status = h("span", {});
+  const form = h("form", { class: "stack" },
+    h("label", {}, "lyrics", body),
+    h("div", { class: "muted" }, "Synced (LRC, lines like [01:23.45]) is detected from the text."),
+    h("label", { class: "row" }, official, "official (from the artist/label)"),
+    h("label", {}, "language", language),
+    h("label", {}, "reason", reason),
+    h("div", { class: "row" }, h("button", { type: "submit" }, l ? "Save lyrics" : "Add lyrics"), status));
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const data = { body: body.value, is_official: official.checked, language: language.value || null, reason: reason.value };
+    save(status, () => l
+      ? putJson(`/api/lyrics/${l.id}`, { base_revision_id: l.revision_id, ...data })
+      : postJson(`/api/tracks/${trackId}/lyrics`, data), reload);
+  });
+  return form;
+}
+
+// Covers of a track or album (`kind` = "track" / "album"): the first is the main one.
+// With `edit_metadata`: reorder, make main, trash, upload.
+function coverGallery(kind, ownerId, covers, reload) {
+  const editable = can("edit_metadata");
+  const status = h("span", {});
+  const ids = covers.map((c) => c.id);
+  const setOrder = (order) => save(status, () => putJson(`/api/${kind}s/${ownerId}/covers/order`, { cover_ids: order }), reload);
+  const swap = (i, j) => { const order = [...ids]; [order[i], order[j]] = [order[j], order[i]]; setOrder(order); };
+  const upload = h("input", { type: "file", accept: "image/jpeg,image/png,image/webp,image/gif" });
+  upload.addEventListener("change", () => {
+    const body = new FormData();
+    body.append("image", upload.files[0]);
+    save(status, () => api(`/api/${kind}s/${ownerId}/covers`, { method: "POST", body }), reload);
+  });
+  const button = (label, onclick) => h("button", { type: "button", class: "small", onclick }, label);
+  return h("div", {},
+    covers.length ? h("div", { class: "covers" }, covers.map((c, i) => h("figure", {},
+      h("img", { src: `/api/covers/${c.id}`, alt: "" }),
+      h("figcaption", { class: "muted" },
+        i === 0 ? "main · " : "", c.width ? `${c.width}×${c.height} · ` : "", c.source),
+      editable ? h("div", { class: "row" },
+        i > 0 ? button("←", () => swap(i, i - 1)) : null,
+        i < covers.length - 1 ? button("→", () => swap(i, i + 1)) : null,
+        i > 0 ? button("make main", () => setOrder([c.id, ...ids.filter((x) => x !== c.id)])) : null,
+        button("Trash", () => {
+          if (!confirm("Move this cover to the trash? It can be taken back out for 7 days.")) return;
+          save(status, () => api(`/api/covers/${c.id}`, { method: "DELETE" }), reload);
+        })) : null))) : h("p", { class: "muted" }, "None."),
+    editable ? h("div", { class: "row" }, h("label", { class: "row" }, "upload an image:", upload), status) : null);
+}
+
+// Album page: pick one of its tracks' covers to use for the album too.
+function copyCoverPicker(albumId, tracks, reload) {
+  const box = h("div", { class: "covers" }, h("span", { class: "muted" }, "Loading…"));
+  const status = h("span", {});
+  const details = h("details", {}, h("summary", {}, "Copy a cover from one of its tracks…"), box, status);
+  details.addEventListener("toggle", async () => {
+    if (!details.open || box.dataset.loaded) return;
+    box.dataset.loaded = "1";
+    const found = (await Promise.all(tracks.map((tr) => api(`/api/tracks/${tr.id}`))))
+      .flatMap((t) => t.covers.map((c) => ({ c, title: t.title })));
+    box.replaceChildren(...(found.length ? found.map(({ c, title }) => h("figure", {},
+      h("img", {
+        src: `/api/covers/${c.id}`, alt: "", title: "Use for the album", style: "cursor: pointer",
+        onclick: () => save(status, () => postJson(`/api/albums/${albumId}/covers/copy`, { cover_id: c.id }), reload),
+      }),
+      h("figcaption", { class: "muted" }, title))) : [h("span", { class: "muted" }, "Its tracks have no covers.")]));
+  });
+  return details;
+}
 
 // ---------------------------------------------------------------------------
 // Access: restricted tracks and groups
@@ -1330,6 +1478,124 @@ async function albumAccessBox(id, reload) {
     save(status, () => putJson(`/api/albums/${id}/access`, picker.read()), () => { loadTracks(true); reload(); });
   });
   return h("details", {}, h("summary", {}, "Restrict all tracks…"), form);
+}
+
+// #/trash: covers, sources and old audio files in the trash; restoring, and purging
+// (admins, after the grace period). Plus replaced audio files, to trash in bulk.
+async function showTrash() {
+  selectedId = null;
+  markSelected();
+  setDetail(h("p", { class: "muted" }, "Loading…"));
+  let items;
+  try {
+    items = await api("/api/trash");
+  } catch (err) {
+    setDetail(errorBox(err));
+    return;
+  }
+  const now = new Date();
+  const rows = items.map((it) => ({ it, check: h("input", { type: "checkbox" }) }));
+  const selected = () => rows.filter((r) => r.check.checked).map((r) => r.it);
+  const status = h("span", {});
+  const ownerLink = (it) => it.owner_id && it.owner
+    ? h("a", { href: `#/${it.owner_kind}/${it.owner_id}` }, it.owner)
+    : h("span", { class: "muted" }, it.owner ?? "—");
+
+  const restore = () => {
+    const chosen = selected();
+    if (!chosen.length) return;
+    save(status, () => postJson("/api/trash/restore", { items: chosen.map((it) => ({ kind: it.kind, id: it.id })) }), showTrash);
+  };
+  const purge = () => {
+    const chosen = selected();
+    if (!chosen.length) return;
+    const early = chosen.filter((it) => new Date(it.purgeable_at) > now);
+    if (early.length) {
+      status.replaceChildren(errorBox(`${early.length} of these can't be purged yet (see "purgeable").`));
+      return;
+    }
+    const one = chosen.length === 1 ? chosen[0] : null;
+    const key = one ? (one.sha256 ?? one.id) : null;
+    const question = one
+      ? `Purge "${one.what}" for good${one.kind === "source" ? "" : " (its data is deleted)"}?\n\nType the first 6 characters of ${one.sha256 ? "its sha256" : "its id"} to confirm:\n${key}`
+      : `Purge these ${chosen.length} items for good? Their data is deleted.\n\nType ${chosen.length} to confirm:`;
+    const confirmText = prompt(question);
+    if (confirmText === null) return;
+    save(status, () => postJson("/api/trash/purge", {
+      items: chosen.map((it) => ({ kind: it.kind, id: it.id })), confirm: confirmText,
+    }).then((r) => {
+      alert(`Purged ${r.purged} item(s); ${r.blobs_deleted} blob(s) deleted, ${fmtSize(r.bytes_freed)} freed.`);
+      return r;
+    }), showTrash);
+  };
+
+  const total = items.reduce((sum, it) => sum + (it.size_bytes ?? 0), 0);
+  setDetail(
+    h("h2", {}, "Trash"),
+    h("p", { class: "muted" },
+      "Things here are hidden, and can be taken back out. After 7 days an admin can purge them: " +
+      "covers and sources are then deleted, audio files keep their record but lose their audio. " +
+      "Lyrics and metadata are never trashed; they have history instead."),
+    items.length ? [
+      h("table", { class: "trash" },
+        h("tr", {}, h("th", {}, ""), h("th", {}, "what"), h("th", {}, "of"), h("th", {}, "size"),
+          h("th", {}, "trashed"), h("th", {}, "purgeable")),
+        rows.map(({ it, check }) => h("tr", {},
+          h("td", {}, check),
+          h("td", {}, h("span", { class: "tag" }, it.kind), " ",
+            it.kind === "cover" ? h("img", { src: `/api/covers/${it.id}`, alt: "", style: "height: 40px; vertical-align: middle" }) : it.what),
+          h("td", {}, ownerLink(it)),
+          h("td", {}, it.size_bytes != null ? fmtSize(it.size_bytes) : "—"),
+          h("td", {}, fmtTime(it.trashed_at), it.trashed_by ? ` by ${it.trashed_by}` : ""),
+          h("td", { class: new Date(it.purgeable_at) <= now ? "ok" : "muted" },
+            new Date(it.purgeable_at) <= now ? "now" : fmtTime(it.purgeable_at))))),
+      h("p", { class: "muted" }, `${items.length} items, ${fmtSize(total)}.`),
+      h("div", { class: "row" },
+        h("button", { type: "button", onclick: () => rows.forEach((r) => { r.check.checked = true; }) }, "Select all"),
+        h("button", { type: "button", onclick: restore }, "Take out of the trash"),
+        can("admin") ? h("button", { type: "button", onclick: purge }, "Purge…") : null,
+        status),
+    ] : h("p", { class: "muted" }, "The trash is empty."),
+    can("admin") ? [h("h3", {}, "Replaced audio files"), await replacedFilesBox()] : null);
+}
+
+// Admins: previous files of tracks (replaced by an upgrade), to move to the trash in bulk.
+async function replacedFilesBox() {
+  const rows = [];
+  const table = h("table", { class: "trash" },
+    h("tr", {}, h("th", {}, ""), h("th", {}, "file"), h("th", {}, "track"), h("th", {}, "size"), h("th", {}, "replaced")));
+  const status = h("span", {});
+  const more = h("button", { type: "button" }, "Load more");
+  const load = async () => {
+    const before = rows.length ? `&before=${rows[rows.length - 1].f.id}` : "";
+    const page = await api(`/api/files/replaced?limit=200${before}`);
+    for (const f of page) {
+      const check = h("input", { type: "checkbox" });
+      rows.push({ f, check });
+      table.append(h("tr", {}, h("td", {}, check),
+        h("td", {}, f.original_filename, h("span", { class: "muted" }, " ", [f.codec, f.bitrate && `${f.bitrate} kbps`].filter(Boolean).join(" "))),
+        h("td", {}, h("a", { href: `#/track/${f.track_id}` }, f.track_title)),
+        h("td", {}, fmtSize(f.size_bytes)),
+        h("td", {}, fmtTime(f.replaced_at))));
+    }
+    more.hidden = page.length < 200;
+  };
+  more.addEventListener("click", load);
+  await load();
+  if (!rows.length) return h("p", { class: "muted" }, "None: every stored audio file is some track's current file.");
+  const trash = () => {
+    const chosen = rows.filter((r) => r.check.checked).map((r) => r.f);
+    if (!chosen.length) return;
+    const size = chosen.reduce((sum, f) => sum + f.size_bytes, 0);
+    if (!confirm(`Move ${chosen.length} file(s) (${fmtSize(size)}) to the trash? After 7 days an admin can purge them.`)) return;
+    save(status, () => postJson("/api/files/trash", { file_ids: chosen.map((f) => f.id) }), showTrash);
+  };
+  return h("div", {},
+    h("p", { class: "muted" }, "Files no track plays anymore. Their record stays even after purging."),
+    table, more,
+    h("div", { class: "row" },
+      h("button", { type: "button", onclick: () => rows.forEach((r) => { r.check.checked = true; }) }, "Select all"),
+      h("button", { type: "button", onclick: trash }, "Move to the trash"), status));
 }
 
 // #/groups: groups and their permissions (manage_users).

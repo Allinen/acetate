@@ -150,6 +150,8 @@ pub struct AlbumDetail {
     pub credits: Vec<AlbumCredit>,
     /// The latest album revision: the base for editing.
     pub revision_id: Option<Uuid>,
+    /// The album's own covers, main one first.
+    pub covers: Vec<super::tracks::Cover>,
     pub sources: Vec<Source>,
     pub tracks: Vec<AlbumTrack>,
     /// Only included for users allowed to view history.
@@ -254,6 +256,7 @@ pub async fn get_album(
         release_date: row.release_date,
         credits,
         revision_id: row.revision_id,
+        covers: super::tracks::covers_of(conn, id).await?,
         sources: super::sources::list_for(conn, id).await?,
         tracks,
         revisions,

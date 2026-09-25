@@ -7,6 +7,8 @@
 
 mod access;
 mod auth;
+mod covers;
+mod lyrics;
 mod catalog;
 mod groups;
 mod media;
@@ -15,6 +17,7 @@ mod review;
 mod shares;
 mod sources;
 mod tracks;
+mod trash;
 mod upload;
 mod users;
 
@@ -121,10 +124,44 @@ pub fn router(state: AppState) -> Router {
         .route("/api/review", require(&[EditMetadata], get(review::list)))
         .route("/api/review/{id}/resolve", require(&[EditMetadata], post(review::resolve)))
         .route("/api/tracks/{id}/sources", require(&[EditSources], post(sources::add_track_source)))
+        .route("/api/sources/{id}", require(&[EditSources], delete(sources::trash)))
+        // Lyrics (entries are edited, never deleted).
+        .route("/api/tracks/{id}/lyrics", require(&[EditMetadata], post(lyrics::create)))
+        .route("/api/lyrics/{id}", require(&[EditMetadata], put(lyrics::edit)))
+        .route("/api/lyrics-revisions/{id}/restore", require(&[RestoreRevision], post(lyrics::restore)))
+        // Covers. Uploads need a bigger body limit than the default 2 MB.
+        .route(
+            "/api/tracks/{id}/covers",
+            require(
+                &[EditMetadata],
+                post(covers::upload_to_track).layer(DefaultBodyLimit::max(covers::MAX_COVER_BYTES + 64 * 1024)),
+            ),
+        )
+        .route(
+            "/api/albums/{id}/covers",
+            require(
+                &[EditMetadata],
+                post(covers::upload_to_album).layer(DefaultBodyLimit::max(covers::MAX_COVER_BYTES + 64 * 1024)),
+            ),
+        )
+        .route("/api/tracks/{id}/covers/copy", require(&[EditMetadata], post(covers::copy_to_track)))
+        .route("/api/albums/{id}/covers/copy", require(&[EditMetadata], post(covers::copy_to_album)))
+        .route("/api/tracks/{id}/covers/order", require(&[EditMetadata], put(covers::order_track)))
+        .route("/api/albums/{id}/covers/order", require(&[EditMetadata], put(covers::order_album)))
+        // Trash. Restoring checks per kind (covers: edit_metadata, sources: edit_sources,
+        // files: admin); purging is for admins only.
+        .route("/api/trash", require(&[EditMetadata, EditSources], get(trash::list)))
+        .route("/api/trash/restore", require(&[EditMetadata, EditSources], post(trash::restore)))
+        .route("/api/trash/purge", require(&[Admin], post(trash::purge)))
+        .route("/api/files/replaced", require(&[Admin], get(trash::replaced_files)))
+        .route("/api/files/trash", require(&[Admin], post(trash::trash_files)))
         .route("/api/source-shapes", require(&[Browse], get(sources::shapes)))
         // Previous (replaced) files additionally need `view_history`, checked in the handler.
         .route("/api/files/{id}/stream", require(&[Stream], get(media::stream_file)))
-        .route("/api/covers/{id}", require(&[Browse], get(media::cover)))
+        .route(
+            "/api/covers/{id}",
+            require(&[Browse], get(media::cover)).merge(require(&[EditMetadata], delete(covers::trash))),
+        )
         .route(
             "/api/albums",
             require(&[Browse], get(catalog::search_albums))
@@ -198,6 +235,8 @@ pub enum AppError {
     /// Rate limited: 429, try again after this long.
     TooManyRequests(std::time::Duration),
     Conflict(String),
+    /// It existed, but is gone for good (e.g. a purged file): 410.
+    Gone(String),
     Internal(anyhow::Error),
 }
 
@@ -220,6 +259,7 @@ impl IntoResponse for AppError {
             AppError::Unauthorized(msg) => (StatusCode::UNAUTHORIZED, msg.to_string()),
             AppError::Forbidden(msg) => (StatusCode::FORBIDDEN, msg),
             AppError::Conflict(msg) => (StatusCode::CONFLICT, msg),
+            AppError::Gone(msg) => (StatusCode::GONE, msg),
             AppError::Internal(err) => {
                 if let Some(rejected) = err.downcast_ref::<Rejected>() {
                     // Refused input (bad file, missing tags...): the client's problem.

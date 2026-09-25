@@ -87,6 +87,26 @@ impl BlobStore {
         Ok(dest)
     }
 
+    /// Deletes a blob. Only purging does this (see `db::trash`), after making sure nothing
+    /// uses it anymore; otherwise blobs are never touched once written. Returns false if it
+    /// was already gone.
+    pub async fn delete(&self, sha256: &str) -> anyhow::Result<bool> {
+        if blob_relative_path(sha256).is_none() {
+            anyhow::bail!("not a sha256: {sha256}");
+        }
+        match tokio::fs::remove_file(self.path_for(sha256)).await {
+            // Removing a read-only file is fine: that depends on the directory's permissions.
+            Ok(()) => Ok(true),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(err) => Err(err).with_context(|| format!("deleting blob {sha256}")),
+        }
+    }
+
+    /// A blob's size in bytes, or None if it isn't there.
+    pub async fn size(&self, sha256: &str) -> Option<u64> {
+        tokio::fs::metadata(self.path_for(sha256)).await.ok().map(|m| m.len())
+    }
+
     /// Convenience for small in-memory blobs (e.g. embedded cover art). Returns the sha256.
     pub async fn put_bytes(&self, bytes: &[u8]) -> anyhow::Result<String> {
         let mut writer = self.writer().await?;

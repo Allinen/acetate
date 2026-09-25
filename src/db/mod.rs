@@ -7,6 +7,7 @@
 
 pub mod access;
 pub mod catalog;
+pub mod covers;
 pub mod groups;
 pub mod ingest;
 pub mod review;
@@ -14,10 +15,13 @@ pub mod revisions;
 pub mod shares;
 pub mod sources;
 pub mod tracks;
+pub mod trash;
 pub mod users;
 
 #[cfg(test)]
 mod rls_tests;
+#[cfg(test)]
+mod trash_tests;
 
 use std::time::Duration;
 

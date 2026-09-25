@@ -96,6 +96,7 @@ pub async fn add_snapshot(
         .fetch_optional(&mut *conn)
         .await?;
         if let Some(row) = same {
+            untrash(conn, row.source_id).await?;
             return Ok(AddedSnapshot {
                 source_id: row.source_id,
                 snapshot_id: row.snapshot_id,
@@ -106,7 +107,10 @@ pub async fn add_snapshot(
     };
 
     let source_id = match existing {
-        Some(id) => id,
+        Some(id) => {
+            untrash(conn, id).await?;
+            id
+        }
         None => {
             let (track_id, album_id, artist_id) = owner_columns(owner);
             sqlx::query_scalar!(
@@ -170,6 +174,55 @@ pub async fn add_snapshot(
     })
 }
 
+/// Takes a source back out of the trash, if it's there: adding it again means it's wanted.
+async fn untrash(conn: &mut PgConnection, source_id: Uuid) -> sqlx::Result<()> {
+    sqlx::query!(
+        "UPDATE sources SET trashed_at = NULL, trashed_by = NULL WHERE id = $1 AND trashed_at IS NOT NULL",
+        source_id
+    )
+    .execute(conn)
+    .await?;
+    Ok(())
+}
+
+/// Moves a source (with its snapshots) to the trash. False if there's no such source (or
+/// it's in the trash already).
+///
+/// Refused while one of its snapshots is a file's origin: every file keeps a known origin.
+/// (A file's origin is always a source of the file's own track, so the filename in the
+/// message is something the user can see anyway.)
+pub async fn trash(conn: &mut PgConnection, source_id: Uuid) -> anyhow::Result<bool> {
+    let system = super::as_system(conn).await?;
+    let origin_of = sqlx::query_scalar!(
+        r#"
+        SELECT f.original_filename FROM files f
+        JOIN source_snapshots ss ON ss.id = f.origin_snapshot_id
+        WHERE ss.source_id = $1
+        LIMIT 1
+        "#,
+        source_id
+    )
+    .fetch_optional(&mut *conn)
+    .await?;
+    system.end(conn).await?;
+    if let Some(filename) = origin_of {
+        return Err(super::revisions::EditRejected::Invalid(format!(
+            "it's where the file \"{filename}\" came from, and a file's origin can't be removed"
+        ))
+        .into());
+    }
+    let result = sqlx::query!(
+        r#"
+        UPDATE sources SET trashed_at = now(), trashed_by = current_app_user()
+        WHERE id = $1 AND trashed_at IS NULL
+        "#,
+        source_id
+    )
+    .execute(&mut *conn)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
 #[derive(Debug, Serialize)]
 pub struct Source {
     pub id: Uuid,
@@ -186,12 +239,12 @@ pub struct Snapshot {
     pub data: serde_json::Value,
 }
 
-/// All sources of a track, album or artist, each with its snapshots.
+/// All sources of a track, album or artist (not those in the trash), each with its snapshots.
 pub async fn list_for(conn: &mut PgConnection, owner_id: Uuid) -> sqlx::Result<Vec<Source>> {
     let sources = sqlx::query!(
         r#"
         SELECT id, platform, external_id FROM sources
-        WHERE COALESCE(track_id, album_id, artist_id) = $1
+        WHERE COALESCE(track_id, album_id, artist_id) = $1 AND trashed_at IS NULL
         ORDER BY platform, id
         "#,
         owner_id

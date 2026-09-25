@@ -27,7 +27,7 @@ pub async fn stream_file(
     let mut tx = state.db(&user).await?;
     let file = sqlx::query!(
         r#"
-        SELECT f.sha256, f.container, f.codec,
+        SELECT f.sha256, f.container, f.codec, f.purged_at,
                EXISTS (SELECT 1 FROM tracks t WHERE t.file_id = f.id) AS "is_current!",
                EXISTS (
                    SELECT 1 FROM track_file_history h
@@ -50,6 +50,13 @@ pub async fn stream_file(
     let visible = file.is_current || (file.is_previous && user.has(Permission::ViewHistory));
     if !visible {
         return Err(AppError::NotFound);
+    }
+
+    if let Some(purged_at) = file.purged_at {
+        return Err(AppError::Gone(format!(
+            "this file was purged on {}: its record is kept, but the audio is gone",
+            purged_at.format("%Y-%m-%d")
+        )));
     }
 
     let mime = audio_mime(file.container.as_deref(), file.codec.as_deref());

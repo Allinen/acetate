@@ -134,7 +134,7 @@ pub async fn tracks(conn: &mut PgConnection, share: &ActiveShare) -> sqlx::Resul
         SharedTrack,
         r#"
         SELECT t.id, t.title, t.artist_display, f.duration_ms,
-               (SELECT c.id FROM covers c WHERE c.track_id = t.id
+               (SELECT c.id FROM covers c WHERE c.track_id = t.id AND c.trashed_at IS NULL
                 ORDER BY c.position, c.id LIMIT 1) AS cover_id
         FROM tracks t
         JOIN files f ON f.id = t.file_id
@@ -159,6 +159,8 @@ pub struct SharedAlbum {
     pub title: String,
     /// The album's artists, as credited, joined with ", ".
     pub artist: String,
+    /// The album's own main cover, if it has one.
+    pub cover_id: Option<Uuid>,
 }
 
 pub async fn album(conn: &mut PgConnection, album_id: Uuid) -> sqlx::Result<Option<SharedAlbum>> {
@@ -172,7 +174,9 @@ pub async fn album(conn: &mut PgConnection, album_id: Uuid) -> sqlx::Result<Opti
                    JOIN artists a ON a.id = ac.artist_id
                    LEFT JOIN artist_aliases aa ON aa.id = ac.alias_id
                    WHERE ac.album_id = al.id
-               ), '') AS "artist!"
+               ), '') AS "artist!",
+               (SELECT c.id FROM covers c WHERE c.album_id = al.id AND c.trashed_at IS NULL
+                ORDER BY c.position, c.id LIMIT 1) AS cover_id
         FROM albums al
         WHERE al.id = $1
         "#,
@@ -230,7 +234,7 @@ pub async fn cover(
         r#"
         SELECT c.blob_sha256 AS sha256, c.mime
         FROM covers c
-        WHERE c.id = $1
+        WHERE c.id = $1 AND c.trashed_at IS NULL
           AND (c.track_id = $2
                OR c.album_id = $3
                OR EXISTS (

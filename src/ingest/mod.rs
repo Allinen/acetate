@@ -20,7 +20,8 @@ use uuid::Uuid;
 
 use crate::db;
 use crate::db::ingest::StoredFile;
-use crate::model::{AlbumMembership, Credit, TrackFacts, TrackMetadata};
+use crate::db::revisions::Source;
+use crate::model::{AlbumMembership, Credit, LyricsData, TrackFacts, TrackMetadata};
 use crate::model::sources::{SourceOwner, ValidSource};
 use crate::storage::{BlobStore, PendingBlob};
 use probe::ProbeInfo;
@@ -486,7 +487,11 @@ async fn create_track_rows(
 
     for body in &tags.lyrics {
         // Whether embedded lyrics are official is unknown, so they start as unofficial.
-        db::ingest::insert_lyrics(conn, track_id, false, looks_synced(body), "embedded", body)
+        let lyrics = LyricsData {
+            body: body.clone(),
+            ..Default::default()
+        };
+        db::revisions::create_lyrics(conn, track_id, "embedded", &lyrics, Source::Import, "imported_from_file")
             .await?;
     }
 
@@ -522,28 +527,9 @@ async fn create_track_rows(
     Ok(track_id)
 }
 
-/// LRC-style synced lyrics have lines like "[01:23.45] text".
-fn looks_synced(body: &str) -> bool {
-    body.lines().any(|line| {
-        let line = line.trim_start();
-        line.starts_with('[') && line[1..].chars().next().is_some_and(|c| c.is_ascii_digit())
-    })
-}
-
 fn is_unique_violation(err: &anyhow::Error, constraint: &str) -> bool {
     err.downcast_ref::<sqlx::Error>()
         .and_then(|e| e.as_database_error())
         .is_some_and(|e| e.is_unique_violation() && e.constraint() == Some(constraint))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn synced_detection() {
-        assert!(looks_synced("[00:12.34] hello\n[00:15.00] world"));
-        assert!(!looks_synced("hello\nworld"));
-        assert!(!looks_synced("[Chorus]\nla la la"));
-    }
-}

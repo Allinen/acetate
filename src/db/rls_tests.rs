@@ -10,7 +10,8 @@
 //! * track O (public), on no album;
 //! * users alice (admin), bob (user + friends + sharers, who may share), carol (user).
 //!
-//! Needs Postgres running (`DATABASE_URL`), like building does.
+//! Needs Postgres running (`DATABASE_URL`), like building does. `setup` is also used by
+//! `trash_tests`.
 
 use serde_json::json;
 use sqlx::PgPool;
@@ -22,23 +23,23 @@ use crate::db::revisions::Source;
 use crate::model::sources::{self, Kind, NewSource, SourceOwner};
 use crate::model::{AlbumData, AlbumMembership, ArtistData, Credit, Relation, TrackFacts, TrackMetadata};
 
-struct Library {
-    owner: PgPool,
-    app: PgPool,
-    alice: Uuid,
-    bob: Uuid,
-    carol: Uuid,
-    friends: Uuid,
-    v: Uuid,
-    h: Uuid,
-    o: Uuid,
-    h_file: Uuid,
-    both: Uuid,
-    x: Uuid,
-    album: Uuid,
+pub(super) struct Library {
+    pub(super) owner: PgPool,
+    pub(super) app: PgPool,
+    pub(super) alice: Uuid,
+    pub(super) bob: Uuid,
+    pub(super) carol: Uuid,
+    pub(super) friends: Uuid,
+    pub(super) v: Uuid,
+    pub(super) h: Uuid,
+    pub(super) o: Uuid,
+    pub(super) h_file: Uuid,
+    pub(super) both: Uuid,
+    pub(super) x: Uuid,
+    pub(super) album: Uuid,
 }
 
-async fn setup(connect: PgConnectOptions) -> anyhow::Result<Library> {
+pub(super) async fn setup(connect: PgConnectOptions) -> anyhow::Result<Library> {
     let owner = PgPoolOptions::new().connect_with(connect.clone()).await?;
     let app = db::app_pool_options().connect_with(connect).await?;
 
@@ -113,7 +114,7 @@ fn membership(album_id: Uuid) -> AlbumMembership {
 }
 
 /// A track with a (fake) file, like ingest makes one. Returns (track id, file id).
-async fn make_track(
+pub(super) async fn make_track(
     conn: &mut sqlx::PgConnection,
     title: &str,
     artists: &[Uuid],

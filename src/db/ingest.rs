@@ -29,7 +29,8 @@ pub async fn find_file_by_sha256(
         LEFT JOIN LATERAL (
             SELECT track_id FROM track_file_history WHERE old_file_id = f.id LIMIT 1
         ) h ON true
-        WHERE f.sha256 = $1
+        -- A purged file's bytes are gone: storing them again makes a new file.
+        WHERE f.sha256 = $1 AND f.purged_at IS NULL
         "#,
         sha256
     )
@@ -236,30 +237,6 @@ pub async fn insert_track_cover(
         mime,
         position,
         source,
-    )
-    .execute(conn)
-    .await?;
-    Ok(())
-}
-
-pub async fn insert_lyrics(
-    conn: &mut PgConnection,
-    track_id: Uuid,
-    is_official: bool,
-    is_synced: bool,
-    source: &str,
-    body: &str,
-) -> sqlx::Result<()> {
-    sqlx::query!(
-        r#"
-        INSERT INTO lyrics (track_id, is_official, is_synced, source, body)
-        VALUES ($1, $2, $3, $4, $5)
-        "#,
-        track_id,
-        is_official,
-        is_synced,
-        source,
-        body,
     )
     .execute(conn)
     .await?;
