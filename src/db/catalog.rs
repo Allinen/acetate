@@ -397,6 +397,13 @@ pub struct Vocabularies {
     pub credit_roles: Vec<String>,
     pub album_kinds: Vec<String>,
     pub relation_kinds: Vec<RelationKind>,
+    pub permissions: Vec<PermissionInfo>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PermissionInfo {
+    pub permission: String,
+    pub description: String,
 }
 
 /// The allowed values of the lookup tables, for clients' forms.
@@ -414,6 +421,12 @@ pub async fn vocabularies(conn: &mut PgConnection) -> sqlx::Result<Vocabularies>
         relation_kinds: sqlx::query_as!(
             RelationKind,
             "SELECT kind, inverse_kind, template FROM relation_kinds ORDER BY kind"
+        )
+        .fetch_all(&mut *conn)
+        .await?,
+        permissions: sqlx::query_as!(
+            PermissionInfo,
+            "SELECT permission, description FROM permissions ORDER BY permission"
         )
         .fetch_all(&mut *conn)
         .await?,

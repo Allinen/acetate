@@ -42,13 +42,17 @@ pub struct IngestOptions {
     /// External source data for the track (already validated), supplied by the uploader.
     /// Also added when the file turns out to be a duplicate, to the existing track.
     pub sources: Vec<ValidSource>,
+    /// Create the track restricted to these groups (None = visible to everyone). Done in
+    /// the same transaction, so the track is never briefly public.
+    pub restrict_to: Option<Vec<Uuid>>,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub enum IngestOutcome {
     Created(Uuid),
-    /// The exact same file (same sha256) is already stored, for this track.
-    Duplicate(Uuid),
+    /// The exact same file (same sha256) is already stored, for this track. None: for a
+    /// track the uploader can't see (which isn't revealed).
+    Duplicate(Option<Uuid>),
 }
 
 /// Reasons a file is refused. These are the user's problem (bad input), not server
@@ -120,7 +124,7 @@ pub async fn ingest(
             return Err(Rejected::AlreadyStored { track_id: None }.into());
         };
         add_to_existing(pool, track_id, &options).await?;
-        return Ok(IngestOutcome::Duplicate(track_id));
+        return Ok(IngestOutcome::Duplicate(visible(pool, options.user, track_id).await?));
     }
 
     // 2. Probe and read tags, and make sure the tags are good enough.
@@ -150,10 +154,16 @@ pub async fn ingest(
     // 4. Everything in the database happens in one transaction: either the whole track
     //    shows up, or nothing does.
     let mut tx = db::begin(pool, options.user).await?;
+    // Creating a track only adds rows, but it looks across the whole library: for artists
+    // and albums that already exist (also ones only on tracks the uploader can't see), and
+    // for similar titles to flag. So it runs as the system (see `db::as_system`); all the
+    // uploader gets back is the new track's id.
+    let system = db::as_system(&mut tx).await?;
     let result = create_track_rows(&mut tx, &options, &sha256, size_bytes, &probe, &tags, &covers)
         .await;
     match result {
         Ok(track_id) => {
+            system.end(&mut tx).await?;
             tx.commit().await?;
             Ok(IngestOutcome::Created(track_id))
         }
@@ -168,7 +178,7 @@ pub async fn ingest(
                 if let Some(existing) = find_file(pool, options.user, &sha256).await? {
                     if let Some(id) = existing.track_id {
                         add_to_existing(pool, id, &options).await?;
-                        return Ok(IngestOutcome::Duplicate(id));
+                        return Ok(IngestOutcome::Duplicate(visible(pool, options.user, id).await?));
                     }
                 }
             }
@@ -205,10 +215,11 @@ pub async fn replace_file(
     options: ReplaceOptions,
 ) -> anyhow::Result<ReplaceOutcome> {
     if let Some(existing) = find_file(pool, options.user, &pending.sha256).await? {
-        return Err(Rejected::AlreadyStored {
-            track_id: existing.track_id,
-        }
-        .into());
+        let track_id = match existing.track_id {
+            Some(id) => visible(pool, options.user, id).await?,
+            None => None,
+        };
+        return Err(Rejected::AlreadyStored { track_id }.into());
     }
     // Check before storing anything, so a typo in the id doesn't leave a stray blob.
     let mut tx = db::begin(pool, options.user).await?;
@@ -255,27 +266,44 @@ pub async fn replace_file(
 
 /// For a duplicate upload: adds the origin and the given sources to the existing track's
 /// sources. The stored file keeps the origin it was first uploaded with.
+///
+/// As the system: where a file came from is worth keeping even when the track is one the
+/// uploader can't see. Nothing about it is returned.
 async fn add_to_existing(
     pool: &PgPool,
     track_id: Uuid,
     options: &IngestOptions,
 ) -> anyhow::Result<()> {
     let mut tx = db::begin(pool, options.user).await?;
+    let system = db::as_system(&mut tx).await?;
     db::sources::add_snapshot(&mut tx, SourceOwner::Track(track_id), &options.origin).await?;
     for source in &options.sources {
         db::sources::add_snapshot(&mut tx, SourceOwner::Track(track_id), source).await?;
     }
+    system.end(&mut tx).await?;
     tx.commit().await?;
     Ok(())
 }
 
+/// Whether these exact bytes are already stored, as any track's file, including tracks
+/// the user can't see (as the system: the file can only be stored once).
 async fn find_file(
     pool: &PgPool,
     user: Option<Uuid>,
     sha256: &str,
 ) -> anyhow::Result<Option<StoredFile>> {
     let mut tx = db::begin(pool, user).await?;
-    Ok(db::ingest::find_file_by_sha256(&mut tx, sha256).await?)
+    let system = db::as_system(&mut tx).await?;
+    let found = db::ingest::find_file_by_sha256(&mut tx, sha256).await?;
+    system.end(&mut tx).await?;
+    Ok(found)
+}
+
+/// `Some(track_id)` if the user can see the track, else None.
+async fn visible(pool: &PgPool, user: Option<Uuid>, track_id: Uuid) -> anyhow::Result<Option<Uuid>> {
+    let mut tx = db::begin(pool, user).await?;
+    let exists = db::sources::owner_exists(&mut tx, SourceOwner::Track(track_id)).await?;
+    Ok(exists.then_some(track_id))
 }
 
 /// Probes and reads tags on tokio's blocking thread pool (both are blocking,
@@ -486,6 +514,10 @@ async fn create_track_rows(
     }
     let artist_ids: Vec<Uuid> = metadata.credits.iter().map(|c| c.artist_id).collect();
     db::review::flag_possible_duplicates(conn, track_id, &metadata.title, &artist_ids).await?;
+
+    if let Some(groups) = &options.restrict_to {
+        db::access::set(conn, track_id, true, groups, "restricted when uploaded").await?;
+    }
 
     Ok(track_id)
 }

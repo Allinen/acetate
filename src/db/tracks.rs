@@ -340,6 +340,9 @@ pub async fn get_track(
     .fetch_all(&mut *conn)
     .await?;
 
+    let mut variants = variants;
+    strip_hidden(conn, variants.iter_mut().map(|v| &mut v.data)).await?;
+
     let external_revision_id = sqlx::query_scalar!(
         r#"
         SELECT id FROM track_revisions
@@ -368,6 +371,8 @@ pub async fn get_track(
         )
         .fetch_all(&mut *conn)
         .await?;
+        let mut revisions = revisions;
+        strip_hidden(conn, revisions.iter_mut().map(|r| &mut r.data)).await?;
         Some(revisions)
     };
 
@@ -434,4 +439,70 @@ pub async fn get_track(
         lyrics,
         covers,
     }))
+}
+
+/// Removes from revision data (as JSON) what the transaction's user can't see: relations
+/// with hidden tracks, hidden albums, and credits of hidden artists.
+///
+/// Revisions store the whole picture, including things only some users may see (e.g. a
+/// relation with a restricted track). Row-level security filters rows, not what's inside
+/// a JSON column, so that's done here, before revision data is shown to anyone.
+async fn strip_hidden<'a>(
+    conn: &mut PgConnection,
+    datas: impl Iterator<Item = &'a mut serde_json::Value>,
+) -> sqlx::Result<()> {
+    // `impl Iterator<Item = &mut Value>`: any sequence of mutable references to the
+    // data, e.g. `revisions.iter_mut().map(|r| &mut r.data)`. The `'a` just says those
+    // references live as long as the iterator hands them out.
+    let datas: Vec<&mut serde_json::Value> = datas.collect();
+
+    // Every id mentioned, then one query per kind for the visible ones.
+    let ids_at = |data: &serde_json::Value, list: &str, field: &str| -> Vec<Uuid> {
+        data.get(list)
+            .and_then(|v| v.as_array())
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| item.get(field)?.as_str()?.parse().ok())
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let mut track_ids = Vec::new();
+    let mut album_ids = Vec::new();
+    let mut artist_ids = Vec::new();
+    for data in &datas {
+        track_ids.extend(ids_at(data, "relations", "track_id"));
+        album_ids.extend(ids_at(data, "albums", "album_id"));
+        artist_ids.extend(ids_at(data, "credits", "artist_id"));
+    }
+    if track_ids.is_empty() && album_ids.is_empty() && artist_ids.is_empty() {
+        return Ok(());
+    }
+    let tracks = sqlx::query_scalar!("SELECT id FROM tracks WHERE id = ANY($1)", &track_ids)
+        .fetch_all(&mut *conn)
+        .await?;
+    let albums = sqlx::query_scalar!("SELECT id FROM albums WHERE id = ANY($1)", &album_ids)
+        .fetch_all(&mut *conn)
+        .await?;
+    let artists = sqlx::query_scalar!("SELECT id FROM artists WHERE id = ANY($1)", &artist_ids)
+        .fetch_all(&mut *conn)
+        .await?;
+
+    let keep_visible = |data: &mut serde_json::Value, list: &str, field: &str, visible: &[Uuid]| {
+        if let Some(items) = data.get_mut(list).and_then(|v| v.as_array_mut()) {
+            items.retain(|item| {
+                item.get(field)
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| s.parse::<Uuid>().ok())
+                    .is_some_and(|id| visible.contains(&id))
+            });
+        }
+    };
+    for data in datas {
+        keep_visible(data, "relations", "track_id", &tracks);
+        keep_visible(data, "albums", "album_id", &albums);
+        keep_visible(data, "credits", "artist_id", &artists);
+    }
+    Ok(())
 }

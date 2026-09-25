@@ -100,7 +100,8 @@ pub struct Flag {
     pub track_id: Uuid,
     pub track_title: String,
     pub track_artist: String,
-    /// As stored (see the migration), plus `tracks` / `artists` expanded below.
+    /// As stored (see the migration), minus the `tracks` / `artists` id lists: those are
+    /// expanded below instead, which leaves out the ones the user can't see.
     pub related: serde_json::Value,
     /// For possible duplicates: the similar tracks, `[{id, title, artist_display}]`.
     pub related_tracks: serde_json::Value,
@@ -124,7 +125,7 @@ pub async fn list(
         Flag,
         r#"
         SELECT f.id, f.kind, f.track_id, t.title AS track_title, t.artist_display AS track_artist,
-               f.related,
+               f.related - 'tracks' - 'artists' AS "related!",
                COALESCE((
                    SELECT jsonb_agg(jsonb_build_object(
                        'id', rt.id, 'title', rt.title, 'artist_display', rt.artist_display))

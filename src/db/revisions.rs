@@ -203,8 +203,19 @@ pub async fn write_internal(
     .fetch_optional(&mut *conn)
     .await?;
     check_base(base, latest.as_ref().map(|r| r.id))?;
+
+    // Credits of artists the user can't see are carried over unchanged, like relations
+    // with hidden tracks in `write_external`. (Only possible on a variant that isn't
+    // primary: a credit on the primary variant makes the artist visible.)
+    let hidden = match &latest {
+        Some(latest) => hidden_credits(conn, &latest.data).await?,
+        None => Vec::new(),
+    };
+    let mut stored = data.clone();
+    stored.credits.extend(hidden);
+
     if let Some(latest) = &latest
-        && same_data(&latest.data, data)
+        && same_data(&latest.data, &stored)
     {
         return Ok(Written {
             revision_id: latest.id,
@@ -224,18 +235,31 @@ pub async fn write_internal(
         source.as_str(),
         reason,
         is_canon,
-        serde_json::to_value(data)?,
+        serde_json::to_value(&stored)?,
     )
     .fetch_one(&mut *conn)
     .await?;
 
     if track.primary_variant_id == Some(variant_id) {
-        apply_internal(conn, track_id, data).await?;
+        apply_internal(conn, track_id, &stored).await?;
     }
     Ok(Written {
         revision_id,
         changed: true,
     })
+}
+
+/// The credits in a variant's revision data whose artist the transaction's user can't see.
+async fn hidden_credits(conn: &mut PgConnection, data: &serde_json::Value) -> anyhow::Result<Vec<Credit>> {
+    let credits = serde_json::from_value::<TrackMetadata>(data.clone())?.credits;
+    let ids: Vec<Uuid> = credits.iter().map(|c| c.artist_id).collect();
+    let visible = sqlx::query_scalar!("SELECT id FROM artists WHERE id = ANY($1)", &ids)
+        .fetch_all(&mut *conn)
+        .await?;
+    Ok(credits
+        .into_iter()
+        .filter(|c| !visible.contains(&c.artist_id))
+        .collect())
 }
 
 /// Copies a variant's metadata onto the track's current state.
@@ -323,10 +347,17 @@ pub async fn write_external(
         return Err(invalid(format!("unknown tracks: {}", unknown.join(", "))));
     }
 
+    // Relations with tracks the user can't see are neither in `facts` (they'd be "unknown
+    // tracks" above) nor in what row-level security lets us read or delete below. They're
+    // carried over unchanged, so the revision still records the whole picture.
+    let hidden = hidden_relations(conn, track_id).await?;
+    let mut stored = facts.clone();
+    stored.relations.extend(hidden);
+
     let latest = latest_external(conn, track_id).await?;
     check_base(base, latest.as_ref().map(|(id, _)| *id))?;
     if let Some((latest_id, latest_data)) = &latest
-        && same_data(latest_data, facts)
+        && same_data(latest_data, &stored)
     {
         return Ok(Written {
             revision_id: *latest_id,
@@ -407,9 +438,11 @@ pub async fn write_external(
         .await?;
     }
 
-    let revision_id = insert_external(conn, track_id, facts, source, reason).await?;
+    let revision_id = insert_external(conn, track_id, &stored, source, reason).await?;
 
     // The other side of every changed relation gets a revision with its new relations.
+    // Its *whole* current facts, including relations to tracks this user can't see (read
+    // as the system; nothing of it is returned).
     let others: BTreeSet<Uuid> = added.iter().chain(&removed).map(|r| r.track_id).collect();
     if !others.is_empty() {
         let title = sqlx::query_scalar!("SELECT title FROM tracks WHERE id = $1", track_id)
@@ -417,7 +450,9 @@ pub async fn write_external(
             .await?;
         let other_reason = format!("relation changed on \"{title}\"");
         for other in others {
+            let system = super::as_system(conn).await?;
             let facts = current_facts(conn, other).await?;
+            system.end(conn).await?;
             insert_external(conn, other, &facts, source, &other_reason).await?;
         }
     }
@@ -495,6 +530,42 @@ pub async fn current_relations(conn: &mut PgConnection, track_id: Uuid) -> sqlx:
     )
     .fetch_all(&mut *conn)
     .await
+}
+
+/// The track's relations with tracks the transaction's user can't see.
+async fn hidden_relations(conn: &mut PgConnection, track_id: Uuid) -> sqlx::Result<Vec<Relation>> {
+    let visible = current_relations(conn, track_id).await?;
+    let system = super::as_system(conn).await?;
+    let all = current_relations(conn, track_id).await?;
+    system.end(conn).await?;
+    Ok(all.into_iter().filter(|r| !visible.contains(r)).collect())
+}
+
+/// `facts` without what the transaction's user can't see: relations with hidden tracks,
+/// and hidden albums. For restoring an old revision: only its visible part is restored
+/// (`write_external` keeps the current hidden part).
+async fn visible_facts(conn: &mut PgConnection, facts: TrackFacts) -> sqlx::Result<TrackFacts> {
+    let track_ids: Vec<Uuid> = facts.relations.iter().map(|r| r.track_id).collect();
+    let visible_tracks = sqlx::query_scalar!("SELECT id FROM tracks WHERE id = ANY($1)", &track_ids)
+        .fetch_all(&mut *conn)
+        .await?;
+    let album_ids: Vec<Uuid> = facts.albums.iter().map(|a| a.album_id).collect();
+    let visible_albums = sqlx::query_scalar!("SELECT id FROM albums WHERE id = ANY($1)", &album_ids)
+        .fetch_all(&mut *conn)
+        .await?;
+    Ok(TrackFacts {
+        status: facts.status,
+        albums: facts
+            .albums
+            .into_iter()
+            .filter(|a| visible_albums.contains(&a.album_id))
+            .collect(),
+        relations: facts
+            .relations
+            .into_iter()
+            .filter(|r| visible_tracks.contains(&r.track_id))
+            .collect(),
+    })
 }
 
 /// A track's facts as they currently are in the tables.
@@ -669,7 +740,11 @@ pub async fn restore_track_revision(
     let reason = restore_reason(reason, revision_id);
     match old.variant_id {
         Some(variant_id) => {
-            let data: TrackMetadata = serde_json::from_value(old.data)?;
+            // Only the visible part is restored; `write_internal` keeps the current
+            // credits of hidden artists.
+            let hidden = hidden_credits(conn, &old.data).await?;
+            let mut data: TrackMetadata = serde_json::from_value(old.data)?;
+            data.credits.retain(|c| !hidden.contains(c));
             write_internal(
                 conn,
                 old.track_id,
@@ -684,6 +759,7 @@ pub async fn restore_track_revision(
         }
         None => {
             let facts: TrackFacts = serde_json::from_value(old.data)?;
+            let facts = visible_facts(conn, facts).await?;
             write_external(conn, old.track_id, None, &facts, Source::Restore, &reason).await
         }
     }
@@ -814,11 +890,15 @@ pub async fn write_artist(
         .map(|(id, _)| *id)
         .collect();
     for alias_id in &hiding {
+        // Counting uses on hidden tracks too (otherwise hiding the alias would break their
+        // credits), so the message mustn't say how many there are.
+        let system = super::as_system(conn).await?;
         let uses = alias_uses(conn, *alias_id).await?;
+        system.end(conn).await?;
         if uses > 0 {
             let name = &existing[alias_id].0;
             return Err(invalid(format!(
-                "alias `{name}` is credited on {uses} tracks/albums; change those credits first"
+                "alias `{name}` is still credited on tracks or albums; change those credits first"
             )));
         }
     }
@@ -855,6 +935,8 @@ pub async fn write_artist(
                 .is_some_and(|(old_name, _)| *old_name != a.name)
         });
     if names_changed {
+        // Hidden tracks too: their artist text must follow the name like everyone else's.
+        let system = super::as_system(conn).await?;
         sqlx::query!(
             r#"
             UPDATE tracks SET artist_display = artist_display_of(id)
@@ -864,6 +946,7 @@ pub async fn write_artist(
         )
         .execute(&mut *conn)
         .await?;
+        system.end(conn).await?;
     }
 
     let revision_id = sqlx::query_scalar!(
@@ -1001,6 +1084,12 @@ pub async fn merge_artist(
     } else {
         reason.to_string()
     };
+
+    // Both artists are visible (the lock above went through row-level security). What
+    // follows must also reach tracks and albums the user can't see, or those would keep
+    // crediting an artist that no longer exists as such: it runs as the system. The
+    // counts returned at the end only include what the user can see.
+    let system = super::as_system(conn).await?;
 
     // 1. Move `from`'s aliases over. A listed alias whose exact name `into` already lists
     //    stays behind and redirects to that one instead.
@@ -1179,10 +1268,28 @@ pub async fn merge_artist(
         }
     }
 
+    system.end(conn).await?;
+
+    let variant_ids: Vec<Uuid> = variants.iter().map(|v| v.variant_id).collect();
+    let album_ids: Vec<Uuid> = albums.iter().map(|a| a.album_id).collect();
+    let flagged_ids: Vec<Uuid> = flagged.into_iter().collect();
+    let visible = sqlx::query!(
+        r#"
+        SELECT (SELECT count(*) FROM track_variants WHERE id = ANY($1)) AS "variants!",
+               (SELECT count(*) FROM albums WHERE id = ANY($2)) AS "albums!",
+               (SELECT count(*) FROM tracks WHERE id = ANY($3)) AS "flagged!"
+        "#,
+        &variant_ids,
+        &album_ids,
+        &flagged_ids
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    let flagged = if flag_for_review { visible.flagged as usize } else { 0 };
     Ok(Merged {
-        variants: variants.len(),
-        albums: albums.len(),
-        flagged: flagged.len(),
+        variants: visible.variants as usize,
+        albums: visible.albums as usize,
+        flagged,
     })
 }
 

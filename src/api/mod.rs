@@ -5,8 +5,10 @@
 //! links, which anyone can do. Requests without a login are made by a guest, who has no
 //! permissions.
 
+mod access;
 mod auth;
 mod catalog;
+mod groups;
 mod media;
 mod rate_limit;
 mod review;
@@ -78,12 +80,24 @@ pub fn router(state: AppState) -> Router {
         .route("/api/auth/sessions/{id}", delete(auth::end_session))
         .route("/api/users", require(&[ManageUsers], get(users::list).post(users::create)))
         .route("/api/users/{id}/groups", require(&[ManageUsers], put(users::set_user_groups)))
+        // Listing groups is also for choosing who may see a restricted track.
+        .route(
+            "/api/groups",
+            require(&[ManageUsers, ManageAccess], get(groups::list))
+                .merge(require(&[ManageUsers], post(groups::create))),
+        )
+        .route(
+            "/api/groups/{id}",
+            require(&[ManageUsers], put(groups::update).delete(groups::delete)),
+        )
         .route("/api/shares", require(&[Share], get(shares::list).post(shares::create)))
         .route("/api/shares/{id}", require(&[Share], delete(shares::revoke)))
         .route("/api/search", require(&[Browse], get(catalog::search)))
         .route("/api/vocab", require(&[Browse], get(catalog::vocab)))
         .route("/api/tracks", require(&[Browse], get(tracks::list)))
         .route("/api/tracks/{id}", require(&[Browse], get(tracks::get)))
+        .route("/api/tracks/{id}/access", require(&[ManageAccess], get(access::get).put(access::set)))
+        .route("/api/albums/{id}/access", require(&[ManageAccess], put(access::set_album)))
         // Editing. Changing relations also needs `edit_relations` (checked in the handler).
         .route("/api/tracks/{id}/facts", require(&[EditMetadata], put(tracks::edit_facts)))
         .route("/api/tracks/{id}/variants", require(&[EditMetadata], post(tracks::create_variant)))
@@ -226,6 +240,10 @@ impl IntoResponse for AppError {
                     (StatusCode::UNPROCESSABLE_ENTITY, invalid.to_string())
                 } else if let Some(msg) = foreign_key_violation(&err) {
                     (StatusCode::BAD_REQUEST, msg)
+                } else if is_row_security_violation(&err) {
+                    // A write that row-level security refused: normally the code checks
+                    // first and says why, so this is the safety net.
+                    (StatusCode::FORBIDDEN, "not allowed".to_string())
                 } else {
                     tracing::error!("internal error: {err:#}");
                     (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
@@ -241,6 +259,14 @@ impl<E: Into<anyhow::Error>> From<E> for AppError {
     fn from(err: E) -> Self {
         AppError::Internal(err.into())
     }
+}
+
+/// Postgres refused a write because of a row-level security policy (SQLSTATE 42501,
+/// insufficient_privilege).
+fn is_row_security_violation(err: &anyhow::Error) -> bool {
+    err.downcast_ref::<sqlx::Error>()
+        .and_then(|e| e.as_database_error())
+        .is_some_and(|e| e.code().as_deref() == Some("42501"))
 }
 
 /// Inserting a value that doesn't exist in a lookup table (e.g. an unknown platform or

@@ -21,7 +21,7 @@ pub struct ListParams {
     q: Option<String>,
 }
 
-// With RLS (Phase 3) this only returns tracks the user can see.
+// Only tracks the user can see (row-level security).
 pub async fn list(
     State(state): State<AppState>,
     user: CurrentUser,

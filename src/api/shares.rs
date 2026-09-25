@@ -60,7 +60,7 @@ pub async fn create(
     }
 
     let mut tx = state.db(&user).await?;
-    // You can only share what you can see. (Once RLS is on, this lookup is filtered too.)
+    // You can only share what you can see (the lookup goes through row-level security).
     if !db::sources::owner_exists(&mut tx, owner).await? {
         return Err(AppError::NotFound);
     }

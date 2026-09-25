@@ -84,7 +84,8 @@ pub async fn list(conn: &mut PgConnection, created_by: Option<Uuid>) -> sqlx::Re
         ShareInfo,
         r#"
         SELECT s.id, s.track_id, s.album_id,
-               COALESCE(t.title, al.title) AS "title!",
+               -- NULL when you can't see it anymore (then the share shows nothing either).
+               COALESCE(t.title, al.title, '(no longer visible to you)') AS "title!",
                u.username AS created_by,
                s.created_at, s.expires_at, s.revoked_at
         FROM shares s

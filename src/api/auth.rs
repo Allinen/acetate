@@ -72,7 +72,7 @@ pub async fn authenticate(
 /// ```
 ///
 /// Use this for "may this user do this kind of thing at all". Whether they may see a
-/// particular track is decided by the data (row-level security, Phase 3), not here.
+/// particular track is decided by the data (row-level security), not here.
 pub fn require(
     permissions: &'static [Permission],
     route: MethodRouter<AppState>,

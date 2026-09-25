@@ -491,7 +491,7 @@ async function save(status, send, onSaved) {
   try {
     const written = await send();
     status.replaceChildren(h("span", { class: "ok" }, written?.changed === false ? "Nothing changed." : "Saved."));
-    onSaved();
+    onSaved(written);
   } catch (err) {
     const stale = err.message.startsWith("changed by someone else");
     status.replaceChildren(errorBox(err), stale ? h("button", { type: "button", onclick: onSaved }, "Reload") : null);
@@ -610,6 +610,8 @@ async function showTrack(id) {
             ? h("a", { href: `/api/files/${f.id}/stream`, download: f.original_filename }, "Download original")
             : null),
         can("share") ? shareForm("track", id) : null)),
+
+    can("manage_access") ? [h("h3", {}, "Access"), await trackAccessBox(id, reload)] : null,
 
     h("h3", {}, "Metadata"),
     kv([
@@ -1022,6 +1024,7 @@ async function showAlbum(id) {
     h("div", {}, a.credits.map((c) => c.alias ?? c.artist_name).join(", ")),
     h("div", { class: "row" }, h("span", { class: "tag" }, a.kind)),
     can("share") ? shareForm("album", id) : null,
+    can("manage_access") ? await albumAccessBox(id, reload) : null,
     kv([
       ["release date", a.release_date && h("span", { class: "mono" }, a.release_date)],
       ["album id", h("span", { class: "mono" }, a.id)],
@@ -1093,6 +1096,8 @@ document.getElementById("upload-toggle").addEventListener("click", async () => {
 async function buildUploadPanel() {
   const files = h("input", { type: "file", accept: "audio/*", multiple: true, required: true });
   const status = h("select", {}, options((await getVocab()).statuses, "released"));
+  // Created restricted right away, so an unreleased track is never briefly visible to all.
+  const access = can("manage_access") ? await accessPicker({ restricted: false, groups: [] }) : null;
   const origin = await sourceWidget("track");
   const sourcesBox = h("div", {});
   const extraSources = [];
@@ -1115,6 +1120,7 @@ async function buildUploadPanel() {
   const form = h("form", { class: "stack" },
     h("label", {}, "files", files),
     h("label", {}, "status", status),
+    access ? access.element : null,
     h("div", { class: "muted" }, "Where the file(s) came from (applies to each file):"),
     origin.element,
     h("div", { class: "muted" }, "Other places the song can be found (single file only):"),
@@ -1140,6 +1146,7 @@ async function buildUploadPanel() {
       results.append(line);
       const body = new FormData();
       body.append("status", status.value);
+      if (access?.read().restricted) body.append("restrict_to", JSON.stringify(access.read().groups));
       body.append("origin", JSON.stringify(o));
       if (sources.length) body.append("sources", JSON.stringify(sources));
       body.append("file", file);
@@ -1147,7 +1154,9 @@ async function buildUploadPanel() {
         const [r] = await api("/api/upload", { method: "POST", body });
         line.lastChild.replaceWith(r.track_id
           ? h("a", { href: `#/track/${r.track_id}`, class: r.status === "created" ? "ok" : "" }, r.status)
-          : h("span", { class: "error" }, `${r.status}: ${r.error}`));
+          : r.status === "duplicate"
+            ? h("span", { class: "muted" }, "duplicate: already in the library")
+            : h("span", { class: "error" }, `${r.status}: ${r.error}`));
       } catch (err) {
         line.lastChild.replaceWith(errorBox(err));
       }
@@ -1170,6 +1179,7 @@ function route() {
   else if (kind === "shares") showShares();
   else if (kind === "account") showAccount();
   else if (kind === "review") showReview();
+  else if (kind === "groups") showGroups();
   else setDetail(h("p", { class: "muted" }, "Select a track. Double-click to play."));
 }
 
@@ -1230,6 +1240,7 @@ async function start() {
   document.getElementById("upload-toggle").hidden = !can("upload");
   document.getElementById("shares-link").hidden = !can("share");
   document.getElementById("review-link").hidden = !can("edit_metadata");
+  document.getElementById("groups-link").hidden = !can("manage_users");
   window.addEventListener("hashchange", route);
   loadTracks(true);
   route();
@@ -1238,6 +1249,149 @@ async function start() {
 // ---------------------------------------------------------------------------
 // Sharing
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Access: restricted tracks and groups
+// ---------------------------------------------------------------------------
+
+// The groups, loaded once (the Groups page reloads them after changes).
+let groupsPromise = null;
+function getGroups(reload = false) {
+  if (reload || !groupsPromise) groupsPromise = api("/api/groups");
+  return groupsPromise;
+}
+
+// "Restricted" checkbox + which groups may see it. `initial`: {restricted, groups: [ids]}.
+// read() -> {restricted, groups}; hidesMe() -> true if saving it would hide it from me.
+async function accessPicker(initial) {
+  const groups = await getGroups();
+  const restricted = h("input", { type: "checkbox", checked: initial.restricted });
+  const boxes = groups.map((g) => ({
+    group: g,
+    input: h("input", { type: "checkbox", checked: initial.groups.includes(g.id) }),
+  }));
+  const groupRow = h("div", { class: "row" },
+    h("span", { class: "muted" }, "visible to:"),
+    boxes.map((b) => h("label", { class: "row" }, b.input, b.group.name)));
+  const sync = () => { groupRow.hidden = !restricted.checked; };
+  restricted.addEventListener("change", sync);
+  sync();
+  const read = () => ({
+    restricted: restricted.checked,
+    groups: restricted.checked ? boxes.filter((b) => b.input.checked).map((b) => b.group.id) : [],
+  });
+  return {
+    element: h("div", {},
+      h("label", { class: "row" }, restricted, "restricted: only admins and the groups below can see it"),
+      groupRow),
+    read,
+    hidesMe: () => {
+      const value = read();
+      if (!value.restricted || can("admin")) return false;
+      return !boxes.some((b) => b.input.checked && b.group.members.includes(me.username));
+    },
+  };
+}
+
+// Access box of a track page (manage_access).
+async function trackAccessBox(id, reload) {
+  const access = await api(`/api/tracks/${id}/access`);
+  const picker = await accessPicker({ restricted: access.restricted, groups: access.groups.map((g) => g.id) });
+  const reason = h("input", { placeholder: "why (optional)" });
+  const status = h("span", {});
+  const form = h("form", { class: "stack box" }, picker.element,
+    h("label", {}, "reason", reason),
+    h("div", { class: "row" }, h("button", { type: "submit" }, "Save access"), status),
+    access.log.length ? h("details", {}, h("summary", {}, `Changes (${access.log.length})`),
+      access.log.map((l) => h("div", { class: "muted" },
+        fmtTime(l.changed_at), " · ", l.changed_by ?? "system", " · ",
+        l.restricted ? `restricted to ${l.groups.map((g) => g.name).join(", ") || "admins only"}` : "unrestricted",
+        l.reason ? ` · ${l.reason}` : ""))) : null);
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (picker.hidesMe() && !confirm("You're in none of these groups: you won't see this track anymore. Save anyway?")) return;
+    save(status, () => putJson(`/api/tracks/${id}/access`, { ...picker.read(), reason: reason.value }),
+      (r) => { if (r.visible) reload(); else { location.hash = ""; loadTracks(true); } });
+  });
+  return form;
+}
+
+// Album page: set access on all its tracks (manage_access).
+async function albumAccessBox(id, reload) {
+  const picker = await accessPicker({ restricted: false, groups: [] });
+  const status = h("span", {});
+  const form = h("form", { class: "stack box" },
+    h("div", { class: "muted" }, "Sets who can see each track of this album (that you can see)."),
+    picker.element,
+    h("div", { class: "row" }, h("button", { type: "submit" }, "Apply to all tracks"), status));
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (picker.hidesMe() && !confirm("You're in none of these groups: you won't see these tracks anymore. Apply anyway?")) return;
+    save(status, () => putJson(`/api/albums/${id}/access`, picker.read()), () => { loadTracks(true); reload(); });
+  });
+  return h("details", {}, h("summary", {}, "Restrict all tracks…"), form);
+}
+
+// #/groups: groups and their permissions (manage_users).
+async function showGroups() {
+  selectedId = null;
+  markSelected();
+  setDetail(h("p", { class: "muted" }, "Loading…"));
+  let groups, vocab;
+  try {
+    [groups, vocab] = await Promise.all([getGroups(true), getVocab()]);
+  } catch (err) {
+    setDetail(errorBox(err));
+    return;
+  }
+  const editor = (g) => {
+    const name = h("input", { value: g?.name ?? "", required: true });
+    const description = h("input", { value: g?.description ?? "" });
+    const perms = vocab.permissions.map((p) => ({
+      name: p.permission,
+      input: h("input", { type: "checkbox", checked: g?.permissions.includes(p.permission) ?? false }),
+      description: p.description,
+    }));
+    const status = h("span", {});
+    const form = h("form", { class: "stack box" },
+      h("label", {}, "name", name),
+      h("label", {}, "description", description),
+      h("div", {}, perms.map((p) => h("label", { class: "row" }, p.input, h("strong", {}, p.name),
+        h("span", { class: "muted" }, p.description)))),
+      h("div", { class: "row" },
+        h("button", { type: "submit" }, g ? "Save group" : "Create group"),
+        g ? h("button", {
+          type: "button",
+          onclick: () => {
+            if (!confirm(`Delete the group "${g.name}"?`)) return;
+            save(status, () => api(`/api/groups/${g.id}`, { method: "DELETE" }), showGroups);
+          },
+        }, "Delete") : null,
+        status));
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const body = {
+        name: name.value, description: description.value,
+        permissions: perms.filter((p) => p.input.checked).map((p) => p.name),
+      };
+      save(status, () => g ? putJson(`/api/groups/${g.id}`, body) : postJson("/api/groups", body), showGroups);
+    });
+    return form;
+  };
+
+  setDetail(
+    h("h2", {}, "Groups"),
+    h("p", { class: "muted" },
+      "Groups give their members permissions, and restricted tracks are opened to groups. " +
+      "People who aren't logged in have no permissions at all; that isn't a group and can't be changed."),
+    groups.map((g) => h("div", { class: "box" },
+      h("div", { class: "row" }, h("strong", {}, g.name), h("span", { class: "muted" }, g.description)),
+      h("div", {}, g.permissions.map((p) => h("span", { class: "tag" }, p))),
+      h("div", { class: "muted" }, "members: ", g.members.join(", ") || "none"),
+      g.name === "admin" ? null : h("details", {}, h("summary", {}, "Edit…"), editor(g)))),
+    h("h3", {}, "New group"),
+    editor(null));
+}
 
 // ---------------------------------------------------------------------------
 // Account: change password, sessions

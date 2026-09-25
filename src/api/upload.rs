@@ -4,7 +4,7 @@ use serde::Serialize;
 use uuid::Uuid;
 
 use super::{AppError, AppState};
-use crate::auth::CurrentUser;
+use crate::auth::{CurrentUser, Permission};
 use crate::ingest::{self, IngestOptions, IngestOutcome, Rejected, ReplaceOptions};
 use crate::model::sources::{self, Kind, NewSource, ValidSource};
 
@@ -21,6 +21,9 @@ pub struct UploadResult {
 ///
 /// Text fields, before the file(s) they apply to:
 /// * `status`: initial track status; applies to all following files.
+/// * `restrict_to`: a JSON array of group ids: the following files' tracks are created
+///   restricted to those groups (needs `manage_access`). `[]` = admins only; send
+///   `null` to go back to unrestricted.
 /// * `origin` (required for every file): where the next file came from, one source snapshot
 ///   as JSON (see `NewSource`), e.g.
 ///   `{"platform":"custom","data":{"label":"discord","description":"sent by X"}}`.
@@ -42,6 +45,7 @@ pub async fn upload(
     mut multipart: Multipart,
 ) -> Result<Json<Vec<UploadResult>>, AppError> {
     let mut status = "released".to_string();
+    let mut restrict_to: Option<Vec<Uuid>> = None;
     let mut next_origin: Option<ValidSource> = None;
     let mut next_sources: Vec<ValidSource> = Vec::new();
     let mut results = Vec::new();
@@ -54,6 +58,16 @@ pub async fn upload(
             let value = field.text().await.map_err(bad_request)?;
             match name.as_str() {
                 "status" => status = value,
+                "restrict_to" => {
+                    if !user.has(Permission::ManageAccess) {
+                        return Err(AppError::Forbidden(
+                            "restricting tracks needs the manage_access permission".to_string(),
+                        ));
+                    }
+                    restrict_to = serde_json::from_str(&value).map_err(|err| {
+                        AppError::BadRequest(format!("restrict_to: expected an array of group ids ({err})"))
+                    })?;
+                }
                 "origin" => next_origin = Some(parse_source(&value)?),
                 "sources" => next_sources = parse_sources(&value)?,
                 other => return Err(AppError::BadRequest(format!("unknown field '{other}'"))),
@@ -87,12 +101,13 @@ pub async fn upload(
             status: status.clone(),
             origin,
             sources,
+            restrict_to: restrict_to.clone(),
         };
         // One bad file shouldn't fail the whole batch, so errors are reported per file.
         let (status, track_id, error) =
             match ingest::ingest(&state.pool, &state.store, pending, options).await {
                 Ok(IngestOutcome::Created(id)) => ("created", Some(id), None),
-                Ok(IngestOutcome::Duplicate(id)) => ("duplicate", Some(id), None),
+                Ok(IngestOutcome::Duplicate(id)) => ("duplicate", id, None),
                 Err(err) if err.downcast_ref::<Rejected>().is_some() => {
                     tracing::warn!("skipped {filename}: {err}");
                     ("skipped", None, Some(err.to_string()))

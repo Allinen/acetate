@@ -49,6 +49,10 @@ esac
 admin_user="${ACETATE_DEV_ADMIN:-admin}"
 admin_password="${ACETATE_DEV_PASSWORD:-adminadmin}"
 
+# Build first: sqlx checks the queries against the database while compiling, which
+# can't work once the tables are gone.
+cargo build -q
+
 echo "resetting database '$db_name'..."
 # lock_timeout: a session in the middle of a transaction (e.g. psql after BEGIN) would
 # otherwise make this wait forever.
@@ -63,8 +67,6 @@ then
          "(e.g. psql after BEGIN)? End it and try again." >&2
     exit 1
 fi
-
-cargo build -q
 
 # Every acetate command applies the migrations first, so this one also recreates the tables.
 echo "creating user '$admin_user' (password '$admin_password')..."

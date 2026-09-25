@@ -11,7 +11,6 @@ use std::path::PathBuf;
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
-use sqlx::postgres::PgPoolOptions;
 use tracing_subscriber::EnvFilter;
 
 use crate::config::Config;
@@ -49,6 +48,10 @@ enum Command {
         /// upload API's `sources` field). Only allowed when importing a single file.
         #[arg(long)]
         sources: Option<String>,
+        /// Create the tracks restricted to these groups (comma-separated names), e.g.
+        /// `--restrict-to friends,testers`. An empty value = admins only.
+        #[arg(long)]
+        restrict_to: Option<String>,
     },
     /// Replace a track's file, e.g. with a higher quality version. The old file is kept.
     ReplaceFile {
@@ -81,14 +84,13 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let config = Config::from_env()?;
 
-    // Without a limit, an unreachable database means half a minute of silence before
-    // an unhelpful "pool timed out". Say what's happening, and fail fast and clearly.
+    // Say what's happening, and fail fast and clearly if the database isn't there
+    // (`connect_owner` has a short timeout).
     let db_host = database_host(&config.database_url);
     tracing::info!("connecting to the database at {db_host}");
-    let pool = PgPoolOptions::new()
-        .max_connections(10)
-        .acquire_timeout(std::time::Duration::from_secs(5))
-        .connect(&config.database_url)
+    // As the owner: migrations and the CLI act as the system. The server makes its own
+    // pool, restricted by row-level security (see `serve`).
+    let pool = db::connect_owner(&config.database_url)
         .await
         .with_context(|| {
             format!(
@@ -114,6 +116,7 @@ async fn main() -> anyhow::Result<()> {
             origin,
             status,
             sources,
+            restrict_to,
         } => {
             let origin = parse_source(&origin)?;
             let sources = match sources {
@@ -123,7 +126,19 @@ async fn main() -> anyhow::Result<()> {
                 Some(json) => parse_sources(&json)?,
                 None => Vec::new(),
             };
-            import(pool, store, paths, origin, status, sources).await
+            let restrict_to = match restrict_to {
+                Some(names) => Some(group_ids(&pool, &names).await?),
+                None => None,
+            };
+            let options = IngestOptions {
+                user: None, // the CLI acts as the system
+                uploaded_filename: String::new(), // set per file
+                origin,
+                status,
+                sources,
+                restrict_to,
+            };
+            import(pool, store, paths, options).await
         }
         Command::ReplaceFile {
             track_id,
@@ -149,8 +164,13 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
-async fn serve(config: Config, pool: sqlx::PgPool, store: BlobStore) -> anyhow::Result<()> {
-    auth::check_permissions_table(&pool).await?;
+/// `owner_pool` is only used for the startup checks. Requests get a pool whose
+/// connections run as `db::APP_ROLE`, so row-level security applies to all of them.
+async fn serve(config: Config, owner_pool: sqlx::PgPool, store: BlobStore) -> anyhow::Result<()> {
+    auth::check_permissions_table(&owner_pool).await?;
+    db::check_row_level_security(&owner_pool).await?;
+    owner_pool.close().await;
+    let pool = db::connect_app(&config.database_url).await?;
     let app = api::router(api::AppState {
         pool,
         store,
@@ -169,23 +189,19 @@ async fn serve(config: Config, pool: sqlx::PgPool, store: BlobStore) -> anyhow::
     Ok(())
 }
 
+/// `options` applies to every file (`uploaded_filename` is filled in per file).
 async fn import(
     pool: sqlx::PgPool,
     store: BlobStore,
     paths: Vec<PathBuf>,
-    origin: ValidSource,
-    status: String,
-    sources: Vec<ValidSource>,
+    options: IngestOptions,
 ) -> anyhow::Result<()> {
     let (mut created, mut duplicates, mut skipped, mut failed) = (0, 0, 0, 0);
 
     for path in paths {
         let options = IngestOptions {
-            user: None, // the CLI acts as the system
             uploaded_filename: file_name(&path),
-            origin: origin.clone(),
-            status: status.clone(),
-            sources: sources.clone(),
+            ..options.clone()
         };
 
         let result = match ingest::receive_path(&store, &path).await {
@@ -199,6 +215,8 @@ async fn import(
             }
             Ok(IngestOutcome::Duplicate(id)) => {
                 duplicates += 1;
+                // The CLI is the system and sees every track, so the id is always there.
+                let id = id.map(|id| id.to_string()).unwrap_or_default();
                 println!("duplicate  {id}  {}", path.display());
             }
             Err(err) if err.downcast_ref::<Rejected>().is_some() => {
@@ -214,6 +232,20 @@ async fn import(
 
     println!("\n{created} created, {duplicates} duplicates, {skipped} skipped, {failed} failed");
     Ok(())
+}
+
+/// Comma-separated group names -> their ids. Empty = no groups (admins only).
+async fn group_ids(pool: &sqlx::PgPool, names: &str) -> anyhow::Result<Vec<Uuid>> {
+    let names: Vec<String> = names
+        .split(',')
+        .map(|n| n.trim().to_string())
+        .filter(|n| !n.is_empty())
+        .collect();
+    let mut tx = db::begin(pool, None).await?;
+    match db::groups::ids_by_name(&mut tx, &names).await? {
+        Ok(ids) => Ok(ids),
+        Err(unknown) => anyhow::bail!("unknown groups: {}", unknown.join(", ")),
+    }
 }
 
 fn parse_source(json: &str) -> anyhow::Result<ValidSource> {

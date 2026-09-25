@@ -13,7 +13,7 @@ use super::{AppError, AppState};
 use crate::auth::{CurrentUser, Permission};
 
 // Files and covers are found through the tracks they belong to, never on their own. So
-// once row-level security (Phase 3) hides a track, its files and covers are hidden too,
+// when row-level security hides a track, its files and covers are hidden too,
 // and asking for them is a plain 404, the same as for an id that doesn't exist.
 
 /// `GET /api/files/{id}/stream`: the file as stored. Supports `Range` requests, so
