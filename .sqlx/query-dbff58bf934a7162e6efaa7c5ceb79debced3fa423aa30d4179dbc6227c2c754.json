@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT is_restricted FROM tracks WHERE id = $1 FOR UPDATE",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "is_restricted",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "tracks",
+            "name": "is_restricted"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "dbff58bf934a7162e6efaa7c5ceb79debced3fa423aa30d4179dbc6227c2c754"
+}

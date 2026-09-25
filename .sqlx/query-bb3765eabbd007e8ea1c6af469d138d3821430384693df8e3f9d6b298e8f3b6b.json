@@ -1,0 +1,76 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT r.kind, r.to_track_id AS track_id, t.title, t.artist_display, k.template\n        FROM track_relations r\n        JOIN tracks t ON t.id = r.to_track_id\n        JOIN relation_kinds k ON k.kind = r.kind\n        WHERE r.from_track_id = $1\n        ORDER BY r.kind, t.title\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "kind",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "track_relations",
+            "name": "kind"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "track_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "track_relations",
+            "name": "to_track_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "title",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tracks",
+            "name": "title"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "artist_display",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tracks",
+            "name": "artist_display"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "template",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "relation_kinds",
+            "name": "template"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "bb3765eabbd007e8ea1c6af469d138d3821430384693df8e3f9d6b298e8f3b6b"
+}

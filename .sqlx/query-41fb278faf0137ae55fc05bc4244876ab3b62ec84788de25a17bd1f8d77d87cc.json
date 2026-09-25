@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO track_access (track_id, group_id) SELECT $1, unnest($2::uuid[])",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "UuidArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "41fb278faf0137ae55fc05bc4244876ab3b62ec84788de25a17bd1f8d77d87cc"
+}

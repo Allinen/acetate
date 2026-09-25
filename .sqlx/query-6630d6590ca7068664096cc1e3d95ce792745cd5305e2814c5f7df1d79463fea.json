@@ -1,0 +1,160 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT h.replaced_at, h.reason, h.old_file_id, f.original_filename AS old_original_filename,\n                   f.uploaded_filename AS old_uploaded_filename,\n                   f.codec AS old_codec, f.bitrate AS old_bitrate, f.size_bytes AS old_size_bytes,\n                   f.trashed_at AS old_trashed_at, f.purged_at AS old_purged_at,\n                   pu.username AS \"old_purged_by?\", h.new_file_id\n            FROM track_file_history h\n            JOIN files f ON f.id = h.old_file_id\n            LEFT JOIN users pu ON pu.id = f.purged_by\n            WHERE h.track_id = $1\n            ORDER BY h.id DESC\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "replaced_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "track_file_history",
+            "name": "replaced_at"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "reason",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "track_file_history",
+            "name": "reason"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "old_file_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "track_file_history",
+            "name": "old_file_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "old_original_filename",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "files",
+            "name": "original_filename"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "old_uploaded_filename",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "files",
+            "name": "uploaded_filename"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "old_codec",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "files",
+            "name": "codec"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "old_bitrate",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "files",
+            "name": "bitrate"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "old_size_bytes",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "files",
+            "name": "size_bytes"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "old_trashed_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "files",
+            "name": "trashed_at"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "old_purged_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "files",
+            "name": "purged_at"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "old_purged_by?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "username"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "new_file_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "track_file_history",
+            "name": "new_file_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false,
+      true,
+      true,
+      false,
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "6630d6590ca7068664096cc1e3d95ce792745cd5305e2814c5f7df1d79463fea"
+}

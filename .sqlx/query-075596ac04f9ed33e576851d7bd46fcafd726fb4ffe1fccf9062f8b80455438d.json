@@ -1,0 +1,76 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT l.changed_at, u.username AS \"changed_by?\", l.restricted, l.groups, l.reason\n        FROM track_access_log l\n        LEFT JOIN users u ON u.id = l.changed_by\n        WHERE l.track_id = $1\n        ORDER BY l.id DESC\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "changed_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "track_access_log",
+            "name": "changed_at"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "changed_by?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "username"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "restricted",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "track_access_log",
+            "name": "restricted"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "groups",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "track_access_log",
+            "name": "groups"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "reason",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "track_access_log",
+            "name": "reason"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "075596ac04f9ed33e576851d7bd46fcafd726fb4ffe1fccf9062f8b80455438d"
+}

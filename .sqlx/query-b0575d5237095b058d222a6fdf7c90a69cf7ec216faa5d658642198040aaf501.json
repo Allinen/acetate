@@ -1,0 +1,95 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT c.trashed_at, c.blob_sha256 AS \"blob_sha256!\", c.mime, c.source, c.track_id, c.album_id,\n                   COALESCE(t.title, al.title) AS owner\n            FROM covers c\n            LEFT JOIN tracks t ON t.id = c.track_id\n            LEFT JOIN albums al ON al.id = c.album_id\n            WHERE c.id = $1\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "trashed_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "covers",
+            "name": "trashed_at"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "blob_sha256!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "covers",
+            "name": "blob_sha256"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "mime",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "covers",
+            "name": "mime"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "source",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "covers",
+            "name": "source"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "track_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "covers",
+            "name": "track_id"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "album_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "covers",
+            "name": "album_id"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "owner",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      null
+    ]
+  },
+  "hash": "b0575d5237095b058d222a6fdf7c90a69cf7ec216faa5d658642198040aaf501"
+}

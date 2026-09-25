@@ -1,0 +1,246 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT p.id, p.kind, p.sha256, p.size_bytes, p.uploaded_filename, p.path, p.reason,\n               p.description, p.embedded_tags, p.tag_title, p.tag_artists, p.attempts, p.created_at, cu.username AS \"created_by?\",\n               p.last_attempt_at, p.resolved_at, ru.username AS \"resolved_by?\", p.resolution,\n               p.track_id\n        FROM ingest_problems p\n        LEFT JOIN users cu ON cu.id = p.created_by\n        LEFT JOIN users ru ON ru.id = p.resolved_by\n        WHERE (p.resolved_at IS NOT NULL) = $1\n          AND p.id < COALESCE($2, 'ffffffff-ffff-ffff-ffff-ffffffffffff'::uuid)\n        ORDER BY p.id DESC\n        LIMIT $3\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "ingest_problems",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "kind",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "ingest_problems",
+            "name": "kind"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "sha256",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "ingest_problems",
+            "name": "sha256"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "size_bytes",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "ingest_problems",
+            "name": "size_bytes"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "uploaded_filename",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "ingest_problems",
+            "name": "uploaded_filename"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "path",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "ingest_problems",
+            "name": "path"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "reason",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "ingest_problems",
+            "name": "reason"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "description",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "ingest_problems",
+            "name": "description"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "embedded_tags",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "ingest_problems",
+            "name": "embedded_tags"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "tag_title",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "ingest_problems",
+            "name": "tag_title"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "tag_artists",
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "ingest_problems",
+            "name": "tag_artists"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "attempts",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "ingest_problems",
+            "name": "attempts"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "ingest_problems",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 13,
+        "name": "created_by?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "username"
+          }
+        }
+      },
+      {
+        "ordinal": 14,
+        "name": "last_attempt_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "ingest_problems",
+            "name": "last_attempt_at"
+          }
+        }
+      },
+      {
+        "ordinal": 15,
+        "name": "resolved_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "ingest_problems",
+            "name": "resolved_at"
+          }
+        }
+      },
+      {
+        "ordinal": 16,
+        "name": "resolved_by?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "username"
+          }
+        }
+      },
+      {
+        "ordinal": 17,
+        "name": "resolution",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "ingest_problems",
+            "name": "resolution"
+          }
+        }
+      },
+      {
+        "ordinal": 18,
+        "name": "track_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "ingest_problems",
+            "name": "track_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bool",
+        "Uuid",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      true,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "0b9e40d7a93cc9e973cda04b2c6ca52b50ce10a3fa2db2911667d65062220a55"
+}

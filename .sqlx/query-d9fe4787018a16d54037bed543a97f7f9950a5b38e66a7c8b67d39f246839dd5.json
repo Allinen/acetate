@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE review_flags\n        SET resolved_at = now(), resolved_by = current_app_user(), resolution = $3\n        WHERE resolved_at IS NULL\n          AND (track_id = $1\n               OR (track_id = $2 AND kind = 'possible_duplicate' AND related -> 'tracks' ? $1::text))\n        RETURNING id\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "review_flags",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "d9fe4787018a16d54037bed543a97f7f9950a5b38e66a7c8b67d39f246839dd5"
+}

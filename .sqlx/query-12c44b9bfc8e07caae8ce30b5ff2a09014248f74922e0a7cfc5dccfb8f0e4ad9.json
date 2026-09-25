@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE covers c SET position = (o.n - 1)::smallint\n        FROM unnest($1::uuid[]) WITH ORDINALITY AS o(id, n)\n        WHERE c.id = o.id\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "UuidArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "12c44b9bfc8e07caae8ce30b5ff2a09014248f74922e0a7cfc5dccfb8f0e4ad9"
+}

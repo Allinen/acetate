@@ -1,0 +1,11 @@
+# Only what the build needs: sources, migrations, .sqlx, web.
+target
+data
+test-audio
+.git
+.env
+.env.*
+*.dump
+navidrome.db*
+netease_id.json
+deploy

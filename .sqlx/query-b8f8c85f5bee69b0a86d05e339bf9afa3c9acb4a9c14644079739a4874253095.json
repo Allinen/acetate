@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO annotations (user_id, track_id, album_id, artist_id, play_count,\n                                 last_played_at, rating, rated_at, starred, starred_at)\n        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)\n        ON CONFLICT (user_id, (COALESCE(track_id, album_id, artist_id))) DO UPDATE SET\n            play_count = EXCLUDED.play_count, last_played_at = EXCLUDED.last_played_at,\n            rating = EXCLUDED.rating, rated_at = EXCLUDED.rated_at,\n            starred = EXCLUDED.starred, starred_at = EXCLUDED.starred_at\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Int4",
+        "Timestamptz",
+        "Int2",
+        "Timestamptz",
+        "Bool",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b8f8c85f5bee69b0a86d05e339bf9afa3c9acb4a9c14644079739a4874253095"
+}

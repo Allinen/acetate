@@ -1,0 +1,304 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT t.id, t.title, t.artist_display, t.status, t.is_restricted, t.release_date,\n               t.release_year, t.genres, t.primary_variant_id, t.created_at,\n               f.id AS file_id, f.sha256, f.original_filename, f.uploaded_filename, f.size_bytes, f.container,\n               f.codec, f.bitrate, f.sample_rate, f.channels, f.bit_depth, f.duration_ms,\n               f.uploaded_at, f.embedded_tags\n        FROM tracks t\n        JOIN files f ON f.id = t.file_id\n        WHERE t.id = $1\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tracks",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "title",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tracks",
+            "name": "title"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "artist_display",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tracks",
+            "name": "artist_display"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "status",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tracks",
+            "name": "status"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "is_restricted",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "tracks",
+            "name": "is_restricted"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "release_date",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tracks",
+            "name": "release_date"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "release_year",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "tracks",
+            "name": "release_year"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "genres",
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "tracks",
+            "name": "genres"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "primary_variant_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tracks",
+            "name": "primary_variant_id"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "tracks",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "file_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "files",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "sha256",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "files",
+            "name": "sha256"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "original_filename",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "files",
+            "name": "original_filename"
+          }
+        }
+      },
+      {
+        "ordinal": 13,
+        "name": "uploaded_filename",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "files",
+            "name": "uploaded_filename"
+          }
+        }
+      },
+      {
+        "ordinal": 14,
+        "name": "size_bytes",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "files",
+            "name": "size_bytes"
+          }
+        }
+      },
+      {
+        "ordinal": 15,
+        "name": "container",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "files",
+            "name": "container"
+          }
+        }
+      },
+      {
+        "ordinal": 16,
+        "name": "codec",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "files",
+            "name": "codec"
+          }
+        }
+      },
+      {
+        "ordinal": 17,
+        "name": "bitrate",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "files",
+            "name": "bitrate"
+          }
+        }
+      },
+      {
+        "ordinal": 18,
+        "name": "sample_rate",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "files",
+            "name": "sample_rate"
+          }
+        }
+      },
+      {
+        "ordinal": 19,
+        "name": "channels",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "files",
+            "name": "channels"
+          }
+        }
+      },
+      {
+        "ordinal": 20,
+        "name": "bit_depth",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "files",
+            "name": "bit_depth"
+          }
+        }
+      },
+      {
+        "ordinal": 21,
+        "name": "duration_ms",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "files",
+            "name": "duration_ms"
+          }
+        }
+      },
+      {
+        "ordinal": 22,
+        "name": "uploaded_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "files",
+            "name": "uploaded_at"
+          }
+        }
+      },
+      {
+        "ordinal": 23,
+        "name": "embedded_tags",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "files",
+            "name": "embedded_tags"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      true,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "6f69232e96a1cbf586eecd378f4f4ace2d73258b1729bd99ae0062d20df5d098"
+}

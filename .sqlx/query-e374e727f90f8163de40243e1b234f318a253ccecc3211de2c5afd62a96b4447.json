@@ -1,0 +1,64 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT g.id, g.name, g.description,\n               ARRAY(SELECT permission FROM group_permissions\n                     WHERE group_id = g.id ORDER BY permission) AS \"permissions!\",\n               ARRAY(SELECT u.username FROM user_groups ug JOIN users u ON u.id = ug.user_id\n                     WHERE ug.group_id = g.id ORDER BY lower(u.username)) AS \"members!\"\n        FROM groups g\n        ORDER BY g.name\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "groups",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "groups",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "description",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "groups",
+            "name": "description"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "permissions!",
+        "type_info": "TextArray",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 4,
+        "name": "members!",
+        "type_info": "TextArray",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      null,
+      null
+    ]
+  },
+  "hash": "e374e727f90f8163de40243e1b234f318a253ccecc3211de2c5afd62a96b4447"
+}

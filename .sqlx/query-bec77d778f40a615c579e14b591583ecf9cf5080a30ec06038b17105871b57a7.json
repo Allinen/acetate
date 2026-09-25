@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                SELECT DISTINCT s.album_id AS \"id!\"\n                FROM sources s\n                WHERE s.platform = $1 AND s.external_id = $2 AND s.trashed_at IS NULL\n                  AND s.album_id IS NOT NULL\n                ORDER BY 1\n                ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id!",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "sources",
+            "name": "album_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "bec77d778f40a615c579e14b591583ecf9cf5080a30ec06038b17105871b57a7"
+}

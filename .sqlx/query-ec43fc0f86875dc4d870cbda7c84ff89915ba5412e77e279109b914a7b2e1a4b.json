@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE files SET trashed_at = now(), trashed_by = current_app_user()\n        WHERE id = ANY($1) AND trashed_at IS NULL AND purged_at IS NULL\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "UuidArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ec43fc0f86875dc4d870cbda7c84ff89915ba5412e77e279109b914a7b2e1a4b"
+}

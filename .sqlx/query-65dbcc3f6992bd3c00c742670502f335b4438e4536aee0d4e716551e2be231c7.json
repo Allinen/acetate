@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO group_permissions (group_id, permission) SELECT $1, unnest($2::text[])",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "TextArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "65dbcc3f6992bd3c00c742670502f335b4438e4536aee0d4e716551e2be231c7"
+}

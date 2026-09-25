@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT COALESCE(f.original_filename, f.uploaded_filename) AS \"filename!\" FROM files f\n        JOIN source_snapshots ss ON ss.id = f.origin_snapshot_id\n        WHERE ss.source_id = $1\n        LIMIT 1\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "filename!",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "c8d8f9af71169822342e950dd1600b89f087509aaf3acd168cf831899744dce8"
+}

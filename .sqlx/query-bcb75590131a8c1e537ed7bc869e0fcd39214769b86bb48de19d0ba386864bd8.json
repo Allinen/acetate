@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE covers SET trashed_at = now(), trashed_by = current_app_user()\n        WHERE id = $1 AND trashed_at IS NULL\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "bcb75590131a8c1e537ed7bc869e0fcd39214769b86bb48de19d0ba386864bd8"
+}

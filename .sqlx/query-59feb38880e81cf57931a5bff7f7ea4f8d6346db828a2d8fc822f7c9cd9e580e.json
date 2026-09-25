@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT blob_sha256 FROM covers WHERE id = $1 AND trashed_at IS NULL",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "blob_sha256",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "covers",
+            "name": "blob_sha256"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "59feb38880e81cf57931a5bff7f7ea4f8d6346db828a2d8fc822f7c9cd9e580e"
+}

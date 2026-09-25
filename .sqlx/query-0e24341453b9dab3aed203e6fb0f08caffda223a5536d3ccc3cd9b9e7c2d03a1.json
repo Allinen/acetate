@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM album_credits WHERE album_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "0e24341453b9dab3aed203e6fb0f08caffda223a5536d3ccc3cd9b9e7c2d03a1"
+}

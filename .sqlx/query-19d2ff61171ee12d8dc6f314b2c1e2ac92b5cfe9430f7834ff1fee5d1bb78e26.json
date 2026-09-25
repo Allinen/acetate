@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM track_access WHERE track_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "19d2ff61171ee12d8dc6f314b2c1e2ac92b5cfe9430f7834ff1fee5d1bb78e26"
+}

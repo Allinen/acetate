@@ -1,0 +1,71 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT a.id, a.name, a.disambiguation, a.merged_into,\n               (SELECT r.id FROM artist_revisions r\n                WHERE r.artist_id = a.id ORDER BY r.id DESC LIMIT 1) AS revision_id\n        FROM artists a\n        WHERE a.id = $1\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "artists",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "artists",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "disambiguation",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "artists",
+            "name": "disambiguation"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "merged_into",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "artists",
+            "name": "merged_into"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "revision_id",
+        "type_info": "Uuid",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      null
+    ]
+  },
+  "hash": "a93f5da845faf6c56d5dc3939c0af2dd81624a1844ae3475ee44f936ac1ce0dc"
+}

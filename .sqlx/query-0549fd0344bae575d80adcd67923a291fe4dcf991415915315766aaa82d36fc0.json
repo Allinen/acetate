@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT DISTINCT id AS \"id!\" FROM (\n                SELECT COALESCE(merged_into, id) AS id FROM artists WHERE lower(name) = lower($1)\n                UNION\n                SELECT artist_id FROM artist_aliases WHERE lower(alias) = lower($1)\n            ) found\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id!",
+        "type_info": "Uuid",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "0549fd0344bae575d80adcd67923a291fe4dcf991415915315766aaa82d36fc0"
+}

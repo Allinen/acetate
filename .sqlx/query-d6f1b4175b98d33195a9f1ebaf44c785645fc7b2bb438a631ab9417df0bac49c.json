@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT name AS \"name!\" FROM unnest($1::text[]) AS name\n        WHERE name NOT IN (SELECT name FROM groups)\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name!",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "d6f1b4175b98d33195a9f1ebaf44c785645fc7b2bb438a631ab9417df0bac49c"
+}

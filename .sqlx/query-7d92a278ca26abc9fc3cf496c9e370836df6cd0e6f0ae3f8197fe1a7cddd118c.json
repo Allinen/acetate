@@ -1,0 +1,31 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT id FROM sources\n            WHERE id = $1\n              AND COALESCE(track_id, album_id, artist_id) = $2\n              AND platform = $3\n              AND external_id IS NOT DISTINCT FROM $4\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "sources",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "7d92a278ca26abc9fc3cf496c9e370836df6cd0e6f0ae3f8197fe1a7cddd118c"
+}

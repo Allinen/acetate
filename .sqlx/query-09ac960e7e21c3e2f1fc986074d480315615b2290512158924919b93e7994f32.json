@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE covers c SET position = p.position\n            FROM unnest($1::uuid[], $2::smallint[]) AS p(id, position)\n            WHERE c.id = p.id\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "UuidArray",
+        "Int2Array"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "09ac960e7e21c3e2f1fc986074d480315615b2290512158924919b93e7994f32"
+}

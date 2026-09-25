@@ -1,0 +1,42 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT al.title,\n               COALESCE((\n                   SELECT string_agg(COALESCE(aa.alias, a.name), ', ' ORDER BY ac.position)\n                   FROM album_credits ac\n                   JOIN artists a ON a.id = ac.artist_id\n                   LEFT JOIN artist_aliases aa ON aa.id = ac.alias_id\n                   WHERE ac.album_id = al.id\n               ), '') AS \"artist!\",\n               (SELECT c.id FROM covers c WHERE c.album_id = al.id AND c.trashed_at IS NULL\n                ORDER BY c.position, c.id LIMIT 1) AS cover_id\n        FROM albums al\n        WHERE al.id = $1\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "title",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "albums",
+            "name": "title"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "artist!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "cover_id",
+        "type_info": "Uuid",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      null,
+      null
+    ]
+  },
+  "hash": "b445fa13c6c32eb6b9c14b4d5e6429bf049928058dfa43bcfe4ba944de35cac4"
+}

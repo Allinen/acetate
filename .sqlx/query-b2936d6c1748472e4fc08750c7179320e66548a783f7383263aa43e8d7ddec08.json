@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT rolsuper OR rolbypassrls AS \"skips!\" FROM pg_roles WHERE rolname = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "skips!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Name"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "b2936d6c1748472e4fc08750c7179320e66548a783f7383263aa43e8d7ddec08"
+}

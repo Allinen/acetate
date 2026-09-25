@@ -1,0 +1,35 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO covers (track_id, album_id, blob_sha256, mime, width, height, source, position)\n        VALUES ($1, $2, $3, $4, $5, $6, $7,\n                (SELECT COALESCE(max(position) + 1, 0) FROM covers\n                 WHERE (track_id = $8 OR album_id = $8) AND trashed_at IS NULL))\n        RETURNING id\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "covers",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Text",
+        "Int4",
+        "Int4",
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "956c688d3212d9c73c0262c911f80826904bbba4374b9d8b6fbb55d8b0713959"
+}

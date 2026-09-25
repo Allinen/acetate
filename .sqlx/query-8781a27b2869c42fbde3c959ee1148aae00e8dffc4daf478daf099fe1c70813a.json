@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM annotations WHERE user_id = $1 AND COALESCE(track_id, album_id, artist_id) = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "8781a27b2869c42fbde3c959ee1148aae00e8dffc4daf478daf099fe1c70813a"
+}

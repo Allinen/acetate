@@ -1,0 +1,100 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT f.id AS file_id, ss.id AS snapshot_id, s.id AS source_id, s.platform,\n               s.external_id, ss.captured_at, ss.data\n        FROM files f\n        JOIN source_snapshots ss ON ss.id = f.origin_snapshot_id\n        JOIN sources s ON s.id = ss.source_id\n        WHERE f.id = ANY($1)\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "file_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "files",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "snapshot_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "source_snapshots",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "source_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "sources",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "platform",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "sources",
+            "name": "platform"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "external_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "sources",
+            "name": "external_id"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "captured_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "source_snapshots",
+            "name": "captured_at"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "data",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "source_snapshots",
+            "name": "data"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "UuidArray"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "b9147077f8c7917540e7d95bc52a255c059d640cd7117370d8473ae50d2277b8"
+}

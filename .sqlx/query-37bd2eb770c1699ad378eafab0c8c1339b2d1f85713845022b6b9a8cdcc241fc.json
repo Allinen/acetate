@@ -1,0 +1,32 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT t.id FROM tracks t\n        WHERE t.id IN (SELECT track_id FROM track_credits WHERE artist_id = ANY($3))\n          AND t.id <> $1\n          AND t.id <> ALL($5)\n          AND t.merged_into IS NULL\n          AND similarity(t.title, $2) >= $4\n        ORDER BY similarity(t.title, $2) DESC, t.id\n        LIMIT 10\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tracks",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "UuidArray",
+        "Float4",
+        "UuidArray"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "37bd2eb770c1699ad378eafab0c8c1339b2d1f85713845022b6b9a8cdcc241fc"
+}

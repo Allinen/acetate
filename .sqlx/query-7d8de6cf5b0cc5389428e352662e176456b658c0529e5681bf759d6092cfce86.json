@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT lyrics_id, data FROM lyrics_revisions WHERE id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "lyrics_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "lyrics_revisions",
+            "name": "lyrics_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "data",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "lyrics_revisions",
+            "name": "data"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "7d8de6cf5b0cc5389428e352662e176456b658c0529e5681bf759d6092cfce86"
+}

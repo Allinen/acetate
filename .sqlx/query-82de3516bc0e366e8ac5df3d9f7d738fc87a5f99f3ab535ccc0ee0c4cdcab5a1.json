@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE sessions\n        SET last_used_at = now(), expires_at = now() + make_interval(days => $2)\n        WHERE id = $1\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "82de3516bc0e366e8ac5df3d9f7d738fc87a5f99f3ab535ccc0ee0c4cdcab5a1"
+}

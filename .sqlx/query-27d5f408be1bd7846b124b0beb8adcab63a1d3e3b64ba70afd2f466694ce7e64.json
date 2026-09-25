@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT artist_id FROM track_credits WHERE track_id = $1 AND role = 'primary'",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "artist_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "track_credits",
+            "name": "artist_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "27d5f408be1bd7846b124b0beb8adcab63a1d3e3b64ba70afd2f466694ce7e64"
+}

@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT EXISTS (SELECT 1 FROM covers WHERE blob_sha256 = $1)\n                OR EXISTS (SELECT 1 FROM files WHERE sha256 = $1 AND purged_at IS NULL)\n                -- A file that didn't import, kept for the review list.\n                OR EXISTS (SELECT 1 FROM ingest_problems WHERE sha256 = $1 AND resolved_at IS NULL)\n               AS \"used!\"\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "used!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "6c8959759c53215bf0dcce9bd5c4998fce735f195bf4a85f51d304e57106a930"
+}

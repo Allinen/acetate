@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE lyrics SET body = $2, is_official = $3, is_synced = $4, language = $5\n        WHERE id = $1\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Bool",
+        "Bool",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "cd28c2a166ed705ad2f59fbb71c90683b58ee02d4afc5001215af47366c5ad58"
+}

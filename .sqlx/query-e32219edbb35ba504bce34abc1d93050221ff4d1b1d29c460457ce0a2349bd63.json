@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT album_id FROM album_tracks WHERE track_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "album_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "album_tracks",
+            "name": "album_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "e32219edbb35ba504bce34abc1d93050221ff4d1b1d29c460457ce0a2349bd63"
+}

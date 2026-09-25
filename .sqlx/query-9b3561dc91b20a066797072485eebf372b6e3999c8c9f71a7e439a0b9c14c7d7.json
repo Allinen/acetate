@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO user_groups (user_id, group_id)\n        SELECT $1, id FROM groups WHERE name = ANY($2)\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "TextArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "9b3561dc91b20a066797072485eebf372b6e3999c8c9f71a7e439a0b9c14c7d7"
+}

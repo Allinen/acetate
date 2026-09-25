@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE review_flags SET resolved_at = NULL, resolved_by = NULL, resolution = '' WHERE id = ANY($1)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "UuidArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "1c88da5020d6b481e1c045bc6a8c52a7432e6a586f744283255ab35f9a4e53df"
+}

@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT sha256, uploaded_filename FROM ingest_problems WHERE id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "sha256",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "ingest_problems",
+            "name": "sha256"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "uploaded_filename",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "ingest_problems",
+            "name": "uploaded_filename"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "7aa6251f98415d32296e64832f49031f9b25a7a0df29bb872f3929a7f1e83908"
+}

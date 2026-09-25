@@ -1,0 +1,64 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT blob_sha256, mime, width, height FROM covers WHERE id = $1 AND trashed_at IS NULL",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "blob_sha256",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "covers",
+            "name": "blob_sha256"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "mime",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "covers",
+            "name": "mime"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "width",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "covers",
+            "name": "width"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "height",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "covers",
+            "name": "height"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "143b623d7d6fc3f658ba4676be91b17d4a9fc690dc448deff5aa0b29105cf8a4"
+}

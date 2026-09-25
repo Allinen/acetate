@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT u.v AS \"id!\" FROM unnest($1::uuid[]) AS u(v)\n        WHERE NOT EXISTS (SELECT 1 FROM artists a WHERE a.id = u.v)\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id!",
+        "type_info": "Uuid",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "UuidArray"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "85efda4a0d398f6d24f53828223720428f00a85fe7b8932cfa8faba98562ff4d"
+}

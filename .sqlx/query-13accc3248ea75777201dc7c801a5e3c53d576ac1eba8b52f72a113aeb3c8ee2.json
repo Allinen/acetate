@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE artist_aliases SET listed = false, merged_into = $2 WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "13accc3248ea75777201dc7c801a5e3c53d576ac1eba8b52f72a113aeb3c8ee2"
+}

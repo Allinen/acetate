@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO track_relations (from_track_id, kind, to_track_id)\n            VALUES ($1, $2, $3), ($3, $4, $1)\n            ON CONFLICT DO NOTHING\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "76941c184338b64e6b18ca8f32c06d90d0c4ad9f2bfd6eea709ab356cd2d565c"
+}

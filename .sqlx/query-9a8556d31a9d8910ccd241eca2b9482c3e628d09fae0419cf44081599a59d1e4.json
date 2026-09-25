@@ -1,0 +1,76 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT sha256, size_bytes, uploaded_filename, path, description\n        FROM ingest_problems\n        WHERE id = $1 AND resolved_at IS NULL\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "sha256",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "ingest_problems",
+            "name": "sha256"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "size_bytes",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "ingest_problems",
+            "name": "size_bytes"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "uploaded_filename",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "ingest_problems",
+            "name": "uploaded_filename"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "path",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "ingest_problems",
+            "name": "path"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "description",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "ingest_problems",
+            "name": "description"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "9a8556d31a9d8910ccd241eca2b9482c3e628d09fae0419cf44081599a59d1e4"
+}

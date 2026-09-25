@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE ingest_problems\n        SET resolved_at = now(), resolved_by = current_app_user(), resolution = $3, track_id = $2\n        WHERE sha256 = $1 AND resolved_at IS NULL\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "658a45b22040c7ed6de331d393912b2d8622f38bb78838c4231c0969d594177d"
+}

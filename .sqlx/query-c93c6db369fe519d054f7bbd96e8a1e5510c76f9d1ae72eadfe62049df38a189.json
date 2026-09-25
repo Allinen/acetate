@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE artist_aliases SET listed = false WHERE id = ANY($1)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "UuidArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c93c6db369fe519d054f7bbd96e8a1e5510c76f9d1ae72eadfe62049df38a189"
+}

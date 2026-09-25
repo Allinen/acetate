@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE covers SET trashed_at = NULL, trashed_by = NULL WHERE id = ANY($1)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "UuidArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "64527871a4ef60f84f3ae7cd95d1b28ee4b444e8cc8054e04b54121308fe68db"
+}

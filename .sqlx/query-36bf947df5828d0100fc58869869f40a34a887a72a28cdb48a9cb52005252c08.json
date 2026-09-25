@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT u.v AS \"kind!\" FROM unnest($1::text[]) AS u(v)\n        WHERE NOT EXISTS (SELECT 1 FROM relation_kinds k WHERE k.kind = u.v)\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "kind!",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "36bf947df5828d0100fc58869869f40a34a887a72a28cdb48a9cb52005252c08"
+}

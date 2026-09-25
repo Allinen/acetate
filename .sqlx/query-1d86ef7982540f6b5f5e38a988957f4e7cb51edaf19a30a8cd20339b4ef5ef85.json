@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                SELECT DISTINCT COALESCE(a.merged_into, a.id) AS \"id!\"\n                FROM sources s JOIN artists a ON a.id = s.artist_id\n                WHERE s.platform = $1 AND s.external_id = $2 AND s.trashed_at IS NULL\n                ORDER BY 1\n                ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id!",
+        "type_info": "Uuid",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "1d86ef7982540f6b5f5e38a988957f4e7cb51edaf19a30a8cd20339b4ef5ef85"
+}

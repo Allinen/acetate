@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE tracks SET artist_display = artist_display_of(id) WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "de4b5819dc25d5b52b6de2ee2493e0f01e719efb9f55d9ab1926ee6eb2b7c235"
+}

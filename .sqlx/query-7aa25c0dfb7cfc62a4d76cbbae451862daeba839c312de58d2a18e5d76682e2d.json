@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE track_merges SET undone_at = now(), undone_by = current_app_user() WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "7aa25c0dfb7cfc62a4d76cbbae451862daeba839c312de58d2a18e5d76682e2d"
+}

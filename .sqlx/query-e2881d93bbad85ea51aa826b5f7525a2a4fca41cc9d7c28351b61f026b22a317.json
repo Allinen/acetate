@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE files SET purged_at = now(), purged_by = current_app_user() WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e2881d93bbad85ea51aa826b5f7525a2a4fca41cc9d7c28351b61f026b22a317"
+}

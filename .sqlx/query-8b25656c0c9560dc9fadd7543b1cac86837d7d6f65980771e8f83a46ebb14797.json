@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO review_flags (kind, track_id, related) VALUES ('possible_duplicate', $1, $2)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Jsonb"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "8b25656c0c9560dc9fadd7543b1cac86837d7d6f65980771e8f83a46ebb14797"
+}

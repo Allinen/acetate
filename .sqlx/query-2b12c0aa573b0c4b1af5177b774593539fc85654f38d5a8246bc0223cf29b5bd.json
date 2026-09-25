@@ -1,0 +1,124 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT f.trashed_at, f.purged_at, f.sha256, f.original_filename, f.size_bytes,\n                   f.codec, f.bitrate, h.track_id AS \"track_id?\", t.title AS \"track_title?\"\n            FROM files f\n            LEFT JOIN track_file_history h ON h.old_file_id = f.id\n            LEFT JOIN tracks t ON t.id = h.track_id\n            WHERE f.id = $1\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "trashed_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "files",
+            "name": "trashed_at"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "purged_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "files",
+            "name": "purged_at"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "sha256",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "files",
+            "name": "sha256"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "original_filename",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "files",
+            "name": "original_filename"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "size_bytes",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "files",
+            "name": "size_bytes"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "codec",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "files",
+            "name": "codec"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "bitrate",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "files",
+            "name": "bitrate"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "track_id?",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "track_file_history",
+            "name": "track_id"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "track_title?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tracks",
+            "name": "title"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true,
+      true,
+      false,
+      true,
+      false,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "2b12c0aa573b0c4b1af5177b774593539fc85654f38d5a8246bc0223cf29b5bd"
+}

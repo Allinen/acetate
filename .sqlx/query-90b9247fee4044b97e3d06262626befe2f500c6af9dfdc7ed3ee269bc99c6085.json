@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT proname::text AS \"name!\" FROM pg_proc\n        WHERE proname IN ('word_similarity_op', 'texticlike') AND NOT proleakproof\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name!",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "90b9247fee4044b97e3d06262626befe2f500c6af9dfdc7ed3ee269bc99c6085"
+}

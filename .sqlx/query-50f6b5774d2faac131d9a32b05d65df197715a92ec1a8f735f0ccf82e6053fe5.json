@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            DELETE FROM track_relations\n            WHERE (from_track_id = $1 AND kind = $2 AND to_track_id = $3)\n               OR (from_track_id = $3 AND kind = $4 AND to_track_id = $1)\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "50f6b5774d2faac131d9a32b05d65df197715a92ec1a8f735f0ccf82e6053fe5"
+}

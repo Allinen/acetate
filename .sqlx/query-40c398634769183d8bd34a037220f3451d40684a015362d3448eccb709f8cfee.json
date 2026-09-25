@@ -1,0 +1,52 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id, alias, listed FROM artist_aliases WHERE artist_id = $1 AND merged_into IS NULL",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "artist_aliases",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "alias",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "artist_aliases",
+            "name": "alias"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "listed",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "artist_aliases",
+            "name": "listed"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "40c398634769183d8bd34a037220f3451d40684a015362d3448eccb709f8cfee"
+}

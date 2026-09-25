@@ -1,0 +1,64 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT v.id, v.label, latest.id AS \"revision_id!\", latest.data AS \"data!\"\n        FROM track_variants v\n        CROSS JOIN LATERAL (\n            SELECT r.id, r.data FROM track_revisions r\n            WHERE r.variant_id = v.id ORDER BY r.id DESC LIMIT 1\n        ) latest\n        WHERE v.track_id = $1\n        ORDER BY v.id\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "track_variants",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "label",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "track_variants",
+            "name": "label"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "revision_id!",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "track_revisions",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "data!",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "track_revisions",
+            "name": "data"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "3885f4c7b409708135fbaa1817f3398b480fb9306f6c2eb41c89f610e99c1d2c"
+}

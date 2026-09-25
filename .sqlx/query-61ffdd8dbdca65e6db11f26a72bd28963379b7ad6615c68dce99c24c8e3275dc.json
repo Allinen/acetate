@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT t.primary_variant_id\n        FROM track_variants v\n        JOIN tracks t ON t.id = v.track_id\n        WHERE v.id = $1 AND v.track_id = $2\n        FOR UPDATE OF v\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "primary_variant_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tracks",
+            "name": "primary_variant_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "61ffdd8dbdca65e6db11f26a72bd28963379b7ad6615c68dce99c24c8e3275dc"
+}

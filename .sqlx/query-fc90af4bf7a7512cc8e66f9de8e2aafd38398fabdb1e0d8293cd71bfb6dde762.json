@@ -1,0 +1,100 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT user_id, play_count, last_played_at, rating, rated_at, starred, starred_at\n        FROM annotations WHERE COALESCE(track_id, album_id, artist_id) = $1\n        ORDER BY user_id\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "user_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "annotations",
+            "name": "user_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "play_count",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "annotations",
+            "name": "play_count"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "last_played_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "annotations",
+            "name": "last_played_at"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "rating",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "annotations",
+            "name": "rating"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "rated_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "annotations",
+            "name": "rated_at"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "starred",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "annotations",
+            "name": "starred"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "starred_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "annotations",
+            "name": "starred_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      true,
+      false,
+      true
+    ]
+  },
+  "hash": "fc90af4bf7a7512cc8e66f9de8e2aafd38398fabdb1e0d8293cd71bfb6dde762"
+}

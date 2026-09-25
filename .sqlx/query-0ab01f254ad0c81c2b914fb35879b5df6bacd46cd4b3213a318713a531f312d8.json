@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE sources SET trashed_at = now(), trashed_by = current_app_user()\n        WHERE id = $1 AND trashed_at IS NULL\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "0ab01f254ad0c81c2b914fb35879b5df6bacd46cd4b3213a318713a531f312d8"
+}
