@@ -122,11 +122,16 @@ impl std::error::Error for Rejected {}
 ///
 /// `volume`: where it's going to be stored, so the reflink lands on that volume's disk.
 pub async fn receive_path(store: &BlobStore, path: &Path, volume: &str) -> anyhow::Result<PendingBlob> {
-    use tokio::io::AsyncReadExt;
-
     if let Some(pending) = store.reflink_in(path, volume).await? {
         return Ok(pending);
     }
+    copy_path(store, path).await
+}
+
+/// Takes a file from disk into a pending blob by copying its bytes (into the default
+/// volume's temp folder; `BlobStore::commit` moves it to the right volume).
+pub async fn copy_path(store: &BlobStore, path: &Path) -> anyhow::Result<PendingBlob> {
+    use tokio::io::AsyncReadExt;
 
     let mut file = tokio::fs::File::open(path)
         .await

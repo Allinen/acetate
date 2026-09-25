@@ -10,6 +10,10 @@ services:
   postgres:
     image: postgres:18
     restart: unless-stopped
+    # Runs as the owner of POSTGRES_DATA (the same user as Acetate), so it creates its
+    # files itself. (By default the image starts as root to hand the folder to its own
+    # user, uid 999, which fails wherever root can't do that.)
+    user: "${ACETATE_UID:-1000}:${ACETATE_GID:-1000}"
     environment:
       POSTGRES_USER: acetate
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}

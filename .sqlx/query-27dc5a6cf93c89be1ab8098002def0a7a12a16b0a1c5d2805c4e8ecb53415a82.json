@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT s.id AS source_id, ss.id AS snapshot_id\n            FROM sources s\n            JOIN source_snapshots ss ON ss.source_id = s.id\n            WHERE COALESCE(s.track_id, s.album_id, s.artist_id) = $1\n              AND s.platform = $2 AND s.external_id IS NULL\n              AND ss.data = $3\n            ORDER BY ss.id\n            LIMIT 1\n            ",
+  "query": "\n            SELECT s.id AS source_id, ss.id AS snapshot_id\n            FROM sources s\n            JOIN source_snapshots ss ON ss.source_id = s.id\n            WHERE (s.track_id = $1 OR s.album_id = $1 OR s.artist_id = $1)\n              AND s.platform = $2 AND s.external_id IS NULL\n              AND ss.data = $3\n            ORDER BY ss.id\n            LIMIT 1\n            ",
   "describe": {
     "columns": [
       {
@@ -38,5 +38,5 @@
       false
     ]
   },
-  "hash": "36e093333c05061222dee6342fe48bc8a1213d46bdb5128a9d838dea83b67d90"
+  "hash": "27dc5a6cf93c89be1ab8098002def0a7a12a16b0a1c5d2805c4e8ecb53415a82"
 }

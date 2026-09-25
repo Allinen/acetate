@@ -206,7 +206,10 @@ pub async fn run(pool: &PgPool, mut options: Options) -> anyhow::Result<()> {
     }
 
     let s = &matcher.stats;
-    println!("\ntracks:  {} matched, {} not in Acetate, {} not on disk", s.tracks_found, s.tracks_not_in_acetate, s.tracks_not_on_disk);
+    println!(
+        "\ntracks:  {} matched, {} not in Acetate, {} not on disk, {} can't be read",
+        s.tracks_found, s.tracks_not_in_acetate, s.tracks_not_on_disk, s.tracks_unreadable
+    );
     println!("albums:  {} matched, {} not found, {} unclear (tracks on several albums)", s.albums_found, s.albums_not_found, s.albums_unclear);
     println!("artists: {} matched, {} not found, {} unclear (several with that name)", s.artists_found, s.artists_not_found, s.artists_unclear);
     for line in s.notes.iter().take(40) {
@@ -322,6 +325,7 @@ struct Stats {
     tracks_found: usize,
     tracks_not_in_acetate: usize,
     tracks_not_on_disk: usize,
+    tracks_unreadable: usize,
     albums_found: usize,
     albums_not_found: usize,
     albums_unclear: usize,
@@ -387,10 +391,19 @@ impl Matcher<'_> {
             let path = path.clone();
             tokio::task::spawn_blocking(move || crate::storage::hash_file(&path)).await?
         };
-        let Ok((sha, _)) = hashed else {
-            self.stats.tracks_not_on_disk += 1;
-            self.stats.notes.push(format!("not on disk: {}", path.display()));
-            return Ok(None);
+        let sha = match hashed {
+            Ok((sha, _)) => sha,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                self.stats.tracks_not_on_disk += 1;
+                self.stats.notes.push(format!("not on disk: {}", path.display()));
+                return Ok(None);
+            }
+            // There, but it can't be read (permissions, usually): say why.
+            Err(error) => {
+                self.stats.tracks_unreadable += 1;
+                self.stats.notes.push(format!("can't read ({error}): {}", path.display()));
+                return Ok(None);
+            }
         };
         let track = db::ingest::find_file_by_sha256(conn, &sha).await?.and_then(|f| f.track_id);
         let Some(track) = track else {
@@ -505,9 +518,9 @@ impl Matcher<'_> {
         let mut candidates = sqlx::query_scalar!(
             r#"
             SELECT DISTINCT id AS "id!" FROM (
-                SELECT COALESCE(merged_into, id) AS id FROM artists WHERE lower(name) = lower($1)
+                SELECT COALESCE(merged_into, id) AS id FROM artists WHERE name_lower = lower($1)
                 UNION
-                SELECT artist_id FROM artist_aliases WHERE lower(alias) = lower($1)
+                SELECT artist_id FROM artist_aliases WHERE alias_lower = lower($1)
             ) found
             "#,
             name

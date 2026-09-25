@@ -95,6 +95,10 @@ enum Command {
         /// the first).
         #[arg(long)]
         volume: Option<String>,
+        /// Stop at the first file that can't be reflinked instead of copying it (a
+        /// reflink takes no extra space; a copy takes the file's full size).
+        #[arg(long)]
+        reflink_only: bool,
         /// Work out and print what would happen, without changing anything.
         #[arg(long)]
         dry_run: bool,
@@ -259,6 +263,7 @@ async fn main() -> anyhow::Result<()> {
             status,
             restrict_to,
             volume,
+            reflink_only,
             dry_run,
         } => {
             let volume = cli_volume(&store, volume)?;
@@ -299,6 +304,7 @@ async fn main() -> anyhow::Result<()> {
                 status,
                 restrict_to,
                 volume,
+                reflink_only,
                 dry_run,
             };
             ingest_command::run(&pool, &store, &dir, options).await

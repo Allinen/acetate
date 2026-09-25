@@ -87,7 +87,7 @@ pub async fn get(conn: &mut PgConnection, item: Item) -> sqlx::Result<Annotation
         r#"
         SELECT play_count, last_played_at, rating, rated_at, starred, starred_at
         FROM annotations
-        WHERE user_id = current_app_user() AND COALESCE(track_id, album_id, artist_id) = $1
+        WHERE user_id = current_app_user() AND (track_id = $1 OR album_id = $1 OR artist_id = $1)
         "#,
         item.id()
     )
@@ -244,7 +244,7 @@ pub async fn split(conn: &mut PgConnection, into: Item, combined: &[CombinedAnno
         }
         if c.kept_before.is_none() && a == Annotation::default() {
             sqlx::query!(
-                "DELETE FROM annotations WHERE user_id = $1 AND COALESCE(track_id, album_id, artist_id) = $2",
+                "DELETE FROM annotations WHERE user_id = $1 AND (track_id = $2 OR album_id = $2 OR artist_id = $2)",
                 c.user_id,
                 into.id()
             )
@@ -262,7 +262,7 @@ async fn rows_of(conn: &mut PgConnection, item: Item) -> sqlx::Result<Vec<(Uuid,
     let rows = sqlx::query!(
         r#"
         SELECT user_id, play_count, last_played_at, rating, rated_at, starred, starred_at
-        FROM annotations WHERE COALESCE(track_id, album_id, artist_id) = $1
+        FROM annotations WHERE (track_id = $1 OR album_id = $1 OR artist_id = $1)
         ORDER BY user_id
         "#,
         item.id()

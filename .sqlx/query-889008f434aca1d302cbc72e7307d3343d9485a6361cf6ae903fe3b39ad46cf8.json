@@ -1,10 +1,21 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT play_count, last_played_at, rating, rated_at, starred, starred_at\n        FROM annotations\n        WHERE user_id = current_app_user() AND COALESCE(track_id, album_id, artist_id) = $1\n        ",
+  "query": "\n        SELECT user_id, play_count, last_played_at, rating, rated_at, starred, starred_at\n        FROM annotations WHERE (track_id = $1 OR album_id = $1 OR artist_id = $1)\n        ORDER BY user_id\n        ",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
+        "name": "user_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "annotations",
+            "name": "user_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
         "name": "play_count",
         "type_info": "Int4",
         "origin": {
@@ -15,7 +26,7 @@
         }
       },
       {
-        "ordinal": 1,
+        "ordinal": 2,
         "name": "last_played_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -26,7 +37,7 @@
         }
       },
       {
-        "ordinal": 2,
+        "ordinal": 3,
         "name": "rating",
         "type_info": "Int2",
         "origin": {
@@ -37,7 +48,7 @@
         }
       },
       {
-        "ordinal": 3,
+        "ordinal": 4,
         "name": "rated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -48,7 +59,7 @@
         }
       },
       {
-        "ordinal": 4,
+        "ordinal": 5,
         "name": "starred",
         "type_info": "Bool",
         "origin": {
@@ -59,7 +70,7 @@
         }
       },
       {
-        "ordinal": 5,
+        "ordinal": 6,
         "name": "starred_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -77,6 +88,7 @@
     },
     "nullable": [
       false,
+      false,
       true,
       false,
       true,
@@ -84,5 +96,5 @@
       true
     ]
   },
-  "hash": "e974533f3192dac951a683f98fec22ca44bd819d8fcfe67667c76b914f96b0d7"
+  "hash": "889008f434aca1d302cbc72e7307d3343d9485a6361cf6ae903fe3b39ad46cf8"
 }

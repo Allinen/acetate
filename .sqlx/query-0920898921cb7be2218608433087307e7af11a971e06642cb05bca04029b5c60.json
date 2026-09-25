@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT a.id FROM albums a\n        WHERE a.title_lower = lower($1)\n          AND a.release_date IS NOT DISTINCT FROM $3\n          AND COALESCE((SELECT array_agg(DISTINCT c.artist_id ORDER BY c.artist_id)\n                        FROM album_credits c\n                        WHERE c.album_id = a.id), '{}') = $2::uuid[]\n        ORDER BY a.id\n        LIMIT 1\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "albums",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "UuidArray",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "0920898921cb7be2218608433087307e7af11a971e06642cb05bca04029b5c60"
+}

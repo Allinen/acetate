@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT id, platform, external_id FROM sources\n        WHERE COALESCE(track_id, album_id, artist_id) = $1 AND trashed_at IS NULL\n        ORDER BY platform, id\n        ",
+  "query": "\n        SELECT id, platform, external_id FROM sources\n        WHERE (track_id = $1 OR album_id = $1 OR artist_id = $1) AND trashed_at IS NULL\n        ORDER BY platform, id\n        ",
   "describe": {
     "columns": [
       {
@@ -48,5 +48,5 @@
       true
     ]
   },
-  "hash": "a8613ee2fc61be29607a5fe0e2c07617c7b1619dbf82675f87db82457a213201"
+  "hash": "23372ad3f3baaaf2a46115e5912ff2f118ba970bd254e221833ebd454a28d6c5"
 }

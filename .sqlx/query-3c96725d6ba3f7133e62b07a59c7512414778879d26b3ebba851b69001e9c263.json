@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE sources SET track_id = $2, album_id = $3, artist_id = $4\n        WHERE id = ANY($1) AND (track_id = $5 OR album_id = $5 OR artist_id = $5)\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "UuidArray",
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "3c96725d6ba3f7133e62b07a59c7512414778879d26b3ebba851b69001e9c263"
+}

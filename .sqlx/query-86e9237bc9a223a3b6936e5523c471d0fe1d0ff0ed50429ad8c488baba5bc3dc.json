@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM annotations WHERE user_id = $1 AND (track_id = $2 OR album_id = $2 OR artist_id = $2)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "86e9237bc9a223a3b6936e5523c471d0fe1d0ff0ed50429ad8c488baba5bc3dc"
+}

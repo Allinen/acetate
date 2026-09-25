@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT id FROM sources\n            WHERE COALESCE(track_id, album_id, artist_id) = $1\n              AND platform = $2 AND external_id = $3\n            ",
+  "query": "\n            SELECT id FROM sources\n            WHERE id = $1\n              AND (track_id = $2 OR album_id = $2 OR artist_id = $2)\n              AND platform = $3\n              AND external_id IS NOT DISTINCT FROM $4\n            ",
   "describe": {
     "columns": [
       {
@@ -18,6 +18,7 @@
     "parameters": {
       "Left": [
         "Uuid",
+        "Uuid",
         "Text",
         "Text"
       ]
@@ -26,5 +27,5 @@
       false
     ]
   },
-  "hash": "fd2911b4b9bd0dbaf1cec7c4726465d9c45021fd8e621d535c60d0f92a4da084"
+  "hash": "eda0c67aba5b5da567cd4b65df0517dd8399313dbceea0bdfe7490d9303251f9"
 }

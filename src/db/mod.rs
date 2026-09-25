@@ -33,6 +33,8 @@ mod ingest_tests;
 mod annotation_tests;
 #[cfg(test)]
 mod navidrome_tests;
+#[cfg(test)]
+mod plan_tests;
 
 use std::time::Duration;
 
@@ -101,7 +103,11 @@ pub fn app_pool_options() -> PgPoolOptions {
         // the callback without knowing its exact type), hence `Box::pin(async move { .. })`.
         .after_connect(|conn, _meta| {
             Box::pin(async move {
-                sqlx::query("SET ROLE acetate_app").execute(conn).await?;
+                sqlx::query("SET ROLE acetate_app").execute(&mut *conn).await?;
+                // No JIT compiling: the app's queries are short lookups, and a plan that looks
+                // expensive (RLS subqueries inflate the estimate) spent seconds compiling
+                // for a query that then ran in milliseconds.
+                sqlx::query("SET jit = off").execute(&mut *conn).await?;
                 Ok(())
             })
         })

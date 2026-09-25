@@ -119,11 +119,11 @@ pub async fn find_or_create_artist(
                    CASE WHEN a.merged_into IS NOT NULL THEN a.merged_alias_id END AS alias_id,
                    a.name = $1 AS exact, 0 AS rank, a.id AS ord
             FROM artists a
-            WHERE lower(a.name) = lower($1)
+            WHERE a.name_lower = lower($1)
             UNION ALL
             SELECT al.artist_id, al.id, al.alias = $1, 1, al.id
             FROM artist_aliases al
-            WHERE lower(al.alias) = lower($1) AND al.listed
+            WHERE al.alias_lower = lower($1) AND al.listed
         ) matches
         ORDER BY exact DESC, rank, ord
         "#,
@@ -190,7 +190,7 @@ pub async fn find_album(
     sqlx::query_scalar!(
         r#"
         SELECT a.id FROM albums a
-        WHERE lower(a.title) = lower($1)
+        WHERE a.title_lower = lower($1)
           AND a.release_date IS NOT DISTINCT FROM $3
           AND COALESCE((SELECT array_agg(DISTINCT c.artist_id ORDER BY c.artist_id)
                         FROM album_credits c
@@ -306,7 +306,7 @@ pub async fn platform_ids_of(
     sqlx::query_scalar!(
         r#"
         SELECT external_id AS "external_id!" FROM sources
-        WHERE COALESCE(track_id, album_id, artist_id) = $1
+        WHERE (track_id = $1 OR album_id = $1 OR artist_id = $1)
           AND platform = $2 AND external_id IS NOT NULL
           AND (trashed_at IS NOT NULL) = $3
         ORDER BY external_id

@@ -44,7 +44,7 @@ pub async fn add_snapshot(
             r#"
             SELECT id FROM sources
             WHERE id = $1
-              AND COALESCE(track_id, album_id, artist_id) = $2
+              AND (track_id = $2 OR album_id = $2 OR artist_id = $2)
               AND platform = $3
               AND external_id IS NOT DISTINCT FROM $4
             "#,
@@ -66,7 +66,7 @@ pub async fn add_snapshot(
         sqlx::query_scalar!(
             r#"
             SELECT id FROM sources
-            WHERE COALESCE(track_id, album_id, artist_id) = $1
+            WHERE (track_id = $1 OR album_id = $1 OR artist_id = $1)
               AND platform = $2 AND external_id = $3
             "#,
             owner_id,
@@ -83,7 +83,7 @@ pub async fn add_snapshot(
             SELECT s.id AS source_id, ss.id AS snapshot_id
             FROM sources s
             JOIN source_snapshots ss ON ss.source_id = s.id
-            WHERE COALESCE(s.track_id, s.album_id, s.artist_id) = $1
+            WHERE (s.track_id = $1 OR s.album_id = $1 OR s.artist_id = $1)
               AND s.platform = $2 AND s.external_id IS NULL
               AND ss.data = $3
             ORDER BY ss.id
@@ -182,7 +182,7 @@ pub async fn move_all(conn: &mut PgConnection, from: SourceOwner, into: SourceOw
     let sources = sqlx::query!(
         r#"
         SELECT id, platform, external_id, created_at, created_by, trashed_at, trashed_by
-        FROM sources WHERE COALESCE(track_id, album_id, artist_id) = $1
+        FROM sources WHERE (track_id = $1 OR album_id = $1 OR artist_id = $1)
         "#,
         from.id()
     )
@@ -196,7 +196,7 @@ pub async fn move_all(conn: &mut PgConnection, from: SourceOwner, into: SourceOw
                 sqlx::query_scalar!(
                     r#"
                     SELECT id FROM sources
-                    WHERE COALESCE(track_id, album_id, artist_id) = $1 AND platform = $2 AND external_id = $3
+                    WHERE (track_id = $1 OR album_id = $1 OR artist_id = $1) AND platform = $2 AND external_id = $3
                     "#,
                     into.id(),
                     src.platform,
@@ -283,7 +283,7 @@ pub async fn unmove_all(
     sqlx::query!(
         r#"
         UPDATE sources SET track_id = $2, album_id = $3, artist_id = $4
-        WHERE id = ANY($1) AND COALESCE(track_id, album_id, artist_id) = $5
+        WHERE id = ANY($1) AND (track_id = $5 OR album_id = $5 OR artist_id = $5)
         "#,
         &moved.moved,
         track_id,
@@ -394,7 +394,7 @@ pub async fn list_for(conn: &mut PgConnection, owner_id: Uuid) -> sqlx::Result<V
     let sources = sqlx::query!(
         r#"
         SELECT id, platform, external_id FROM sources
-        WHERE COALESCE(track_id, album_id, artist_id) = $1 AND trashed_at IS NULL
+        WHERE (track_id = $1 OR album_id = $1 OR artist_id = $1) AND trashed_at IS NULL
         ORDER BY platform, id
         "#,
         owner_id

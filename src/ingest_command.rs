@@ -33,6 +33,9 @@ pub struct Options {
     pub restrict_to: Option<Vec<uuid::Uuid>>,
     /// Which storage volume the audio goes to (None: the default one).
     pub volume: Option<String>,
+    /// Stop instead of copying a file that can't be reflinked (so a big import can't
+    /// fill the disk by accident).
+    pub reflink_only: bool,
     pub dry_run: bool,
 }
 
@@ -43,6 +46,9 @@ struct Totals {
     same_song: usize,
     skipped: usize,
     failed: usize,
+    /// How the files got into the store: reflinked (no space used) or copied.
+    reflinked: usize,
+    copied: usize,
 }
 
 pub async fn run(pool: &PgPool, store: &BlobStore, dir: &Path, options: Options) -> anyhow::Result<()> {
@@ -72,8 +78,9 @@ pub async fn run(pool: &PgPool, store: &BlobStore, dir: &Path, options: Options)
     };
     let mut totals = Totals::default();
 
-    for path in &files {
-        let shown = path.strip_prefix(&root).unwrap_or(path).display().to_string();
+    for (index, path) in files.iter().enumerate() {
+        // With the position, so a long run shows how far along it is.
+        let shown = format!("[{}/{}] {}", index + 1, files.len(), path.strip_prefix(&root).unwrap_or(path).display());
         let mut info = options.layout.read(&root, path);
         if let Some(map) = &options.netease_albums {
             map.apply(&mut info);
@@ -112,7 +119,23 @@ pub async fn run(pool: &PgPool, store: &BlobStore, dir: &Path, options: Options)
         };
 
         let volume = options.volume.as_deref().unwrap_or(store.default_volume());
-        let result = match ingest::receive_path(store, path, volume).await {
+        // A reflink if possible; otherwise a copy, unless --reflink-only.
+        let received = match store.reflink_in(path, volume).await {
+            Ok(Some(pending)) => {
+                totals.reflinked += 1;
+                Ok(pending)
+            }
+            Ok(None) if options.reflink_only => anyhow::bail!(
+                "can't reflink {shown} into volume {volume} (not the same filesystem and mount as the volume?); \
+                 stopping because of --reflink-only. Files before it are done; running again continues here."
+            ),
+            Ok(None) => {
+                totals.copied += 1;
+                ingest::copy_path(store, path).await
+            }
+            Err(err) => Err(err),
+        };
+        let result = match received {
             Err(err) => Err(err),
             Ok(pending) => match &mut dry_run_tx {
                 None => ingest::ingest_with_report(pool, store, pending, &ingest_options, false).await,
@@ -162,12 +185,14 @@ pub async fn run(pool: &PgPool, store: &BlobStore, dir: &Path, options: Options)
     }
     println!(
         "\n{} created ({} with the same song id as an existing track, flagged), {} duplicates, \
-         {} skipped, {} failed{}",
+         {} skipped, {} failed\nfiles taken in: {} reflinked (no extra space), {} copied{}",
         totals.created,
         totals.same_song,
         totals.duplicates,
         totals.skipped,
         totals.failed,
+        totals.reflinked,
+        totals.copied,
         if options.dry_run { "\ndry run: nothing was changed" } else { "" }
     );
     if totals.failed > 0 {
