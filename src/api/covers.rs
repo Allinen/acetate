@@ -54,18 +54,11 @@ async fn upload(
 
     // What it is, from the bytes themselves (not the filename or the content type the
     // client claims).
-    let mime = match imagesize::image_type(&bytes) {
-        Ok(imagesize::ImageType::Jpeg) => "image/jpeg",
-        Ok(imagesize::ImageType::Png) => "image/png",
-        Ok(imagesize::ImageType::Webp) => "image/webp",
-        Ok(imagesize::ImageType::Gif) => "image/gif",
-        _ => {
-            return Err(AppError::BadRequest(
-                "not a JPEG, PNG, WebP or GIF image".to_string(),
-            ));
-        }
+    let Some(image) = crate::model::image_info(&bytes) else {
+        return Err(AppError::BadRequest(
+            "not a JPEG, PNG, WebP or GIF image".to_string(),
+        ));
     };
-    let size = imagesize::blob_size(&bytes).ok();
 
     // Check the owner before storing anything.
     let mut tx = state.db(&user).await?;
@@ -80,9 +73,9 @@ async fn upload(
     let sha256 = state.store.put_bytes(&bytes).await?;
     let cover = NewCover {
         blob_sha256: &sha256,
-        mime: Some(mime),
-        width: size.and_then(|s| i32::try_from(s.width).ok()),
-        height: size.and_then(|s| i32::try_from(s.height).ok()),
+        mime: Some(image.mime),
+        width: image.width,
+        height: image.height,
         source: "upload",
     };
     let id = db::covers::add(&mut tx, owner, &cover).await?;

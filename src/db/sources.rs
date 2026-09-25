@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sqlx::PgConnection;
 use uuid::Uuid;
 
@@ -178,14 +178,18 @@ pub async fn add_snapshot(
 /// tracks), when merging them. A source with the same platform id as one of `into`'s
 /// (e.g. both have NetEase song 123) joins that one: its snapshots move over, so files'
 /// origins keep pointing at the same snapshots, and the emptied source is deleted.
-pub async fn move_all(conn: &mut PgConnection, from: SourceOwner, into: SourceOwner) -> sqlx::Result<()> {
+pub async fn move_all(conn: &mut PgConnection, from: SourceOwner, into: SourceOwner) -> sqlx::Result<MovedSources> {
     let sources = sqlx::query!(
-        "SELECT id, platform, external_id FROM sources WHERE COALESCE(track_id, album_id, artist_id) = $1",
+        r#"
+        SELECT id, platform, external_id, created_at, created_by, trashed_at, trashed_by
+        FROM sources WHERE COALESCE(track_id, album_id, artist_id) = $1
+        "#,
         from.id()
     )
     .fetch_all(&mut *conn)
     .await?;
     let (track_id, album_id, artist_id) = owner_columns(into);
+    let mut result = MovedSources::default();
     for src in sources {
         let same = match &src.external_id {
             Some(external_id) => {
@@ -205,16 +209,27 @@ pub async fn move_all(conn: &mut PgConnection, from: SourceOwner, into: SourceOw
         };
         match same {
             Some(target) => {
-                sqlx::query!(
-                    "UPDATE source_snapshots SET source_id = $2 WHERE source_id = $1",
+                let snapshot_ids = sqlx::query_scalar!(
+                    "UPDATE source_snapshots SET source_id = $2 WHERE source_id = $1 RETURNING id",
                     src.id,
                     target
                 )
-                .execute(&mut *conn)
+                .fetch_all(&mut *conn)
                 .await?;
                 sqlx::query!("DELETE FROM sources WHERE id = $1", src.id)
                     .execute(&mut *conn)
                     .await?;
+                result.joined.push(JoinedSource {
+                    id: src.id,
+                    platform: src.platform,
+                    external_id: src.external_id,
+                    created_at: src.created_at,
+                    created_by: src.created_by,
+                    trashed_at: src.trashed_at,
+                    trashed_by: src.trashed_by,
+                    snapshot_ids,
+                    into_source: target,
+                });
             }
             None => {
                 sqlx::query!(
@@ -226,8 +241,85 @@ pub async fn move_all(conn: &mut PgConnection, from: SourceOwner, into: SourceOw
                 )
                 .execute(&mut *conn)
                 .await?;
+                result.moved.push(src.id);
             }
         }
+    }
+    Ok(result)
+}
+
+/// What `move_all` did, so it can be put back (undoing a track merge).
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct MovedSources {
+    /// Sources that just changed owner.
+    pub moved: Vec<Uuid>,
+    /// Sources that joined one of the new owner's (and were deleted), as they were.
+    pub joined: Vec<JoinedSource>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct JoinedSource {
+    pub id: Uuid,
+    pub platform: String,
+    pub external_id: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub created_by: Option<Uuid>,
+    pub trashed_at: Option<DateTime<Utc>>,
+    pub trashed_by: Option<Uuid>,
+    /// Its snapshots, now in `into_source`.
+    pub snapshot_ids: Vec<Uuid>,
+    pub into_source: Uuid,
+}
+
+/// Puts back what `move_all` moved from `from` to `into`: moved sources return, joined
+/// ones are recreated (same id) and get their snapshots back.
+pub async fn unmove_all(
+    conn: &mut PgConnection,
+    moved: &MovedSources,
+    from: SourceOwner,
+    into: SourceOwner,
+) -> sqlx::Result<()> {
+    let (track_id, album_id, artist_id) = owner_columns(from);
+    sqlx::query!(
+        r#"
+        UPDATE sources SET track_id = $2, album_id = $3, artist_id = $4
+        WHERE id = ANY($1) AND COALESCE(track_id, album_id, artist_id) = $5
+        "#,
+        &moved.moved,
+        track_id,
+        album_id,
+        artist_id,
+        into.id()
+    )
+    .execute(&mut *conn)
+    .await?;
+    for source in &moved.joined {
+        sqlx::query!(
+            r#"
+            INSERT INTO sources (id, track_id, album_id, artist_id, platform, external_id,
+                                 created_at, created_by, trashed_at, trashed_by)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            "#,
+            source.id,
+            track_id,
+            album_id,
+            artist_id,
+            source.platform,
+            source.external_id,
+            source.created_at,
+            source.created_by,
+            source.trashed_at,
+            source.trashed_by
+        )
+        .execute(&mut *conn)
+        .await?;
+        sqlx::query!(
+            "UPDATE source_snapshots SET source_id = $1 WHERE id = ANY($2)",
+            source.id,
+            &source.snapshot_ids
+        )
+        .execute(&mut *conn)
+        .await?;
     }
     Ok(())
 }
@@ -253,7 +345,7 @@ pub async fn trash(conn: &mut PgConnection, source_id: Uuid) -> anyhow::Result<b
     let system = super::as_system(conn).await?;
     let origin_of = sqlx::query_scalar!(
         r#"
-        SELECT f.original_filename FROM files f
+        SELECT COALESCE(f.original_filename, f.uploaded_filename) AS "filename!" FROM files f
         JOIN source_snapshots ss ON ss.id = f.origin_snapshot_id
         WHERE ss.source_id = $1
         LIMIT 1

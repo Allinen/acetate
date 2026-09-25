@@ -100,7 +100,7 @@ pub async fn list(conn: &mut PgConnection) -> sqlx::Result<Vec<TrashItem>> {
             LEFT JOIN artists ar ON ar.id = s.artist_id
             WHERE s.trashed_at IS NOT NULL
             UNION ALL
-            SELECT 'file', f.id, f.original_filename, h.track_id, 'track', t.title,
+            SELECT 'file', f.id, COALESCE(f.original_filename, f.uploaded_filename), h.track_id, 'track', t.title,
                    f.sha256, f.size_bytes, f.trashed_at, f.trashed_by
             FROM files f
             LEFT JOIN track_file_history h ON h.old_file_id = f.id
@@ -158,7 +158,8 @@ pub struct ReplacedFile {
     pub id: Uuid,
     pub track_id: Uuid,
     pub track_title: String,
-    pub original_filename: String,
+    pub original_filename: Option<String>,
+    pub uploaded_filename: String,
     pub codec: Option<String>,
     pub bitrate: Option<i32>,
     pub size_bytes: i64,
@@ -175,7 +176,7 @@ pub async fn replaced_files(
     sqlx::query_as!(
         ReplacedFile,
         r#"
-        SELECT f.id, h.track_id, t.title AS track_title, f.original_filename, f.codec,
+        SELECT f.id, h.track_id, t.title AS track_title, f.original_filename, f.uploaded_filename, f.codec,
                f.bitrate, f.size_bytes, h.replaced_at
         FROM track_file_history h
         JOIN files f ON f.id = h.old_file_id
@@ -352,6 +353,8 @@ pub async fn purge(
             r#"
             SELECT EXISTS (SELECT 1 FROM covers WHERE blob_sha256 = $1)
                 OR EXISTS (SELECT 1 FROM files WHERE sha256 = $1 AND purged_at IS NULL)
+                -- A file that didn't import, kept for the review list.
+                OR EXISTS (SELECT 1 FROM ingest_problems WHERE sha256 = $1 AND resolved_at IS NULL)
                AS "used!"
             "#,
             sha

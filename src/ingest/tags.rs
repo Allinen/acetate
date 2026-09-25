@@ -30,9 +30,11 @@ pub struct TagInfo {
     pub raw: Vec<RawTag>,
 
     pub title: Option<String>,
-    /// Each artist tag value exactly as written.
+    /// The artists from the ARTIST tag, one per value, with values like "A;B" split (see
+    /// `split_artists`). These are the track's credits.
     pub artists: Vec<String>,
     pub album: Option<String>,
+    /// The same from ALBUM ARTIST: the album's credits (may differ from the track's).
     pub album_artists: Vec<String>,
     pub track_number: Option<u32>,
     pub disc_number: Option<u32>,
@@ -41,7 +43,9 @@ pub struct TagInfo {
     pub comment: Option<String>,
     pub lyrics: Vec<String>,
     pub pictures: Vec<EmbeddedPicture>,
-    /// From an ORIGINALFILENAME / TOFN / ... tag, verbatim.
+    /// An original file's name, from an ORIGINALFILENAME / TOFN / ... tag, verbatim. The
+    /// old tag-based library kept the names of original files there, so it's where they're
+    /// read from; see `files.original_filename`.
     pub original_filename: Option<String>,
 
     /// From the audio properties lofty reads alongside the tags.
@@ -126,12 +130,14 @@ pub fn read_tags(path: &Path, extension: Option<&str>) -> anyhow::Result<TagInfo
     };
 
     info.title = tag.title().map(|s| s.to_string()).filter(|s| !s.trim().is_empty());
-    info.artists = strings(tag, ItemKey::TrackArtist);
+    // Only ARTIST and ALBUM ARTIST count. Tags like DISPLAY ARTIST or origartist are
+    // ignored (they're still in `raw`).
+    info.artists = split_artists(strings(tag, ItemKey::TrackArtist));
     if info.artists.is_empty() {
-        info.artists = strings(tag, ItemKey::TrackArtists);
+        info.artists = split_artists(strings(tag, ItemKey::TrackArtists));
     }
     info.album = tag.album().map(|s| s.to_string()).filter(|s| !s.trim().is_empty());
-    info.album_artists = strings(tag, ItemKey::AlbumArtist);
+    info.album_artists = split_artists(strings(tag, ItemKey::AlbumArtist));
     info.track_number = tag.track();
     info.disc_number = tag.disk();
     // Dates come from the raw tags: lofty's generic view of ID3v2 dates is re-rendered
@@ -178,22 +184,56 @@ fn strings(tag: &Tag, key: ItemKey) -> Vec<String> {
     out
 }
 
-/// Keys that hold a file's original name, compared case-insensitively.
-const ORIGINAL_FILENAME_KEYS: [&str; 4] = [
-    "ORIGINALFILENAME",
-    "ORIGINAL_FILENAME",
-    "ORIGINAL FILENAME",
-    "TOFN", // ID3v2 "Original filename" frame
-];
+/// Splits artist values on `;`, the usual separator for several values in one tag
+/// (NetEase writes `ARTIST=Ravel.;Moss Keeper`). The parts are trimmed ("A; B"), and empty
+/// ones and repeats are dropped. A value without `;` is kept exactly as written.
+///
+/// Nothing else is split: "A feat. B", "A x B" or "A & B" stay one name, since those can be
+/// a single artist's name. Fixing them is an edit.
+pub fn split_artists(values: Vec<String>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for value in values {
+        let parts: Vec<String> = if value.contains(';') {
+            value
+                .split(';')
+                .map(|part| part.trim().to_string())
+                .filter(|part| !part.is_empty())
+                .collect()
+        } else {
+            vec![value]
+        };
+        for part in parts {
+            if !out.contains(&part) {
+                out.push(part);
+            }
+        }
+    }
+    out
+}
 
-/// Looks through all raw tags for an original filename.
-fn find_original_filename(raw: &[RawTag]) -> Option<String> {
-    let is_filename_key = |k: &str| {
-        ORIGINAL_FILENAME_KEYS
-            .iter()
-            .any(|known| known.eq_ignore_ascii_case(k))
+/// Whether a tag key holds an original file's name, in any spelling: ORIGINALFILENAME,
+/// ORIGINAL_FILENAME, "Original Filename", origfilename, orig-fname... Case, spaces and
+/// punctuation are ignored; what's left must be "orig"/"original" + "filename"/"fname".
+/// Also TOFN, ID3v2's "original filename" frame.
+///
+/// (The same rule is in migration 0013, which applied it to files already stored.)
+fn is_original_filename_key(key: &str) -> bool {
+    let letters: String = key
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .map(|c| c.to_ascii_lowercase())
+        .collect();
+    if letters == "tofn" {
+        return true;
+    }
+    let Some(rest) = letters.strip_prefix("original").or_else(|| letters.strip_prefix("orig")) else {
+        return false;
     };
+    rest == "filename" || rest == "fname"
+}
 
+/// Looks through all raw tags for an original file's name (see `is_original_filename_key`).
+fn find_original_filename(raw: &[RawTag]) -> Option<String> {
     for tag in raw {
         for item in &tag.items {
             let Some(value) = first_text(&item.value) else {
@@ -201,12 +241,12 @@ fn find_original_filename(raw: &[RawTag]) -> Option<String> {
             };
             let is_match = match (item.key.as_str(), &item.description) {
                 // ID3v2 user-defined frames: key "TXXX", the real name is in the description.
-                ("TXXX", Some(desc)) => is_filename_key(desc),
+                ("TXXX", Some(desc)) => is_original_filename_key(desc),
                 // MP4 freeform atoms: "----:com.apple.iTunes:ORIGINALFILENAME"
                 (key, _) if key.starts_with("----:") => {
-                    key.rsplit(':').next().is_some_and(is_filename_key)
+                    key.rsplit(':').next().is_some_and(is_original_filename_key)
                 }
-                (key, _) => is_filename_key(key),
+                (key, _) => is_original_filename_key(key),
             };
             if is_match {
                 return Some(value.to_string());
@@ -561,6 +601,18 @@ mod tests {
     }
 
     #[test]
+    fn artists_are_split_on_semicolons() {
+        let split = |values: &[&str]| split_artists(values.iter().map(|v| v.to_string()).collect());
+        assert_eq!(split(&["Ravel.;Moss Keeper"]), ["Ravel.", "Moss Keeper"]);
+        assert_eq!(split(&["VANTA; KR8; "]), ["VANTA", "KR8"]);
+        // Repeats (also across values) are dropped; other separators aren't split.
+        assert_eq!(split(&["A;A", "A", "B feat. C"]), ["A", "B feat. C"]);
+        // Without `;`, verbatim (not even trimmed).
+        assert_eq!(split(&[" Odd Spacing "]), [" Odd Spacing "]);
+        assert!(split(&[";", " ; "]).is_empty());
+    }
+
+    #[test]
     fn original_filename_from_vorbis() {
         let raw = vec![tag(
             "vorbis_comments",
@@ -602,6 +654,19 @@ mod tests {
             find_original_filename(&raw),
             Some("c.wav".into())
         );
+    }
+
+    #[test]
+    fn original_filename_keys_in_any_spelling() {
+        for key in [
+            "ORIGINALFILENAME", "ORIGINAL_FILENAME", "Original Filename", "origfilename",
+            "ORIG_FILENAME", "orig-fname", "original.file.name", "TOFN",
+        ] {
+            assert!(is_original_filename_key(key), "{key}");
+        }
+        for key in ["FILENAME", "ORIGINALNAME", "ORIGARTIST", "originalfilenames", "TOF"] {
+            assert!(!is_original_filename_key(key), "{key}");
+        }
     }
 
     #[test]

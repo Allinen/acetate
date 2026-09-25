@@ -376,3 +376,28 @@ mod tests {
         assert_eq!(removed, vec![r("remix_of", 1)]);
     }
 }
+
+/// What an image is, read from its bytes (not from a filename or a claimed content type).
+#[derive(Debug, Clone, Copy)]
+pub struct ImageInfo {
+    pub mime: &'static str,
+    pub width: Option<i32>,
+    pub height: Option<i32>,
+}
+
+/// None if it's not a JPEG, PNG, WebP or GIF image (the formats covers can be).
+pub fn image_info(bytes: &[u8]) -> Option<ImageInfo> {
+    let mime = match imagesize::image_type(bytes) {
+        Ok(imagesize::ImageType::Jpeg) => "image/jpeg",
+        Ok(imagesize::ImageType::Png) => "image/png",
+        Ok(imagesize::ImageType::Webp) => "image/webp",
+        Ok(imagesize::ImageType::Gif) => "image/gif",
+        _ => return None,
+    };
+    let size = imagesize::blob_size(bytes).ok();
+    Some(ImageInfo {
+        mime,
+        width: size.and_then(|s| i32::try_from(s.width).ok()),
+        height: size.and_then(|s| i32::try_from(s.height).ok()),
+    })
+}

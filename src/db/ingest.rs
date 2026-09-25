@@ -8,6 +8,7 @@ use sqlx::PgConnection;
 use uuid::Uuid;
 
 use super::revisions::{self, Source};
+use crate::model::sources::{Kind, SourceOwner};
 use crate::model::{AlbumData, ArtistData, Credit};
 
 pub struct StoredFile {
@@ -44,7 +45,8 @@ pub struct NewFile<'a> {
     /// Where the file came from (required).
     pub origin_snapshot_id: Uuid,
     pub sha256: &'a str,
-    pub original_filename: &'a str,
+    /// Only for an original file: its name. None for everything else (rips, downloads).
+    pub original_filename: Option<&'a str>,
     pub uploaded_filename: &'a str,
     pub size_bytes: i64,
     pub container: Option<&'a str>,
@@ -86,6 +88,7 @@ pub async fn insert_file(conn: &mut PgConnection, f: &NewFile<'_>) -> sqlx::Resu
 }
 
 /// An artist found (or created) for a name from the tags, and how to credit it.
+#[derive(Debug, Clone)]
 pub struct FoundArtist {
     pub id: Uuid,
     /// The alias the name is (None = the artist's own name).
@@ -93,6 +96,8 @@ pub struct FoundArtist {
     /// All artists the name matched, if more than one (then the best match was used, and
     /// ingest flags it for review).
     pub ambiguous: Vec<Uuid>,
+    /// True if no artist matched and this one was just created.
+    pub created: bool,
 }
 
 /// Finds the artist a name from the tags refers to, creating what's missing:
@@ -138,6 +143,7 @@ pub async fn find_or_create_artist(
             id,
             alias_id: None,
             ambiguous: Vec::new(),
+            created: true,
         });
     };
 
@@ -163,49 +169,61 @@ pub async fn find_or_create_artist(
         id: best.artist_id,
         alias_id,
         ambiguous,
+        created: false,
     })
 }
 
-/// Finds an album with the same title (case-insensitive) credited to the same primary
-/// artist, or to no artist if `album_artists` is empty. Creates it (with album revision 0)
-/// if there's none.
-pub async fn find_or_create_album(
+/// Finds the album a file's tags describe: the same title (ignoring case), exactly the
+/// same album artists (as a set, whatever their role: none missing, none extra) and the same release
+/// date (verbatim; no date matches no date). Anything different is a different album,
+/// even with the same title: splitting too eagerly is fixed by merging, while wrongly
+/// joined albums are much harder to notice.
+pub async fn find_album(
     conn: &mut PgConnection,
     title: &str,
-    album_artists: &[FoundArtist],
+    album_artist_ids: &[Uuid],
     release_date: Option<&str>,
-) -> anyhow::Result<Uuid> {
-    let primary_artist = album_artists.first().map(|a| a.id);
-
-    let existing = sqlx::query_scalar!(
+) -> sqlx::Result<Option<Uuid>> {
+    let mut artists = album_artist_ids.to_vec();
+    artists.sort();
+    artists.dedup();
+    sqlx::query_scalar!(
         r#"
         SELECT a.id FROM albums a
         WHERE lower(a.title) = lower($1)
-          AND CASE WHEN $2::uuid IS NULL
-                   THEN NOT EXISTS (SELECT 1 FROM album_credits c WHERE c.album_id = a.id)
-                   ELSE EXISTS (SELECT 1 FROM album_credits c
-                                WHERE c.album_id = a.id AND c.artist_id = $2 AND c.role = 'primary')
-              END
+          AND a.release_date IS NOT DISTINCT FROM $3
+          AND COALESCE((SELECT array_agg(DISTINCT c.artist_id ORDER BY c.artist_id)
+                        FROM album_credits c
+                        WHERE c.album_id = a.id), '{}') = $2::uuid[]
         ORDER BY a.id
         LIMIT 1
         "#,
         title,
-        primary_artist as Option<Uuid>,
+        &artists,
+        release_date,
     )
-    .fetch_optional(&mut *conn)
-    .await?;
+    .fetch_optional(conn)
+    .await
+}
 
-    if let Some(id) = existing {
-        return Ok(id);
-    }
-
+/// Creates an album from a file's tags (with album revision 0). Every album artist is
+/// primary, except on a `single`: there only the first is, and the others are featured
+/// (NetEase lists everyone on a single as album artists).
+pub async fn create_album(
+    conn: &mut PgConnection,
+    title: &str,
+    album_artists: &[FoundArtist],
+    single: bool,
+    release_date: Option<&str>,
+) -> anyhow::Result<Uuid> {
     let mut credits: Vec<Credit> = Vec::new();
     for artist in album_artists {
         // The same artist twice in the tag would be a duplicate credit.
         if !credits.iter().any(|c| c.artist_id == artist.id) {
+            let role = if single && !credits.is_empty() { "featured" } else { "primary" };
             credits.push(Credit {
                 artist_id: artist.id,
-                role: "primary".to_string(),
+                role: role.to_string(),
                 alias_id: artist.alias_id,
             });
         }
@@ -217,6 +235,87 @@ pub async fn find_or_create_album(
         ..Default::default()
     };
     revisions::create_album(conn, &data, Source::Import, "imported_from_file").await
+}
+
+/// The artists, albums or tracks that have this platform id among their sources (not
+/// counting trashed ones: those were wrong). Artists that were merged lead to the artist
+/// they were merged into; merged tracks aren't included.
+pub async fn owners_with_platform_id(
+    conn: &mut PgConnection,
+    kind: Kind,
+    platform: &str,
+    external_id: &str,
+) -> sqlx::Result<Vec<Uuid>> {
+    match kind {
+        Kind::Artist => {
+            sqlx::query_scalar!(
+                r#"
+                SELECT DISTINCT COALESCE(a.merged_into, a.id) AS "id!"
+                FROM sources s JOIN artists a ON a.id = s.artist_id
+                WHERE s.platform = $1 AND s.external_id = $2 AND s.trashed_at IS NULL
+                ORDER BY 1
+                "#,
+                platform,
+                external_id
+            )
+            .fetch_all(conn)
+            .await
+        }
+        Kind::Album => {
+            sqlx::query_scalar!(
+                r#"
+                SELECT DISTINCT s.album_id AS "id!"
+                FROM sources s
+                WHERE s.platform = $1 AND s.external_id = $2 AND s.trashed_at IS NULL
+                  AND s.album_id IS NOT NULL
+                ORDER BY 1
+                "#,
+                platform,
+                external_id
+            )
+            .fetch_all(conn)
+            .await
+        }
+        Kind::Track => {
+            sqlx::query_scalar!(
+                r#"
+                SELECT DISTINCT t.id
+                FROM sources s JOIN tracks t ON t.id = s.track_id
+                WHERE s.platform = $1 AND s.external_id = $2 AND s.trashed_at IS NULL
+                  AND t.merged_into IS NULL
+                ORDER BY 1
+                "#,
+                platform,
+                external_id
+            )
+            .fetch_all(conn)
+            .await
+        }
+    }
+}
+
+/// An owner's ids on a platform, e.g. an artist's NetEase artist ids. With `trashed`,
+/// only the ones in the trash (marked wrong), else only the ones that aren't.
+pub async fn platform_ids_of(
+    conn: &mut PgConnection,
+    owner: SourceOwner,
+    platform: &str,
+    trashed: bool,
+) -> sqlx::Result<Vec<String>> {
+    sqlx::query_scalar!(
+        r#"
+        SELECT external_id AS "external_id!" FROM sources
+        WHERE COALESCE(track_id, album_id, artist_id) = $1
+          AND platform = $2 AND external_id IS NOT NULL
+          AND (trashed_at IS NOT NULL) = $3
+        ORDER BY external_id
+        "#,
+        owner.id(),
+        platform,
+        trashed
+    )
+    .fetch_all(conn)
+    .await
 }
 
 pub async fn insert_track_cover(

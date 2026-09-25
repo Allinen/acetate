@@ -15,6 +15,7 @@ pub mod revisions;
 pub mod shares;
 pub mod sources;
 pub mod tracks;
+pub mod problems;
 pub mod trash;
 pub mod users;
 
@@ -24,6 +25,8 @@ mod rls_tests;
 mod trash_tests;
 #[cfg(test)]
 mod merge_tests;
+#[cfg(test)]
+mod ingest_tests;
 
 use std::time::Duration;
 

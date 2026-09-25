@@ -203,3 +203,151 @@ async fn merging_is_refused_when_it_should_be(_: PgPoolOptions, connect: PgConne
     assert!(rejection(err).contains("already merged"));
     Ok(())
 }
+
+/// Everything about a track that a merge changes and an undo must give back, as the
+/// system sees it (hidden relations included), in a stable order.
+async fn snapshot(lib: &Library, track: Uuid) -> anyhow::Result<serde_json::Value> {
+    let mut tx = db::begin(&lib.owner, None).await?;
+    let t = db::tracks::get_track(&mut tx, track, true).await?.expect("track exists");
+    let sorted = |mut v: Vec<String>| { v.sort(); v };
+    let shares: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM shares WHERE track_id = $1 ORDER BY id")
+        .bind(track)
+        .fetch_all(&mut *tx)
+        .await?;
+    let open_flags: i64 = sqlx::query_scalar("SELECT count(*) FROM review_flags WHERE track_id = $1 AND resolved_at IS NULL")
+        .bind(track)
+        .fetch_one(&mut *tx)
+        .await?;
+    Ok(json!({
+        "title": t.title,
+        "artist_display": t.artist_display,
+        "status": t.status,
+        "file": t.file.id,
+        "previous_files": sorted(t.file_history.unwrap().iter().map(|c| c.old_file_id.to_string()).collect()),
+        "variants": sorted(t.variants.iter().map(|v| format!("{} {}", v.id, v.label)).collect()),
+        "credits": t.credits.iter().map(|c| format!("{} {}", c.artist_id, c.role)).collect::<Vec<_>>(),
+        "covers": t.covers.iter().map(|c| format!("{} {}", c.id, c.position)).collect::<Vec<_>>(),
+        "lyrics": sorted(t.lyrics.iter().map(|l| l.id.to_string()).collect()),
+        "sources": sorted(t.sources.iter().map(|s| {
+            let snaps: Vec<String> = s.snapshots.iter().map(|x| x.id.to_string()).collect();
+            format!("{} {} {:?}", s.id, s.platform, snaps)
+        }).collect()),
+        "relations": sorted(t.relations.iter().map(|r| format!("{} {}", r.kind, r.track_id)).collect()),
+        "albums": sorted(t.albums.iter().map(|a| format!("{} {:?}", a.album_id, a.track_number)).collect()),
+        "shares": shares,
+        "open_flags": open_flags,
+    }))
+}
+
+async fn merge_ids(lib: &Library) -> anyhow::Result<Vec<Uuid>> {
+    Ok(sqlx::query_scalar("SELECT id FROM track_merges ORDER BY id").fetch_all(&lib.owner).await?)
+}
+
+#[sqlx::test]
+async fn undo_gives_both_tracks_back(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
+    let lib = setup(connect).await?;
+    let dupe = make_duplicate(&lib).await?;
+    let (v_before, d_before) = (snapshot(&lib, lib.v).await?, snapshot(&lib, dupe.d).await?);
+    let o_before = snapshot(&lib, lib.o).await?;
+
+    let picks = MergePicks { title: Side::Right, file: Side::Right, covers: Side::Right, ..Default::default() };
+    let mut tx = db::begin(&lib.app, Some(lib.carol)).await?;
+    db::revisions::merge_tracks(&mut tx, lib.v, dupe.d, &picks, None, None, "").await?;
+    tx.commit().await?;
+    // In the meantime, the file that wasn't picked went to the trash (undo takes it out).
+    let mut tx = db::begin(&lib.app, Some(lib.alice)).await?;
+    db::trash::trash_files(&mut tx, &[dupe.v_file]).await?;
+    tx.commit().await?;
+
+    let merge = merge_ids(&lib).await?[0];
+    let mut tx = db::begin(&lib.app, Some(lib.carol)).await?;
+    assert_eq!(db::revisions::merge_undo_blockers(&mut tx, merge).await?, Vec::<String>::new());
+    let restored = db::revisions::undo_track_merge(&mut tx, merge, "").await?;
+    tx.commit().await?;
+    assert_eq!(restored, dupe.d);
+
+    assert_eq!(snapshot(&lib, lib.v).await?, v_before);
+    assert_eq!(snapshot(&lib, dupe.d).await?, d_before);
+    assert_eq!(snapshot(&lib, lib.o).await?, o_before, "the third track's relation came back");
+    let mut tx = db::begin(&lib.app, Some(lib.carol)).await?;
+    assert_eq!(db::tracks::merged_into(&mut tx, dupe.d).await?, None);
+    assert!(db::tracks::list_tracks(&mut tx, None, 100).await?.iter().any(|t| t.id == dupe.d));
+    let trashed: Option<chrono::DateTime<chrono::Utc>> = sqlx::query_scalar("SELECT trashed_at FROM files WHERE id = $1")
+        .bind(dupe.v_file)
+        .fetch_one(&lib.owner)
+        .await?;
+    assert!(trashed.is_none(), "V's own file is out of the trash");
+    let _ = (dupe.d_file, dupe.d_old_file, dupe.v_cover, dupe.d_cover);
+    Ok(())
+}
+
+#[sqlx::test]
+async fn undo_goes_newest_first_and_once(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
+    let lib = setup(connect).await?;
+    let dupe = make_duplicate(&lib).await?;
+    let picks = MergePicks::default();
+    let mut tx = db::begin(&lib.app, Some(lib.alice)).await?;
+    db::revisions::merge_tracks(&mut tx, lib.v, dupe.d, &picks, None, None, "").await?;
+    db::revisions::merge_tracks(&mut tx, lib.v, lib.o, &picks, None, None, "").await?;
+    tx.commit().await?;
+    let ids = merge_ids(&lib).await?;
+    let (first, second) = (ids[0], ids[1]);
+
+    let mut tx = db::begin(&lib.app, Some(lib.alice)).await?;
+    let err = db::revisions::undo_track_merge(&mut tx, first, "").await.unwrap_err();
+    assert!(err.to_string().contains("merged into it later"), "{err}");
+    drop(tx);
+    let mut tx = db::begin(&lib.app, Some(lib.alice)).await?;
+    db::revisions::undo_track_merge(&mut tx, second, "").await?;
+    db::revisions::undo_track_merge(&mut tx, first, "").await?;
+    tx.commit().await?;
+    let mut tx = db::begin(&lib.app, Some(lib.alice)).await?;
+    let err = db::revisions::undo_track_merge(&mut tx, first, "").await.unwrap_err();
+    assert!(err.to_string().contains("undone already"), "{err}");
+    Ok(())
+}
+
+#[sqlx::test]
+async fn undo_is_refused_after_later_changes(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
+    let lib = setup(connect).await?;
+    let dupe = make_duplicate(&lib).await?;
+    let mut tx = db::begin(&lib.app, Some(lib.alice)).await?;
+    db::revisions::merge_tracks(&mut tx, lib.v, dupe.d, &MergePicks::default(), None, None, "").await?;
+    tx.commit().await?;
+    let merge = merge_ids(&lib).await?[0];
+
+    // The file that wasn't picked (D's) is trashed and purged.
+    let mut tx = db::begin(&lib.app, Some(lib.alice)).await?;
+    db::trash::trash_files(&mut tx, &[dupe.d_file]).await?;
+    tx.commit().await?;
+    sqlx::query("UPDATE files SET trashed_at = now() - interval '8 days' WHERE id = $1")
+        .bind(dupe.d_file)
+        .execute(&lib.owner)
+        .await?;
+    let sha: String = sqlx::query_scalar("SELECT sha256 FROM files WHERE id = $1").bind(dupe.d_file).fetch_one(&lib.owner).await?;
+    let dir = tempfile::tempdir()?;
+    let store = crate::storage::BlobStore::open(dir.path())?;
+    let mut tx = db::begin(&lib.app, Some(lib.alice)).await?;
+    db::trash::purge(&mut tx, &store, &[(db::trash::Kind::File, dupe.d_file)], &sha[..6]).await?;
+    tx.commit().await?;
+
+    // And the kept track's title is edited.
+    let mut tx = db::begin(&lib.app, Some(lib.alice)).await?;
+    let v = db::tracks::get_track(&mut tx, lib.v, false).await?.unwrap();
+    let primary = v.variants.iter().find(|x| Some(x.id) == v.primary_variant_id).unwrap();
+    let mut data: crate::model::TrackMetadata = serde_json::from_value(primary.data.clone())?;
+    data.title = "Edited later".into();
+    db::revisions::write_internal(&mut tx, lib.v, primary.id, Some(primary.revision_id), &data, Source::Edit, "", false).await?;
+    tx.commit().await?;
+
+    let mut tx = db::begin(&lib.app, Some(lib.alice)).await?;
+    let blockers = db::revisions::merge_undo_blockers(&mut tx, merge).await?;
+    assert!(blockers.iter().any(|b| b.contains("metadata")), "{blockers:?}");
+    assert!(blockers.iter().any(|b| b.contains("purged")), "{blockers:?}");
+    let err = db::revisions::undo_track_merge(&mut tx, merge, "").await.unwrap_err();
+    assert!(matches!(err.downcast_ref(), Some(EditRejected::Invalid(_))));
+    drop(tx);
+    let mut tx = db::begin(&lib.app, Some(lib.alice)).await?;
+    assert_eq!(db::tracks::merged_into(&mut tx, dupe.d).await?, Some(lib.v), "nothing changed");
+    Ok(())
+}

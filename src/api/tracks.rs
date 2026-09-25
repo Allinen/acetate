@@ -50,10 +50,13 @@ pub async fn get(
     if let Some(target) = db::tracks::merged_into(&mut tx, id).await? {
         return Ok(Redirect::permanent(&format!("/api/tracks/{target}")).into_response());
     }
-    match db::tracks::get_track(&mut tx, id, with_history).await? {
-        Some(track) => Ok(Json(track).into_response()),
-        None => Err(AppError::NotFound),
+    let Some(mut track) = db::tracks::get_track(&mut tx, id, with_history).await? else {
+        return Err(AppError::NotFound);
+    };
+    if with_history {
+        track.merges = revisions::merges_into(&mut tx, id).await?;
     }
+    Ok(Json(track).into_response())
 }
 
 
@@ -287,4 +290,26 @@ pub async fn merge(
     .await?;
     tx.commit().await?;
     Ok(Json(merged))
+}
+
+/// `POST /api/track-merges/{id}/undo` (body optional: `{"reason": "..."}`): gives back both
+/// tracks as they were, if nothing depends on the merge anymore (400 listing what's in
+/// the way otherwise). Returns the id of the track that was merged away (back now).
+pub async fn undo_merge(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(merge_id): Path<Uuid>,
+    body: Option<Json<Restore>>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    if !user.has(Permission::ReplaceFile) {
+        return Err(AppError::Forbidden(
+            "undoing a merge changes which file a track plays, which needs the `replace_file` permission"
+                .to_string(),
+        ));
+    }
+    let reason = body.map(|Json(b)| b.reason).unwrap_or_default();
+    let mut tx = state.db(&user).await?;
+    let restored = revisions::undo_track_merge(&mut tx, merge_id, &reason).await?;
+    tx.commit().await?;
+    Ok(Json(serde_json::json!({ "restored_track_id": restored })))
 }

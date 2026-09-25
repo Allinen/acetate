@@ -132,6 +132,8 @@ table.diff td.new { color: var(--good); }
 .covers { display: flex; gap: 10px; flex-wrap: wrap; margin: 6px 0; }
 .covers figure { margin: 0; width: 130px; }
 .covers img { width: 130px; height: 130px; object-fit: cover; border-radius: 4px; border: 1px solid var(--line); display: block; }
+.album-cover { margin: 0 0 8px; width: 200px; }
+.album-cover img { width: 200px; height: 200px; object-fit: cover; border-radius: 4px; border: 1px solid var(--line); display: block; }
 .covers figcaption { font-size: 12px; margin: 2px 0; }
 form.stack textarea { width: 100%; font-family: inherit; }
 

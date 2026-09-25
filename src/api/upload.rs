@@ -102,6 +102,8 @@ pub async fn upload(
             origin,
             sources,
             restrict_to: restrict_to.clone(),
+            hints: Default::default(),
+            local_path: None,
         };
         // One bad file shouldn't fail the whole batch, so errors are reported per file.
         let (status, track_id, error) =

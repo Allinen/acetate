@@ -192,7 +192,7 @@ pub(super) async fn add_file(conn: &mut sqlx::PgConnection, track: Uuid, name: &
             id,
             origin_snapshot_id: snapshot.snapshot_id,
             sha256: &crate::auth::token_hash(name),
-            original_filename: name,
+            original_filename: Some(name),
             uploaded_filename: name,
             size_bytes: 1,
             container: None,

@@ -132,7 +132,13 @@ pub const SHAPES: &[Shape] = &[
         platform: "netease",
         kind: Kind::Track,
         id_field: Some("song_id"),
-        fields: &[required("song_id", Int)],
+        fields: &[
+            required("song_id", Int),
+            // The song's index on its NetEase album, exactly as NetEase has it (it can skip
+            // numbers or repeat them). The track's own position on the album is a clean
+            // 1, 2, 3... derived from it (see `netease::AlbumMap`); this keeps the original.
+            optional("song_index", Int),
+        ],
     },
     Shape {
         platform: "netease",

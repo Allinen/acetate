@@ -650,7 +650,7 @@ async function showTrack(id) {
         h("div", { class: "row" },
           can("stream") ? h("button", { onclick: () => play(f.id, t.title, t.artist_display, cover?.id) }, "▶ Play") : null,
           can("download_original")
-            ? h("a", { href: `/api/files/${f.id}/stream`, download: f.original_filename }, "Download original")
+            ? h("a", { href: `/api/files/${f.id}/stream`, download: f.original_filename ?? f.uploaded_filename }, "Download original")
             : null),
         can("share") ? shareForm("track", id) : null)),
 
@@ -679,6 +679,23 @@ async function showTrack(id) {
       : h("p", { class: "muted" }, "None."),
 
     can("edit_metadata") ? [h("h3", {}, "Edit"), await trackEditor(t, reload)] : null,
+    t.merges?.length ? [h("h3", {}, "Merged into this track"), t.merges.map((m) => {
+      const status = h("span", {});
+      return h("div", { class: "box" },
+        h("div", { class: "row" },
+          `"${m.from_title}"`, h("span", { class: "muted" }, ` merged ${fmtTime(m.merged_at)}${m.merged_by ? ` by ${m.merged_by}` : ""}`),
+          m.undone_at ? h("span", { class: "tag" }, `undone ${fmtTime(m.undone_at)}`)
+            : !m.undo_blockers.length && can("edit_metadata") && can("replace_file") ? h("button", {
+              type: "button", class: "small",
+              onclick: () => {
+                if (!confirm(`Undo this merge? "${m.from_title}" becomes its own track again, and this track goes back to how it was before.`)) return;
+                save(status, () => postJson(`/api/track-merges/${m.id}/undo`, {}), () => { loadTracks(true); reload(); });
+              },
+            }, "Undo") : null,
+          status),
+        !m.undone_at && m.undo_blockers.length
+          ? h("div", { class: "muted" }, "Can't be undone: ", m.undo_blockers.join("; "), ".") : null);
+    })] : null,
     can("edit_metadata") && can("replace_file") ? h("details", {},
       h("summary", {}, "Merge a duplicate into this track…"),
       h("div", { class: "row" }, picker("the duplicate…", findTracks,
@@ -697,7 +714,7 @@ async function showTrack(id) {
     h("h3", {}, "File"),
     h("div", { class: "box" },
       kv([
-        ["original filename", f.original_filename],
+        ["original filename", f.original_filename ?? "— (none in the tags)"],
         ["uploaded as", f.uploaded_filename],
         ["format", [f.container, f.codec].filter(Boolean).join(" / ")],
         ["quality", [
@@ -719,7 +736,7 @@ async function showTrack(id) {
       h("h3", {}, "Previous files"),
       t.file_history.map((c) => h("div", { class: "box" },
         h("div", { class: "row" },
-          h("strong", {}, c.old_original_filename),
+          h("strong", {}, c.old_original_filename ?? c.old_uploaded_filename),
           h("span", { class: "muted" }, [c.old_codec, c.old_bitrate && `${c.old_bitrate} kbps`, fmtSize(c.old_size_bytes)].filter(Boolean).join(" · ")),
           c.old_purged_at
             ? h("span", { class: "tag" }, `purged ${fmtTime(c.old_purged_at)}${c.old_purged_by ? ` by ${c.old_purged_by}` : ""}`)
@@ -731,7 +748,7 @@ async function showTrack(id) {
           can("admin") && !c.old_trashed_at ? h("button", {
             class: "small",
             onclick: async () => {
-              if (!confirm(`Move "${c.old_original_filename}" to the trash? After 7 days an admin can purge it (its audio is then deleted for good).`)) return;
+              if (!confirm(`Move "${c.old_original_filename ?? c.old_uploaded_filename}" to the trash? After 7 days an admin can purge it (its audio is then deleted for good).`)) return;
               try { await postJson("/api/files/trash", { file_ids: [c.old_file_id] }); reload(); } catch (err) { alert(err.message); }
             },
           }, "Trash") : null),
@@ -1073,7 +1090,12 @@ async function showAlbum(id) {
 
   setDetail(
     h("h2", {}, a.title),
-    h("div", {}, a.credits.map((c) => c.alias ?? c.artist_name).join(", ")),
+    // The album's cover: its own main one, else the first track's (`display_cover_id`).
+    a.display_cover_id ? h("figure", { class: "album-cover" },
+      h("img", { src: `/api/covers/${a.display_cover_id}`, alt: "" }),
+      a.covers.length ? null : h("figcaption", { class: "muted" },
+        "from the tracklist: ", a.tracks.find((t) => t.cover_id === a.display_cover_id)?.title ?? "a track")) : null,
+    h("div", {}, a.credits.map((c) => (c.alias ?? c.artist_name) + (c.role === "primary" ? "" : ` (${c.role})`)).join(", ")),
     h("div", { class: "row" }, h("span", { class: "tag" }, a.kind)),
     can("share") ? shareForm("album", id) : null,
     can("manage_access") ? await albumAccessBox(id, reload) : null,
@@ -1105,16 +1127,21 @@ async function showReview() {
   selectedId = null;
   markSelected();
   setDetail(h("p", { class: "muted" }, "Loading…"));
-  let flags;
+  let flags, problems;
   try {
-    flags = await api("/api/review");
+    [flags, problems] = await Promise.all([
+      can("edit_metadata") ? api("/api/review") : [],
+      can("upload") ? api("/api/ingest-problems") : [],
+    ]);
   } catch (err) {
     setDetail(errorBox(err));
     return;
   }
   setDetail(
     h("h2", {}, "Review"),
-    flags.length ? flags.map((f) => {
+    can("upload") ? [h("h3", {}, `Files that didn't import (${problems.length})`), problemList(problems)] : null,
+    can("edit_metadata") ? h("h3", {}, "Flags") : null,
+    !can("edit_metadata") ? null : flags.length ? flags.map((f) => {
       const resolution = h("input", { placeholder: "what you did (optional)" });
       const status = h("span", {});
       return h("div", { class: "box stack" },
@@ -1123,7 +1150,7 @@ async function showReview() {
           h("a", { href: `#/track/${f.track_id}` }, f.track_title),
           h("span", { class: "muted" }, f.track_artist, " · ", fmtTime(f.created_at))),
         f.kind === "possible_duplicate"
-          ? h("div", {}, "Similar titles by the same artist: ",
+          ? h("div", {}, f.related.reason ? `The ${f.related.reason}: ` : "Similar titles by the same artist: ",
               f.related_tracks.map((x) => [h("a", { href: `#/track/${x.id}` }, x.title), " ",
                 can("edit_metadata") && can("replace_file")
                   ? h("a", { href: `#/merge/${f.track_id}/${x.id}`, class: "tag" }, "compare & merge")
@@ -1141,6 +1168,34 @@ async function showReview() {
             onclick: () => save(status, () => postJson(`/api/review/${f.id}/resolve`, { resolution: resolution.value }), showReview),
           }, "Resolve"), status));
     }) : h("p", { class: "muted" }, "Nothing to review."));
+}
+
+// Files that were refused (missing tags...) or failed, with their audio kept. They resolve
+// by themselves when the same file imports fine later.
+function problemList(problems) {
+  if (!problems.length) return h("p", { class: "muted" }, "None.");
+  return problems.map((p) => {
+    const resolution = h("input", { placeholder: "what you did (optional)" });
+    const status = h("span", {});
+    const tags = p.embedded_tags?.tags ?? [];
+    return h("div", { class: "box stack" },
+      h("div", { class: "row" },
+        h("span", { class: "tag" }, p.kind),
+        h("strong", {}, p.uploaded_filename),
+        h("span", { class: "muted" }, fmtSize(p.size_bytes), " · ", fmtTime(p.last_attempt_at),
+          p.attempts > 1 ? ` · tried ${p.attempts} times` : "", p.created_by ? ` · ${p.created_by}` : "")),
+      p.path ? h("div", { class: "muted mono" }, p.path) : null,
+      h("div", {}, p.reason),
+      h("audio", { controls: true, preload: "none", src: `/api/ingest-problems/${p.id}/audio` }),
+      tags.length ? h("details", {}, h("summary", {}, "tags in the file"),
+        h("pre", { class: "mono" }, tags.map((t) => [`[${t.format}]`,
+          ...t.items.map((i) => `  ${i.key}${i.description ? ` (${i.description})` : ""}: ${typeof i.value === "string" ? i.value : JSON.stringify(i.value)}`)].join("\n")).join("\n"))) : null,
+      h("div", { class: "row" }, resolution,
+        h("button", {
+          type: "button", class: "small",
+          onclick: () => save(status, () => postJson(`/api/ingest-problems/${p.id}/resolve`, { resolution: resolution.value }), showReview),
+        }, "Resolve"), status));
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1301,7 +1356,7 @@ async function start() {
   accountButton.textContent = "Log out";
   document.getElementById("upload-toggle").hidden = !can("upload");
   document.getElementById("shares-link").hidden = !can("share");
-  document.getElementById("review-link").hidden = !can("edit_metadata");
+  document.getElementById("review-link").hidden = !can("edit_metadata") && !can("upload");
   document.getElementById("groups-link").hidden = !can("manage_users");
   document.getElementById("trash-link").hidden = !(can("edit_metadata") || can("edit_sources"));
   window.addEventListener("hashchange", route);
@@ -1537,7 +1592,7 @@ async function showMerge(leftId, rightId) {
   const fileView = (t) => {
     const f = t.file;
     return h("div", {},
-      h("div", {}, h("strong", {}, f.original_filename)),
+      h("div", {}, h("strong", {}, f.original_filename ?? f.uploaded_filename)),
       h("div", { class: "muted" }, [f.container, f.codec].filter(Boolean).join(" / "),
         f.bitrate ? ` · ${f.bitrate} kbps` : "", f.sample_rate ? ` · ${f.sample_rate} Hz` : "",
         f.bit_depth ? ` · ${f.bit_depth} bit` : "", f.channels ? ` · ${f.channels} ch` : ""),
@@ -1698,7 +1753,7 @@ async function replacedFilesBox() {
       const check = h("input", { type: "checkbox" });
       rows.push({ f, check });
       table.append(h("tr", {}, h("td", {}, check),
-        h("td", {}, f.original_filename, h("span", { class: "muted" }, " ", [f.codec, f.bitrate && `${f.bitrate} kbps`].filter(Boolean).join(" "))),
+        h("td", {}, f.original_filename ?? f.uploaded_filename, h("span", { class: "muted" }, " ", [f.codec, f.bitrate && `${f.bitrate} kbps`].filter(Boolean).join(" "))),
         h("td", {}, h("a", { href: `#/track/${f.track_id}` }, f.track_title)),
         h("td", {}, fmtSize(f.size_bytes)),
         h("td", {}, fmtTime(f.replaced_at))));

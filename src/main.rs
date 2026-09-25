@@ -3,6 +3,7 @@ mod auth;
 mod config;
 mod db;
 mod ingest;
+mod ingest_command;
 mod model;
 mod storage;
 mod user_commands;
@@ -16,7 +17,7 @@ use tracing_subscriber::EnvFilter;
 use crate::config::Config;
 use uuid::Uuid;
 
-use crate::ingest::{IngestOptions, IngestOutcome, Rejected, ReplaceOptions};
+use crate::ingest::{IngestOptions, IngestOutcome, ReplaceOptions};
 use crate::model::sources::{self, Kind, NewSource, ValidSource};
 use crate::storage::BlobStore;
 
@@ -36,9 +37,10 @@ enum Command {
         /// Files to import.
         #[arg(required = true)]
         paths: Vec<PathBuf>,
-        /// Where the files came from (required): one source snapshot as JSON (same format as
-        /// the upload API's `origin` field), e.g.
-        /// '{"platform":"custom","data":{"label":"discord"}}'. Applies to every imported file.
+        /// Where the files came from (required). Just a label (`--origin vk`) for a custom
+        /// source, or a source snapshot as JSON (same format as the upload API's `origin`
+        /// field), e.g. '{"platform":"soundcloud","data":{"song_id":555}}'. Applies to every
+        /// imported file.
         #[arg(long)]
         origin: String,
         /// Initial status for the new tracks.
@@ -53,6 +55,40 @@ enum Command {
         #[arg(long)]
         restrict_to: Option<String>,
     },
+    /// Import a whole folder, reading platform ids from the folder layout to match artists
+    /// and albums (see the README, "Automated ingestion"). The metadata comes from the tags.
+    Ingest {
+        /// The folder to import (all audio files below it).
+        dir: PathBuf,
+        /// How the folder is laid out: `netease` (`Artist - <id>/…/Album - <id>/… - <song id>.flac`),
+        /// `ytdlp` (`Title [<id>].ext`, needs `--platform`) or `tags` (nothing from paths).
+        #[arg(long)]
+        layout: LayoutArg,
+        /// For `--layout ytdlp`: where the files are from.
+        #[arg(long)]
+        platform: Option<PlatformArg>,
+        /// Where the files came from when the path doesn't say (required for `tags`):
+        /// a label (`--origin vk`) or a source snapshot as JSON, as for `import --origin`.
+        #[arg(long)]
+        origin: Option<String>,
+        /// A folder of album covers named `<title> - <album id>.jpg` (for `netease`).
+        #[arg(long)]
+        covers: Option<PathBuf>,
+        /// A JSON map of NetEase song ids to `{"album_id", "song_index"}`: the album and
+        /// position of songs, also ones outside album folders (album_id -1: no album).
+        /// Required with `--layout netease`.
+        #[arg(long)]
+        netease_albums: Option<PathBuf>,
+        /// Initial status for the new tracks.
+        #[arg(long, default_value = "released")]
+        status: String,
+        /// Create the tracks restricted to these groups (comma-separated names).
+        #[arg(long)]
+        restrict_to: Option<String>,
+        /// Work out and print what would happen, without changing anything.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Replace a track's file, e.g. with a higher quality version. The old file is kept.
     ReplaceFile {
         track_id: Uuid,
@@ -60,7 +96,7 @@ enum Command {
         /// Why the file is being replaced, e.g. "flac upgrade".
         #[arg(long, default_value = "")]
         reason: String,
-        /// Where the new file came from (required): one source snapshot as JSON
+        /// Where the new file came from (required): a label or a source snapshot as JSON
         /// (see `import --origin`).
         #[arg(long)]
         origin: String,
@@ -70,6 +106,19 @@ enum Command {
         #[command(subcommand)]
         command: user_commands::UserCommand,
     },
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum LayoutArg {
+    Netease,
+    Ytdlp,
+    Tags,
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum PlatformArg {
+    Soundcloud,
+    Youtube,
 }
 
 #[tokio::main]
@@ -137,8 +186,61 @@ async fn main() -> anyhow::Result<()> {
                 status,
                 sources,
                 restrict_to,
+                hints: Default::default(),
+                local_path: None, // set per file
             };
             import(pool, store, paths, options).await
+        }
+        Command::Ingest {
+            dir,
+            layout,
+            platform,
+            origin,
+            covers,
+            netease_albums,
+            status,
+            restrict_to,
+            dry_run,
+        } => {
+            use crate::ingest::layouts::{ytdlp, Layout};
+            let layout = match (layout, platform) {
+                (LayoutArg::Netease, None) => Layout::Netease,
+                (LayoutArg::Tags, None) => Layout::Tags,
+                (LayoutArg::Ytdlp, Some(PlatformArg::Soundcloud)) => Layout::Ytdlp(ytdlp::Platform::Soundcloud),
+                (LayoutArg::Ytdlp, Some(PlatformArg::Youtube)) => Layout::Ytdlp(ytdlp::Platform::Youtube),
+                (LayoutArg::Ytdlp, None) => anyhow::bail!("--layout ytdlp needs --platform"),
+                (_, Some(_)) => anyhow::bail!("--platform is only for --layout ytdlp"),
+            };
+            let origin = match origin {
+                Some(json) => Some(parse_source(&json)?),
+                None if layout == Layout::Tags => {
+                    anyhow::bail!("--layout tags needs --origin: where did the files come from?")
+                }
+                None => None,
+            };
+            let restrict_to = match restrict_to {
+                Some(names) => Some(group_ids(&pool, &names).await?),
+                None => None,
+            };
+            // Every NetEase song is in the map, and without it songs outside album folders
+            // would get no NetEase album: so the netease layout never runs without it.
+            let netease_albums = match (netease_albums, layout) {
+                (Some(path), _) => Some(crate::ingest::layouts::netease::AlbumMap::load(&path)?),
+                (None, Layout::Netease) => anyhow::bail!(
+                    "--layout netease needs --netease-albums <map.json> (the song id -> album map)"
+                ),
+                (None, _) => None,
+            };
+            let options = ingest_command::Options {
+                layout,
+                origin,
+                covers,
+                netease_albums,
+                status,
+                restrict_to,
+                dry_run,
+            };
+            ingest_command::run(&pool, &store, &dir, options).await
         }
         Command::ReplaceFile {
             track_id,
@@ -201,6 +303,7 @@ async fn import(
     for path in paths {
         let options = IngestOptions {
             uploaded_filename: file_name(&path),
+            local_path: Some(path.display().to_string()),
             ..options.clone()
         };
 
@@ -219,7 +322,7 @@ async fn import(
                 let id = id.map(|id| id.to_string()).unwrap_or_default();
                 println!("duplicate  {id}  {}", path.display());
             }
-            Err(err) if err.downcast_ref::<Rejected>().is_some() => {
+            Err(err) if ingest::is_refusal(&err) => {
                 skipped += 1;
                 eprintln!("skipped    {}: {err}", path.display());
             }
@@ -231,6 +334,9 @@ async fn import(
     }
 
     println!("\n{created} created, {duplicates} duplicates, {skipped} skipped, {failed} failed");
+    if skipped + failed > 0 {
+        println!("Files that didn't import are listed on the Review page (with their audio).");
+    }
     Ok(())
 }
 
@@ -248,8 +354,23 @@ async fn group_ids(pool: &sqlx::PgPool, names: &str) -> anyhow::Result<Vec<Uuid>
     }
 }
 
-fn parse_source(json: &str) -> anyhow::Result<ValidSource> {
-    let source: NewSource = serde_json::from_str(json).context("invalid --origin JSON")?;
+/// An `--origin`: either a source snapshot as JSON (`{"platform": ..., "data": {...}}`),
+/// or just a word or two for where the file came from (`vk`, `a friend's drive`), which is
+/// short for a custom source with that label: `{"platform":"custom","data":{"label":"vk"}}`.
+fn parse_source(text: &str) -> anyhow::Result<ValidSource> {
+    let source: NewSource = if text.trim_start().starts_with('{') {
+        serde_json::from_str(text).context("invalid --origin JSON")?
+    } else {
+        if text.trim().is_empty() {
+            anyhow::bail!("--origin is empty: say where the files came from");
+        }
+        NewSource {
+            platform: "custom".to_string(),
+            source_id: None,
+            captured_at: None,
+            data: serde_json::json!({ "label": text.trim() }),
+        }
+    };
     Ok(sources::validate(Kind::Track, source)?)
 }
 

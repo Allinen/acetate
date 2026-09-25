@@ -118,6 +118,12 @@ impl BlobStore {
     }
 }
 
+/// The sha256 of some bytes, as stored blobs are named. For a dry run, which works out
+/// what would be stored without storing it.
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    hex::encode(Sha256::digest(bytes))
+}
+
 /// A blob being written. Feed it chunks with `write`, then call `finish`.
 pub struct BlobWriter {
     file: tokio::fs::File,

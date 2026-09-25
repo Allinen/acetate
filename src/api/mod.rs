@@ -13,12 +13,14 @@ mod catalog;
 mod groups;
 mod media;
 mod rate_limit;
+mod problems;
 mod review;
 mod shares;
 mod sources;
 mod tracks;
 mod trash;
 mod upload;
+mod ingest;
 mod users;
 
 use axum::extract::DefaultBodyLimit;
@@ -105,6 +107,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/tracks/{id}/facts", require(&[EditMetadata], put(tracks::edit_facts)))
         // Merging a duplicate into a track (also needs replace_file, checked in the handler).
         .route("/api/tracks/{id}/merge", require(&[EditMetadata], post(tracks::merge)))
+        .route("/api/track-merges/{id}/undo", require(&[EditMetadata], post(tracks::undo_merge)))
         .route("/api/tracks/{id}/variants", require(&[EditMetadata], post(tracks::create_variant)))
         .route(
             "/api/tracks/{id}/variants/{variant_id}",
@@ -125,6 +128,10 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/review", require(&[EditMetadata], get(review::list)))
         .route("/api/review/{id}/resolve", require(&[EditMetadata], post(review::resolve)))
+        // Files that didn't import: whoever uploaded them (admins: all).
+        .route("/api/ingest-problems", require(&[Upload], get(problems::list)))
+        .route("/api/ingest-problems/{id}/resolve", require(&[Upload], post(problems::resolve)))
+        .route("/api/ingest-problems/{id}/audio", require(&[Upload], get(problems::audio)))
         .route("/api/tracks/{id}/sources", require(&[EditSources], post(sources::add_track_source)))
         .route("/api/sources/{id}", require(&[EditSources], delete(sources::trash)))
         // Lyrics (entries are edited, never deleted).
@@ -196,6 +203,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/upload",
             require(&[Upload], post(upload::upload).layer(DefaultBodyLimit::max(UPLOAD_LIMIT))),
+        )
+        .route(
+            "/api/ingest",
+            require(&[Upload], post(ingest::ingest).layer(DefaultBodyLimit::max(UPLOAD_LIMIT))),
         )
         .route(
             "/api/tracks/{id}/file",

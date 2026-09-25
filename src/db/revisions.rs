@@ -897,6 +897,10 @@ pub async fn merge_tracks(
     // Everything below may touch rows the user can't see (see above).
     let system = super::as_system(conn).await?;
 
+    // What happens is written down as it goes, so it can be undone (`undo_track_merge`).
+    let kept_external_before = latest_external(conn, into).await?.map(|(id, _)| id);
+    let dupe_external_before = latest_external(conn, from).await?.map(|(id, _)| id);
+
     // 1. Metadata, field by field.
     let metadata = TrackMetadata {
         title: picks.title.pick(left.title, right.title),
@@ -905,7 +909,7 @@ pub async fn merge_tracks(
         comment: picks.comment.pick(left.comment, right.comment),
         credits: picks.credits.pick(left.credits, right.credits),
     };
-    write_internal(conn, into, kept_variant, None, &metadata, Source::Edit, &reason, false).await?;
+    let kept_internal = write_internal(conn, into, kept_variant, None, &metadata, Source::Edit, &reason, false).await?;
 
     // 2. Albums and relations, combined. The duplicate lets go of its own first, which
     //    also drops a relation between the two (with revisions on the other sides).
@@ -915,7 +919,7 @@ pub async fn merge_tracks(
         albums: Vec::new(),
         relations: Vec::new(),
     };
-    write_external(conn, from, None, &emptied, Source::Edit, &reason).await?;
+    let dupe_external = write_external(conn, from, None, &emptied, Source::Edit, &reason).await?;
     let mut facts = current_facts(conn, into).await?;
     facts.status = picks.status.pick(facts.status, dupe_facts.status);
     for album in dupe_facts.albums {
@@ -929,29 +933,32 @@ pub async fn merge_tracks(
             facts.relations.push(relation);
         }
     }
-    write_external(conn, into, None, &facts, Source::Edit, &reason).await?;
+    let kept_external = write_external(conn, into, None, &facts, Source::Edit, &reason).await?;
 
     // 3. Variants: the duplicate's become the kept track's, with their revisions (the
     //    foreign key moves those along). The duplicate keeps no current metadata.
-    sqlx::query!(
-        "UPDATE tracks SET primary_variant_id = NULL WHERE id = $1",
+    let variants = sqlx::query_as!(
+        MovedVariant,
+        "SELECT id, label FROM track_variants WHERE track_id = $1 ORDER BY id",
         from
     )
-    .execute(&mut *conn)
+    .fetch_all(&mut *conn)
     .await?;
+    sqlx::query!("UPDATE tracks SET primary_variant_id = NULL WHERE id = $1", from)
+        .execute(&mut *conn)
+        .await?;
     sqlx::query!("DELETE FROM track_credits WHERE track_id = $1", from)
         .execute(&mut *conn)
         .await?;
     let from_label = format!(" (from \"{dupe_title}\")");
-    let variants_moved = sqlx::query!(
+    sqlx::query!(
         "UPDATE track_variants SET track_id = $1, label = label || $3 WHERE track_id = $2",
         into,
         from,
         from_label
     )
     .execute(&mut *conn)
-    .await?
-    .rows_affected() as usize;
+    .await?;
 
     // 4. Files. The duplicate gives up its file (file_id is unique), becoming a redirect.
     sqlx::query!(
@@ -961,12 +968,12 @@ pub async fn merge_tracks(
     )
     .execute(&mut *conn)
     .await?;
-    sqlx::query!(
-        "UPDATE track_file_history SET track_id = $2 WHERE track_id = $1",
+    let history_moved = sqlx::query_scalar!(
+        "UPDATE track_file_history SET track_id = $2 WHERE track_id = $1 RETURNING id",
         from,
         into
     )
-    .execute(&mut *conn)
+    .fetch_all(&mut *conn)
     .await?;
     let (current, previous) = picks.file.pick((kept_file, dupe_file), (dupe_file, kept_file));
     if current != kept_file {
@@ -974,28 +981,33 @@ pub async fn merge_tracks(
             .execute(&mut *conn)
             .await?;
     }
-    sqlx::query!(
+    let history_added = sqlx::query_scalar!(
         r#"
         INSERT INTO track_file_history (track_id, old_file_id, new_file_id, reason)
         VALUES ($1, $2, $3, $4)
+        RETURNING id
         "#,
         into,
         previous,
         current,
         reason
     )
-    .execute(&mut *conn)
+    .fetch_one(&mut *conn)
     .await?;
 
     // 5. Covers: all of them move over; the side not picked goes to the trash.
-    let kept_covers = cover_ids(conn, into).await?;
-    let dupe_covers = cover_ids(conn, from).await?;
-    sqlx::query!("UPDATE covers SET track_id = $2 WHERE track_id = $1", from, into)
-        .execute(&mut *conn)
-        .await?;
-    let (keep, drop) = match picks.covers {
-        Side::Left => (kept_covers, dupe_covers),
-        Side::Right => (dupe_covers, kept_covers),
+    let kept_covers = cover_positions(conn, into).await?;
+    let dupe_covers = cover_positions(conn, from).await?;
+    let dupe_all_covers = sqlx::query_scalar!(
+        "UPDATE covers SET track_id = $2 WHERE track_id = $1 RETURNING id",
+        from,
+        into
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    let (keep, drop): (Vec<Uuid>, Vec<Uuid>) = match picks.covers {
+        Side::Left => (kept_covers.iter().map(|c| c.id).collect(), dupe_covers.iter().map(|c| c.id).collect()),
+        Side::Right => (dupe_covers.iter().map(|c| c.id).collect(), kept_covers.iter().map(|c| c.id).collect()),
     };
     sqlx::query!(
         "UPDATE covers SET trashed_at = now(), trashed_by = current_app_user() WHERE id = ANY($1)",
@@ -1003,65 +1015,92 @@ pub async fn merge_tracks(
     )
     .execute(&mut *conn)
     .await?;
-    sqlx::query!(
-        r#"
-        UPDATE covers c SET position = (o.n - 1)::smallint
-        FROM unnest($1::uuid[]) WITH ORDINALITY AS o(id, n)
-        WHERE c.id = o.id
-        "#,
-        &keep
-    )
-    .execute(&mut *conn)
-    .await?;
+    set_cover_positions(conn, &keep).await?;
 
     // 6. Lyrics move with their history, except ones the kept track has word for word.
-    let lyrics_moved = sqlx::query!(
+    let lyrics = sqlx::query_scalar!(
         r#"
         UPDATE lyrics l SET track_id = $2
         WHERE l.track_id = $1
           AND NOT EXISTS (SELECT 1 FROM lyrics k WHERE k.track_id = $2 AND k.body = l.body)
+        RETURNING l.id
         "#,
         from,
         into
     )
-    .execute(&mut *conn)
-    .await?
-    .rows_affected() as usize;
+    .fetch_all(&mut *conn)
+    .await?;
 
     // 7. Sources (same platform id: joined).
-    super::sources::move_all(conn, SourceOwner::Track(from), SourceOwner::Track(into)).await?;
+    let sources = super::sources::move_all(conn, SourceOwner::Track(from), SourceOwner::Track(into)).await?;
 
     // 8. Links to the duplicate lead to the kept track.
-    sqlx::query!("UPDATE shares SET track_id = $2 WHERE track_id = $1", from, into)
-        .execute(&mut *conn)
-        .await?;
-    sqlx::query!("UPDATE tracks SET merged_into = $2 WHERE merged_into = $1", from, into)
-        .execute(&mut *conn)
-        .await?;
+    let shares = sqlx::query_scalar!(
+        "UPDATE shares SET track_id = $2 WHERE track_id = $1 RETURNING id",
+        from,
+        into
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    let redirected = sqlx::query_scalar!(
+        "UPDATE tracks SET merged_into = $2 WHERE merged_into = $1 RETURNING id",
+        from,
+        into
+    )
+    .fetch_all(&mut *conn)
+    .await?;
     let resolution = format!("merged into {into}");
-    sqlx::query!(
+    let flags = sqlx::query_scalar!(
         r#"
         UPDATE review_flags
         SET resolved_at = now(), resolved_by = current_app_user(), resolution = $3
         WHERE resolved_at IS NULL
           AND (track_id = $1
                OR (track_id = $2 AND kind = 'possible_duplicate' AND related -> 'tracks' ? $1::text))
+        RETURNING id
         "#,
         from,
         into,
         resolution
     )
-    .execute(&mut *conn)
+    .fetch_all(&mut *conn)
     .await?;
+
+    let record = MergeRecord {
+        kept_variant,
+        kept_internal_before: kept_rev,
+        kept_internal_after: kept_internal.revision_id,
+        kept_external_before,
+        kept_external_after: kept_external.revision_id,
+        dupe_external_before,
+        dupe_external_after: dupe_external.revision_id,
+        dupe_primary_variant: dupe_variant,
+        variants,
+        kept_file,
+        dupe_file,
+        file_pick: picks.file,
+        history_moved,
+        history_added,
+        kept_covers,
+        dupe_covers,
+        dupe_all_covers,
+        covers_trashed: drop.clone(),
+        lyrics: lyrics.clone(),
+        sources,
+        shares,
+        redirected,
+        flags,
+    };
     sqlx::query!(
         r#"
-        INSERT INTO track_merges (into_track_id, from_track_id, picks, reason)
-        VALUES ($1, $2, $3, $4)
+        INSERT INTO track_merges (into_track_id, from_track_id, picks, reason, moved)
+        VALUES ($1, $2, $3, $4, $5)
         "#,
         into,
         from,
         serde_json::to_value(picks)?,
-        reason
+        reason,
+        serde_json::to_value(&record)?
     )
     .execute(&mut *conn)
     .await?;
@@ -1069,21 +1108,429 @@ pub async fn merge_tracks(
     system.end(conn).await?;
     Ok(MergedTracks {
         track_id: into,
-        variants_moved,
-        lyrics_moved,
+        variants_moved: record.variants.len(),
+        lyrics_moved: lyrics.len(),
         covers_trashed: drop.len(),
     })
 }
 
-/// A track's covers that aren't in the trash, in order.
-async fn cover_ids(conn: &mut PgConnection, track_id: Uuid) -> sqlx::Result<Vec<Uuid>> {
-    sqlx::query_scalar!(
-        "SELECT id FROM covers WHERE track_id = $1 AND trashed_at IS NULL ORDER BY position, id",
+/// Everything a merge did, by id: stored with the merge (`track_merges.moved`) so it can
+/// be undone exactly.
+#[derive(Debug, Serialize, Deserialize)]
+struct MergeRecord {
+    kept_variant: Uuid,
+    kept_internal_before: Uuid,
+    kept_internal_after: Uuid,
+    kept_external_before: Option<Uuid>,
+    kept_external_after: Uuid,
+    dupe_external_before: Option<Uuid>,
+    dupe_external_after: Uuid,
+    dupe_primary_variant: Uuid,
+    /// The duplicate's variants, with their labels from before.
+    variants: Vec<MovedVariant>,
+    kept_file: Uuid,
+    dupe_file: Uuid,
+    file_pick: Side,
+    /// The duplicate's file history rows (now the kept track's).
+    history_moved: Vec<Uuid>,
+    /// The row saying the file not picked became a previous file.
+    history_added: Uuid,
+    /// Both sides' covers (not in the trash) and their order before.
+    kept_covers: Vec<CoverPosition>,
+    dupe_covers: Vec<CoverPosition>,
+    /// All of the duplicate's covers that moved, trashed ones included.
+    dupe_all_covers: Vec<Uuid>,
+    covers_trashed: Vec<Uuid>,
+    lyrics: Vec<Uuid>,
+    sources: super::sources::MovedSources,
+    shares: Vec<Uuid>,
+    redirected: Vec<Uuid>,
+    flags: Vec<Uuid>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct MovedVariant {
+    id: Uuid,
+    label: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct CoverPosition {
+    id: Uuid,
+    position: i16,
+}
+
+/// A merge into a track, for its page.
+#[derive(Debug, Serialize)]
+pub struct MergeInfo {
+    pub id: Uuid,
+    pub from_track_id: Uuid,
+    pub from_title: String,
+    pub merged_at: chrono::DateTime<chrono::Utc>,
+    pub merged_by: Option<String>,
+    pub undone_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Why it can't be undone (empty: it can).
+    pub undo_blockers: Vec<String>,
+}
+
+/// The merges into a track, newest first.
+pub async fn merges_into(conn: &mut PgConnection, track_id: Uuid) -> anyhow::Result<Vec<MergeInfo>> {
+    let rows = sqlx::query!(
+        r#"
+        SELECT m.id, m.from_track_id, t.title AS from_title, m.merged_at, u.username AS "merged_by?",
+               m.undone_at
+        FROM track_merges m
+        JOIN tracks t ON t.id = m.from_track_id
+        LEFT JOIN users u ON u.id = m.merged_by
+        WHERE m.into_track_id = $1
+        ORDER BY m.id DESC
+        "#,
+        track_id
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    let mut merges = Vec::new();
+    for row in rows {
+        let undo_blockers = if row.undone_at.is_some() {
+            vec!["it was undone already".to_string()]
+        } else {
+            merge_undo_blockers(conn, row.id).await?
+        };
+        merges.push(MergeInfo {
+            id: row.id,
+            from_track_id: row.from_track_id,
+            from_title: row.from_title,
+            merged_at: row.merged_at,
+            merged_by: row.merged_by,
+            undone_at: row.undone_at,
+            undo_blockers,
+        });
+    }
+    Ok(merges)
+}
+
+/// Why a merge can't be undone, in plain words (empty: it can). A merge can be undone
+/// only while nothing depends on it: nothing happened to the kept track since, and
+/// nothing it moved or trashed has been purged.
+pub async fn merge_undo_blockers(conn: &mut PgConnection, merge_id: Uuid) -> anyhow::Result<Vec<String>> {
+    let Some(merge) = sqlx::query!(
+        "SELECT into_track_id, from_track_id, moved, undone_at FROM track_merges WHERE id = $1",
+        merge_id
+    )
+    .fetch_optional(&mut *conn)
+    .await?
+    else {
+        return Err(EditRejected::NotFound("merge").into());
+    };
+    if merge.undone_at.is_some() {
+        return Ok(vec!["it was undone already".to_string()]);
+    }
+    let Some(moved) = merge.moved else {
+        return Ok(vec!["it was made before merges could be undone".to_string()]);
+    };
+    let record: MergeRecord = serde_json::from_value(moved)?;
+    let (kept, dupe) = (merge.into_track_id, merge.from_track_id);
+
+    // Checked as the system: whether something changed, not what, and nothing is returned
+    // but these sentences.
+    let system = super::as_system(conn).await?;
+    let mut blockers = Vec::new();
+    let later_merge = sqlx::query_scalar!(
+        r#"SELECT EXISTS (SELECT 1 FROM track_merges WHERE into_track_id = $1 AND id > $2 AND undone_at IS NULL) AS "e!""#,
+        kept,
+        merge_id
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    if later_merge {
+        blockers.push("another track was merged into it later (undo that first)".to_string());
+    }
+    let tracks = sqlx::query!(
+        "SELECT id, file_id, primary_variant_id, merged_into FROM tracks WHERE id = ANY($1)",
+        &[kept, dupe][..]
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    let kept_row = tracks.iter().find(|t| t.id == kept);
+    let dupe_row = tracks.iter().find(|t| t.id == dupe);
+    if dupe_row.and_then(|t| t.merged_into) != Some(kept) {
+        blockers.push("the merged track doesn't redirect here anymore".to_string());
+    }
+    // "Changed" means the data differs from what the merge left, not just that there's a
+    // newer revision: undoing a later merge writes revisions with the same data again.
+    let latest_internal_data = sqlx::query_scalar!(
+        "SELECT data FROM track_revisions WHERE variant_id = $1 ORDER BY id DESC LIMIT 1",
+        record.kept_variant
+    )
+    .fetch_optional(&mut *conn)
+    .await?;
+    if latest_internal_data != Some(revision_data(conn, record.kept_internal_after).await?)
+        || kept_row.and_then(|t| t.primary_variant_id) != Some(record.kept_variant)
+    {
+        blockers.push("its metadata (or primary variant) was changed after the merge".to_string());
+    }
+    if latest_external(conn, kept).await?.map(|(_, data)| data)
+        != Some(revision_data(conn, record.kept_external_after).await?)
+    {
+        blockers.push("its status, albums or relations changed after the merge".to_string());
+    }
+    if latest_external(conn, dupe).await?.map(|(_, data)| data)
+        != Some(revision_data(conn, record.dupe_external_after).await?)
+    {
+        blockers.push("the merged track's relations changed after the merge".to_string());
+    }
+    let expected_file = record.file_pick.pick(record.kept_file, record.dupe_file);
+    let later_file = sqlx::query_scalar!(
+        r#"SELECT EXISTS (SELECT 1 FROM track_file_history WHERE track_id = $1 AND id > $2) AS "e!""#,
+        kept,
+        record.history_added
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    if kept_row.and_then(|t| t.file_id) != Some(expected_file) || later_file {
+        blockers.push("its file was replaced after the merge".to_string());
+    }
+    let not_picked = record.file_pick.pick(record.dupe_file, record.kept_file);
+    let purged = sqlx::query_scalar!("SELECT purged_at IS NOT NULL AS \"p!\" FROM files WHERE id = $1", not_picked)
+        .fetch_one(&mut *conn)
+        .await?;
+    if purged {
+        blockers.push("the file that wasn't picked has been purged".to_string());
+    }
+    let variant_ids: Vec<Uuid> = record.variants.iter().map(|v| v.id).collect();
+    let variants_here = sqlx::query_scalar!(
+        r#"SELECT count(*) AS "n!" FROM track_variants WHERE id = ANY($1) AND track_id = $2"#,
+        &variant_ids,
+        kept
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    if variants_here as usize != variant_ids.len() {
+        blockers.push("the variants that came with the merge changed".to_string());
+    }
+    let covers_left = sqlx::query_scalar!(
+        r#"SELECT count(*) AS "n!" FROM covers WHERE id = ANY($1)"#,
+        &record.covers_trashed
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    if covers_left as usize != record.covers_trashed.len() {
+        blockers.push("covers it put in the trash have been purged".to_string());
+    }
+    let mut source_ids = record.sources.moved.clone();
+    source_ids.extend(record.sources.joined.iter().map(|j| j.into_source));
+    let sources_left = sqlx::query_scalar!(
+        r#"SELECT count(DISTINCT id) AS "n!" FROM sources WHERE id = ANY($1)"#,
+        &source_ids
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    let distinct: std::collections::BTreeSet<Uuid> = source_ids.iter().copied().collect();
+    if sources_left as usize != distinct.len() {
+        blockers.push("sources that came with the merge have been purged".to_string());
+    }
+    system.end(conn).await?;
+    Ok(blockers)
+}
+
+/// Undoes a merge: gives back both tracks as they were before it (see `merge_tracks`).
+/// Refused, listing why, unless nothing depends on it (`merge_undo_blockers`). Both tracks
+/// must be visible to the user.
+pub async fn undo_track_merge(conn: &mut PgConnection, merge_id: Uuid, reason: &str) -> anyhow::Result<Uuid> {
+    let Some(merge) = sqlx::query!(
+        "SELECT into_track_id, from_track_id, moved FROM track_merges WHERE id = $1",
+        merge_id
+    )
+    .fetch_optional(&mut *conn)
+    .await?
+    else {
+        return Err(EditRejected::NotFound("merge").into());
+    };
+    let (kept, dupe) = (merge.into_track_id, merge.from_track_id);
+    // Lock both (through row-level security: both must be visible).
+    let locked = sqlx::query_scalar!(
+        "SELECT id FROM tracks WHERE id = ANY($1) ORDER BY id FOR UPDATE",
+        &[kept, dupe][..]
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    if locked.len() != 2 {
+        return Err(EditRejected::NotFound("track").into());
+    }
+    let blockers = merge_undo_blockers(conn, merge_id).await?;
+    if !blockers.is_empty() {
+        return Err(invalid(format!("this merge can't be undone: {}", blockers.join("; "))));
+    }
+    let record: MergeRecord = serde_json::from_value(merge.moved.unwrap_or_default())?;
+    let reason = if reason.trim().is_empty() {
+        format!("undid merge {merge_id}")
+    } else {
+        reason.to_string()
+    };
+
+    let system = super::as_system(conn).await?;
+
+    // 1. The kept track's metadata as it was.
+    let before = sqlx::query_scalar!("SELECT data FROM track_revisions WHERE id = $1", record.kept_internal_before)
+        .fetch_one(&mut *conn)
+        .await?;
+    let before: TrackMetadata = serde_json::from_value(before)?;
+    write_internal(conn, kept, record.kept_variant, None, &before, Source::Restore, &reason, false).await?;
+
+    // 2. Variants back (with their labels), so the duplicate has metadata again.
+    for variant in &record.variants {
+        sqlx::query!(
+            "UPDATE track_variants SET track_id = $2, label = $3 WHERE id = $1",
+            variant.id,
+            dupe,
+            variant.label
+        )
+        .execute(&mut *conn)
+        .await?;
+    }
+
+    // 3. Files: each track its own again; the duplicate stops redirecting.
+    sqlx::query!("DELETE FROM track_file_history WHERE id = $1", record.history_added)
+        .execute(&mut *conn)
+        .await?;
+    sqlx::query!(
+        "UPDATE track_file_history SET track_id = $2 WHERE id = ANY($1)",
+        &record.history_moved,
+        dupe
+    )
+    .execute(&mut *conn)
+    .await?;
+    sqlx::query!("UPDATE tracks SET file_id = $2 WHERE id = $1", kept, record.kept_file)
+        .execute(&mut *conn)
+        .await?;
+    sqlx::query!(
+        r#"
+        UPDATE tracks SET file_id = $2, merged_into = NULL, primary_variant_id = $3, updated_at = now()
+        WHERE id = $1
+        "#,
+        dupe,
+        record.dupe_file,
+        record.dupe_primary_variant
+    )
+    .execute(&mut *conn)
+    .await?;
+    // The file that wasn't picked may have been put in the trash since.
+    sqlx::query!(
+        "UPDATE files SET trashed_at = NULL, trashed_by = NULL WHERE id = ANY($1) AND purged_at IS NULL",
+        &[record.kept_file, record.dupe_file][..]
+    )
+    .execute(&mut *conn)
+    .await?;
+    if let Some((_, data)) = latest_internal(conn, dupe, record.dupe_primary_variant).await? {
+        apply_internal(conn, dupe, &data).await?;
+    }
+
+    // 4. Albums and relations as they were (the relation between the two comes back too).
+    for (track, revision) in [(kept, record.kept_external_before), (dupe, record.dupe_external_before)] {
+        let facts: TrackFacts = match revision {
+            Some(id) => {
+                let data = sqlx::query_scalar!("SELECT data FROM track_revisions WHERE id = $1", id)
+                    .fetch_one(&mut *conn)
+                    .await?;
+                serde_json::from_value(data)?
+            }
+            None => TrackFacts::default(),
+        };
+        write_external(conn, track, None, &facts, Source::Restore, &reason).await?;
+    }
+
+    // 5. Covers back, the ones the merge trashed out of the trash, the old order.
+    sqlx::query!(
+        "UPDATE covers SET track_id = $2 WHERE id = ANY($1)",
+        &record.dupe_all_covers,
+        dupe
+    )
+    .execute(&mut *conn)
+    .await?;
+    sqlx::query!(
+        "UPDATE covers SET trashed_at = NULL, trashed_by = NULL WHERE id = ANY($1)",
+        &record.covers_trashed
+    )
+    .execute(&mut *conn)
+    .await?;
+    for side in [&record.kept_covers, &record.dupe_covers] {
+        let ids: Vec<Uuid> = side.iter().map(|c| c.id).collect();
+        let positions: Vec<i16> = side.iter().map(|c| c.position).collect();
+        sqlx::query!(
+            r#"
+            UPDATE covers c SET position = p.position
+            FROM unnest($1::uuid[], $2::smallint[]) AS p(id, position)
+            WHERE c.id = p.id
+            "#,
+            &ids,
+            &positions
+        )
+        .execute(&mut *conn)
+        .await?;
+    }
+
+    // 6. Lyrics and sources.
+    sqlx::query!("UPDATE lyrics SET track_id = $2 WHERE id = ANY($1)", &record.lyrics, dupe)
+        .execute(&mut *conn)
+        .await?;
+    super::sources::unmove_all(conn, &record.sources, SourceOwner::Track(dupe), SourceOwner::Track(kept)).await?;
+
+    // 7. Links, flags and redirects as they were.
+    sqlx::query!("UPDATE shares SET track_id = $2 WHERE id = ANY($1)", &record.shares, dupe)
+        .execute(&mut *conn)
+        .await?;
+    sqlx::query!("UPDATE tracks SET merged_into = $2 WHERE id = ANY($1)", &record.redirected, dupe)
+        .execute(&mut *conn)
+        .await?;
+    sqlx::query!(
+        "UPDATE review_flags SET resolved_at = NULL, resolved_by = NULL, resolution = '' WHERE id = ANY($1)",
+        &record.flags
+    )
+    .execute(&mut *conn)
+    .await?;
+    sqlx::query!(
+        "UPDATE track_merges SET undone_at = now(), undone_by = current_app_user() WHERE id = $1",
+        merge_id
+    )
+    .execute(&mut *conn)
+    .await?;
+
+    system.end(conn).await?;
+    Ok(dupe)
+}
+
+async fn revision_data(conn: &mut PgConnection, revision_id: Uuid) -> sqlx::Result<serde_json::Value> {
+    sqlx::query_scalar!("SELECT data FROM track_revisions WHERE id = $1", revision_id)
+        .fetch_one(conn)
+        .await
+}
+
+/// A track's covers that aren't in the trash, with their positions.
+async fn cover_positions(conn: &mut PgConnection, track_id: Uuid) -> sqlx::Result<Vec<CoverPosition>> {
+    sqlx::query_as!(
+        CoverPosition,
+        "SELECT id, position FROM covers WHERE track_id = $1 AND trashed_at IS NULL ORDER BY position, id",
         track_id
     )
     .fetch_all(conn)
     .await
 }
+
+/// Numbers covers 0, 1, 2... in the given order.
+async fn set_cover_positions(conn: &mut PgConnection, ids: &[Uuid]) -> sqlx::Result<()> {
+    sqlx::query!(
+        r#"
+        UPDATE covers c SET position = (o.n - 1)::smallint
+        FROM unnest($1::uuid[]) WITH ORDINALITY AS o(id, n)
+        WHERE c.id = o.id
+        "#,
+        ids
+    )
+    .execute(conn)
+    .await?;
+    Ok(())
+}
+
 
 // ============================================================================
 // Lyrics

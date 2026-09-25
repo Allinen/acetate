@@ -107,6 +107,8 @@ pub struct TrackDetail {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub revisions: Option<Vec<Revision>>,
     pub lyrics: Vec<Lyrics>,
+    /// Tracks merged into this one (filled in by the API, see `revisions::merges_into`).
+    pub merges: Vec<super::revisions::MergeInfo>,
     pub covers: Vec<Cover>,
 }
 
@@ -114,7 +116,8 @@ pub struct TrackDetail {
 pub struct FileInfo {
     pub id: Uuid,
     pub sha256: String,
-    pub original_filename: String,
+    /// Set only if this is an original file: its name (see migration 0013).
+    pub original_filename: Option<String>,
     pub uploaded_filename: String,
     pub size_bytes: i64,
     pub container: Option<String>,
@@ -135,7 +138,8 @@ pub struct FileChange {
     pub replaced_at: chrono::DateTime<chrono::Utc>,
     pub reason: String,
     pub old_file_id: Uuid,
-    pub old_original_filename: String,
+    pub old_original_filename: Option<String>,
+    pub old_uploaded_filename: String,
     pub old_codec: Option<String>,
     pub old_bitrate: Option<i32>,
     pub old_origin: Option<super::sources::Origin>,
@@ -272,6 +276,7 @@ pub async fn get_track(
         sqlx::query!(
             r#"
             SELECT h.replaced_at, h.reason, h.old_file_id, f.original_filename AS old_original_filename,
+                   f.uploaded_filename AS old_uploaded_filename,
                    f.codec AS old_codec, f.bitrate AS old_bitrate, f.size_bytes AS old_size_bytes,
                    f.trashed_at AS old_trashed_at, f.purged_at AS old_purged_at,
                    pu.username AS "old_purged_by?", h.new_file_id
@@ -300,6 +305,7 @@ pub async fn get_track(
             reason: h.reason,
             old_file_id: h.old_file_id,
             old_original_filename: h.old_original_filename,
+            old_uploaded_filename: h.old_uploaded_filename,
             old_codec: h.old_codec,
             old_bitrate: h.old_bitrate,
             old_size_bytes: h.old_size_bytes,
@@ -451,6 +457,7 @@ pub async fn get_track(
         revisions,
         lyrics,
         covers,
+        merges: Vec::new(),
     }))
 }
 

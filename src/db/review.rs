@@ -53,7 +53,27 @@ pub async fn flag_merged_artist(
     Ok(())
 }
 
-/// Flags a new track if tracks by the same artists have a similar title.
+/// Flags a new track that has the same platform song id as other tracks (e.g. the same
+/// NetEase song downloaded twice, as different files). A possible duplicate, with the reason.
+pub async fn flag_same_song(
+    conn: &mut PgConnection,
+    track_id: Uuid,
+    tracks: &[Uuid],
+    reason: &str,
+) -> sqlx::Result<()> {
+    let related = json!({ "tracks": tracks, "reason": reason });
+    sqlx::query!(
+        "INSERT INTO review_flags (kind, track_id, related) VALUES ('possible_duplicate', $1, $2)",
+        track_id,
+        related
+    )
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
+}
+
+/// Flags a new track if tracks by the same artists have a similar title. `except`: tracks
+/// already flagged for another reason (see `flag_same_song`).
 ///
 /// Starts from the artists' tracks rather than from all similar titles: an artist has at
 /// most thousands of tracks, while a short title like "Intro" is similar to far more.
@@ -62,12 +82,14 @@ pub async fn flag_possible_duplicates(
     track_id: Uuid,
     title: &str,
     artist_ids: &[Uuid],
+    except: &[Uuid],
 ) -> sqlx::Result<()> {
     let similar = sqlx::query_scalar!(
         r#"
         SELECT t.id FROM tracks t
         WHERE t.id IN (SELECT track_id FROM track_credits WHERE artist_id = ANY($3))
           AND t.id <> $1
+          AND t.id <> ALL($5)
           AND t.merged_into IS NULL
           AND similarity(t.title, $2) >= $4
         ORDER BY similarity(t.title, $2) DESC, t.id
@@ -77,6 +99,7 @@ pub async fn flag_possible_duplicates(
         title,
         artist_ids,
         DUPLICATE_SIMILARITY,
+        except,
     )
     .fetch_all(&mut *conn)
     .await?;

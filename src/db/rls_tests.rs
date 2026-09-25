@@ -154,7 +154,7 @@ pub(super) async fn make_track(
             id: file_id,
             origin_snapshot_id: snapshot.snapshot_id,
             sha256: &crate::auth::token_hash(title),
-            original_filename: title,
+            original_filename: Some(title),
             uploaded_filename: title,
             size_bytes: 1,
             container: None,
