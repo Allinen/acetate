@@ -174,7 +174,7 @@ async fn old_files_become_tombstones(_: PgPoolOptions, connect: PgConnectOptions
 }
 
 /// A new file for `track` (not yet its current one), like ingest stores one.
-async fn add_file(conn: &mut sqlx::PgConnection, track: Uuid, name: &str) -> anyhow::Result<Uuid> {
+pub(super) async fn add_file(conn: &mut sqlx::PgConnection, track: Uuid, name: &str) -> anyhow::Result<Uuid> {
     let origin = sources::validate(
         sources::Kind::Track,
         NewSource {

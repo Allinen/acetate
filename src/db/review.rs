@@ -68,6 +68,7 @@ pub async fn flag_possible_duplicates(
         SELECT t.id FROM tracks t
         WHERE t.id IN (SELECT track_id FROM track_credits WHERE artist_id = ANY($3))
           AND t.id <> $1
+          AND t.merged_into IS NULL
           AND similarity(t.title, $2) >= $4
         ORDER BY similarity(t.title, $2) DESC, t.id
         LIMIT 10

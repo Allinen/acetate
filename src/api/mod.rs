@@ -103,6 +103,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/albums/{id}/access", require(&[ManageAccess], put(access::set_album)))
         // Editing. Changing relations also needs `edit_relations` (checked in the handler).
         .route("/api/tracks/{id}/facts", require(&[EditMetadata], put(tracks::edit_facts)))
+        // Merging a duplicate into a track (also needs replace_file, checked in the handler).
+        .route("/api/tracks/{id}/merge", require(&[EditMetadata], post(tracks::merge)))
         .route("/api/tracks/{id}/variants", require(&[EditMetadata], post(tracks::create_variant)))
         .route(
             "/api/tracks/{id}/variants/{variant_id}",

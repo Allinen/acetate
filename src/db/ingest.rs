@@ -247,7 +247,8 @@ pub async fn insert_track_cover(
 /// Returns None if the track doesn't exist.
 pub async fn lock_track_file(conn: &mut PgConnection, track_id: Uuid) -> sqlx::Result<Option<Uuid>> {
     sqlx::query_scalar!(
-        "SELECT file_id FROM tracks WHERE id = $1 FOR UPDATE",
+        // A merged track has no file of its own anymore: as good as not there.
+        r#"SELECT file_id AS "file_id!" FROM tracks WHERE id = $1 AND merged_into IS NULL FOR UPDATE"#,
         track_id
     )
     .fetch_optional(conn)

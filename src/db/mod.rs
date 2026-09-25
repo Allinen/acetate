@@ -22,6 +22,8 @@ pub mod users;
 mod rls_tests;
 #[cfg(test)]
 mod trash_tests;
+#[cfg(test)]
+mod merge_tests;
 
 use std::time::Duration;
 

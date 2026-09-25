@@ -198,7 +198,7 @@ pub async fn replaced_files(
 pub async fn trash_files(conn: &mut PgConnection, ids: &[Uuid]) -> anyhow::Result<usize> {
     // Current files of any track, hidden ones included.
     let system = super::as_system(conn).await?;
-    let current = sqlx::query_scalar!("SELECT file_id FROM tracks WHERE file_id = ANY($1)", ids)
+    let current = sqlx::query_scalar!(r#"SELECT file_id AS "file_id!" FROM tracks WHERE file_id = ANY($1)"#, ids)
         .fetch_all(&mut *conn)
         .await?;
     system.end(conn).await?;

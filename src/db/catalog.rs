@@ -127,6 +127,7 @@ pub async fn artist_tracks(
         FROM tracks t
         JOIN files f ON f.id = t.file_id
         WHERE t.id IN (SELECT track_id FROM track_credits WHERE artist_id = $1)
+          AND t.merged_into IS NULL
           AND t.id < COALESCE($2, 'ffffffff-ffff-ffff-ffff-ffffffffffff'::uuid)
         ORDER BY t.id DESC
         LIMIT $3
@@ -329,8 +330,9 @@ pub async fn search_tracks(conn: &mut PgConnection, query: &str, limit: i64) -> 
                    word_similarity($1, t.artist_display)
                )::real AS "score!"
         FROM tracks t
-        WHERE $1 <% t.title OR $1 <% t.artist_display
-           OR t.title ILIKE $2 OR t.artist_display ILIKE $2
+        WHERE ($1 <% t.title OR $1 <% t.artist_display
+               OR t.title ILIKE $2 OR t.artist_display ILIKE $2)
+          AND t.merged_into IS NULL
         ORDER BY 4 DESC, t.id DESC
         LIMIT $3
         "#,

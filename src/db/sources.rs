@@ -174,6 +174,64 @@ pub async fn add_snapshot(
     })
 }
 
+/// Moves every source of `from` to `into` (the same kind of owner: two artists, two
+/// tracks), when merging them. A source with the same platform id as one of `into`'s
+/// (e.g. both have NetEase song 123) joins that one: its snapshots move over, so files'
+/// origins keep pointing at the same snapshots, and the emptied source is deleted.
+pub async fn move_all(conn: &mut PgConnection, from: SourceOwner, into: SourceOwner) -> sqlx::Result<()> {
+    let sources = sqlx::query!(
+        "SELECT id, platform, external_id FROM sources WHERE COALESCE(track_id, album_id, artist_id) = $1",
+        from.id()
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    let (track_id, album_id, artist_id) = owner_columns(into);
+    for src in sources {
+        let same = match &src.external_id {
+            Some(external_id) => {
+                sqlx::query_scalar!(
+                    r#"
+                    SELECT id FROM sources
+                    WHERE COALESCE(track_id, album_id, artist_id) = $1 AND platform = $2 AND external_id = $3
+                    "#,
+                    into.id(),
+                    src.platform,
+                    external_id
+                )
+                .fetch_optional(&mut *conn)
+                .await?
+            }
+            None => None,
+        };
+        match same {
+            Some(target) => {
+                sqlx::query!(
+                    "UPDATE source_snapshots SET source_id = $2 WHERE source_id = $1",
+                    src.id,
+                    target
+                )
+                .execute(&mut *conn)
+                .await?;
+                sqlx::query!("DELETE FROM sources WHERE id = $1", src.id)
+                    .execute(&mut *conn)
+                    .await?;
+            }
+            None => {
+                sqlx::query!(
+                    "UPDATE sources SET track_id = $2, album_id = $3, artist_id = $4 WHERE id = $1",
+                    src.id,
+                    track_id,
+                    album_id,
+                    artist_id
+                )
+                .execute(&mut *conn)
+                .await?;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Takes a source back out of the trash, if it's there: adding it again means it's wanted.
 async fn untrash(conn: &mut PgConnection, source_id: Uuid) -> sqlx::Result<()> {
     sqlx::query!(

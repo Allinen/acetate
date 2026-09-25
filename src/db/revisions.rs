@@ -20,10 +20,11 @@
 use std::collections::{BTreeSet, HashMap};
 use std::fmt;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sqlx::PgConnection;
 use uuid::Uuid;
 
+use crate::model::sources::SourceOwner;
 use crate::model::{
     AlbumData, AlbumMembership, Alias, ArtistData, Credit, LyricsData, Relation, TrackFacts,
     TrackMetadata, diff_relations,
@@ -774,6 +775,317 @@ fn restore_reason(reason: &str, revision_id: Uuid) -> String {
 }
 
 // ============================================================================
+// Merging tracks
+// ============================================================================
+
+/// Which of the two tracks wins a field in a merge: left = the track kept (merged into),
+/// right = the duplicate.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Side {
+    #[default]
+    Left,
+    Right,
+}
+
+impl Side {
+    /// `left` or `right`, whichever this side is.
+    fn pick<T>(self, left: T, right: T) -> T {
+        match self {
+            Side::Left => left,
+            Side::Right => right,
+        }
+    }
+}
+
+/// What to take from which side. Everything not listed is left's. (Sources, albums,
+/// relations, lyrics and variants aren't picked: they're combined.)
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MergePicks {
+    pub title: Side,
+    pub release_date: Side,
+    pub genres: Side,
+    pub comment: Side,
+    pub credits: Side,
+    pub status: Side,
+    /// Which file stays the track's current one; the other becomes a previous file.
+    pub file: Side,
+    /// Whose covers the track keeps; the other side's go to the trash.
+    pub covers: Side,
+}
+
+#[derive(Debug, Serialize)]
+pub struct MergedTracks {
+    /// The track that was kept.
+    pub track_id: Uuid,
+    pub variants_moved: usize,
+    pub lyrics_moved: usize,
+    pub covers_trashed: usize,
+}
+
+/// Merges track `from` (the duplicate, "right") into `into` (kept, "left"): the same song
+/// stored twice.
+///
+/// * The kept track's primary variant gets a revision with each field from the side
+///   `picks` says; `from`'s variants (with their history) become extra variants of it.
+/// * The file `picks.file` says stays current; the other becomes a previous file (so it
+///   can be trashed and purged). `from`'s previous files move along.
+/// * Covers of the side not picked go to the trash (recoverable for a while).
+/// * Albums, relations, lyrics and sources are combined; a relation between the two
+///   tracks is dropped.
+/// * `from` then redirects to `into` (`merged_into`), and its shares point at `into`.
+///
+/// `into_base` / `from_base`: the primary variants' revisions the choice was made from
+/// (409 if either changed since). Both tracks must be visible to the user. What's moved
+/// includes things only others can see (e.g. a relation with a restricted track); that
+/// part runs as the system, like other cascades.
+pub async fn merge_tracks(
+    conn: &mut PgConnection,
+    into: Uuid,
+    from: Uuid,
+    picks: &MergePicks,
+    into_base: Option<Uuid>,
+    from_base: Option<Uuid>,
+    reason: &str,
+) -> anyhow::Result<MergedTracks> {
+    if into == from {
+        return Err(invalid("can't merge a track into itself".to_string()));
+    }
+    // Lock both, in id order (through row-level security: both must be visible).
+    let rows = sqlx::query!(
+        r#"
+        SELECT id, title, file_id, primary_variant_id, merged_into
+        FROM tracks WHERE id = ANY($1) ORDER BY id FOR UPDATE
+        "#,
+        &[into, from][..]
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    let (Some(kept), Some(dupe)) = (
+        rows.iter().find(|r| r.id == into),
+        rows.iter().find(|r| r.id == from),
+    ) else {
+        return Err(EditRejected::NotFound("track").into());
+    };
+    if kept.merged_into.is_some() || dupe.merged_into.is_some() {
+        return Err(invalid("one of these tracks was already merged into another".to_string()));
+    }
+    let (Some(kept_variant), Some(dupe_variant), Some(kept_file), Some(dupe_file)) = (
+        kept.primary_variant_id,
+        dupe.primary_variant_id,
+        kept.file_id,
+        dupe.file_id,
+    ) else {
+        return Err(invalid("both tracks need a primary variant and a file".to_string()));
+    };
+    let (Some((kept_rev, left)), Some((dupe_rev, right))) = (
+        latest_internal(conn, into, kept_variant).await?,
+        latest_internal(conn, from, dupe_variant).await?,
+    ) else {
+        return Err(invalid("both tracks need metadata".to_string()));
+    };
+    check_base(into_base, Some(kept_rev))?;
+    check_base(from_base, Some(dupe_rev))?;
+    let dupe_title = dupe.title.clone();
+    let reason = if reason.trim().is_empty() {
+        format!("merged \"{dupe_title}\" ({from})")
+    } else {
+        reason.to_string()
+    };
+
+    // Everything below may touch rows the user can't see (see above).
+    let system = super::as_system(conn).await?;
+
+    // 1. Metadata, field by field.
+    let metadata = TrackMetadata {
+        title: picks.title.pick(left.title, right.title),
+        release_date: picks.release_date.pick(left.release_date, right.release_date),
+        genres: picks.genres.pick(left.genres, right.genres),
+        comment: picks.comment.pick(left.comment, right.comment),
+        credits: picks.credits.pick(left.credits, right.credits),
+    };
+    write_internal(conn, into, kept_variant, None, &metadata, Source::Edit, &reason, false).await?;
+
+    // 2. Albums and relations, combined. The duplicate lets go of its own first, which
+    //    also drops a relation between the two (with revisions on the other sides).
+    let dupe_facts = current_facts(conn, from).await?;
+    let emptied = TrackFacts {
+        status: dupe_facts.status.clone(),
+        albums: Vec::new(),
+        relations: Vec::new(),
+    };
+    write_external(conn, from, None, &emptied, Source::Edit, &reason).await?;
+    let mut facts = current_facts(conn, into).await?;
+    facts.status = picks.status.pick(facts.status, dupe_facts.status);
+    for album in dupe_facts.albums {
+        // On an album both are on, left's disc/track number wins.
+        if !facts.albums.iter().any(|a| a.album_id == album.album_id) {
+            facts.albums.push(album);
+        }
+    }
+    for relation in dupe_facts.relations {
+        if relation.track_id != into && !facts.relations.contains(&relation) {
+            facts.relations.push(relation);
+        }
+    }
+    write_external(conn, into, None, &facts, Source::Edit, &reason).await?;
+
+    // 3. Variants: the duplicate's become the kept track's, with their revisions (the
+    //    foreign key moves those along). The duplicate keeps no current metadata.
+    sqlx::query!(
+        "UPDATE tracks SET primary_variant_id = NULL WHERE id = $1",
+        from
+    )
+    .execute(&mut *conn)
+    .await?;
+    sqlx::query!("DELETE FROM track_credits WHERE track_id = $1", from)
+        .execute(&mut *conn)
+        .await?;
+    let from_label = format!(" (from \"{dupe_title}\")");
+    let variants_moved = sqlx::query!(
+        "UPDATE track_variants SET track_id = $1, label = label || $3 WHERE track_id = $2",
+        into,
+        from,
+        from_label
+    )
+    .execute(&mut *conn)
+    .await?
+    .rows_affected() as usize;
+
+    // 4. Files. The duplicate gives up its file (file_id is unique), becoming a redirect.
+    sqlx::query!(
+        "UPDATE tracks SET file_id = NULL, merged_into = $2, updated_at = now() WHERE id = $1",
+        from,
+        into
+    )
+    .execute(&mut *conn)
+    .await?;
+    sqlx::query!(
+        "UPDATE track_file_history SET track_id = $2 WHERE track_id = $1",
+        from,
+        into
+    )
+    .execute(&mut *conn)
+    .await?;
+    let (current, previous) = picks.file.pick((kept_file, dupe_file), (dupe_file, kept_file));
+    if current != kept_file {
+        sqlx::query!("UPDATE tracks SET file_id = $2 WHERE id = $1", into, current)
+            .execute(&mut *conn)
+            .await?;
+    }
+    sqlx::query!(
+        r#"
+        INSERT INTO track_file_history (track_id, old_file_id, new_file_id, reason)
+        VALUES ($1, $2, $3, $4)
+        "#,
+        into,
+        previous,
+        current,
+        reason
+    )
+    .execute(&mut *conn)
+    .await?;
+
+    // 5. Covers: all of them move over; the side not picked goes to the trash.
+    let kept_covers = cover_ids(conn, into).await?;
+    let dupe_covers = cover_ids(conn, from).await?;
+    sqlx::query!("UPDATE covers SET track_id = $2 WHERE track_id = $1", from, into)
+        .execute(&mut *conn)
+        .await?;
+    let (keep, drop) = match picks.covers {
+        Side::Left => (kept_covers, dupe_covers),
+        Side::Right => (dupe_covers, kept_covers),
+    };
+    sqlx::query!(
+        "UPDATE covers SET trashed_at = now(), trashed_by = current_app_user() WHERE id = ANY($1)",
+        &drop
+    )
+    .execute(&mut *conn)
+    .await?;
+    sqlx::query!(
+        r#"
+        UPDATE covers c SET position = (o.n - 1)::smallint
+        FROM unnest($1::uuid[]) WITH ORDINALITY AS o(id, n)
+        WHERE c.id = o.id
+        "#,
+        &keep
+    )
+    .execute(&mut *conn)
+    .await?;
+
+    // 6. Lyrics move with their history, except ones the kept track has word for word.
+    let lyrics_moved = sqlx::query!(
+        r#"
+        UPDATE lyrics l SET track_id = $2
+        WHERE l.track_id = $1
+          AND NOT EXISTS (SELECT 1 FROM lyrics k WHERE k.track_id = $2 AND k.body = l.body)
+        "#,
+        from,
+        into
+    )
+    .execute(&mut *conn)
+    .await?
+    .rows_affected() as usize;
+
+    // 7. Sources (same platform id: joined).
+    super::sources::move_all(conn, SourceOwner::Track(from), SourceOwner::Track(into)).await?;
+
+    // 8. Links to the duplicate lead to the kept track.
+    sqlx::query!("UPDATE shares SET track_id = $2 WHERE track_id = $1", from, into)
+        .execute(&mut *conn)
+        .await?;
+    sqlx::query!("UPDATE tracks SET merged_into = $2 WHERE merged_into = $1", from, into)
+        .execute(&mut *conn)
+        .await?;
+    let resolution = format!("merged into {into}");
+    sqlx::query!(
+        r#"
+        UPDATE review_flags
+        SET resolved_at = now(), resolved_by = current_app_user(), resolution = $3
+        WHERE resolved_at IS NULL
+          AND (track_id = $1
+               OR (track_id = $2 AND kind = 'possible_duplicate' AND related -> 'tracks' ? $1::text))
+        "#,
+        from,
+        into,
+        resolution
+    )
+    .execute(&mut *conn)
+    .await?;
+    sqlx::query!(
+        r#"
+        INSERT INTO track_merges (into_track_id, from_track_id, picks, reason)
+        VALUES ($1, $2, $3, $4)
+        "#,
+        into,
+        from,
+        serde_json::to_value(picks)?,
+        reason
+    )
+    .execute(&mut *conn)
+    .await?;
+
+    system.end(conn).await?;
+    Ok(MergedTracks {
+        track_id: into,
+        variants_moved,
+        lyrics_moved,
+        covers_trashed: drop.len(),
+    })
+}
+
+/// A track's covers that aren't in the trash, in order.
+async fn cover_ids(conn: &mut PgConnection, track_id: Uuid) -> sqlx::Result<Vec<Uuid>> {
+    sqlx::query_scalar!(
+        "SELECT id FROM covers WHERE track_id = $1 AND trashed_at IS NULL ORDER BY position, id",
+        track_id
+    )
+    .fetch_all(conn)
+    .await
+}
+
+// ============================================================================
 // Lyrics
 // ============================================================================
 //
@@ -1372,48 +1684,8 @@ pub async fn merge_artist(
         write_album(conn, album.album_id, None, &data, Source::Edit, &reason).await?;
     }
 
-    // 5. Sources. One with the same platform id as one of `into`'s joins it (its
-    //    snapshots move over); the others just change owner.
-    let sources = sqlx::query!(
-        "SELECT id, platform, external_id FROM sources WHERE artist_id = $1",
-        from
-    )
-    .fetch_all(&mut *conn)
-    .await?;
-    for src in sources {
-        let same = match &src.external_id {
-            Some(external_id) => {
-                sqlx::query_scalar!(
-                    "SELECT id FROM sources WHERE artist_id = $1 AND platform = $2 AND external_id = $3",
-                    into,
-                    src.platform,
-                    external_id
-                )
-                .fetch_optional(&mut *conn)
-                .await?
-            }
-            None => None,
-        };
-        match same {
-            Some(target) => {
-                sqlx::query!(
-                    "UPDATE source_snapshots SET source_id = $2 WHERE source_id = $1",
-                    src.id,
-                    target
-                )
-                .execute(&mut *conn)
-                .await?;
-                sqlx::query!("DELETE FROM sources WHERE id = $1", src.id)
-                    .execute(&mut *conn)
-                    .await?;
-            }
-            None => {
-                sqlx::query!("UPDATE sources SET artist_id = $2 WHERE id = $1", src.id, into)
-                    .execute(&mut *conn)
-                    .await?;
-            }
-        }
-    }
+    // 5. Sources. One with the same platform id as one of `into`'s joins it.
+    super::sources::move_all(conn, SourceOwner::Artist(from), SourceOwner::Artist(into)).await?;
 
     system.end(conn).await?;
 

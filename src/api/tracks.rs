@@ -3,13 +3,14 @@
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
+use axum::response::{IntoResponse, Redirect, Response};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::{AppError, AppState};
 use crate::auth::{CurrentUser, Permission};
 use crate::db;
-use crate::db::revisions::{self, Source, Written};
+use crate::db::revisions::{self, MergePicks, MergedTracks, Source, Written};
 use crate::model::{AlbumMembership, Relation, TrackFacts, TrackMetadata, diff_relations};
 
 #[derive(Debug, Deserialize)]
@@ -38,15 +39,19 @@ pub async fn list(
 }
 
 /// Revisions and previous files are only included with the `view_history` permission.
+/// A merged track redirects (308) to the track it was merged into.
 pub async fn get(
     State(state): State<AppState>,
     user: CurrentUser,
     Path(id): Path<Uuid>,
-) -> Result<Json<db::tracks::TrackDetail>, AppError> {
+) -> Result<Response, AppError> {
     let with_history = user.has(Permission::ViewHistory);
     let mut tx = state.db(&user).await?;
+    if let Some(target) = db::tracks::merged_into(&mut tx, id).await? {
+        return Ok(Redirect::permanent(&format!("/api/tracks/{target}")).into_response());
+    }
     match db::tracks::get_track(&mut tx, id, with_history).await? {
-        Some(track) => Ok(Json(track)),
+        Some(track) => Ok(Json(track).into_response()),
         None => Err(AppError::NotFound),
     }
 }
@@ -229,4 +234,57 @@ pub async fn restore(
     let written = revisions::restore_track_revision(&mut tx, revision_id, &reason).await?;
     tx.commit().await?;
     Ok(Json(written))
+}
+
+// ---- Merging ----
+
+#[derive(Debug, Deserialize)]
+pub struct Merge {
+    /// The duplicate, merged into the track in the path.
+    from: Uuid,
+    #[serde(default)]
+    base: MergeBase,
+    /// Which side wins each field; missing = "left" (the track in the path).
+    #[serde(default)]
+    pick: MergePicks,
+    #[serde(default)]
+    reason: String,
+}
+
+/// The primary variants' latest revisions the choice was made from (409 if one changed).
+#[derive(Debug, Default, Deserialize)]
+pub struct MergeBase {
+    into_revision_id: Option<Uuid>,
+    from_revision_id: Option<Uuid>,
+}
+
+/// `POST /api/tracks/{id}/merge`, JSON `{"from": "<duplicate>", "base": {...},
+/// "pick": {"title": "right", "file": "right", ...}, "reason": ""}`: merges the duplicate
+/// into this track (see `db::revisions::merge_tracks`). Also needs `replace_file`, since
+/// it changes which file a track plays.
+pub async fn merge(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<Uuid>,
+    Json(body): Json<Merge>,
+) -> Result<Json<MergedTracks>, AppError> {
+    if !user.has(Permission::ReplaceFile) {
+        return Err(AppError::Forbidden(
+            "merging changes which file a track plays, which needs the `replace_file` permission"
+                .to_string(),
+        ));
+    }
+    let mut tx = state.db(&user).await?;
+    let merged = revisions::merge_tracks(
+        &mut tx,
+        id,
+        body.from,
+        &body.pick,
+        body.base.into_revision_id,
+        body.base.from_revision_id,
+        &body.reason,
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(Json(merged))
 }

@@ -32,7 +32,8 @@ pub async fn list_tracks(
                f.duration_ms, f.codec
         FROM tracks t
         JOIN files f ON f.id = t.file_id
-        WHERE t.id < COALESCE($1, 'ffffffff-ffff-ffff-ffff-ffffffffffff'::uuid)
+        WHERE t.merged_into IS NULL  -- merged tracks only redirect
+          AND t.id < COALESCE($1, 'ffffffff-ffff-ffff-ffff-ffffffffffff'::uuid)
         ORDER BY t.id DESC
         LIMIT $2
         "#,
@@ -65,6 +66,7 @@ pub async fn search_tracks(
         FROM tracks t
         JOIN files f ON f.id = t.file_id
         WHERE (t.title ILIKE $1 OR t.artist_display ILIKE $1)
+          AND t.merged_into IS NULL
           AND t.id < COALESCE($2, 'ffffffff-ffff-ffff-ffff-ffffffffffff'::uuid)
         ORDER BY t.id DESC
         LIMIT $3
@@ -228,6 +230,14 @@ pub struct Cover {
     pub position: i16,
     /// "embedded" (in the file), "upload", "copied".
     pub source: String,
+}
+
+/// If the track was merged into another: the one it redirects to.
+pub async fn merged_into(conn: &mut PgConnection, id: Uuid) -> sqlx::Result<Option<Uuid>> {
+    Ok(sqlx::query_scalar!("SELECT merged_into FROM tracks WHERE id = $1", id)
+        .fetch_optional(conn)
+        .await?
+        .flatten())
 }
 
 /// Everything about one track. Returns None if it doesn't exist. Revisions and previous

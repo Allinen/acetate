@@ -621,6 +621,11 @@ async function showTrack(id) {
     setDetail(errorBox(err));
     return;
   }
+  // A merged track redirects to the one it was merged into.
+  if (t.id !== id) {
+    location.replace(`#/track/${t.id}`);
+    return;
+  }
   const reload = () => showTrack(id);
   const cover = t.covers[0];
   const f = t.file;
@@ -674,6 +679,11 @@ async function showTrack(id) {
       : h("p", { class: "muted" }, "None."),
 
     can("edit_metadata") ? [h("h3", {}, "Edit"), await trackEditor(t, reload)] : null,
+    can("edit_metadata") && can("replace_file") ? h("details", {},
+      h("summary", {}, "Merge a duplicate into this track…"),
+      h("div", { class: "row" }, picker("the duplicate…", findTracks,
+        (x) => [x.title, h("span", { class: "muted" }, " · ", x.artist_display)],
+        (x) => { if (x.id !== t.id) location.hash = `#/merge/${t.id}/${x.id}`; }))) : null,
 
     h("h3", {}, "Albums"),
     t.albums.length ? t.albums.map((a) => h("div", {},
@@ -1114,7 +1124,10 @@ async function showReview() {
           h("span", { class: "muted" }, f.track_artist, " · ", fmtTime(f.created_at))),
         f.kind === "possible_duplicate"
           ? h("div", {}, "Similar titles by the same artist: ",
-              f.related_tracks.map((x) => [h("a", { href: `#/track/${x.id}` }, x.title), " "]))
+              f.related_tracks.map((x) => [h("a", { href: `#/track/${x.id}` }, x.title), " ",
+                can("edit_metadata") && can("replace_file")
+                  ? h("a", { href: `#/merge/${f.track_id}/${x.id}`, class: "tag" }, "compare & merge")
+                  : null, " "]))
           : f.kind === "merged_artist"
           ? h("div", {}, `Was credited to "${f.related.from_name}", which was merged into `,
               h("a", { href: `#/artist/${f.related.into}` }, f.related_artists.find((x) => x.id === f.related.into)?.name ?? "another artist"),
@@ -1219,8 +1232,9 @@ async function buildUploadPanel() {
 // ---------------------------------------------------------------------------
 
 function route() {
-  const [, kind, id] = location.hash.split("/");
+  const [, kind, id, other] = location.hash.split("/");
   if (kind === "track" && id) showTrack(id);
+  else if (kind === "merge" && id && other) showMerge(id, other);
   else if (kind === "artist" && id) showArtist(id);
   else if (kind === "album" && id) showAlbum(id);
   else if (kind === "shares") showShares();
@@ -1478,6 +1492,117 @@ async function albumAccessBox(id, reload) {
     save(status, () => putJson(`/api/albums/${id}/access`, picker.read()), () => { loadTracks(true); reload(); });
   });
   return h("details", {}, h("summary", {}, "Restrict all tracks…"), form);
+}
+
+// #/merge/<kept>/<duplicate>: both tracks side by side. Left is kept, right is merged
+// into it. Metadata, file and covers: pick a side per row (left by default). Albums,
+// relations, sources, lyrics and variants: combined.
+async function showMerge(leftId, rightId) {
+  selectedId = null;
+  markSelected();
+  setDetail(h("p", { class: "muted" }, "Loading…"));
+  let left, right;
+  try {
+    [left, right] = await Promise.all([api(`/api/tracks/${leftId}`), api(`/api/tracks/${rightId}`)]);
+  } catch (err) {
+    setDetail(errorBox(err));
+    return;
+  }
+  if (left.id === right.id) {
+    setDetail(errorBox("These are the same track (one was merged into the other already)."));
+    return;
+  }
+  const primary = (t) => t.variants.find((v) => v.id === t.primary_variant_id);
+  const [lv, rv] = [primary(left), primary(right)];
+  for (const t of [left, right]) for (const c of t.credits) names.artist.set(c.artist_id, c.artist_name);
+
+  const picks = {};
+  const choice = (field, leftView, rightView, same) => {
+    const name = `pick-${field}`;
+    const radio = (side) => h("input", {
+      type: "radio", name, checked: side === "left",
+      onchange: () => { picks[field] = side; },
+    });
+    picks[field] = "left";
+    return h("tr", {},
+      h("td", { class: "mono" }, field),
+      h("td", {}, h("label", { class: "row" }, radio("left"), leftView)),
+      h("td", {}, h("label", { class: "row" }, radio("right"), rightView)),
+      h("td", { class: "muted" }, same ? "same" : ""));
+  };
+  const text = (v) => v === null || v === undefined || v === "" || (Array.isArray(v) && !v.length)
+    ? h("span", { class: "muted" }, "—") : Array.isArray(v) ? v.join(", ") : String(v);
+  const creditsText = (credits) => (credits ?? []).map((c) =>
+    `${names.artist.get(c.artist_id) ?? c.artist_id.slice(0, 8)} (${c.role})`).join(", ") || "—";
+  const fileView = (t) => {
+    const f = t.file;
+    return h("div", {},
+      h("div", {}, h("strong", {}, f.original_filename)),
+      h("div", { class: "muted" }, [f.container, f.codec].filter(Boolean).join(" / "),
+        f.bitrate ? ` · ${f.bitrate} kbps` : "", f.sample_rate ? ` · ${f.sample_rate} Hz` : "",
+        f.bit_depth ? ` · ${f.bit_depth} bit` : "", f.channels ? ` · ${f.channels} ch` : ""),
+      h("div", { class: "muted" }, fmtDuration(f.duration_ms), " · ", fmtSize(f.size_bytes)),
+      h("button", { type: "button", class: "small", onclick: () => play(f.id, t.title, t.artist_display, t.covers[0]?.id) }, "▶"));
+  };
+  const coversView = (t) => t.covers.length
+    ? h("div", { class: "covers" }, t.covers.map((c) => h("figure", {}, h("img", { src: `/api/covers/${c.id}`, alt: "" }))))
+    : h("span", { class: "muted" }, "none");
+  const same = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+  const ld = lv.data, rd = rv.data;
+
+  const table = h("table", { class: "trash" },
+    h("tr", {}, h("th", {}, ""),
+      h("th", {}, "left: kept ", h("a", { href: `#/track/${left.id}` }, "(open)")),
+      h("th", {}, "right: merged into it ", h("a", { href: `#/track/${right.id}` }, "(open)")), h("th", {}, "")),
+    choice("title", text(ld.title), text(rd.title), same(ld.title, rd.title)),
+    choice("credits", creditsText(ld.credits), creditsText(rd.credits), same(ld.credits, rd.credits)),
+    choice("release_date", text(ld.release_date), text(rd.release_date), same(ld.release_date, rd.release_date)),
+    choice("genres", text(ld.genres), text(rd.genres), same(ld.genres, rd.genres)),
+    choice("comment", text(ld.comment), text(rd.comment), same(ld.comment, rd.comment)),
+    choice("status", text(left.status), text(right.status), left.status === right.status),
+    choice("file", fileView(left), fileView(right), left.file.sha256 === right.file.sha256),
+    choice("covers", coversView(left), coversView(right), false));
+
+  const union = (a, b, key) => [...new Map([...a, ...b].map((x) => [key(x), x])).values()];
+  const albums = union(left.albums, right.albums, (a) => a.album_id);
+  const relations = union(left.relations, right.relations, (r) => `${r.kind}/${r.track_id}`)
+    .filter((r) => r.track_id !== left.id && r.track_id !== right.id);
+  const status = h("span", {});
+  const reason = h("input", { placeholder: "why (optional)" });
+
+  setDetail(
+    h("h2", {}, "Merge tracks"),
+    h("p", { class: "muted" },
+      "The right track is merged into the left one and then redirects to it. Pick a side per row. " +
+      "The file not picked becomes a previous file (then it can be trashed and purged); the covers " +
+      "not picked go to the trash."),
+    left.is_restricted !== right.is_restricted ? h("p", { class: "box error" },
+      `Their access differs: left is ${left.is_restricted ? "restricted" : "visible to everyone"}, right is ` +
+      `${right.is_restricted ? "restricted" : "visible to everyone"}. The merged track keeps left's.`) : null,
+    table,
+    h("h3", {}, "Combined automatically"),
+    kv([
+      ["albums", albums.map((a) => a.title).join(", ") || "—"],
+      ["relations", relations.map((r) => `${r.kind} ${r.title}`).join(", ") || "—"],
+      ["sources", [...left.sources, ...right.sources].map((s) => s.platform + (s.external_id ? ` ${s.external_id}` : "")).join(", ") || "—"],
+      ["lyrics", `${left.lyrics.length} + ${right.lyrics.length} (identical ones counted once)`],
+      ["right's variants", right.variants.map((v) => v.label).join(", ") + " (become variants of the left track)"],
+    ]),
+    h("div", { class: "row" },
+      h("button", { type: "button", onclick: () => { location.hash = `#/merge/${right.id}/${left.id}`; } }, "⇄ swap sides"),
+      h("label", { class: "row" }, "reason", reason)),
+    h("div", { class: "row" },
+      h("button", {
+        type: "button",
+        onclick: () => {
+          if (!confirm(`Merge "${right.title}" into "${left.title}"? The right track will only redirect to the left one afterwards.`)) return;
+          save(status, () => postJson(`/api/tracks/${left.id}/merge`, {
+            from: right.id,
+            base: { into_revision_id: lv.revision_id, from_revision_id: rv.revision_id },
+            pick: picks, reason: reason.value,
+          }), () => { loadTracks(true); location.hash = `#/track/${left.id}`; });
+        },
+      }, "Merge"), status));
 }
 
 // #/trash: covers, sources and old audio files in the trash; restoring, and purging
