@@ -132,6 +132,11 @@ pub fn router(state: AppState) -> Router {
         .route("/api/ingest-problems", require(&[Upload], get(problems::list)))
         .route("/api/ingest-problems/{id}/resolve", require(&[Upload], post(problems::resolve)))
         .route("/api/ingest-problems/{id}/audio", require(&[Upload], get(problems::audio)))
+        .route("/api/ingest-problems/{id}/import", require(&[Upload], post(problems::import)))
+        .route(
+            "/api/ingest-problems/{id}/add-to-track",
+            require(&[ReplaceFile], post(problems::add_to_track)),
+        )
         .route("/api/tracks/{id}/sources", require(&[EditSources], post(sources::add_track_source)))
         .route("/api/sources/{id}", require(&[EditSources], delete(sources::trash)))
         // Lyrics (entries are edited, never deleted).

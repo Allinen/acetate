@@ -49,9 +49,9 @@ pub struct AlbumHint {
     pub covers: Vec<Vec<u8>>,
     /// The track's position on the album, instead of the TRACK tag's.
     pub track_number: Option<i16>,
-    /// The album is a single: only its first album artist is primary, the others are
-    /// featured (on an album, every album artist is primary).
-    pub single: bool,
+    /// Whether the album is a single (only the first artist primary, the others featured;
+    /// on an album, see `ingest`). None: decided from the tags (a track count of 1).
+    pub single: Option<bool>,
 }
 
 /// How an artist or album was found.
@@ -194,6 +194,7 @@ impl Resolver {
         hints: &Hints,
         title: &str,
         album_artists: &[FoundArtist],
+        single: bool,
         release_date: Option<&str>,
     ) -> anyhow::Result<Uuid> {
         let empty = AlbumHint::default();
@@ -220,7 +221,7 @@ impl Resolver {
                             conflict.unwrap_or_default()
                         ));
                     }
-                    let id = db::ingest::create_album(conn, title, album_artists, hint.single, release_date)
+                    let id = db::ingest::create_album(conn, title, album_artists, single, release_date)
                         .await?;
                     (id, MatchedBy::Created)
                 }
@@ -476,6 +477,54 @@ pub async fn hide_invisible(conn: &mut PgConnection, report: &mut Report) -> any
 
 // ---- The JSON form (API) ----
 
+/// A source as a client sends it (the inverse of `sources::validate`).
+fn source_json(source: &ValidSource) -> serde_json::Value {
+    serde_json::json!({
+        "platform": source.platform,
+        "source_id": source.source_id,
+        "captured_at": source.captured_at,
+        "data": source.data,
+    })
+}
+
+/// What a file was imported with, as a description (`NewDescription`'s JSON), to import
+/// it again later the same way (see `db::problems`). Album cover images aren't included.
+pub fn description_json(
+    origin: &ValidSource,
+    status: &str,
+    track_sources: &[ValidSource],
+    hints: &Hints,
+    restrict_to: Option<&[Uuid]>,
+) -> serde_json::Value {
+    let artists: Vec<serde_json::Value> = hints
+        .artists
+        .iter()
+        .map(|a| {
+            serde_json::json!({
+                "name": a.name,
+                "id": a.id,
+                "sources": a.sources.iter().map(source_json).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+    let album = hints.album.as_ref().map(|a| {
+        serde_json::json!({
+            "id": a.id,
+            "sources": a.sources.iter().map(source_json).collect::<Vec<_>>(),
+            "track_number": a.track_number,
+            "single": a.single,
+        })
+    });
+    serde_json::json!({
+        "origin": source_json(origin),
+        "status": status,
+        "track": { "sources": track_sources.iter().map(source_json).collect::<Vec<_>>() },
+        "album": album,
+        "artists": artists,
+        "restrict_to": restrict_to,
+    })
+}
+
 /// A description as a client sends it (`POST /api/ingest`). See the README for an example.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -515,9 +564,10 @@ pub struct NewAlbumHint {
     /// The track's position on the album, instead of the TRACK tag's.
     #[serde(default)]
     pub track_number: Option<i16>,
-    /// It's a single: only the first album artist is primary, the others featured.
+    /// Whether it's a single (true) or an album (false). Left out: decided from the tags'
+    /// track count ("1/1" is a single).
     #[serde(default)]
-    pub single: bool,
+    pub single: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]

@@ -9,8 +9,8 @@
 //!
 //! * The song id is at the end of the filename. The NetEase song is the file's origin.
 //! * The file's own folder, if it ends in ` - <id>`, is its album.
-//! * A file directly in a `Singles` folder is on a single (its album credits differ,
-//!   see `db::ingest::create_album`).
+//! * Whether it's a single or an album comes from the `Singles`/`Albums` folders, as for
+//!   every layout (see `layouts::release_kind`).
 //! * The top-most folder (from where the import started) ending in ` - <id>`, other than
 //!   the album's, is the artist. The name before the id says which of the tags' artists it
 //!   is: it's only used if the ARTIST or ALBUM ARTIST tag has exactly that name.
@@ -50,7 +50,6 @@ pub fn read(root: &Path, path: &Path) -> PathInfo {
     let Some((album_folder, others)) = folders.split_last() else {
         return info;
     };
-    info.album_is_single = album_folder == "Singles";
     if let Some((_, album_id)) = split_id(album_folder) {
         info.album_sources
             .push(source("netease", Kind::Album, "album_id", json!(album_id)));
@@ -322,7 +321,6 @@ mod tests {
         let artist = root.join("Ravel. - 10000037/FLACs");
 
         let mut single = read(&root, &artist.join("Singles/Pause - 1000000185.flac"));
-        assert!(single.album_is_single);
         map.apply(&mut single);
         assert_eq!(ids(&single).1.as_deref(), Some("100001036"));
         assert_eq!(single.album_track_number, Some(1));

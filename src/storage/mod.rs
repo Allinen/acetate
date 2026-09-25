@@ -107,6 +107,51 @@ impl BlobStore {
         tokio::fs::metadata(self.path_for(sha256)).await.ok().map(|m| m.len())
     }
 
+    /// Takes a file on the same machine into the store's temp folder as a *reflink*: a copy
+    /// that shares the original's data blocks on disk (btrfs, XFS), so it takes no time and
+    /// almost no space, yet is a separate file. Changing or deleting the original later
+    /// never affects it (unlike a hard link, which would be the same file). Then hashes
+    /// that copy (reading it, not the original, so a file changing underneath can't give a
+    /// blob the wrong name).
+    ///
+    /// None if the filesystem can't reflink (another filesystem, ext4...): then the caller
+    /// copies the bytes instead.
+    pub async fn reflink_in(&self, source: &Path) -> anyhow::Result<Option<PendingBlob>> {
+        let source = source.to_path_buf();
+        let tmp_dir = self.tmp_dir.clone();
+        // Blocking file work, on tokio's thread pool for that.
+        tokio::task::spawn_blocking(move || -> anyhow::Result<Option<PendingBlob>> {
+            let dest = tmp_dir.join(format!("reflink-{}", uuid::Uuid::now_v7()));
+            if let Err(err) = reflink_copy::reflink(&source, &dest) {
+                tracing::debug!("can't reflink {}: {err}", source.display());
+                let _ = std::fs::remove_file(&dest);
+                return Ok(None);
+            }
+            // From here on the temp file is deleted if anything fails (or when dropped).
+            let temp_path = TempPath::try_from_path(&dest)?;
+            let mut file = std::fs::File::open(&temp_path)?;
+            let mut hasher = Sha256::new();
+            let mut size = 0u64;
+            let mut buf = vec![0u8; 1024 * 1024];
+            loop {
+                let n = std::io::Read::read(&mut file, &mut buf)?;
+                if n == 0 {
+                    break;
+                }
+                hasher.update(&buf[..n]);
+                size += n as u64;
+            }
+            // Make sure it's on disk before the database records it.
+            file.sync_all()?;
+            Ok(Some(PendingBlob {
+                sha256: hex::encode(hasher.finalize()),
+                size,
+                temp_path,
+            }))
+        })
+        .await?
+    }
+
     /// Convenience for small in-memory blobs (e.g. embedded cover art). Returns the sha256.
     pub async fn put_bytes(&self, bytes: &[u8]) -> anyhow::Result<String> {
         let mut writer = self.writer().await?;

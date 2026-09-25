@@ -42,6 +42,7 @@ fn options(user: Option<Uuid>, song_id: i64, hints: Hints) -> IngestOptions {
         restrict_to: None,
         hints,
         local_path: None,
+        given: Default::default(),
     }
 }
 
@@ -361,5 +362,99 @@ async fn listed_files_resolve_when_they_import(
     assert_eq!(resolved.len(), 1);
     assert_eq!(resolved[0].track_id, report.track_id);
     assert_eq!(resolved[0].resolution, "imported");
+    Ok(())
+}
+
+/// Refuses "no-artist.opus" (no ARTIST tag) as `user`, and returns the kept file.
+async fn refused_file(lib_pool: &PgPool, store: &BlobStore, opts: &IngestOptions) -> anyhow::Result<ingest::StagedFile> {
+    ingest_file(lib_pool, store, "no-artist.opus", opts, false).await.unwrap_err();
+    let (sha, size): (String, i64) = sqlx::query_as("SELECT sha256, size_bytes FROM ingest_problems")
+        .fetch_one(lib_pool)
+        .await?;
+    Ok(ingest::StagedFile::stored(store, &sha, size as u64))
+}
+
+#[sqlx::test]
+async fn listed_files_import_with_values_given_by_hand(
+    _: PgPoolOptions,
+    connect: PgConnectOptions,
+) -> anyhow::Result<()> {
+    let lib = setup(connect).await?;
+    let dir = tempfile::tempdir()?;
+    let store = BlobStore::open(dir.path())?;
+
+    // Refused while being imported restricted to "friends": the entry remembers that.
+    let mut opts = options(None, 1, Hints::default());
+    opts.restrict_to = Some(vec![lib.friends]);
+    let file = refused_file(&lib.owner, &store, &opts).await?;
+    let description: serde_json::Value = sqlx::query_scalar("SELECT description FROM ingest_problems")
+        .fetch_one(&lib.owner)
+        .await?;
+    assert_eq!(description["restrict_to"], json!([lib.friends]));
+
+    // Imported again (what the Review page does), with the artist typed in.
+    let description: crate::ingest::describe::NewDescription = serde_json::from_value(description)?;
+    let description = description.validate(|_| None).map_err(anyhow::Error::msg)?;
+    let again = IngestOptions {
+        restrict_to: description.restrict_to,
+        given: ingest::Given { title: None, artists: vec!["Typed Artist; Another".into()] },
+        uploaded_filename: "no-artist.opus".into(),
+        ..opts.clone()
+    };
+    let report = ingest::ingest_staged(&lib.owner, &store, &file, &again, false).await?;
+    let track = report.track_id.unwrap();
+    let names: Vec<&str> = report.artists.iter().map(|a| a.name.as_str()).collect();
+    assert_eq!(names, ["Typed Artist", "Another"]);
+
+    // Still restricted, and the revision says what was typed in.
+    let restricted: bool = sqlx::query_scalar("SELECT is_restricted FROM tracks WHERE id = $1")
+        .bind(track)
+        .fetch_one(&lib.owner)
+        .await?;
+    assert!(restricted);
+    let reason: String = sqlx::query_scalar("SELECT reason FROM track_revisions WHERE track_id = $1 AND variant_id IS NOT NULL")
+        .bind(track)
+        .fetch_one(&lib.owner)
+        .await?;
+    assert!(reason.contains("given by hand") && reason.contains("artist"), "{reason}");
+    let open: i64 = sqlx::query_scalar("SELECT count(*) FROM ingest_problems WHERE resolved_at IS NULL")
+        .fetch_one(&lib.owner)
+        .await?;
+    assert_eq!(open, 0);
+    Ok(())
+}
+
+#[sqlx::test]
+async fn listed_files_can_be_added_to_a_track(
+    _: PgPoolOptions,
+    connect: PgConnectOptions,
+) -> anyhow::Result<()> {
+    let lib = setup(connect).await?;
+    let dir = tempfile::tempdir()?;
+    let store = BlobStore::open(dir.path())?;
+    let file = refused_file(&lib.owner, &store, &options(None, 1, Hints::default())).await?;
+    let current = |pool: PgPool, track: Uuid| async move {
+        sqlx::query_scalar::<_, Uuid>("SELECT file_id FROM tracks WHERE id = $1").bind(track).fetch_one(&pool).await
+    };
+    let replace = ingest::ReplaceOptions {
+        user: Some(lib.alice),
+        uploaded_filename: "no-artist.opus".into(),
+        origin: netease(Kind::Track, "song_id", 1),
+        reason: "untagged copy".into(),
+    };
+
+    // As a previous file: the track keeps playing its file.
+    let before = current(lib.owner.clone(), lib.v).await?;
+    let added = ingest::add_file_to_track(&lib.app, &file, lib.v, ingest::AddAs::PreviousFile, &replace).await?;
+    assert_eq!(current(lib.owner.clone(), lib.v).await?, before);
+    let mut tx = db::begin(&lib.app, Some(lib.alice)).await?;
+    let v = db::tracks::get_track(&mut tx, lib.v, true).await?.unwrap();
+    assert!(v.file_history.as_ref().unwrap().iter().any(|h| h.old_file_id == added.new_file_id));
+    drop(tx);
+    assert!(problems_seen_by(&lib.app, lib.alice).await?.is_empty(), "resolved");
+
+    // The same file can't be added twice.
+    let err = ingest::add_file_to_track(&lib.app, &file, lib.o, ingest::AddAs::CurrentFile, &replace).await.unwrap_err();
+    assert!(err.to_string().contains("already stored"), "{err}");
     Ok(())
 }

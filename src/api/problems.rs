@@ -12,6 +12,8 @@ use super::{AppError, AppState};
 use crate::auth::{CurrentUser, Permission};
 use crate::db;
 use crate::db::problems::Problem;
+use crate::ingest::describe::{NewDescription, Report, ValidDescription};
+use crate::ingest::{self, AddAs, Given, IngestOptions, ReplaceOptions};
 
 #[derive(Debug, Deserialize)]
 pub struct ListParams {
@@ -98,4 +100,105 @@ pub async fn audio(
     .parse()
     .unwrap_or(mime::APPLICATION_OCTET_STREAM);
     serve_blob(state.store.path_for(&sha256), &mime, request).await
+}
+
+/// An open entry, ready to import again: the file in the blob store, and what it was
+/// imported with (status, restriction, platform ids...).
+async fn load_open(
+    state: &AppState,
+    user: &CurrentUser,
+    id: Uuid,
+) -> Result<(ingest::StagedFile, db::problems::OpenProblem, ValidDescription), AppError> {
+    let mut tx = state.db(user).await?;
+    let problem = db::problems::get_open(&mut tx, id).await?.ok_or(AppError::NotFound)?;
+    drop(tx);
+    let Some(json) = problem.description.clone() else {
+        return Err(AppError::BadRequest("this entry doesn't say where the file came from".to_string()));
+    };
+    let description: NewDescription = serde_json::from_value(json)
+        .map_err(|err| AppError::BadRequest(format!("the stored description doesn't fit: {err}")))?;
+    let description = description.validate(|_| None).map_err(AppError::BadRequest)?;
+    let file = ingest::StagedFile::stored(&state.store, &problem.sha256, problem.size_bytes as u64);
+    Ok((file, problem, description))
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ImportWith {
+    /// Used instead of the tags' title (for a file whose tags have none).
+    title: Option<String>,
+    /// Used instead of the tags' artists. Each is split on `;` like the ARTIST tag.
+    artists: Vec<String>,
+}
+
+/// `POST /api/ingest-problems/{id}/import`, JSON `{"title": "...", "artists": ["..."]}`:
+/// imports the kept file again, with what it was imported with the first time, using these
+/// values for what its tags lack. The file and its raw tags aren't changed; the track's
+/// first revision says which values were given by hand. Returns the ingest report; if it's
+/// refused again, the entry is updated with the new reason.
+pub async fn import(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<Uuid>,
+    Json(with): Json<ImportWith>,
+) -> Result<Json<Report>, AppError> {
+    let (file, problem, description) = load_open(&state, &user, id).await?;
+    if description.restrict_to.is_some() && !user.has(Permission::ManageAccess) {
+        return Err(AppError::Forbidden(
+            "this file was to be restricted; importing it needs the manage_access permission".to_string(),
+        ));
+    }
+    let options = IngestOptions {
+        user: user.id(),
+        uploaded_filename: problem.uploaded_filename,
+        origin: description.origin,
+        status: description.status.unwrap_or_else(|| "released".to_string()),
+        sources: description.track_sources,
+        restrict_to: description.restrict_to,
+        hints: description.hints,
+        local_path: problem.path,
+        given: Given {
+            title: with.title,
+            artists: with.artists,
+        },
+    };
+    let report = ingest::ingest_staged(&state.pool, &state.store, &file, &options, false).await?;
+    Ok(Json(report))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AddToTrack {
+    track_id: Uuid,
+    /// `current_file` (the track's file becomes a previous one) or `previous_file`.
+    add_as: AddAs,
+    #[serde(default)]
+    reason: String,
+}
+
+/// `POST /api/ingest-problems/{id}/add-to-track`, JSON `{"track_id": "...", "add_as":
+/// "current_file" | "previous_file", "reason": "..."}`: for a file that belongs to a track
+/// that's already there, e.g. a better copy without tags. Needs `replace_file`.
+pub async fn add_to_track(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<Uuid>,
+    Json(body): Json<AddToTrack>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let (file, problem, description) = load_open(&state, &user, id).await?;
+    let options = ReplaceOptions {
+        user: user.id(),
+        uploaded_filename: problem.uploaded_filename,
+        origin: description.origin,
+        reason: body.reason,
+    };
+    let outcome = ingest::add_file_to_track(&state.pool, &file, body.track_id, body.add_as, &options).await?;
+    Ok(Json(serde_json::json!({
+        "track_id": body.track_id,
+        "file_id": outcome.new_file_id,
+        "current_file_id": match body.add_as {
+            AddAs::CurrentFile => outcome.new_file_id,
+            AddAs::PreviousFile => outcome.old_file_id,
+        },
+    })))
 }

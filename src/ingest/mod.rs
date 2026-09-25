@@ -54,6 +54,18 @@ pub struct IngestOptions {
     pub hints: Hints,
     /// Where the file was on disk (CLI), for the review list if it doesn't import.
     pub local_path: Option<String>,
+    /// Values typed in by hand for what the tags lack (see `Given`).
+    pub given: Given,
+}
+
+/// Title and artists given by hand for a file whose tags lack them (the Review page's
+/// "import with these values"). They're used instead of the tags' for those fields, in the
+/// track's first revision, which says so. The file and its stored raw tags aren't changed.
+#[derive(Debug, Clone, Default)]
+pub struct Given {
+    pub title: Option<String>,
+    /// Split on `;` like the ARTIST tag.
+    pub artists: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -100,9 +112,17 @@ impl fmt::Display for Rejected {
 // Lets `Rejected` be used as an error (and so be wrapped in anyhow::Error and downcast later).
 impl std::error::Error for Rejected {}
 
-/// Streams a file from disk into a pending blob (hashing it on the way). Used by the CLI.
+/// Takes a file from disk into a pending blob (hashed). Used by the CLI.
+///
+/// On a filesystem that can, it's a reflink (see `BlobStore::reflink_in`): no bytes are
+/// copied and the library isn't stored twice. Otherwise it's streamed into the store's
+/// temp folder, hashing on the way.
 pub async fn receive_path(store: &BlobStore, path: &Path) -> anyhow::Result<PendingBlob> {
     use tokio::io::AsyncReadExt;
+
+    if let Some(pending) = store.reflink_in(path).await? {
+        return Ok(pending);
+    }
 
     let mut file = tokio::fs::File::open(path)
         .await
@@ -159,6 +179,16 @@ impl StagedFile {
             Ok(StagedFile { sha256, size, path, _temp: None })
         }
     }
+
+    /// A file already in the blob store (e.g. one kept for the review list).
+    pub fn stored(store: &BlobStore, sha256: &str, size: u64) -> StagedFile {
+        StagedFile {
+            sha256: sha256.to_string(),
+            size,
+            path: store.path_for(sha256),
+            _temp: None,
+        }
+    }
 }
 
 /// Ingests one file in its own transaction, and says what it did. With `dry_run`, works
@@ -174,9 +204,20 @@ pub async fn ingest_with_report(
     dry_run: bool,
 ) -> anyhow::Result<Report> {
     let file = StagedFile::new(store, pending, dry_run).await?;
+    ingest_staged(pool, store, &file, options, dry_run).await
+}
+
+/// `ingest_with_report` for a file that's staged already (e.g. kept for the review list).
+pub async fn ingest_staged(
+    pool: &PgPool,
+    store: &BlobStore,
+    file: &StagedFile,
+    options: &IngestOptions,
+    dry_run: bool,
+) -> anyhow::Result<Report> {
     let sha256 = file.sha256.clone();
     let mut tx = db::begin(pool, options.user).await?;
-    match ingest_in(&mut tx, store, &file, options, dry_run).await {
+    match ingest_in(&mut tx, store, file, options, dry_run).await {
         Ok(report) => {
             if !dry_run {
                 tx.commit().await?;
@@ -200,7 +241,7 @@ pub async fn ingest_with_report(
             if !dry_run {
                 // Listing it is a convenience: if that fails too, the original error is
                 // what matters.
-                if let Err(record_err) = record_problem(pool, &file, options, &err).await {
+                if let Err(record_err) = record_problem(pool, file, options, &err).await {
                     tracing::error!("couldn't list {} for review: {record_err:#}", options.uploaded_filename);
                 }
             }
@@ -226,14 +267,19 @@ async fn record_problem(
 ) -> anyhow::Result<()> {
     let refused = is_refusal(err);
     let reason = if refused { err.to_string() } else { format!("{err:#}") };
-    // The raw tags, to see what's missing. (Not there for files that aren't audio.)
+    // The tags, to see what's missing. (Not there for files that aren't audio.)
     let path = file.path.clone();
     let extension = file_extension(&options.uploaded_filename);
     let tags = tokio::task::spawn_blocking(move || tags::read_tags(&path, extension.as_deref()))
         .await?
-        .ok()
-        .map(|t| json!({ "tags": t.raw }));
-    let origin = &options.origin;
+        .ok();
+    let description = describe::description_json(
+        &options.origin,
+        &options.status,
+        &options.sources,
+        &options.hints,
+        options.restrict_to.as_deref(),
+    );
     let problem = db::problems::NewProblem {
         kind: if refused { "skipped" } else { "failed" },
         sha256: &file.sha256,
@@ -241,9 +287,10 @@ async fn record_problem(
         uploaded_filename: &options.uploaded_filename,
         path: options.local_path.as_deref(),
         reason: &reason,
-        origin: Some(json!({ "platform": origin.platform, "source_id": origin.source_id,
-                             "captured_at": origin.captured_at, "data": origin.data })),
-        embedded_tags: tags,
+        description,
+        embedded_tags: tags.as_ref().map(|t| json!({ "tags": t.raw })),
+        tag_title: tags.as_ref().and_then(|t| t.title.as_deref()),
+        tag_artists: tags.as_ref().map_or(&[], |t| &t.artists),
     };
     let mut tx = db::begin(pool, options.user).await?;
     db::problems::record(&mut tx, &problem).await?;
@@ -290,7 +337,17 @@ pub async fn ingest_in(
     }
 
     // 2. Probe and read tags, and make sure the tags are good enough.
-    let (probe, tags) = read_file_info(&file.path, &options.uploaded_filename).await?;
+    let (probe, mut tags) = read_file_info(&file.path, &options.uploaded_filename).await?;
+    let mut given = Vec::new();
+    if let Some(title) = options.given.title.as_ref().filter(|t| !t.trim().is_empty()) {
+        tags.title = Some(title.clone());
+        given.push("title");
+    }
+    let given_artists = tags::split_artists(options.given.artists.clone());
+    if !given_artists.is_empty() {
+        tags.artists = given_artists;
+        given.push("artist");
+    }
     let missing: Vec<&'static str> = [
         ("title", tags.title.is_none()),
         ("artist", tags.artists.is_empty()),
@@ -321,7 +378,18 @@ pub async fn ingest_in(
     //    uploader can't see), and for similar titles to flag. So it runs as the system
     //    (see `db::as_system`); what the uploader gets back is filtered afterwards.
     let system = db::as_system(conn).await?;
+    // The first revision says where its values came from.
+    let (variant_label, revision_reason) = if given.is_empty() {
+        ("File tags".to_string(), "imported_from_file".to_string())
+    } else {
+        (
+            "File tags + given by hand".to_string(),
+            format!("imported_from_file; given by hand (not from the tags): {}", given.join(", ")),
+        )
+    };
     let new_file = NewFileInfo {
+        variant_label: &variant_label,
+        revision_reason: &revision_reason,
         sha256: &sha256,
         size_bytes,
         probe: &probe,
@@ -444,6 +512,7 @@ pub async fn replace_file(
     pending: PendingBlob,
     options: ReplaceOptions,
 ) -> anyhow::Result<ReplaceOutcome> {
+    // Check before storing anything, so a typo in the id doesn't leave a stray blob.
     if let Some(existing) = find_file(pool, options.user, &pending.sha256).await? {
         let track_id = match existing.track_id {
             Some(id) => visible(pool, options.user, id).await?,
@@ -451,23 +520,46 @@ pub async fn replace_file(
         };
         return Err(Rejected::AlreadyStored { track_id }.into());
     }
-    // Check before storing anything, so a typo in the id doesn't leave a stray blob.
-    let mut tx = db::begin(pool, options.user).await?;
-    let track_exists =
-        db::sources::owner_exists(&mut tx, SourceOwner::Track(track_id)).await?;
-    drop(tx);
-    if !track_exists {
+    if visible(pool, options.user, track_id).await?.is_none() {
         return Err(Rejected::TrackNotFound(track_id).into());
     }
+    let file = StagedFile::new(store, pending, false).await?;
+    add_file_to_track(pool, &file, track_id, AddAs::CurrentFile, &options).await
+}
 
-    let (probe, tags) = read_file_info(pending.path(), &options.uploaded_filename).await?;
-    let sha256 = pending.sha256.clone();
-    let size_bytes = pending.size as i64;
-    store.commit(pending).await?;
+/// How a file is added to an existing track (see `add_file_to_track`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AddAs {
+    /// It becomes the track's file; the one it had becomes a previous file (an upgrade).
+    CurrentFile,
+    /// It's kept as one of the track's previous files; the current file stays.
+    PreviousFile,
+}
+
+/// Adds a stored file to an existing track: as its new file (like `replace_file`), or as a
+/// previous file. Its own tags are kept on its `files` row; the track's metadata doesn't
+/// change. Used for replacing files, and for files that didn't import because their tags
+/// lack things, when they belong to a track that's already there.
+pub async fn add_file_to_track(
+    pool: &PgPool,
+    file: &StagedFile,
+    track_id: Uuid,
+    add_as: AddAs,
+    options: &ReplaceOptions,
+) -> anyhow::Result<ReplaceOutcome> {
+    if let Some(existing) = find_file(pool, options.user, &file.sha256).await? {
+        let track_id = match existing.track_id {
+            Some(id) => visible(pool, options.user, id).await?,
+            None => None,
+        };
+        return Err(Rejected::AlreadyStored { track_id }.into());
+    }
+    let (probe, tags) = read_file_info(&file.path, &options.uploaded_filename).await?;
 
     let mut tx = db::begin(pool, options.user).await?;
-    // Locking the row means two replacements of the same track can't interleave.
-    let Some(old_file_id) = db::ingest::lock_track_file(&mut tx, track_id).await? else {
+    // Locking the row means two changes to the same track's files can't interleave.
+    let Some(current_file_id) = db::ingest::lock_track_file(&mut tx, track_id).await? else {
         return Err(Rejected::TrackNotFound(track_id).into());
     };
     let origin =
@@ -478,18 +570,33 @@ pub async fn replace_file(
         new_file_id,
         origin.snapshot_id,
         &options.uploaded_filename,
-        &sha256,
-        size_bytes,
+        &file.sha256,
+        file.size as i64,
         &probe,
         &tags,
     )
     .await?;
-    db::ingest::replace_track_file(&mut tx, track_id, old_file_id, new_file_id, &options.reason)
-        .await?;
+    let resolution = match add_as {
+        AddAs::CurrentFile => {
+            db::ingest::replace_track_file(&mut tx, track_id, current_file_id, new_file_id, &options.reason)
+                .await?;
+            "added to a track as its file"
+        }
+        AddAs::PreviousFile => {
+            db::ingest::add_previous_file(&mut tx, track_id, new_file_id, current_file_id, &options.reason)
+                .await?;
+            "added to a track as a previous file"
+        }
+    };
+    // If it was listed as not imported, it's in now. (As the system: the entry may be
+    // someone else's.)
+    let system = db::as_system(&mut tx).await?;
+    db::problems::resolve_imported(&mut tx, &file.sha256, track_id, resolution).await?;
+    system.end(&mut tx).await?;
     tx.commit().await?;
 
     Ok(ReplaceOutcome {
-        old_file_id,
+        old_file_id: current_file_id,
         new_file_id,
     })
 }
@@ -595,6 +702,9 @@ async fn insert_file_row(
 
 /// The new file, as read and stored.
 struct NewFileInfo<'a> {
+    /// The first variant's label and the first revision's reason.
+    variant_label: &'a str,
+    revision_reason: &'a str,
     sha256: &'a str,
     size_bytes: i64,
     probe: &'a ProbeInfo,
@@ -625,9 +735,15 @@ async fn create_track_rows(
     // album artist says nothing about this track, and all are primary. Names are compared
     // ignoring case, like artist matching.
     //
-    // On a single (see `AlbumHint::single`), the first artist is primary and the others
-    // featured, whatever ALBUM ARTIST says (NetEase lists everyone there on singles).
-    let single = hints.album.as_ref().is_some_and(|a| a.single);
+    // On a single, the first artist is primary and the others featured, whatever ALBUM
+    // ARTIST says (NetEase lists everyone there on singles). A single is what the
+    // description (or the folders, see `layouts::release_kind`) says, or else a track
+    // count of 1 ("1/1"). Anything else is an album.
+    let single = hints
+        .album
+        .as_ref()
+        .and_then(|a| a.single)
+        .unwrap_or(tags.track_total == Some(1));
     let album_artist_names = if tags.album_artists.is_empty() {
         &tags.artists
     } else {
@@ -678,7 +794,7 @@ async fn create_track_rows(
             album_artists.push(resolver.artist(conn, hints, name).await?);
         }
         let id = resolver
-            .album(conn, hints, album_title, &album_artists, tags.date.as_deref())
+            .album(conn, hints, album_title, &album_artists, single, tags.date.as_deref())
             .await?;
         album_id = Some(id);
         albums.push(AlbumMembership {
@@ -709,8 +825,8 @@ async fn create_track_rows(
         file_id,
         &metadata,
         &facts,
-        "File tags",
-        "imported_from_file",
+        file.variant_label,
+        file.revision_reason,
     )
     .await?;
 

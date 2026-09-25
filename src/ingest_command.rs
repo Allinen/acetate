@@ -92,7 +92,7 @@ pub async fn run(pool: &PgPool, store: &BlobStore, dir: &Path, options: Options)
             album.covers.push(bytes);
         }
         let has_album_hint =
-            !album.sources.is_empty() || !album.covers.is_empty() || album.track_number.is_some() || album.single;
+            !album.sources.is_empty() || !album.covers.is_empty() || album.track_number.is_some() || album.single.is_some();
         let ingest_options = IngestOptions {
             user: None, // the CLI acts as the system
             uploaded_filename: file_name(path),
@@ -105,6 +105,7 @@ pub async fn run(pool: &PgPool, store: &BlobStore, dir: &Path, options: Options)
                 album: has_album_hint.then_some(album),
             },
             local_path: Some(path.display().to_string()),
+            given: Default::default(),
         };
 
         let result = match ingest::receive_path(store, path).await {

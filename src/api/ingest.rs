@@ -102,6 +102,7 @@ pub async fn ingest(
         restrict_to: description.restrict_to,
         hints: description.hints,
         local_path: None,
+        given: Default::default(),
     };
     let report =
         ingest::ingest_with_report(&state.pool, &state.store, pending, &options, params.dry_run)

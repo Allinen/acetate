@@ -1190,12 +1190,61 @@ function problemList(problems) {
       tags.length ? h("details", {}, h("summary", {}, "tags in the file"),
         h("pre", { class: "mono" }, tags.map((t) => [`[${t.format}]`,
           ...t.items.map((i) => `  ${i.key}${i.description ? ` (${i.description})` : ""}: ${typeof i.value === "string" ? i.value : JSON.stringify(i.value)}`)].join("\n")).join("\n"))) : null,
+      importForm(p),
+      can("replace_file") ? addToTrackForm(p) : null,
       h("div", { class: "row" }, resolution,
         h("button", {
           type: "button", class: "small",
           onclick: () => save(status, () => postJson(`/api/ingest-problems/${p.id}/resolve`, { resolution: resolution.value }), showReview),
         }, "Resolve"), status));
   });
+}
+
+// Import the kept file again, typing in what its tags lack (the file isn't changed).
+function importForm(p) {
+  const title = h("input", { value: p.tag_title ?? "", placeholder: "title", required: true });
+  const artists = h("input", { value: p.tag_artists.join("; "), placeholder: "artists, separated by ;", required: true });
+  const status = h("span", {});
+  const form = h("form", { class: "row" },
+    h("label", { class: "row" }, "title", title),
+    h("label", { class: "row" }, "artists", artists),
+    h("button", { type: "submit", class: "small" }, "Import with these"), status);
+  form.addEventListener("submit", (e) => {
+    e.preventDefault();
+    save(status, () => postJson(`/api/ingest-problems/${p.id}/import`, {
+      // Only what differs from the tags counts as given by hand.
+      title: title.value.trim() !== (p.tag_title ?? "") ? title.value.trim() : null,
+      artists: artists.value.trim() !== p.tag_artists.join("; ") ? [artists.value] : [],
+    }), (report) => { location.hash = `#/track/${report.track_id}`; });
+  });
+  return form;
+}
+
+// For a file that belongs to a track that's already there: make it that track's file (the
+// old one becomes a previous file), or keep it as a previous file.
+function addToTrackForm(p) {
+  let target = null;
+  const chosen = h("span", { class: "muted" }, "no track chosen");
+  const addAs = h("select", {},
+    h("option", { value: "previous_file" }, "as a previous file"),
+    h("option", { value: "current_file" }, "as its file (the current one becomes previous)"));
+  const reason = h("input", { placeholder: "why (optional)" });
+  const status = h("span", {});
+  const pick = picker("add to track…", findTracks, (x) => [x.title, h("span", { class: "muted" }, " · ", x.artist_display)], (x) => {
+    target = x;
+    chosen.replaceChildren(h("a", { href: `#/track/${x.id}` }, x.title), ` · ${x.artist_display}`);
+  });
+  return h("details", {}, h("summary", {}, "add to an existing track"),
+    h("div", { class: "stack" }, pick, h("div", { class: "row" }, chosen, addAs, reason,
+      h("button", {
+        type: "button", class: "small",
+        onclick: () => {
+          if (!target) { status.textContent = "choose a track first"; return; }
+          save(status, () => postJson(`/api/ingest-problems/${p.id}/add-to-track`,
+            { track_id: target.id, add_as: addAs.value, reason: reason.value }),
+            () => { location.hash = `#/track/${target.id}`; });
+        },
+      }, "Add"), status)));
 }
 
 // ---------------------------------------------------------------------------

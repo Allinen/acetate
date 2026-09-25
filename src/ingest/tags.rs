@@ -37,6 +37,8 @@ pub struct TagInfo {
     /// The same from ALBUM ARTIST: the album's credits (may differ from the track's).
     pub album_artists: Vec<String>,
     pub track_number: Option<u32>,
+    /// How many tracks the album has (TRACKTOTAL, or the "10" in TRACK "3/10").
+    pub track_total: Option<u32>,
     pub disc_number: Option<u32>,
     pub date: Option<String>,
     pub genres: Vec<String>,
@@ -139,6 +141,7 @@ pub fn read_tags(path: &Path, extension: Option<&str>) -> anyhow::Result<TagInfo
     info.album = tag.album().map(|s| s.to_string()).filter(|s| !s.trim().is_empty());
     info.album_artists = split_artists(strings(tag, ItemKey::AlbumArtist));
     info.track_number = tag.track();
+    info.track_total = tag.track_total();
     info.disc_number = tag.disk();
     // Dates come from the raw tags: lofty's generic view of ID3v2 dates is re-rendered
     // from a parsed timestamp and not verbatim.

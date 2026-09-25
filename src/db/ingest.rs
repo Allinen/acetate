@@ -354,6 +354,34 @@ pub async fn lock_track_file(conn: &mut PgConnection, track_id: Uuid) -> sqlx::R
     .await
 }
 
+/// Adds a file to a track as a previous file: recorded in the file history as if the
+/// current file had replaced it, so it's listed, streamable and cleanable (trash, purge)
+/// like any previous file. The track keeps playing its current file.
+pub async fn add_previous_file(
+    conn: &mut PgConnection,
+    track_id: Uuid,
+    file_id: Uuid,
+    current_file_id: Uuid,
+    reason: &str,
+) -> sqlx::Result<()> {
+    sqlx::query!(
+        r#"
+        INSERT INTO track_file_history (track_id, old_file_id, new_file_id, reason)
+        VALUES ($1, $2, $3, $4)
+        "#,
+        track_id,
+        file_id,
+        current_file_id,
+        reason,
+    )
+    .execute(&mut *conn)
+    .await?;
+    sqlx::query!("UPDATE tracks SET updated_at = now() WHERE id = $1", track_id)
+        .execute(conn)
+        .await?;
+    Ok(())
+}
+
 /// Points a track at a new file and records the change. The old file is kept.
 pub async fn replace_track_file(
     conn: &mut PgConnection,
