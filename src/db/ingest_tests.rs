@@ -43,6 +43,7 @@ fn options(user: Option<Uuid>, song_id: i64, hints: Hints) -> IngestOptions {
         hints,
         local_path: None,
         given: Default::default(),
+        volume: None,
     }
 }
 
@@ -69,7 +70,7 @@ async fn ingest_file(
     dry_run: bool,
 ) -> anyhow::Result<Report> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("test-audio").join(file);
-    let pending = ingest::receive_path(store, &path).await?;
+    let pending = ingest::receive_path(store, &path, "main").await?;
     let options = IngestOptions {
         uploaded_filename: file.to_string(),
         ..options.clone()
@@ -371,7 +372,7 @@ async fn refused_file(lib_pool: &PgPool, store: &BlobStore, opts: &IngestOptions
     let (sha, size): (String, i64) = sqlx::query_as("SELECT sha256, size_bytes FROM ingest_problems")
         .fetch_one(lib_pool)
         .await?;
-    Ok(ingest::StagedFile::stored(store, &sha, size as u64))
+    Ok(ingest::StagedFile::stored(store, &sha, size as u64).await)
 }
 
 #[sqlx::test]
@@ -441,6 +442,7 @@ async fn listed_files_can_be_added_to_a_track(
         uploaded_filename: "no-artist.opus".into(),
         origin: netease(Kind::Track, "song_id", 1),
         reason: "untagged copy".into(),
+        volume: None,
     };
 
     // As a previous file: the track keeps playing its file.
@@ -456,5 +458,41 @@ async fn listed_files_can_be_added_to_a_track(
     // The same file can't be added twice.
     let err = ingest::add_file_to_track(&lib.app, &file, lib.o, ingest::AddAs::CurrentFile, &replace).await.unwrap_err();
     assert!(err.to_string().contains("already stored"), "{err}");
+    Ok(())
+}
+
+#[sqlx::test]
+async fn audio_goes_to_the_chosen_volume_and_covers_to_the_default(
+    _: PgPoolOptions,
+    connect: PgConnectOptions,
+) -> anyhow::Result<()> {
+    let lib = setup(connect).await?;
+    let (ssd, hdd) = (tempfile::tempdir()?, tempfile::tempdir()?);
+    let store = BlobStore::open_volumes(&[
+        ("main".into(), ssd.path().to_path_buf()),
+        ("archive".into(), hdd.path().to_path_buf()),
+    ])?;
+
+    // Glass Harbor has an embedded cover.
+    let mut opts = options(None, 1, Hints::default());
+    opts.volume = Some("archive".into());
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("test-audio/01 - Glass Harbor.flac");
+    let pending = ingest::receive_path(&store, &path, "archive").await?;
+    let opts = IngestOptions { uploaded_filename: "01 - Glass Harbor.flac".into(), ..opts };
+    ingest::ingest_with_report(&lib.owner, &store, pending, &opts, false).await?;
+
+    let audio: (String, String) = sqlx::query_as(
+        "SELECT b.volume, b.sha256 FROM blobs b JOIN files f ON f.sha256 = b.sha256",
+    )
+    .fetch_one(&lib.owner)
+    .await?;
+    assert_eq!(audio.0, "archive");
+    assert!(store.find(&audio.1).await.unwrap().1.starts_with(hdd.path()));
+    let covers: Vec<String> = sqlx::query_scalar(
+        "SELECT b.volume FROM blobs b JOIN covers c ON c.blob_sha256 = b.sha256",
+    )
+    .fetch_all(&lib.owner)
+    .await?;
+    assert!(!covers.is_empty() && covers.iter().all(|v| v == "main"), "{covers:?}");
     Ok(())
 }

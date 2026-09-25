@@ -181,7 +181,7 @@ pub async fn stream(
     drop(tx);
     let file = file.ok_or(AppError::NotFound)?;
     let mime = audio_mime(file.container.as_deref(), file.codec.as_deref());
-    serve_blob(state.store.path_for(&file.sha256), &mime, request).await
+    serve_blob(state.store.path_for(&file.sha256).await, &mime, request).await
 }
 
 /// `GET /api/share/{token}/covers/{cover_id}`: a cover of a shared track or album.
@@ -199,7 +199,7 @@ pub async fn cover(
         .mime
         .and_then(|m| m.parse().ok())
         .unwrap_or(mime::APPLICATION_OCTET_STREAM);
-    serve_blob(state.store.path_for(&cover.sha256), &mime, request).await
+    serve_blob(state.store.path_for(&cover.sha256).await, &mime, request).await
 }
 
 async fn find(state: &AppState, token: &str) -> Result<ActiveShare, AppError> {

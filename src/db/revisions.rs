@@ -1049,6 +1049,13 @@ pub async fn merge_tracks(
     )
     .fetch_all(&mut *conn)
     .await?;
+    // Users' plays, stars and ratings: the kept track gets both tracks' combined.
+    let annotations = super::annotations::combine_into(
+        conn,
+        super::annotations::Item::Track(from),
+        super::annotations::Item::Track(into),
+    )
+    .await?;
     let resolution = format!("merged into {into}");
     let flags = sqlx::query_scalar!(
         r#"
@@ -1090,6 +1097,7 @@ pub async fn merge_tracks(
         shares,
         redirected,
         flags,
+        annotations,
     };
     sqlx::query!(
         r#"
@@ -1146,6 +1154,10 @@ struct MergeRecord {
     shares: Vec<Uuid>,
     redirected: Vec<Uuid>,
     flags: Vec<Uuid>,
+    /// Users' plays, stars and ratings of the duplicate, combined into the kept track's.
+    /// (Missing in merges recorded before annotations existed.)
+    #[serde(default)]
+    annotations: Vec<super::annotations::CombinedAnnotation>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1479,6 +1491,8 @@ pub async fn undo_track_merge(conn: &mut PgConnection, merge_id: Uuid, reason: &
     sqlx::query!("UPDATE shares SET track_id = $2 WHERE id = ANY($1)", &record.shares, dupe)
         .execute(&mut *conn)
         .await?;
+    // Users' plays, stars and ratings: the kept track's lose the duplicate's again.
+    super::annotations::split(conn, super::annotations::Item::Track(kept), &record.annotations).await?;
     sqlx::query!("UPDATE tracks SET merged_into = $2 WHERE id = ANY($1)", &record.redirected, dupe)
         .execute(&mut *conn)
         .await?;
@@ -2133,6 +2147,13 @@ pub async fn merge_artist(
 
     // 5. Sources. One with the same platform id as one of `into`'s joins it.
     super::sources::move_all(conn, SourceOwner::Artist(from), SourceOwner::Artist(into)).await?;
+    // 6. Users' plays, stars and ratings of the artist: combined into `into`'s.
+    super::annotations::combine_into(
+        conn,
+        super::annotations::Item::Artist(from),
+        super::annotations::Item::Artist(into),
+    )
+    .await?;
 
     system.end(conn).await?;
 

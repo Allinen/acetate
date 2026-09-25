@@ -7,8 +7,8 @@
 #   scripts/reset-dev-db.sh --with-audio   # plus the test files
 #
 # Uses DATABASE_URL (from the environment or .env) and refuses anything that isn't on this
-# machine. Blobs in the data dir are left alone: they're content-addressed, so importing
-# the same file again just reuses them.
+# machine, or whose name doesn't end in _dev, _test or _scratch. Blobs in the data dir are
+# left alone: they're content-addressed, so importing the same file again reuses them.
 #
 # Unlike `sqlx database reset`, this works while other sessions (psql, the server) are
 # connected; it drops the schema instead of the whole database. Restart a running server
@@ -44,6 +44,13 @@ db_name="${BASH_REMATCH[6]}"
 case "$db_host" in
     127.0.0.1|localhost|::1) ;;
     *) echo "refusing to reset a database on $db_host (only local ones)" >&2; exit 1 ;;
+esac
+
+# Only databases whose name says they're disposable: the real library may live in the same
+# Postgres (e.g. `acetate`), one wrong DATABASE_URL away.
+case "$db_name" in
+    *_dev|*_test|*_scratch) ;;
+    *) echo "refusing to reset '$db_name': only databases named *_dev, *_test or *_scratch" >&2; exit 1 ;;
 esac
 
 admin_user="${ACETATE_DEV_ADMIN:-admin}"

@@ -368,6 +368,8 @@ pub async fn purge(
             if let Some(t) = targets.iter().find(|t| t.blob.as_ref() == Some(sha)) {
                 *freed_by.entry(t.id).or_default() += size;
             }
+            // No longer stored anywhere once it's deleted (after the commit).
+            super::blobs::forget(conn, sha).await?;
             delete_blobs.push(sha.clone());
         }
     }

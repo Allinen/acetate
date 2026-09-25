@@ -6,6 +6,7 @@
 //! permissions.
 
 mod access;
+mod annotations;
 mod auth;
 mod covers;
 mod lyrics;
@@ -126,6 +127,14 @@ pub fn router(state: AppState) -> Router {
             "/api/album-revisions/{id}/restore",
             require(&[RestoreRevision], post(catalog::restore_album)),
         )
+        // A user's own plays, stars and ratings.
+        .route("/api/tracks/{id}/star", require(&[Browse], post(annotations::star_track).delete(annotations::unstar_track)))
+        .route("/api/albums/{id}/star", require(&[Browse], post(annotations::star_album).delete(annotations::unstar_album)))
+        .route("/api/artists/{id}/star", require(&[Browse], post(annotations::star_artist).delete(annotations::unstar_artist)))
+        .route("/api/tracks/{id}/rating", require(&[Browse], put(annotations::rate_track)))
+        .route("/api/albums/{id}/rating", require(&[Browse], put(annotations::rate_album)))
+        .route("/api/artists/{id}/rating", require(&[Browse], put(annotations::rate_artist)))
+        .route("/api/tracks/{id}/played", require(&[Browse], post(annotations::played)))
         .route("/api/review", require(&[EditMetadata], get(review::list)))
         .route("/api/review/{id}/resolve", require(&[EditMetadata], post(review::resolve)))
         // Files that didn't import: whoever uploaded them (admins: all).
@@ -314,6 +323,18 @@ impl IntoResponse for AppError {
         };
         (status, Json(json!({ "error": message }))).into_response()
     }
+}
+
+/// A storage volume picked in a request: only admins choose (it's about the server's
+/// disks), and it must be one that's configured.
+pub(crate) fn check_volume(state: &AppState, user: &CurrentUser, volume: &str) -> Result<(), AppError> {
+    if !user.has(crate::auth::Permission::Admin) {
+        return Err(AppError::Forbidden("choosing a storage volume is for admins".to_string()));
+    }
+    if !state.store.has_volume(volume) {
+        return Err(AppError::BadRequest(format!("no storage volume called \"{volume}\"")));
+    }
+    Ok(())
 }
 
 // Lets handlers use `?` on anything that converts into anyhow::Error (sqlx errors, io errors...).

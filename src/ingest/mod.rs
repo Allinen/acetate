@@ -56,6 +56,8 @@ pub struct IngestOptions {
     pub local_path: Option<String>,
     /// Values typed in by hand for what the tags lack (see `Given`).
     pub given: Given,
+    /// Which storage volume the audio goes to (None: the default one). Admins choose.
+    pub volume: Option<String>,
 }
 
 /// Title and artists given by hand for a file whose tags lack them (the Review page's
@@ -117,10 +119,12 @@ impl std::error::Error for Rejected {}
 /// On a filesystem that can, it's a reflink (see `BlobStore::reflink_in`): no bytes are
 /// copied and the library isn't stored twice. Otherwise it's streamed into the store's
 /// temp folder, hashing on the way.
-pub async fn receive_path(store: &BlobStore, path: &Path) -> anyhow::Result<PendingBlob> {
+///
+/// `volume`: where it's going to be stored, so the reflink lands on that volume's disk.
+pub async fn receive_path(store: &BlobStore, path: &Path, volume: &str) -> anyhow::Result<PendingBlob> {
     use tokio::io::AsyncReadExt;
 
-    if let Some(pending) = store.reflink_in(path).await? {
+    if let Some(pending) = store.reflink_in(path, volume).await? {
         return Ok(pending);
     }
 
@@ -157,6 +161,8 @@ pub async fn ingest(
 pub struct StagedFile {
     pub sha256: String,
     pub size: u64,
+    /// The volume it's stored on (a dry run: would be).
+    pub volume: String,
     /// Where to read it: in the blob store, or (dry run) the temp file.
     path: PathBuf,
     /// A dry run's temp file, deleted when this is dropped.
@@ -168,24 +174,32 @@ impl StagedFile {
     /// checked: if it's refused, the audio is kept for the review list (see
     /// `db::problems`). If it's a duplicate, nothing new is stored (same hash, same blob).
     /// A dry run only keeps the temp file, which goes away.
-    pub async fn new(store: &BlobStore, pending: PendingBlob, dry_run: bool) -> anyhow::Result<StagedFile> {
+    ///
+    /// It goes to `volume`, unless the same bytes are already stored on another one.
+    pub async fn new(store: &BlobStore, pending: PendingBlob, dry_run: bool, volume: &str) -> anyhow::Result<StagedFile> {
         let sha256 = pending.sha256.clone();
         let size = pending.size;
         if dry_run {
             let path = pending.path().to_path_buf();
-            Ok(StagedFile { sha256, size, path, _temp: Some(pending) })
+            let volume = volume.to_string();
+            Ok(StagedFile { sha256, size, volume, path, _temp: Some(pending) })
         } else {
-            let path = store.commit(pending).await?;
-            Ok(StagedFile { sha256, size, path, _temp: None })
+            let (volume, path) = store.commit(pending, volume).await?;
+            Ok(StagedFile { sha256, size, volume, path, _temp: None })
         }
     }
 
     /// A file already in the blob store (e.g. one kept for the review list).
-    pub fn stored(store: &BlobStore, sha256: &str, size: u64) -> StagedFile {
+    pub async fn stored(store: &BlobStore, sha256: &str, size: u64) -> StagedFile {
+        let (volume, path) = match store.find(sha256).await {
+            Some(found) => found,
+            None => (store.default_volume().to_string(), store.path_for(sha256).await),
+        };
         StagedFile {
             sha256: sha256.to_string(),
             size,
-            path: store.path_for(sha256),
+            volume,
+            path,
             _temp: None,
         }
     }
@@ -203,7 +217,8 @@ pub async fn ingest_with_report(
     options: &IngestOptions,
     dry_run: bool,
 ) -> anyhow::Result<Report> {
-    let file = StagedFile::new(store, pending, dry_run).await?;
+    let volume = options.volume.as_deref().unwrap_or(store.default_volume());
+    let file = StagedFile::new(store, pending, dry_run, volume).await?;
     ingest_staged(pool, store, &file, options, dry_run).await
 }
 
@@ -293,6 +308,7 @@ async fn record_problem(
         tag_artists: tags.as_ref().map_or(&[], |t| &t.artists),
     };
     let mut tx = db::begin(pool, options.user).await?;
+    db::blobs::register(&mut tx, &file.sha256, &file.volume, Some(file.size as i64)).await?;
     db::problems::record(&mut tx, &problem).await?;
     tx.commit().await?;
     Ok(())
@@ -388,6 +404,8 @@ pub async fn ingest_in(
         )
     };
     let new_file = NewFileInfo {
+        volume: &file.volume,
+        cover_volume: store.default_volume(),
         variant_label: &variant_label,
         revision_reason: &revision_reason,
         sha256: &sha256,
@@ -443,7 +461,7 @@ async fn covers_for_known_album(
     for (bytes, image) in covers {
         blobs.push((put_image(store, bytes, dry_run).await?, image));
     }
-    describe::add_album_covers(conn, album_id, &blobs).await
+    describe::add_album_covers(conn, album_id, &blobs, store.default_volume()).await
 }
 
 /// Stores an image as a blob and returns its sha256. In a dry run, only hashes it.
@@ -494,6 +512,8 @@ pub struct ReplaceOptions {
     pub origin: ValidSource,
     /// Why the file was replaced, e.g. "upgrade: 320k mp3 -> flac".
     pub reason: String,
+    /// Which storage volume the new file goes to (None: the default one).
+    pub volume: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -523,7 +543,8 @@ pub async fn replace_file(
     if visible(pool, options.user, track_id).await?.is_none() {
         return Err(Rejected::TrackNotFound(track_id).into());
     }
-    let file = StagedFile::new(store, pending, false).await?;
+    let volume = options.volume.as_deref().unwrap_or(store.default_volume());
+    let file = StagedFile::new(store, pending, false, volume).await?;
     add_file_to_track(pool, &file, track_id, AddAs::CurrentFile, &options).await
 }
 
@@ -576,6 +597,7 @@ pub async fn add_file_to_track(
         &tags,
     )
     .await?;
+    db::blobs::register(&mut tx, &file.sha256, &file.volume, Some(file.size as i64)).await?;
     let resolution = match add_as {
         AddAs::CurrentFile => {
             db::ingest::replace_track_file(&mut tx, track_id, current_file_id, new_file_id, &options.reason)
@@ -702,6 +724,9 @@ async fn insert_file_row(
 
 /// The new file, as read and stored.
 struct NewFileInfo<'a> {
+    /// The volume the audio is on, and the one covers go to.
+    volume: &'a str,
+    cover_volume: &'a str,
     /// The first variant's label and the first revision's reason.
     variant_label: &'a str,
     revision_reason: &'a str,
@@ -843,7 +868,7 @@ async fn create_track_rows(
     }
     let mut album_covers_added = 0;
     if let Some(album_id) = album_id {
-        album_covers_added = describe::add_album_covers(conn, album_id, album_covers).await?;
+        album_covers_added = describe::add_album_covers(conn, album_id, album_covers, file.cover_volume).await?;
     }
 
     for body in &tags.lyrics {
@@ -897,6 +922,10 @@ async fn create_track_rows(
         tags,
     )
     .await?;
+    db::blobs::register(conn, file.sha256, file.volume, Some(file.size_bytes)).await?;
+    for (cover_sha, _) in covers {
+        db::blobs::register(conn, cover_sha, file.cover_volume, None).await?;
+    }
     // If this file was listed as not imported before (e.g. its tags were fixed since), it
     // is now.
     db::problems::resolve_imported(conn, file.sha256, track_id, "imported").await?;

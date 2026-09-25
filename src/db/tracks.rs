@@ -109,6 +109,8 @@ pub struct TrackDetail {
     pub lyrics: Vec<Lyrics>,
     /// Tracks merged into this one (filled in by the API, see `revisions::merges_into`).
     pub merges: Vec<super::revisions::MergeInfo>,
+    /// The current user's plays, rating and star.
+    pub annotation: super::annotations::Annotation,
     pub covers: Vec<Cover>,
 }
 
@@ -458,6 +460,7 @@ pub async fn get_track(
         lyrics,
         covers,
         merges: Vec::new(),
+        annotation: super::annotations::get(conn, super::annotations::Item::Track(id)).await?,
     }))
 }
 

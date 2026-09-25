@@ -46,6 +46,7 @@ pub async fn upload(
 ) -> Result<Json<Vec<UploadResult>>, AppError> {
     let mut status = "released".to_string();
     let mut restrict_to: Option<Vec<Uuid>> = None;
+    let mut volume: Option<String> = None;
     let mut next_origin: Option<ValidSource> = None;
     let mut next_sources: Vec<ValidSource> = Vec::new();
     let mut results = Vec::new();
@@ -67,6 +68,10 @@ pub async fn upload(
                     restrict_to = serde_json::from_str(&value).map_err(|err| {
                         AppError::BadRequest(format!("restrict_to: expected an array of group ids ({err})"))
                     })?;
+                }
+                "volume" => {
+                    super::check_volume(&state, &user, &value)?;
+                    volume = Some(value);
                 }
                 "origin" => next_origin = Some(parse_source(&value)?),
                 "sources" => next_sources = parse_sources(&value)?,
@@ -102,6 +107,7 @@ pub async fn upload(
             origin,
             sources,
             restrict_to: restrict_to.clone(),
+            volume: volume.clone(),
             hints: Default::default(),
             local_path: None,
             given: Default::default(),
@@ -151,6 +157,7 @@ pub async fn replace_file(
 ) -> Result<Json<ReplaceResult>, AppError> {
     let mut origin: Option<ValidSource> = None;
     let mut reason = String::new();
+    let mut volume: Option<String> = None;
 
     while let Some(mut field) = multipart.next_field().await.map_err(bad_request)? {
         let name = field.name().unwrap_or_default().to_string();
@@ -159,6 +166,10 @@ pub async fn replace_file(
             match name.as_str() {
                 "origin" => origin = Some(parse_source(&value)?),
                 "reason" => reason = value,
+                "volume" => {
+                    super::check_volume(&state, &user, &value)?;
+                    volume = Some(value);
+                }
                 other => return Err(AppError::BadRequest(format!("unknown field '{other}'"))),
             }
             continue;
@@ -182,6 +193,7 @@ pub async fn replace_file(
             uploaded_filename: filename,
             origin,
             reason,
+            volume,
         };
         let outcome =
             ingest::replace_file(&state.pool, &state.store, track_id, pending, options).await?;

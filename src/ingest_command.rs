@@ -31,6 +31,8 @@ pub struct Options {
     pub netease_albums: Option<netease::AlbumMap>,
     pub status: String,
     pub restrict_to: Option<Vec<uuid::Uuid>>,
+    /// Which storage volume the audio goes to (None: the default one).
+    pub volume: Option<String>,
     pub dry_run: bool,
 }
 
@@ -106,14 +108,16 @@ pub async fn run(pool: &PgPool, store: &BlobStore, dir: &Path, options: Options)
             },
             local_path: Some(path.display().to_string()),
             given: Default::default(),
+            volume: options.volume.clone(),
         };
 
-        let result = match ingest::receive_path(store, path).await {
+        let volume = options.volume.as_deref().unwrap_or(store.default_volume());
+        let result = match ingest::receive_path(store, path, volume).await {
             Err(err) => Err(err),
             Ok(pending) => match &mut dry_run_tx {
                 None => ingest::ingest_with_report(pool, store, pending, &ingest_options, false).await,
                 Some(tx) => {
-                    let file = ingest::StagedFile::new(store, pending, true).await?;
+                    let file = ingest::StagedFile::new(store, pending, true, volume).await?;
                     let mut savepoint = sqlx::Connection::begin(&mut **tx).await?;
                     match ingest::ingest_in(&mut savepoint, store, &file, &ingest_options, true).await {
                         Ok(report) => {

@@ -4,9 +4,11 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+aes-gcm = "0.11.1"
 anyhow = "1.0.104"
 argon2 = "0.6.0"
 axum = { version = "0.8.9", features = ["multipart"] }
+base64 = "0.23.1"
 chrono = { version = "0.4.45", features = ["serde"] }
 clap = { version = "4.6.7", features = ["derive"] }
 dotenvy = "0.15.7"
@@ -21,7 +23,7 @@ rpassword = "7.5.4"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 sha2 = "0.11.0"
-sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "postgres", "uuid", "chrono", "json", "migrate", "macros"] }
+sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "postgres", "sqlite", "uuid", "chrono", "json", "migrate", "macros"] }
 symphonia = { version = "0.6.1", features = ["all"] }
 tempfile = "3.27.0"
 tokio = { version = "1.53.1", features = ["full"] }

@@ -30,6 +30,8 @@ pub struct AliasInfo {
 #[derive(Debug, Serialize)]
 pub struct ArtistDetail {
     pub id: Uuid,
+    /// The current user's plays, rating and star.
+    pub annotation: super::annotations::Annotation,
     pub name: String,
     pub disambiguation: String,
     /// Listed aliases.
@@ -100,6 +102,7 @@ pub async fn get_artist(
     .await?;
 
     Ok(Some(ArtistDetail {
+        annotation: super::annotations::get(conn, super::annotations::Item::Artist(row.id)).await?,
         id: row.id,
         name: row.name,
         disambiguation: row.disambiguation,
@@ -145,6 +148,8 @@ pub async fn artist_tracks(
 #[derive(Debug, Serialize)]
 pub struct AlbumDetail {
     pub id: Uuid,
+    /// The current user's plays, rating and star.
+    pub annotation: super::annotations::Annotation,
     pub title: String,
     pub kind: String,
     pub release_date: Option<String>,
@@ -259,6 +264,7 @@ pub async fn get_album(
 
     let covers = super::tracks::covers_of(conn, id).await?;
     Ok(Some(AlbumDetail {
+        annotation: super::annotations::get(conn, super::annotations::Item::Album(row.id)).await?,
         id: row.id,
         title: row.title,
         kind: row.kind,

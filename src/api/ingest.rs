@@ -87,6 +87,9 @@ pub async fn ingest(
             "form part \"{name}\" isn't named in the description"
         )));
     }
+    if let Some(volume) = &description.volume {
+        super::check_volume(&state, &user, volume)?;
+    }
     if description.restrict_to.is_some() && !user.has(Permission::ManageAccess) {
         return Err(AppError::Forbidden(
             "restricting tracks needs the manage_access permission".to_string(),
@@ -103,6 +106,7 @@ pub async fn ingest(
         hints: description.hints,
         local_path: None,
         given: Default::default(),
+        volume: description.volume,
     };
     let report =
         ingest::ingest_with_report(&state.pool, &state.store, pending, &options, params.dry_run)

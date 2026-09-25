@@ -5,8 +5,10 @@ mod db;
 mod ingest;
 mod ingest_command;
 mod model;
+mod navidrome;
 mod storage;
 mod user_commands;
+mod verify_command;
 
 use std::path::PathBuf;
 
@@ -54,6 +56,10 @@ enum Command {
         /// `--restrict-to friends,testers`. An empty value = admins only.
         #[arg(long)]
         restrict_to: Option<String>,
+        /// Which storage volume the audio goes to (a name from ACETATE_VOLUMES; default:
+        /// the first).
+        #[arg(long)]
+        volume: Option<String>,
     },
     /// Import a whole folder, reading platform ids from the folder layout to match artists
     /// and albums (see the README, "Automated ingestion"). The metadata comes from the tags.
@@ -85,6 +91,49 @@ enum Command {
         /// Create the tracks restricted to these groups (comma-separated names).
         #[arg(long)]
         restrict_to: Option<String>,
+        /// Which storage volume the audio goes to (a name from ACETATE_VOLUMES; default:
+        /// the first).
+        #[arg(long)]
+        volume: Option<String>,
+        /// Work out and print what would happen, without changing anything.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Check, without changing anything, that files are safely stored in Acetate: every
+    /// file below <dir> (e.g. an old library, before deleting it by hand), or with
+    /// `--blobs`, every stored blob. Never writes, moves or deletes anything in <dir>.
+    Verify {
+        dir: Option<PathBuf>,
+        /// Check the blob store instead: every blob in use is there with the right content,
+        /// and which blobs nothing uses anymore.
+        #[arg(long)]
+        blobs: bool,
+        /// Write the paths of the files that are safely stored to this file.
+        #[arg(long)]
+        list_ok: Option<PathBuf>,
+        /// Write the paths of the files that aren't to this file.
+        #[arg(long)]
+        list_missing: Option<PathBuf>,
+    },
+    /// Move users and their plays, stars and ratings over from a Navidrome server. Reads
+    /// Navidrome's database and music files, never changes them. Matches tracks by their
+    /// bytes, so the music files must still be where Navidrome sees them (see --path-map).
+    ImportNavidrome {
+        /// Navidrome's database file (navidrome.db).
+        #[arg(long)]
+        db: PathBuf,
+        /// Where Navidrome's paths are on this machine, e.g. `--path-map /music=/home/me/Music`
+        /// (Docker mounts). Can be given several times; the longest match wins.
+        #[arg(long = "path-map")]
+        path_maps: Vec<String>,
+        /// Only this Navidrome library (its name or id), optionally with where its folder
+        /// is here: `--library "Music Library=/home/me/Music"`. Can be given several times;
+        /// without it, all libraries. For libraries whose files are on another machine.
+        #[arg(long = "library")]
+        libraries: Vec<String>,
+        /// Navidrome's `PasswordEncryptionKey`, if it was set.
+        #[arg(long, default_value = navidrome::DEFAULT_PASSWORD_KEY)]
+        password_key: String,
         /// Work out and print what would happen, without changing anything.
         #[arg(long)]
         dry_run: bool,
@@ -100,6 +149,10 @@ enum Command {
         /// (see `import --origin`).
         #[arg(long)]
         origin: String,
+        /// Which storage volume the audio goes to (a name from ACETATE_VOLUMES; default:
+        /// the first).
+        #[arg(long)]
+        volume: Option<String>,
     },
     /// Manage users (e.g. create the first admin: `acetate user create alice --group admin`).
     User {
@@ -155,7 +208,8 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("running migrations")?;
 
-    let store = BlobStore::open(&config.data_dir)?;
+    let store = BlobStore::open_volumes(&config.volumes)?;
+    check_volumes(&pool, &store).await?;
 
     match cli.command {
         Command::Serve => serve(config, pool, store).await,
@@ -166,7 +220,9 @@ async fn main() -> anyhow::Result<()> {
             status,
             sources,
             restrict_to,
+            volume,
         } => {
+            let volume = cli_volume(&store, volume)?;
             let origin = parse_source(&origin)?;
             let sources = match sources {
                 Some(_) if paths.len() != 1 => {
@@ -189,6 +245,7 @@ async fn main() -> anyhow::Result<()> {
                 hints: Default::default(),
                 local_path: None, // set per file
                 given: Default::default(),
+                volume,
             };
             import(pool, store, paths, options).await
         }
@@ -201,8 +258,10 @@ async fn main() -> anyhow::Result<()> {
             netease_albums,
             status,
             restrict_to,
+            volume,
             dry_run,
         } => {
+            let volume = cli_volume(&store, volume)?;
             use crate::ingest::layouts::{ytdlp, Layout};
             let layout = match (layout, platform) {
                 (LayoutArg::Netease, None) => Layout::Netease,
@@ -239,23 +298,45 @@ async fn main() -> anyhow::Result<()> {
                 netease_albums,
                 status,
                 restrict_to,
+                volume,
                 dry_run,
             };
             ingest_command::run(&pool, &store, &dir, options).await
+        }
+        Command::Verify { dir, blobs, list_ok, list_missing } => match (dir, blobs) {
+            (None, true) => verify_command::verify_blobs(&pool, &store).await,
+            (Some(dir), false) => {
+                let options = verify_command::Options { list_ok, list_missing };
+                verify_command::verify_dir(&pool, &store, &dir, options).await
+            }
+            _ => anyhow::bail!("give either a folder to check, or --blobs"),
+        },
+        Command::ImportNavidrome { db, path_maps, libraries, password_key, dry_run } => {
+            let path_maps = path_maps
+                .iter()
+                .map(|m| navidrome::parse_path_map(m))
+                .collect::<anyhow::Result<Vec<_>>>()?;
+            let libraries = libraries.iter().map(|l| navidrome::parse_library(l)).collect();
+            let options = navidrome::Options { db, path_maps, libraries, password_key, dry_run };
+            navidrome::run(&pool, options).await
         }
         Command::ReplaceFile {
             track_id,
             path,
             reason,
             origin,
+            volume,
         } => {
+            let volume = cli_volume(&store, volume)?;
             let origin = parse_source(&origin)?;
-            let pending = ingest::receive_path(&store, &path).await?;
+            let pending =
+                ingest::receive_path(&store, &path, volume.as_deref().unwrap_or(store.default_volume())).await?;
             let options = ReplaceOptions {
                 user: None, // the CLI acts as the system
                 uploaded_filename: file_name(&path),
                 origin,
                 reason,
+                volume,
             };
             let outcome = ingest::replace_file(&pool, &store, track_id, pending, options).await?;
             println!(
@@ -308,7 +389,8 @@ async fn import(
             ..options.clone()
         };
 
-        let result = match ingest::receive_path(&store, &path).await {
+        let volume = options.volume.as_deref().unwrap_or(store.default_volume());
+        let result = match ingest::receive_path(&store, &path, volume).await {
             Ok(pending) => ingest::ingest(&pool, &store, pending, options).await,
             Err(err) => Err(err),
         };
@@ -337,6 +419,38 @@ async fn import(
     println!("\n{created} created, {duplicates} duplicates, {skipped} skipped, {failed} failed");
     if skipped + failed > 0 {
         println!("Files that didn't import are listed on the Review page (with their audio).");
+    }
+    Ok(())
+}
+
+/// A `--volume` given on the command line, checked against the configured ones.
+fn cli_volume(store: &BlobStore, volume: Option<String>) -> anyhow::Result<Option<String>> {
+    if let Some(name) = &volume {
+        if !store.has_volume(name) {
+            let names: Vec<&str> = store.volumes().iter().map(|v| v.name.as_str()).collect();
+            anyhow::bail!("no storage volume called \"{name}\" (ACETATE_VOLUMES has: {})", names.join(", "));
+        }
+    }
+    Ok(volume)
+}
+
+/// Every volume the database has blobs on must be configured here (ACETATE_VOLUMES), or
+/// those blobs couldn't be found: e.g. a database restored on another machine whose
+/// configuration doesn't name the HDD volume yet.
+async fn check_volumes(pool: &sqlx::PgPool, store: &BlobStore) -> anyhow::Result<()> {
+    let mut tx = db::begin(pool, None).await?;
+    let in_use = db::blobs::volumes_in_use(&mut tx).await?;
+    let missing: Vec<String> = in_use
+        .iter()
+        .filter(|(name, _, _)| !store.has_volume(name))
+        .map(|(name, blobs, _)| format!("{name} ({blobs} blobs)"))
+        .collect();
+    if !missing.is_empty() {
+        anyhow::bail!(
+            "the database has blobs on volumes that aren't configured: {}. Add them to \
+             ACETATE_VOLUMES (name=/path), e.g. ACETATE_VOLUMES=main=/srv/acetate,archive=/mnt/hdd/acetate",
+            missing.join(", ")
+        );
     }
     Ok(())
 }

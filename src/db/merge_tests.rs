@@ -351,3 +351,48 @@ async fn undo_is_refused_after_later_changes(_: PgPoolOptions, connect: PgConnec
     assert_eq!(db::tracks::merged_into(&mut tx, dupe.d).await?, Some(lib.v), "nothing changed");
     Ok(())
 }
+
+#[sqlx::test]
+async fn merge_combines_annotations_and_undo_splits_them(
+    _: PgPoolOptions,
+    connect: PgConnectOptions,
+) -> anyhow::Result<()> {
+    use crate::db::annotations::{self, Item};
+    let lib = setup(connect).await?;
+    let dupe = make_duplicate(&lib).await?;
+
+    // Carol played V twice and rated it 4; she played D 3 times and starred it.
+    let mut tx = db::begin(&lib.app, Some(lib.carol)).await?;
+    for _ in 0..2 {
+        annotations::played(&mut tx, lib.v).await?;
+    }
+    annotations::set_rating(&mut tx, Item::Track(lib.v), 4).await?;
+    for _ in 0..3 {
+        annotations::played(&mut tx, dupe.d).await?;
+    }
+    annotations::set_starred(&mut tx, Item::Track(dupe.d), true).await?;
+    tx.commit().await?;
+
+    let mut tx = db::begin(&lib.app, Some(lib.carol)).await?;
+    db::revisions::merge_tracks(&mut tx, lib.v, dupe.d, &MergePicks::default(), None, None, "").await?;
+    let merged = annotations::get(&mut tx, Item::Track(lib.v)).await?;
+    tx.commit().await?;
+    assert_eq!((merged.play_count, merged.rating, merged.starred), (5, 4, true));
+
+    // After the merge she plays it once more and changes the rating; undo keeps those.
+    let mut tx = db::begin(&lib.app, Some(lib.carol)).await?;
+    annotations::played(&mut tx, lib.v).await?;
+    annotations::set_rating(&mut tx, Item::Track(lib.v), 8).await?;
+    tx.commit().await?;
+
+    let merge = merge_ids(&lib).await?[0];
+    let mut tx = db::begin(&lib.app, Some(lib.carol)).await?;
+    db::revisions::undo_track_merge(&mut tx, merge, "").await?;
+    tx.commit().await?;
+    let mut tx = db::begin(&lib.app, Some(lib.carol)).await?;
+    let v = annotations::get(&mut tx, Item::Track(lib.v)).await?;
+    let d = annotations::get(&mut tx, Item::Track(dupe.d)).await?;
+    assert_eq!((v.play_count, v.rating, v.starred), (3, 8, false), "{v:?}");
+    assert_eq!((d.play_count, d.starred), (3, true));
+    Ok(())
+}

@@ -6,6 +6,8 @@
 //! connection it wraps.
 
 pub mod access;
+pub mod annotations;
+pub mod blobs;
 pub mod catalog;
 pub mod covers;
 pub mod groups;
@@ -27,6 +29,10 @@ mod trash_tests;
 mod merge_tests;
 #[cfg(test)]
 mod ingest_tests;
+#[cfg(test)]
+mod annotation_tests;
+#[cfg(test)]
+mod navidrome_tests;
 
 use std::time::Duration;
 

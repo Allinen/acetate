@@ -206,9 +206,9 @@ pub async fn find_album(
     .await
 }
 
-/// Creates an album from a file's tags (with album revision 0). Every album artist is
-/// primary, except on a `single`: there only the first is, and the others are featured
-/// (NetEase lists everyone on a single as album artists).
+/// Creates an album from a file's tags (with album revision 0), of kind `single` or
+/// `album`. Every album artist is primary, except on a `single`: there only the first is,
+/// and the others are featured (NetEase lists everyone on a single as album artists).
 pub async fn create_album(
     conn: &mut PgConnection,
     title: &str,
@@ -230,6 +230,7 @@ pub async fn create_album(
     }
     let data = AlbumData {
         title: title.to_string(),
+        kind: if single { "single" } else { "album" }.to_string(),
         release_date: release_date.map(str::to_string),
         credits,
         ..Default::default()

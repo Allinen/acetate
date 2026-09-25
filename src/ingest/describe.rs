@@ -344,6 +344,7 @@ pub async fn add_album_covers(
     conn: &mut PgConnection,
     album_id: Uuid,
     covers: &[(String, ImageInfo)],
+    volume: &str,
 ) -> anyhow::Result<usize> {
     let mut added = 0;
     for (sha256, image) in covers {
@@ -364,6 +365,7 @@ pub async fn add_album_covers(
             height: image.height,
             source: "import",
         };
+        db::blobs::register(conn, sha256, volume, None).await?;
         db::covers::add(conn, CoverOwner::Album(album_id), &cover).await?;
         added += 1;
     }
@@ -542,6 +544,9 @@ pub struct NewDescription {
     /// Create the track restricted to these groups (needs `manage_access`).
     #[serde(default)]
     pub restrict_to: Option<Vec<Uuid>>,
+    /// The storage volume for the audio (admins only; left out: the default one).
+    #[serde(default)]
+    pub volume: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -587,6 +592,7 @@ pub struct ValidDescription {
     pub track_sources: Vec<ValidSource>,
     pub hints: Hints,
     pub restrict_to: Option<Vec<Uuid>>,
+    pub volume: Option<String>,
 }
 
 impl NewDescription {
@@ -642,6 +648,7 @@ impl NewDescription {
             track_sources,
             hints: Hints { artists, album },
             restrict_to: self.restrict_to,
+            volume: self.volume,
         })
     }
 }

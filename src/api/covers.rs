@@ -71,6 +71,7 @@ async fn upload(
     }
 
     let sha256 = state.store.put_bytes(&bytes).await?;
+    db::blobs::register(&mut tx, &sha256, state.store.default_volume(), Some(bytes.len() as i64)).await?;
     let cover = NewCover {
         blob_sha256: &sha256,
         mime: Some(image.mime),

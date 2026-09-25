@@ -240,12 +240,27 @@ const audio = document.getElementById("audio");
 const playerInfo = document.getElementById("player-info");
 const playerCover = document.getElementById("player-cover");
 
-function play(fileId, title, artist, coverId, note) {
+// `trackId`: this is a listen of that track (its current file), so it counts as a play once
+// it's been heard long enough. Previews (a previous file, the merge view) don't pass it.
+function play(fileId, title, artist, coverId, note, trackId) {
   playSrc(`/api/files/${fileId}/stream`, title, artist, coverId && `/api/covers/${coverId}`, note);
+  playing = trackId ? { trackId, counted: false } : null;
 }
+
+// What's playing, for counting plays: counted after half the track or 4 minutes, like
+// Navidrome and Last.fm.
+let playing = null;
+audio.addEventListener("timeupdate", () => {
+  if (!playing || playing.counted || !audio.duration) return;
+  if (audio.currentTime >= Math.min(audio.duration / 2, 240)) {
+    playing.counted = true;
+    postJson(`/api/tracks/${playing.trackId}/played`, {}).catch(() => {});
+  }
+});
 
 // Plays any stream URL (normal files, or through a share link).
 function playSrc(src, title, artist, coverSrc, note) {
+  playing = null;
   audio.src = src;
   audio.play().catch((err) => {
     playerInfo.replaceChildren(errorBox(`Can't play: ${err.message}`));
@@ -257,9 +272,32 @@ function playSrc(src, title, artist, coverSrc, note) {
   if (coverSrc) playerCover.src = coverSrc;
 }
 
+// The user's own star, rating (0-10 = half stars) and plays of a track, album or artist.
+function annotationBox(kind, id, a) {
+  const status = h("span", {});
+  const starLabel = (starred) => starred ? "★ starred" : "☆ star";
+  const star = h("button", { type: "button", class: "small" }, starLabel(a.starred));
+  star.addEventListener("click", async () => {
+    try {
+      a = await api(`/api/${kind}s/${id}/star`, { method: a.starred ? "DELETE" : "POST" });
+      star.textContent = starLabel(a.starred);
+    } catch (err) { status.replaceChildren(errorBox(err)); }
+  });
+  const stars = (n) => n ? "★".repeat(Math.floor(n / 2)) + (n % 2 ? "½" : "") : "not rated";
+  const rating = h("select", {}, [...Array(11).keys()].map((n) => h("option", { value: n, selected: n === a.rating }, stars(n))));
+  rating.addEventListener("change", async () => {
+    try {
+      a = await putJson(`/api/${kind}s/${id}/rating`, { rating: Number(rating.value) });
+    } catch (err) { status.replaceChildren(errorBox(err)); }
+  });
+  return h("div", { class: "row" }, star, rating,
+    h("span", { class: "muted" }, a.play_count ? `played ${a.play_count}×, last ${a.last_played_at ? fmtTime(a.last_played_at) : "?"}` : "never played"),
+    status);
+}
+
 async function playTrackById(id) {
   const t = await api(`/api/tracks/${id}`);
-  play(t.file.id, t.title, t.artist_display, t.covers[0]?.id);
+  play(t.file.id, t.title, t.artist_display, t.covers[0]?.id, null, t.id);
 }
 
 // ---------------------------------------------------------------------------
@@ -643,12 +681,13 @@ async function showTrack(id) {
       h("div", {},
         h("h2", {}, t.title),
         h("div", {}, t.artist_display),
+        annotationBox("track", t.id, t.annotation),
         h("div", { class: "row" },
           h("span", { class: "tag" }, t.status),
           t.is_restricted ? h("span", { class: "tag" }, "restricted") : null,
           t.genres.map((g) => h("span", { class: "tag" }, g))),
         h("div", { class: "row" },
-          can("stream") ? h("button", { onclick: () => play(f.id, t.title, t.artist_display, cover?.id) }, "▶ Play") : null,
+          can("stream") ? h("button", { onclick: () => play(f.id, t.title, t.artist_display, cover?.id, null, t.id) }, "▶ Play") : null,
           can("download_original")
             ? h("a", { href: `/api/files/${f.id}/stream`, download: f.original_filename ?? f.uploaded_filename }, "Download original")
             : null),
@@ -1032,6 +1071,7 @@ async function showArtist(id) {
   setDetail(
     h("h2", {}, a.name),
     a.disambiguation ? h("div", { class: "muted" }, a.disambiguation) : null,
+    a.merged_into ? null : annotationBox("artist", a.id, a.annotation),
     a.merged_into ? h("p", { class: "box" }, "This artist was merged into ",
       h("a", { href: `#/artist/${a.merged_into}` }, "another artist"), ".") : null,
     kv([
@@ -1097,6 +1137,7 @@ async function showAlbum(id) {
         "from the tracklist: ", a.tracks.find((t) => t.cover_id === a.display_cover_id)?.title ?? "a track")) : null,
     h("div", {}, a.credits.map((c) => (c.alias ?? c.artist_name) + (c.role === "primary" ? "" : ` (${c.role})`)).join(", ")),
     h("div", { class: "row" }, h("span", { class: "tag" }, a.kind)),
+    annotationBox("album", a.id, a.annotation),
     can("share") ? shareForm("album", id) : null,
     can("manage_access") ? await albumAccessBox(id, reload) : null,
     a.covers.length || can("edit_metadata") ? [

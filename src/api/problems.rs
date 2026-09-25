@@ -99,7 +99,7 @@ pub async fn audio(
     }
     .parse()
     .unwrap_or(mime::APPLICATION_OCTET_STREAM);
-    serve_blob(state.store.path_for(&sha256), &mime, request).await
+    serve_blob(state.store.path_for(&sha256).await, &mime, request).await
 }
 
 /// An open entry, ready to import again: the file in the blob store, and what it was
@@ -118,7 +118,8 @@ async fn load_open(
     let description: NewDescription = serde_json::from_value(json)
         .map_err(|err| AppError::BadRequest(format!("the stored description doesn't fit: {err}")))?;
     let description = description.validate(|_| None).map_err(AppError::BadRequest)?;
-    let file = ingest::StagedFile::stored(&state.store, &problem.sha256, problem.size_bytes as u64);
+    // Already stored: it stays on the volume it's on.
+    let file = ingest::StagedFile::stored(&state.store, &problem.sha256, problem.size_bytes as u64).await;
     Ok((file, problem, description))
 }
 
@@ -161,6 +162,7 @@ pub async fn import(
             title: with.title,
             artists: with.artists,
         },
+        volume: None,
     };
     let report = ingest::ingest_staged(&state.pool, &state.store, &file, &options, false).await?;
     Ok(Json(report))
@@ -191,6 +193,7 @@ pub async fn add_to_track(
         uploaded_filename: problem.uploaded_filename,
         origin: description.origin,
         reason: body.reason,
+        volume: None,
     };
     let outcome = ingest::add_file_to_track(&state.pool, &file, body.track_id, body.add_as, &options).await?;
     Ok(Json(serde_json::json!({
