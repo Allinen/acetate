@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE covers c\n        SET album_id = $2,\n            position = c.position + (SELECT COALESCE(max(k.position) + 1, 0) FROM covers k\n                                     WHERE k.album_id = $2 AND k.trashed_at IS NULL)\n        WHERE c.id = ANY($1)\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "UuidArray",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "9638dc92ec00b7e19568e5e8d6d659bd1d7d15b50a6c727c94e263ec0a1df064"
+}

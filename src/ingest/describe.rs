@@ -202,7 +202,7 @@ impl Resolver {
         let hint = hints.album.as_ref().unwrap_or(&empty);
 
         let (id, matched_by) = if let Some(id) = hint.id {
-            (id, MatchedBy::Id)
+            (album_target(conn, id).await?, MatchedBy::Id)
         } else if let Some(id) = self.by_platform_id(conn, Kind::Album, &hint.sources).await? {
             (id, MatchedBy::PlatformId)
         } else {
@@ -378,7 +378,7 @@ pub async fn add_album_covers(
 /// Runs with the user's own access.
 pub async fn known_album(conn: &mut PgConnection, hint: &AlbumHint) -> anyhow::Result<Option<Uuid>> {
     if let Some(id) = hint.id {
-        return Ok(Some(id)); // checked by `check_explicit_ids`
+        return Ok(Some(album_target(conn, id).await?)); // checked by `check_explicit_ids`
     }
     for source in &hint.sources {
         let Some(external_id) = &source.external_id else {
@@ -402,6 +402,17 @@ async fn artist_target(conn: &mut PgConnection, artist_id: Uuid) -> anyhow::Resu
     .fetch_optional(&mut *conn)
     .await?;
     target.ok_or_else(|| EditRejected::NotFound("artist").into())
+}
+
+/// The album an explicit id means (an album that was merged leads to where it went).
+async fn album_target(conn: &mut PgConnection, album_id: Uuid) -> anyhow::Result<Uuid> {
+    let target = sqlx::query_scalar!(
+        r#"SELECT COALESCE(merged_into, id) AS "id!" FROM albums WHERE id = $1"#,
+        album_id
+    )
+    .fetch_optional(&mut *conn)
+    .await?;
+    target.ok_or_else(|| EditRejected::NotFound("album").into())
 }
 
 /// If `owner` already has an id on one of the hint's platforms, but not the hint's id,

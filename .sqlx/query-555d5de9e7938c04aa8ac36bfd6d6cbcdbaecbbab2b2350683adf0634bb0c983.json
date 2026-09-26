@@ -1,0 +1,49 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        WITH stats AS MATERIALIZED (\n            SELECT at.album_id, count(*) AS tracks, count(f.duration_ms) AS known,\n                   sum(f.duration_ms)::bigint AS total_ms\n            FROM album_tracks at\n            JOIN tracks t ON t.id = at.track_id\n            JOIN files f ON f.id = t.file_id\n            GROUP BY at.album_id\n        )\n        SELECT a.id AS \"a!\", b.id AS \"b!\", similarity(a.title, b.title) AS \"similarity!\"\n        FROM albums a\n        JOIN stats sa ON sa.album_id = a.id\n        JOIN albums b ON b.title % a.title AND b.id > a.id\n        JOIN stats sb ON sb.album_id = b.id\n        WHERE a.merged_into IS NULL AND b.merged_into IS NULL\n          AND sa.known = sa.tracks AND sb.known = sb.tracks\n          AND abs(sa.tracks - sb.tracks) <= $1\n          AND abs(sa.total_ms - sb.total_ms) <= $2\n          AND ($3 OR EXISTS (SELECT 1 FROM album_credits ca\n                             JOIN album_credits cb ON cb.artist_id = ca.artist_id\n                             WHERE ca.album_id = a.id AND cb.album_id = b.id))\n        ORDER BY a.id, b.id\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "a!",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "albums",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "b!",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "albums",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "similarity!",
+        "type_info": "Float4",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Bool"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "555d5de9e7938c04aa8ac36bfd6d6cbcdbaecbbab2b2350683adf0634bb0c983"
+}

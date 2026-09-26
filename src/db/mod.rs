@@ -6,6 +6,7 @@
 //! connection it wraps.
 
 pub mod access;
+pub mod album_merges;
 pub mod annotations;
 pub mod blobs;
 pub mod catalog;
@@ -36,6 +37,8 @@ mod annotation_tests;
 mod navidrome_tests;
 #[cfg(test)]
 mod plan_tests;
+#[cfg(test)]
+mod album_merge_tests;
 
 use std::time::Duration;
 

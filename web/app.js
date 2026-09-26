@@ -1108,11 +1108,17 @@ async function showAlbum(id) {
     setDetail(errorBox(err));
     return;
   }
+  // A merged album redirects to the one it was merged into.
+  if (a.id !== id) {
+    location.replace(`#/album/${a.id}`);
+    return;
+  }
   names.album.set(a.id, a.title);
   for (const c of a.credits) names.artist.set(c.artist_id, c.artist_name);
   const reload = () => showAlbum(id);
 
   let editor = null;
+  let merger = null;
   if (can("edit_metadata")) {
     const vocab = await getVocab();
     const title = h("input", { value: a.title, required: true });
@@ -1135,6 +1141,28 @@ async function showAlbum(id) {
         release_date: date.value || null, credits: credits.read(), reason: reason.value,
       }), reload);
     });
+
+    // Merge this album into another.
+    let target = null;
+    const targetLabel = h("span", { class: "muted" }, "no album chosen");
+    const mergeStatus = h("span", {});
+    const choose = picker("merge into…", without(findAlbums, a.id), (x) => [x.title, ` (${x.kind})`], (x) => {
+      target = x;
+      targetLabel.replaceChildren(h("a", { href: `#/album/${x.id}` }, x.title), ` (${x.kind})`);
+    });
+    merger = h("div", { class: "stack box" },
+      h("div", { class: "muted" }, `For when "${a.title}" is really the same album as another (e.g. split because the album artists or date were written differently). ` +
+        "Its tracks (keeping their disc/track numbers), covers, sources and share links move to the chosen one, which keeps its own title, date and credits; this album then points to it. It can be undone from the other album's page."),
+      h("div", { class: "row" }, choose, targetLabel),
+      h("div", { class: "row" }, h("button", {
+        type: "button",
+        onclick: () => {
+          if (!target) { mergeStatus.replaceChildren(errorBox("Choose an album first.")); return; }
+          if (!confirm(`Merge "${a.title}" into "${target.title}"? Its ${a.tracks.length} tracks move there (as new revisions).`)) return;
+          save(mergeStatus, () => postJson(`/api/albums/${id}/merge`, { into: target.id }),
+            () => { location.hash = `#/album/${target.id}`; });
+        },
+      }, "Merge"), mergeStatus));
   }
 
   setDetail(
@@ -1164,12 +1192,54 @@ async function showAlbum(id) {
       h("a", { href: `#/track/${tr.id}` }, tr.title),
       h("span", { class: "muted" }, tr.artist_display, " · ", fmtDuration(tr.duration_ms))))
       : h("p", { class: "muted" }, "None."),
-    editor ? [h("h3", {}, "Edit"), editor] : null,
+    editor ? [h("h3", {}, "Edit"), editor, h("h3", {}, "Merge"), merger] : null,
+    a.merges.length ? [h("h3", {}, "Merged into this album"), a.merges.map((m) => albumMergeRow(m))] : null,
     h("h3", {}, "Sources"),
     await sourcesView(a.sources, "album", id, reload),
     can("edit_sources") ? await addSourceForm("album", id, reload) : null,
     a.revisions ? [h("h3", {}, "History"),
       await historyView(a.revisions, () => "album", (r) => `/api/album-revisions/${r.id}/restore`, reload)] : null);
+}
+
+// One merge into an album. Undoing it first shows exactly what would go back and what
+// stays (the server's preview), then does just that.
+function albumMergeRow(m) {
+  const from = m.from_title ? h("a", { href: `#/album/${m.from_album_id}` }, `"${m.from_title}"`) : "an album you can't see";
+  const status = h("span", {});
+  const preview = h("div", {});
+  const list = (title, items) => items.length ? h("div", {}, h("strong", {}, title), h("ul", {}, items.map((x) => h("li", {}, x)))) : null;
+  async function showPreview() {
+    let r;
+    try {
+      r = await api(`/api/album-merges/${m.id}/undo`);
+    } catch (err) {
+      preview.replaceChildren(errorBox(err));
+      return;
+    }
+    const hidden = r.hidden_tracks_back + r.hidden_tracks_staying
+      ? `and tracks you can't see: ${r.hidden_tracks_back} go back, ${r.hidden_tracks_staying} stay` : null;
+    preview.replaceChildren(h("div", { class: "stack box" },
+      r.blockers.length ? errorBox(`Can't be undone: ${r.blockers.join("; ")}`) : null,
+      list("Tracks going back", r.tracks.filter((t) => t.goes_back).map((t) =>
+        [h("a", { href: `#/track/${t.id}` }, t.title), h("span", { class: "muted" }, `: ${t.detail}`)])),
+      list("Tracks staying", r.tracks.filter((t) => !t.goes_back).map((t) =>
+        [h("a", { href: `#/track/${t.id}` }, t.title), h("span", { class: "muted" }, `: ${t.detail}`)])),
+      hidden ? h("div", { class: "muted" }, hidden) : null,
+      list("Also goes back", r.goes_back),
+      list("Stays as it is", r.stays),
+      r.blockers.length ? null : h("div", { class: "row" }, h("button", {
+        type: "button",
+        onclick: () => {
+          if (!confirm("Undo this merge, exactly as listed?")) return;
+          save(status, () => postJson(`/api/album-merges/${m.id}/undo`, {}), () => { location.hash = `#/album/${r.from_album_id}`; });
+        },
+      }, "Undo merge"), status)));
+  }
+  return h("div", { class: "stack" },
+    h("div", { class: "row" }, from,
+      h("span", { class: "muted" }, ` merged ${fmtTime(m.merged_at)}${m.merged_by ? ` by ${m.merged_by}` : ""}${m.undone_at ? `, undone ${fmtTime(m.undone_at)}` : ""}`),
+      !m.undone_at && can("edit_metadata") ? h("button", { type: "button", class: "small", onclick: showPreview }, "Undo…") : null),
+    preview);
 }
 
 // #/review: things ingest flagged for a person to look at.
@@ -1729,8 +1799,8 @@ async function showMerge(leftId, rightId) {
     h("h2", {}, "Merge tracks"),
     h("p", { class: "muted" },
       "The right track is merged into the left one and then redirects to it. Pick a side per row. " +
-      "The file not picked becomes a previous file (then it can be trashed and purged); the covers " +
-      "not picked go to the trash."),
+      "The file not picked becomes a previous file (then it can be trashed and purged). All covers are " +
+      "kept: the picked side's come first (the first is the main cover), then the other side's."),
     left.is_restricted !== right.is_restricted ? h("p", { class: "box error" },
       `Their access differs: left is ${left.is_restricted ? "restricted" : "visible to everyone"}, right is ` +
       `${right.is_restricted ? "restricted" : "visible to everyone"}. The merged track keeps left's.`) : null,

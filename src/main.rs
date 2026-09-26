@@ -2,6 +2,7 @@ mod api;
 mod auth;
 mod config;
 mod db;
+mod duplicate_albums_command;
 mod ingest;
 mod ingest_command;
 mod merge_duplicates_command;
@@ -132,6 +133,39 @@ enum Command {
         #[arg(long)]
         ignore_case: bool,
         /// Only list what would be merged.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// List albums that look like the same album twice: about the same number of tracks
+    /// and total length, a similar title and an album artist in common (e.g. split by
+    /// ingest because the album artists or the date differ). Read-only unless --merge.
+    DuplicateAlbums {
+        /// How many tracks the two may differ by.
+        #[arg(long, default_value_t = 0)]
+        max_track_difference: i64,
+        /// How far apart the total lengths may be, in milliseconds.
+        #[arg(long, default_value_t = 2000)]
+        max_length_difference_ms: i64,
+        /// How alike the titles must be, 0 to 1 (trigram similarity; 1 = the same
+        /// ignoring case).
+        #[arg(long, default_value_t = 0.6)]
+        min_title_similarity: f32,
+        /// Also pair albums without an album artist in common (by default one is needed:
+        /// singles with a common title like "Intro" by different artists look alike).
+        #[arg(long)]
+        any_artists: bool,
+        /// Merge each pair: the newer album into the older one (tracks, covers, sources,
+        /// shares), which keeps its own title, date and credits.
+        #[arg(long)]
+        merge: bool,
+    },
+    /// One-off, for merges made before 2026-09-26: takes a merged track's covers back out
+    /// of the trash where the kept track had none; moves covers album merges left on the
+    /// merged album; and gives an album a copy of the cover a merged album without covers
+    /// of its own (e.g. a single) showed from its tracklist. Album fixes are recorded in
+    /// each merge, so an undo takes them back too.
+    FixMergedCovers {
+        /// Only list what would be moved.
         #[arg(long)]
         dry_run: bool,
     },
@@ -337,6 +371,23 @@ async fn main() -> anyhow::Result<()> {
             let options = merge_duplicates_command::Options { max_length_difference_ms, ignore_case, dry_run };
             merge_duplicates_command::run(&pool, options).await
         }
+        Command::DuplicateAlbums {
+            max_track_difference,
+            max_length_difference_ms,
+            min_title_similarity,
+            any_artists,
+            merge,
+        } => {
+            let options = duplicate_albums_command::Options {
+                max_track_difference,
+                max_length_difference_ms,
+                min_title_similarity,
+                any_artists,
+                merge,
+            };
+            duplicate_albums_command::run(&pool, options).await
+        }
+        Command::FixMergedCovers { dry_run } => duplicate_albums_command::fix_merged_covers(&pool, dry_run).await,
         Command::ImportNavidrome { db, path_maps, libraries, password_key, dry_run } => {
             let path_maps = path_maps
                 .iter()

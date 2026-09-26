@@ -323,6 +323,11 @@ pub async fn write_external(
     source: Source,
     reason: &str,
 ) -> anyhow::Result<Written> {
+    let resolved = TrackFacts {
+        albums: resolve_albums(conn, &facts.albums).await?,
+        ..facts.clone()
+    };
+    let facts = &resolved;
     facts.validate(track_id).map_err(invalid)?;
 
     // Lock this track and every track whose relations might change (currently related,
@@ -570,7 +575,7 @@ async fn visible_facts(conn: &mut PgConnection, facts: TrackFacts) -> sqlx::Resu
 }
 
 /// A track's facts as they currently are in the tables.
-async fn current_facts(conn: &mut PgConnection, track_id: Uuid) -> sqlx::Result<TrackFacts> {
+pub(super) async fn current_facts(conn: &mut PgConnection, track_id: Uuid) -> sqlx::Result<TrackFacts> {
     let status = sqlx::query_scalar!("SELECT status FROM tracks WHERE id = $1", track_id)
         .fetch_one(&mut *conn)
         .await?;
@@ -811,7 +816,7 @@ pub struct MergePicks {
     pub status: Side,
     /// Which file stays the track's current one; the other becomes a previous file.
     pub file: Side,
-    /// Whose covers the track keeps; the other side's go to the trash.
+    /// Whose covers come first (the first is the main cover); the other side's follow.
     pub covers: Side,
 }
 
@@ -821,7 +826,6 @@ pub struct MergedTracks {
     pub track_id: Uuid,
     pub variants_moved: usize,
     pub lyrics_moved: usize,
-    pub covers_trashed: usize,
 }
 
 /// Merges track `from` (the duplicate, "right") into `into` (kept, "left"): the same song
@@ -831,7 +835,7 @@ pub struct MergedTracks {
 ///   `picks` says; `from`'s variants (with their history) become extra variants of it.
 /// * The file `picks.file` says stays current; the other becomes a previous file (so it
 ///   can be trashed and purged). `from`'s previous files move along.
-/// * Covers of the side not picked go to the trash (recoverable for a while).
+/// * All covers are kept: the picked side's first, then the other side's.
 /// * Albums, relations, lyrics and sources are combined; a relation between the two
 ///   tracks is dropped.
 /// * `from` then redirects to `into` (`merged_into`), and its shares point at `into`.
@@ -1001,7 +1005,7 @@ pub async fn merge_tracks(
         Some(id)
     };
 
-    // 5. Covers: all of them move over; the side not picked goes to the trash.
+    // 5. Covers: all of them move over; the picked side's come first.
     let kept_covers = cover_positions(conn, into).await?;
     let dupe_covers = cover_positions(conn, from).await?;
     let dupe_all_covers = sqlx::query_scalar!(
@@ -1011,17 +1015,12 @@ pub async fn merge_tracks(
     )
     .fetch_all(&mut *conn)
     .await?;
-    let (keep, drop): (Vec<Uuid>, Vec<Uuid>) = match picks.covers {
-        Side::Left => (kept_covers.iter().map(|c| c.id).collect(), dupe_covers.iter().map(|c| c.id).collect()),
-        Side::Right => (dupe_covers.iter().map(|c| c.id).collect(), kept_covers.iter().map(|c| c.id).collect()),
+    let (first, then) = match picks.covers {
+        Side::Left => (&kept_covers, &dupe_covers),
+        Side::Right => (&dupe_covers, &kept_covers),
     };
-    sqlx::query!(
-        "UPDATE covers SET trashed_at = now(), trashed_by = current_app_user() WHERE id = ANY($1)",
-        &drop
-    )
-    .execute(&mut *conn)
-    .await?;
-    set_cover_positions(conn, &keep).await?;
+    let order: Vec<Uuid> = first.iter().chain(then.iter()).map(|c| c.id).collect();
+    set_cover_positions(conn, &order).await?;
 
     // 6. Lyrics move with their history, except ones the kept track has word for word.
     let lyrics = sqlx::query_scalar!(
@@ -1100,7 +1099,7 @@ pub async fn merge_tracks(
         kept_covers,
         dupe_covers,
         dupe_all_covers,
-        covers_trashed: drop.clone(),
+        covers_trashed: Vec::new(),
         lyrics: lyrics.clone(),
         sources,
         shares,
@@ -1127,7 +1126,6 @@ pub async fn merge_tracks(
         track_id: into,
         variants_moved: record.variants.len(),
         lyrics_moved: lyrics.len(),
-        covers_trashed: drop.len(),
     })
 }
 
@@ -1158,6 +1156,8 @@ struct MergeRecord {
     dupe_covers: Vec<CoverPosition>,
     /// All of the duplicate's covers that moved, trashed ones included.
     dupe_all_covers: Vec<Uuid>,
+    /// Covers the merge put in the trash: the side not picked, in merges made before every
+    /// cover was kept (2026-09-26). Empty now.
     covers_trashed: Vec<Uuid>,
     lyrics: Vec<Uuid>,
     sources: super::sources::MovedSources,
@@ -1526,6 +1526,71 @@ async fn revision_data(conn: &mut PgConnection, revision_id: Uuid) -> sqlx::Resu
     sqlx::query_scalar!("SELECT data FROM track_revisions WHERE id = $1", revision_id)
         .fetch_one(conn)
         .await
+}
+
+/// For track merges made before every cover was kept (before 2026-09-26): the side not
+/// picked had its covers put in the trash. Takes those out again, in their old order,
+/// after the covers of the track that holds them now (a later merge may have moved them
+/// on). Only covers still in the trash from that merge itself (trashed at the merge's own
+/// moment), not ones someone trashed later. Returns them. Undoing the merge still works
+/// as before.
+pub async fn restore_trashed_covers(conn: &mut PgConnection, merge_id: Uuid) -> anyhow::Result<Vec<Uuid>> {
+    let merge = sqlx::query!(
+        "SELECT moved, merged_at FROM track_merges WHERE id = $1 AND undone_at IS NULL",
+        merge_id
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    let Some(moved) = merge.moved else {
+        return Ok(Vec::new()); // made before merges were recorded
+    };
+    let record: MergeRecord = serde_json::from_value(moved)?;
+    if record.covers_trashed.is_empty() {
+        return Ok(Vec::new());
+    }
+    // In their old order (they were all one side's).
+    let mut in_order: Vec<&CoverPosition> = record
+        .kept_covers
+        .iter()
+        .chain(record.dupe_covers.iter())
+        .filter(|c| record.covers_trashed.contains(&c.id))
+        .collect();
+    in_order.sort_by_key(|c| c.position);
+    let ids: Vec<Uuid> = in_order.iter().map(|c| c.id).collect();
+    // `now()` is the same for a whole transaction, so the merge's trashing has exactly
+    // the merge's time.
+    let trashed = sqlx::query!(
+        r#"
+        SELECT id, track_id AS "track_id!" FROM covers
+        WHERE id = ANY($1) AND trashed_at = $2 AND track_id IS NOT NULL
+        "#,
+        &ids,
+        merge.merged_at
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+
+    let mut restored = Vec::new();
+    let mut holders: Vec<Uuid> = trashed.iter().map(|c| c.track_id).collect();
+    holders.dedup();
+    for holder in holders {
+        let back: Vec<Uuid> = ids
+            .iter()
+            .copied()
+            .filter(|id| trashed.iter().any(|c| c.id == *id && c.track_id == holder))
+            .collect();
+        let mut order: Vec<Uuid> = cover_positions(conn, holder).await?.into_iter().map(|c| c.id).collect();
+        order.extend(&back);
+        sqlx::query!(
+            "UPDATE covers SET trashed_at = NULL, trashed_by = NULL WHERE id = ANY($1)",
+            &back
+        )
+        .execute(&mut *conn)
+        .await?;
+        set_cover_positions(conn, &order).await?;
+        restored.extend(back);
+    }
+    Ok(restored)
 }
 
 /// A track's covers that aren't in the trash, with their positions.
@@ -2347,6 +2412,40 @@ pub async fn restore_album_revision(
 //
 // Run before writing a revision, so a revision never refers to things that don't exist
 // (for a non-primary variant, nothing else would catch it: its data isn't applied).
+
+/// Album memberships with merged albums replaced by the album they were merged into (an
+/// old revision being restored, or an ingest with an old album id). If the track is on
+/// that album already, that membership (and its disc/track number) wins over the merged
+/// album's.
+async fn resolve_albums(conn: &mut PgConnection, albums: &[AlbumMembership]) -> sqlx::Result<Vec<AlbumMembership>> {
+    let mut kept: Vec<AlbumMembership> = Vec::with_capacity(albums.len());
+    let mut redirected: Vec<AlbumMembership> = Vec::new();
+    for album in albums {
+        let mut target = album.album_id;
+        // Merges can chain; the loop limit is just a safety net.
+        for _ in 0..16 {
+            let into = sqlx::query_scalar!("SELECT merged_into FROM albums WHERE id = $1", target)
+                .fetch_optional(&mut *conn)
+                .await?
+                .flatten();
+            match into {
+                Some(into) => target = into,
+                None => break, // not merged (or unknown: reported by check_facts)
+            }
+        }
+        if target == album.album_id {
+            kept.push(album.clone());
+        } else {
+            redirected.push(AlbumMembership { album_id: target, ..album.clone() });
+        }
+    }
+    for album in redirected {
+        if !kept.iter().any(|a| a.album_id == album.album_id) {
+            kept.push(album);
+        }
+    }
+    Ok(kept)
+}
 
 /// Credits with merged artists and aliases replaced by what they were merged into. A
 /// credit of a merged artist under its own name gets the alias that name became (if it

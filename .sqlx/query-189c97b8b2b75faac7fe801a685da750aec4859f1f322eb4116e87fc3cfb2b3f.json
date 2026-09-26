@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT c.id FROM album_tracks at\n        JOIN tracks t ON t.id = at.track_id\n        JOIN covers c ON c.track_id = t.id AND c.trashed_at IS NULL\n        WHERE at.album_id = $1\n        ORDER BY at.disc_number NULLS FIRST, at.track_number NULLS LAST, t.title, c.position, c.id\n        LIMIT 1\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "covers",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "189c97b8b2b75faac7fe801a685da750aec4859f1f322eb4116e87fc3cfb2b3f"
+}

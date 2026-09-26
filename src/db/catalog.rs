@@ -163,6 +163,8 @@ pub struct AlbumDetail {
     pub display_cover_id: Option<Uuid>,
     pub sources: Vec<Source>,
     pub tracks: Vec<AlbumTrack>,
+    /// Albums merged into this one, newest first (each can be undone, see `album_merges`).
+    pub merges: Vec<super::album_merges::AlbumMergeInfo>,
     /// Only included for users allowed to view history.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub revisions: Option<Vec<EntityRevision>>,
@@ -187,6 +189,14 @@ pub struct AlbumTrack {
     pub duration_ms: Option<i64>,
     /// The track's main cover, if it has one.
     pub cover_id: Option<Uuid>,
+}
+
+/// Where a merged album leads (None: not merged, or not visible).
+pub async fn album_merged_into(conn: &mut PgConnection, id: Uuid) -> sqlx::Result<Option<Uuid>> {
+    Ok(sqlx::query_scalar!("SELECT merged_into FROM albums WHERE id = $1", id)
+        .fetch_optional(conn)
+        .await?
+        .flatten())
 }
 
 pub async fn get_album(
@@ -278,6 +288,7 @@ pub async fn get_album(
         covers,
         sources: super::sources::list_for(conn, id).await?,
         tracks,
+        merges: super::album_merges::merges_into(conn, id).await?,
         revisions,
     }))
 }
@@ -393,7 +404,7 @@ pub async fn search_albums(conn: &mut PgConnection, query: &str, limit: i64) -> 
                GREATEST(CASE WHEN al.title ILIKE $2 THEN 1 ELSE 0 END,
                         word_similarity($1, al.title))::real AS "score!"
         FROM albums al
-        WHERE $1 <% al.title OR al.title ILIKE $2
+        WHERE ($1 <% al.title OR al.title ILIKE $2) AND al.merged_into IS NULL
         ORDER BY 4 DESC, al.title
         LIMIT $3
         "#,

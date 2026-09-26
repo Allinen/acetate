@@ -1,0 +1,41 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT disc_number, track_number FROM album_tracks WHERE album_id = $1 AND track_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "disc_number",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "album_tracks",
+            "name": "disc_number"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "track_number",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "album_tracks",
+            "name": "track_number"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true,
+      true
+    ]
+  },
+  "hash": "3146621d8047ce527b9be497a6f9b32f5899c5b7732e5ed47dab63cb1fdb7b74"
+}

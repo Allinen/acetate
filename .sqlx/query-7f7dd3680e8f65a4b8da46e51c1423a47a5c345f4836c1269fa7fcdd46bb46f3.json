@@ -1,0 +1,100 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT m.id, m.from_album_id, al.title AS \"from_title?\", m.merged_at,\n               u.username AS \"merged_by?\", m.reason, m.undone_at\n        FROM album_merges m\n        LEFT JOIN albums al ON al.id = m.from_album_id\n        LEFT JOIN users u ON u.id = m.merged_by\n        WHERE m.into_album_id = $1\n        ORDER BY m.id DESC\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "album_merges",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "from_album_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "album_merges",
+            "name": "from_album_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "from_title?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "albums",
+            "name": "title"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "merged_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "album_merges",
+            "name": "merged_at"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "merged_by?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "username"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "reason",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "album_merges",
+            "name": "reason"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "undone_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "album_merges",
+            "name": "undone_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "7f7dd3680e8f65a4b8da46e51c1423a47a5c345f4836c1269fa7fcdd46bb46f3"
+}

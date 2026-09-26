@@ -77,8 +77,9 @@ pub async fn run(pool: &PgPool, options: Options) -> anyhow::Result<()> {
         }
 
         // The older track is kept (UUIDv7: the smaller id was created first), with its
-        // metadata and covers. The bigger file is kept: same length, so more bytes is the
-        // better copy (lossless over lossy, a higher bitrate).
+        // metadata and its covers first (the merged one's follow). The bigger file is kept:
+        // same length, so more bytes is the better copy (lossless over lossy, a higher
+        // bitrate).
         let (kept, dupe) = if a.id < b.id { (&a, &b) } else { (&b, &a) };
         let file = if dupe.size_bytes > kept.size_bytes { Side::Right } else { Side::Left };
         let shown = format!(

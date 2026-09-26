@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE album_merges SET undone_at = now(), undone_by = current_app_user() WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "614d6a41729cef2a7072cc5b2b17d80ee363eb6f7c630da2ae2b39035065b2df"
+}

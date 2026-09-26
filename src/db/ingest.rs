@@ -215,7 +215,7 @@ pub async fn find_album(
     sqlx::query_scalar!(
         r#"
         SELECT a.id FROM albums a
-        WHERE a.title_lower = lower($1)
+        WHERE a.title_lower = lower($1) AND a.merged_into IS NULL
           AND a.release_date IS NOT DISTINCT FROM $3
           AND COALESCE((SELECT array_agg(DISTINCT c.artist_id ORDER BY c.artist_id)
                         FROM album_credits c
@@ -264,8 +264,8 @@ pub async fn create_album(
 }
 
 /// The artists, albums or tracks that have this platform id among their sources (not
-/// counting trashed ones: those were wrong). Artists that were merged lead to the artist
-/// they were merged into; merged tracks aren't included.
+/// counting trashed ones: those were wrong). Artists and albums that were merged lead to
+/// the one they were merged into; merged tracks aren't included.
 pub async fn owners_with_platform_id(
     conn: &mut PgConnection,
     kind: Kind,
@@ -290,10 +290,9 @@ pub async fn owners_with_platform_id(
         Kind::Album => {
             sqlx::query_scalar!(
                 r#"
-                SELECT DISTINCT s.album_id AS "id!"
-                FROM sources s
+                SELECT DISTINCT COALESCE(a.merged_into, a.id) AS "id!"
+                FROM sources s JOIN albums a ON a.id = s.album_id
                 WHERE s.platform = $1 AND s.external_id = $2 AND s.trashed_at IS NULL
-                  AND s.album_id IS NOT NULL
                 ORDER BY 1
                 "#,
                 platform,

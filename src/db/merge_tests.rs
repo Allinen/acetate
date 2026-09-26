@@ -99,7 +99,6 @@ async fn merging_combines_and_picks(_: PgPoolOptions, connect: PgConnectOptions)
     tx.commit().await?;
     assert_eq!(merged.variants_moved, 1);
     assert_eq!(merged.lyrics_moved, 1);
-    assert_eq!(merged.covers_trashed, 1);
 
     let mut tx = db::begin(&lib.app, Some(lib.carol)).await?;
     let v = db::tracks::get_track(&mut tx, lib.v, true).await?.unwrap();
@@ -113,11 +112,8 @@ async fn merging_combines_and_picks(_: PgPoolOptions, connect: PgConnectOptions)
     // D's variant (with its history) is V's now.
     assert_eq!(v.variants.len(), 2);
     assert!(v.variants.iter().any(|x| x.label.contains("(from \"Song V (copy)\")")));
-    // Covers: D's is the main one, V's is in the trash.
-    assert_eq!(v.covers.iter().map(|c| c.id).collect::<Vec<_>>(), vec![dupe.d_cover]);
-    let trashed: Option<chrono::DateTime<chrono::Utc>> =
-        sqlx::query_scalar("SELECT trashed_at FROM covers WHERE id = $1").bind(dupe.v_cover).fetch_one(&lib.owner).await?;
-    assert!(trashed.is_some());
+    // Covers: D's is the main one, then V's (none in the trash).
+    assert_eq!(v.covers.iter().map(|c| c.id).collect::<Vec<_>>(), vec![dupe.d_cover, dupe.v_cover]);
     // Lyrics moved; sources combined (the two NetEase song 1 sources are one now).
     assert_eq!(v.lyrics.len(), 1);
     let netease: Vec<_> = v.sources.iter().filter(|s| s.platform == "netease").collect();

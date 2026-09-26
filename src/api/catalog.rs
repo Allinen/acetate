@@ -2,6 +2,7 @@
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
+use axum::response::{IntoResponse, Redirect, Response};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -245,17 +246,21 @@ pub async fn search_albums(
     Ok(Json(hits))
 }
 
-/// `GET /api/albums/{id}`: with credits, tracks, and history if allowed.
+/// `GET /api/albums/{id}`: with credits, tracks, and history if allowed. A merged album
+/// redirects (308) to the album it was merged into.
 pub async fn get_album(
     State(state): State<AppState>,
     user: CurrentUser,
     Path(id): Path<Uuid>,
-) -> Result<Json<AlbumDetail>, AppError> {
+) -> Result<Response, AppError> {
     let mut tx = state.db(&user).await?;
-    db::catalog::get_album(&mut tx, id, user.has(Permission::ViewHistory))
+    if let Some(target) = db::catalog::album_merged_into(&mut tx, id).await? {
+        return Ok(Redirect::permanent(&format!("/api/albums/{target}")).into_response());
+    }
+    let album: AlbumDetail = db::catalog::get_album(&mut tx, id, user.has(Permission::ViewHistory))
         .await?
-        .map(Json)
-        .ok_or(AppError::NotFound)
+        .ok_or(AppError::NotFound)?;
+    Ok(Json(album).into_response())
 }
 
 /// `POST /api/albums`, JSON `{"title": "...", "kind": "ep", "release_date": "...",
@@ -308,6 +313,57 @@ pub async fn edit_album(
     .await?;
     tx.commit().await?;
     Ok(Json(written))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct MergeAlbum {
+    /// The album to merge this one into (the one that stays).
+    into: Uuid,
+    #[serde(default)]
+    reason: String,
+}
+
+/// `POST /api/albums/{id}/merge`, JSON `{"into": "..."}`: this album is the same as
+/// `into`. Its tracks (each with a revision), covers, sources and shares move there; this
+/// album then redirects to `into`.
+pub async fn merge_album(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<Uuid>,
+    Json(body): Json<MergeAlbum>,
+) -> Result<Json<db::album_merges::MergedAlbum>, AppError> {
+    let mut tx = state.db(&user).await?;
+    let merged = db::album_merges::merge_album(&mut tx, id, body.into, &body.reason).await?;
+    tx.commit().await?;
+    Ok(Json(merged))
+}
+
+/// `GET /api/album-merges/{id}/undo`: what undoing the merge would do, item by item
+/// (nothing is changed).
+pub async fn preview_album_merge_undo(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(merge_id): Path<Uuid>,
+) -> Result<Json<db::album_merges::UndoReport>, AppError> {
+    let mut tx = state.db(&user).await?;
+    let report = db::album_merges::undo_album_merge(&mut tx, merge_id, "", false).await?;
+    // Dropped without commit: rolls back (the preview only read).
+    Ok(Json(report))
+}
+
+/// `POST /api/album-merges/{id}/undo`, JSON `{"reason": "..."}` (optional): undoes the
+/// merge, exactly as the preview said. Returns the same report, with `done: true`.
+pub async fn undo_album_merge(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(merge_id): Path<Uuid>,
+    body: Option<Json<Restore>>,
+) -> Result<Json<db::album_merges::UndoReport>, AppError> {
+    let reason = body.map(|Json(b)| b.reason).unwrap_or_default();
+    let mut tx = state.db(&user).await?;
+    let report = db::album_merges::undo_album_merge(&mut tx, merge_id, &reason, true).await?;
+    tx.commit().await?;
+    Ok(Json(report))
 }
 
 /// `POST /api/album-revisions/{id}/restore`

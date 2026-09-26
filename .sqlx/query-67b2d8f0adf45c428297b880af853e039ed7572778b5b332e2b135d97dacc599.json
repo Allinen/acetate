@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT count(*) AS \"n!\"\n        FROM album_tracks bt JOIN tracks t ON t.id = bt.track_id\n        WHERE bt.album_id = $2\n          AND lower(t.title) IN (SELECT lower(t2.title) FROM album_tracks at\n                                 JOIN tracks t2 ON t2.id = at.track_id\n                                 WHERE at.album_id = $1)\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "n!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "67b2d8f0adf45c428297b880af853e039ed7572778b5b332e2b135d97dacc599"
+}

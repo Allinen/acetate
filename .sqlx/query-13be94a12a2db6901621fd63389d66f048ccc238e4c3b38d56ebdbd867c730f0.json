@@ -1,0 +1,65 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT blob_sha256, mime, width, height FROM covers c\n        WHERE id = $1\n          AND NOT EXISTS (SELECT 1 FROM covers k WHERE k.album_id = $2 AND k.blob_sha256 = c.blob_sha256\n                                                   AND k.trashed_at IS NULL)\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "blob_sha256",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "covers",
+            "name": "blob_sha256"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "mime",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "covers",
+            "name": "mime"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "width",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "covers",
+            "name": "width"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "height",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "covers",
+            "name": "height"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "13be94a12a2db6901621fd63389d66f048ccc238e4c3b38d56ebdbd867c730f0"
+}

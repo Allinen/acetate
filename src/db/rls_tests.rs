@@ -355,6 +355,32 @@ async fn cascades_reach_hidden_tracks(_: PgPoolOptions, connect: PgConnectOption
     Ok(())
 }
 
+#[sqlx::test]
+async fn a_merged_artist_is_as_hidden_as_where_it_went(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
+    let lib = setup(connect).await?;
+    // Z and X are both only credited on hidden tracks: bob (friends) sees them, carol doesn't.
+    let mut tx = db::begin(&lib.owner, None).await?;
+    let z = db::ingest::find_or_create_artist(&mut tx, "Z").await?.id;
+    let (t, _) = make_track(&mut tx, "Song T", &[z], None).await?;
+    db::access::set(&mut tx, t, true, &[lib.friends], "test").await?;
+    tx.commit().await?;
+
+    let mut tx = db::begin(&lib.app, Some(lib.bob)).await?;
+    db::revisions::merge_artist(&mut tx, z, lib.x, false, false, "").await?;
+    tx.commit().await?;
+
+    // Z has no credits left, but isn't visible to everyone like an artist credited nowhere.
+    for (user, visible) in [(lib.bob, 2), (lib.carol, 0)] {
+        let mut tx = db::begin(&lib.app, Some(user)).await?;
+        let seen: i64 = sqlx::query_scalar("SELECT count(*) FROM artists WHERE id = ANY($1)")
+            .bind(&[z, lib.x][..])
+            .fetch_one(&mut *tx)
+            .await?;
+        assert_eq!(seen, visible, "user {user}");
+    }
+    Ok(())
+}
+
 /// What a share shows: its tracks, and how many tracks a query without the share's own
 /// filters finds (straight from the table, so only row-level security limits it).
 async fn seen_by_share(lib: &Library, share: &db::shares::ActiveShare) -> anyhow::Result<(Vec<Uuid>, i64)> {
