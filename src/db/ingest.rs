@@ -12,8 +12,8 @@ use crate::model::sources::{Kind, SourceOwner};
 use crate::model::{AlbumData, ArtistData, Credit};
 
 pub struct StoredFile {
-    /// The track currently using this file, or the track it used to belong to
-    /// before being replaced by another file.
+    /// The track currently using this file (the oldest, if several share it), or the
+    /// track it used to belong to before being replaced by another file.
     pub track_id: Option<Uuid>,
 }
 
@@ -32,6 +32,9 @@ pub async fn find_file_by_sha256(
         ) h ON true
         -- A purged file's bytes are gone: storing them again makes a new file.
         WHERE f.sha256 = $1 AND f.purged_at IS NULL
+        -- Several tracks can share a file: the first one to have it counts.
+        ORDER BY t.id NULLS LAST
+        LIMIT 1
         "#,
         sha256
     )

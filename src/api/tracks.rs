@@ -313,3 +313,35 @@ pub async fn undo_merge(
     tx.commit().await?;
     Ok(Json(serde_json::json!({ "restored_track_id": restored })))
 }
+
+#[derive(Debug, Deserialize)]
+pub struct UseFile {
+    /// Play the file this track plays (the two share it from then on).
+    #[serde(default)]
+    file_of: Option<Uuid>,
+    /// Or: play this previous file of the track again.
+    #[serde(default)]
+    previous_file: Option<Uuid>,
+    #[serde(default)]
+    reason: String,
+}
+
+/// `POST /api/tracks/{id}/use-file`, JSON `{"file_of": "<track id>"}` or
+/// `{"previous_file": "<file id>"}` (plus an optional `reason`): switches which file the
+/// track plays, without uploading anything. The file it played becomes a previous file.
+/// Both tracks must be visible to the user.
+pub async fn use_file(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<Uuid>,
+    Json(body): Json<UseFile>,
+) -> Result<Json<db::track_files::FileSwitch>, AppError> {
+    let mut tx = state.db(&user).await?;
+    let switched = match (body.file_of, body.previous_file) {
+        (Some(other), None) => db::track_files::use_file_of(&mut tx, id, other, &body.reason).await?,
+        (None, Some(file)) => db::track_files::use_previous_file(&mut tx, id, file, &body.reason).await?,
+        _ => return Err(AppError::BadRequest("give either `file_of` or `previous_file`".to_string())),
+    };
+    tx.commit().await?;
+    Ok(Json(switched))
+}

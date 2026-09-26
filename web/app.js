@@ -767,7 +767,9 @@ async function showTrack(id) {
         ["sha256", h("span", { class: "mono" }, f.sha256)],
         ["uploaded", fmtTime(f.uploaded_at)],
         ["origin", originView(f.origin)],
-      ])),
+        t.file_shared_with.length ? ["also played by", t.file_shared_with.map((o) =>
+          h("div", {}, h("a", { href: `#/track/${o.id}` }, o.title), h("span", { class: "muted" }, ` ${o.artist_display}`)))] : null,
+      ].filter(Boolean))),
     can("replace_file") ? await replaceFileForm(id, reload) : null,
 
     // Only there with the `view_history` permission.
@@ -784,7 +786,14 @@ async function showTrack(id) {
             class: "small",
             onclick: () => play(c.old_file_id, t.title, t.artist_display, cover?.id, "previous file"),
           }, "▶") : null,
-          can("admin") && !c.old_trashed_at ? h("button", {
+          can("replace_file") && !c.old_purged_at && c.old_file_id !== f.id ? h("button", {
+            class: "small",
+            onclick: async () => {
+              if (!confirm("Play this file again? The current file becomes a previous file.")) return;
+              try { await postJson(`/api/tracks/${id}/use-file`, { previous_file: c.old_file_id }); reload(); } catch (err) { alert(err.message); }
+            },
+          }, "Use again") : null,
+          can("admin") && !c.old_trashed_at && c.old_file_id !== f.id ? h("button", {
             class: "small",
             onclick: async () => {
               if (!confirm(`Move "${c.old_original_filename ?? c.old_uploaded_filename}" to the trash? After 7 days an admin can purge it (its audio is then deleted for good).`)) return;
@@ -1714,6 +1723,7 @@ async function showMerge(leftId, rightId) {
     .filter((r) => r.track_id !== left.id && r.track_id !== right.id);
   const status = h("span", {});
   const reason = h("input", { placeholder: "why (optional)" });
+  const shareStatus = h("span", {});
 
   setDetail(
     h("h2", {}, "Merge tracks"),
@@ -1747,7 +1757,23 @@ async function showMerge(leftId, rightId) {
             pick: picks, reason: reason.value,
           }), () => { loadTracks(true); location.hash = `#/track/${left.id}`; });
         },
-      }, "Merge"), status));
+      }, "Merge"), status),
+    can("replace_file") && left.file.sha256 !== right.file.sha256 ? [
+      h("h3", {}, "Or: keep both tracks, share one file"),
+      h("p", { class: "muted" },
+        "Both stay separate tracks with their own metadata; only the audio is stored once. The other " +
+        "file becomes a previous file of its track (it can be played again from there, or trashed)."),
+      h("div", { class: "row" },
+        [[left, right], [right, left]].map(([keeps, gives]) => h("button", {
+          type: "button",
+          onclick: () => {
+            if (!confirm(`"${gives.title}" plays the file of "${keeps.title}" from now on?`)) return;
+            save(shareStatus, () => postJson(`/api/tracks/${gives.id}/use-file`, { file_of: keeps.id, reason: reason.value }),
+              () => { location.hash = `#/track/${gives.id}`; });
+          },
+        }, `Both use ${keeps === left ? "left" : "right"}'s file`)),
+        shareStatus),
+    ] : null);
 }
 
 // #/trash: covers, sources and old audio files in the trash; restoring, and purging

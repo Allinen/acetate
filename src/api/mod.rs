@@ -109,6 +109,8 @@ pub fn router(state: AppState) -> Router {
         // Merging a duplicate into a track (also needs replace_file, checked in the handler).
         .route("/api/tracks/{id}/merge", require(&[EditMetadata], post(tracks::merge)))
         .route("/api/track-merges/{id}/undo", require(&[EditMetadata], post(tracks::undo_merge)))
+        // Which file a track plays: another track's (shared), or one of its previous files.
+        .route("/api/tracks/{id}/use-file", require(&[ReplaceFile], post(tracks::use_file)))
         .route("/api/tracks/{id}/variants", require(&[EditMetadata], post(tracks::create_variant)))
         .route(
             "/api/tracks/{id}/variants/{variant_id}",

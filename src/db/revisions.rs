@@ -960,7 +960,7 @@ pub async fn merge_tracks(
     .execute(&mut *conn)
     .await?;
 
-    // 4. Files. The duplicate gives up its file (file_id is unique), becoming a redirect.
+    // 4. Files. The duplicate gives up its file, becoming a redirect.
     sqlx::query!(
         "UPDATE tracks SET file_id = NULL, merged_into = $2, updated_at = now() WHERE id = $1",
         from,
@@ -981,19 +981,25 @@ pub async fn merge_tracks(
             .execute(&mut *conn)
             .await?;
     }
-    let history_added = sqlx::query_scalar!(
-        r#"
-        INSERT INTO track_file_history (track_id, old_file_id, new_file_id, reason)
-        VALUES ($1, $2, $3, $4)
-        RETURNING id
-        "#,
-        into,
-        previous,
-        current,
-        reason
-    )
-    .fetch_one(&mut *conn)
-    .await?;
+    // Two tracks sharing one file (`track_files::use_file_of`) have no other file to keep.
+    let history_added = if previous == current {
+        None
+    } else {
+        let id = sqlx::query_scalar!(
+            r#"
+            INSERT INTO track_file_history (track_id, old_file_id, new_file_id, reason)
+            VALUES ($1, $2, $3, $4)
+            RETURNING id
+            "#,
+            into,
+            previous,
+            current,
+            reason
+        )
+        .fetch_one(&mut *conn)
+        .await?;
+        Some(id)
+    };
 
     // 5. Covers: all of them move over; the side not picked goes to the trash.
     let kept_covers = cover_positions(conn, into).await?;
@@ -1141,8 +1147,9 @@ struct MergeRecord {
     file_pick: Side,
     /// The duplicate's file history rows (now the kept track's).
     history_moved: Vec<Uuid>,
-    /// The row saying the file not picked became a previous file.
-    history_added: Uuid,
+    /// The row saying the file not picked became a previous file. None if both tracks
+    /// played the same file.
+    history_added: Option<Uuid>,
     /// Both sides' covers (not in the trash) and their order before.
     kept_covers: Vec<CoverPosition>,
     dupe_covers: Vec<CoverPosition>,
@@ -1295,7 +1302,8 @@ pub async fn merge_undo_blockers(conn: &mut PgConnection, merge_id: Uuid) -> any
     let later_file = sqlx::query_scalar!(
         r#"SELECT EXISTS (SELECT 1 FROM track_file_history WHERE track_id = $1 AND id > $2) AS "e!""#,
         kept,
-        record.history_added
+        // Without a row of its own, the merge's id (also a UUIDv7) marks the moment.
+        record.history_added.unwrap_or(merge_id)
     )
     .fetch_one(&mut *conn)
     .await?;
@@ -1402,9 +1410,11 @@ pub async fn undo_track_merge(conn: &mut PgConnection, merge_id: Uuid, reason: &
     }
 
     // 3. Files: each track its own again; the duplicate stops redirecting.
-    sqlx::query!("DELETE FROM track_file_history WHERE id = $1", record.history_added)
-        .execute(&mut *conn)
-        .await?;
+    if let Some(history_added) = record.history_added {
+        sqlx::query!("DELETE FROM track_file_history WHERE id = $1", history_added)
+            .execute(&mut *conn)
+            .await?;
+    }
     sqlx::query!(
         "UPDATE track_file_history SET track_id = $2 WHERE id = ANY($1)",
         &record.history_moved,

@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT COALESCE(t.id, h.track_id) AS track_id\n        FROM files f\n        LEFT JOIN tracks t ON t.file_id = f.id\n        LEFT JOIN LATERAL (\n            SELECT track_id FROM track_file_history WHERE old_file_id = f.id LIMIT 1\n        ) h ON true\n        -- A purged file's bytes are gone: storing them again makes a new file.\n        WHERE f.sha256 = $1 AND f.purged_at IS NULL\n        -- Several tracks can share a file: the first one to have it counts.\n        ORDER BY t.id NULLS LAST\n        LIMIT 1\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "track_id",
+        "type_info": "Uuid",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "d1bfc97dede5fecbb3741d11886218850d5cf665cb26856bd2ecfd84f74001d7"
+}

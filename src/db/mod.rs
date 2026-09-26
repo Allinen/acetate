@@ -16,6 +16,7 @@ pub mod review;
 pub mod revisions;
 pub mod shares;
 pub mod sources;
+pub mod track_files;
 pub mod tracks;
 pub mod problems;
 pub mod trash;

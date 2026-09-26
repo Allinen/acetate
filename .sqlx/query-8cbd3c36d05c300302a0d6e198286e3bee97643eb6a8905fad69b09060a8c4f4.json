@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT f.purged_at IS NOT NULL AS \"purged!\"\n        FROM track_file_history h JOIN files f ON f.id = h.old_file_id\n        WHERE h.track_id = $1 AND h.old_file_id = $2\n        LIMIT 1\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "purged!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "8cbd3c36d05c300302a0d6e198286e3bee97643eb6a8905fad69b09060a8c4f4"
+}

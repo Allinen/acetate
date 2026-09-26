@@ -396,3 +396,108 @@ async fn merge_combines_annotations_and_undo_splits_them(
     assert_eq!((d.play_count, d.starred), (3, true));
     Ok(())
 }
+
+// ---- Sharing a file: two tracks, one file (`track_files`) ----
+
+async fn file_of(lib: &Library, track: Uuid) -> anyhow::Result<Uuid> {
+    Ok(sqlx::query_scalar("SELECT file_id FROM tracks WHERE id = $1").bind(track).fetch_one(&lib.owner).await?)
+}
+
+#[sqlx::test]
+async fn sharing_a_file_and_taking_it_back(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
+    let lib = setup(connect).await?;
+    let dupe = make_duplicate(&lib).await?;
+    let v_before = snapshot(&lib, lib.v).await?;
+
+    // D plays V's file from now on; everything else about both stays.
+    let mut tx = db::begin(&lib.app, Some(lib.carol)).await?;
+    let switched = db::track_files::use_file_of(&mut tx, dupe.d, lib.v, "").await?;
+    tx.commit().await?;
+    assert_eq!((switched.old_file_id, switched.new_file_id), (dupe.d_file, dupe.v_file));
+    assert_eq!(file_of(&lib, dupe.d).await?, dupe.v_file);
+    assert_eq!(snapshot(&lib, lib.v).await?, v_before, "V itself is untouched");
+
+    let mut tx = db::begin(&lib.app, Some(lib.carol)).await?;
+    let d = db::tracks::get_track(&mut tx, dupe.d, true).await?.unwrap();
+    assert_eq!(d.title, "Song V (copy)");
+    let history = d.file_history.unwrap();
+    assert_eq!(history[0].old_file_id, dupe.d_file, "D's own file is a previous file now");
+    assert!(history[0].reason.contains("uses the file of"));
+    let v = db::tracks::get_track(&mut tx, lib.v, false).await?.unwrap();
+    assert_eq!(v.file_shared_with.iter().map(|t| t.id).collect::<Vec<_>>(), vec![dupe.d]);
+    drop(tx);
+
+    // D's own file is played by nothing now: listed for cleanup. The shared one isn't.
+    let mut tx = db::begin(&lib.app, Some(lib.alice)).await?;
+    let replaced: Vec<Uuid> = db::trash::replaced_files(&mut tx, None, 100).await?.iter().map(|f| f.id).collect();
+    assert!(replaced.contains(&dupe.d_file));
+    assert!(!replaced.contains(&dupe.v_file));
+    // Its bytes stored again are a duplicate of the older track playing it (V).
+    let sha: String = sqlx::query_scalar("SELECT sha256 FROM files WHERE id = $1").bind(dupe.v_file).fetch_one(&mut *tx).await?;
+    let found = db::ingest::find_file_by_sha256(&mut tx, &sha).await?.unwrap();
+    assert_eq!(found.track_id, Some(lib.v.min(dupe.d)));
+    // D's own file goes to the trash in the meantime.
+    db::trash::trash_files(&mut tx, &[dupe.d_file]).await?;
+    tx.commit().await?;
+
+    // Taking it back: D plays its own file again (out of the trash), V keeps its file.
+    let mut tx = db::begin(&lib.app, Some(lib.carol)).await?;
+    db::track_files::use_previous_file(&mut tx, dupe.d, dupe.d_file, "").await?;
+    tx.commit().await?;
+    assert_eq!(file_of(&lib, dupe.d).await?, dupe.d_file);
+    assert_eq!(file_of(&lib, lib.v).await?, dupe.v_file);
+    let trashed: Option<chrono::DateTime<chrono::Utc>> = sqlx::query_scalar("SELECT trashed_at FROM files WHERE id = $1")
+        .bind(dupe.d_file)
+        .fetch_one(&lib.owner)
+        .await?;
+    assert!(trashed.is_none());
+    Ok(())
+}
+
+#[sqlx::test]
+async fn sharing_a_file_is_refused_when_it_should_be(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
+    let lib = setup(connect).await?;
+    let dupe = make_duplicate(&lib).await?;
+    let rejection = |err: anyhow::Error| err.downcast_ref::<EditRejected>().map(|e| e.to_string()).unwrap_or_else(|| format!("{err:#}"));
+    let mut tx = db::begin(&lib.app, Some(lib.carol)).await?;
+    let err = db::track_files::use_file_of(&mut tx, lib.v, lib.v, "").await.unwrap_err();
+    assert!(rejection(err).contains("itself"));
+    // H is hidden from carol: as if it didn't exist.
+    let err = db::track_files::use_file_of(&mut tx, dupe.d, lib.h, "").await.unwrap_err();
+    assert!(rejection(err).contains("not found"));
+    // Not one of V's previous files.
+    let err = db::track_files::use_previous_file(&mut tx, lib.v, dupe.d_old_file, "").await.unwrap_err();
+    assert!(rejection(err).contains("previous files"));
+    drop(tx);
+
+    let mut tx = db::begin(&lib.app, Some(lib.carol)).await?;
+    db::track_files::use_file_of(&mut tx, dupe.d, lib.v, "").await?;
+    let err = db::track_files::use_file_of(&mut tx, lib.v, dupe.d, "").await.unwrap_err();
+    assert!(rejection(err).contains("already play the same file"));
+    Ok(())
+}
+
+#[sqlx::test]
+async fn merging_tracks_that_share_a_file(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
+    let lib = setup(connect).await?;
+    let dupe = make_duplicate(&lib).await?;
+    let mut tx = db::begin(&lib.app, Some(lib.carol)).await?;
+    db::track_files::use_file_of(&mut tx, dupe.d, lib.v, "").await?;
+    tx.commit().await?;
+    let (v_before, d_before) = (snapshot(&lib, lib.v).await?, snapshot(&lib, dupe.d).await?);
+
+    // No second file to keep: V's history gets D's rows, but no "merged" row of its own.
+    let mut tx = db::begin(&lib.app, Some(lib.carol)).await?;
+    db::revisions::merge_tracks(&mut tx, lib.v, dupe.d, &MergePicks::default(), None, None, "").await?;
+    tx.commit().await?;
+    assert_eq!(file_of(&lib, lib.v).await?, dupe.v_file);
+
+    let merge = merge_ids(&lib).await?[0];
+    let mut tx = db::begin(&lib.app, Some(lib.carol)).await?;
+    assert_eq!(db::revisions::merge_undo_blockers(&mut tx, merge).await?, Vec::<String>::new());
+    db::revisions::undo_track_merge(&mut tx, merge, "").await?;
+    tx.commit().await?;
+    assert_eq!(snapshot(&lib, lib.v).await?, v_before);
+    assert_eq!(snapshot(&lib, dupe.d).await?, d_before);
+    Ok(())
+}

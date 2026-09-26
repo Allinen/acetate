@@ -92,6 +92,8 @@ pub struct TrackDetail {
     pub primary_variant_id: Option<Uuid>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub file: FileInfo,
+    /// Other tracks playing the same file (see `track_files::use_file_of`), if visible.
+    pub file_shared_with: Vec<super::track_files::SharedWith>,
     /// Previous files. Only included for users allowed to view history.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub file_history: Option<Vec<FileChange>>,
@@ -320,6 +322,7 @@ pub async fn get_track(
     let file_history = with_history.then_some(file_history);
 
     let sources = super::sources::list_for(conn, id).await?;
+    let file_shared_with = super::track_files::shared_with(conn, row.file_id, id).await?;
 
     let credits = sqlx::query_as!(
         Credit,
@@ -449,6 +452,7 @@ pub async fn get_track(
             uploaded_at: row.uploaded_at,
             embedded_tags: row.embedded_tags,
         },
+        file_shared_with,
         file_history,
         sources,
         credits,

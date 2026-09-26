@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        INSERT INTO track_file_history (track_id, old_file_id, new_file_id, reason)\n        VALUES ($1, $2, $3, $4)\n        RETURNING id\n        ",
+  "query": "\n            INSERT INTO track_file_history (track_id, old_file_id, new_file_id, reason)\n            VALUES ($1, $2, $3, $4)\n            RETURNING id\n            ",
   "describe": {
     "columns": [
       {
@@ -27,5 +27,5 @@
       false
     ]
   },
-  "hash": "ac9fdc094db9cabed4ba9c35e0445f68eca993e115cc8bb98ac90da8a87c1671"
+  "hash": "90652bf180be5679ce3023430b93893d134bf0c89c2ab7fd62d819a9a03c2dee"
 }
