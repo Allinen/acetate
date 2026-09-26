@@ -4,6 +4,7 @@ mod config;
 mod db;
 mod ingest;
 mod ingest_command;
+mod merge_duplicates_command;
 mod model;
 mod navidrome;
 mod storage;
@@ -118,6 +119,21 @@ enum Command {
         /// Write the paths of the files that aren't to this file.
         #[arg(long)]
         list_missing: Option<PathBuf>,
+    },
+    /// Merge the "possible duplicate" pairs from review flags that have exactly the same
+    /// title and about the same length. The older track is kept (its metadata and covers),
+    /// with the bigger of the two files. Each merge can be undone on the track's page.
+    MergeDuplicates {
+        /// How far apart the lengths may be, in milliseconds.
+        #[arg(long, default_value_t = 1000)]
+        max_length_difference_ms: i64,
+        /// Also merge titles that differ only in case ("Intro" and "INTRO"). The kept
+        /// track's spelling stays.
+        #[arg(long)]
+        ignore_case: bool,
+        /// Only list what would be merged.
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Move users and their plays, stars and ratings over from a Navidrome server. Reads
     /// Navidrome's database and music files, never changes them. Matches tracks by their
@@ -317,6 +333,10 @@ async fn main() -> anyhow::Result<()> {
             }
             _ => anyhow::bail!("give either a folder to check, or --blobs"),
         },
+        Command::MergeDuplicates { max_length_difference_ms, ignore_case, dry_run } => {
+            let options = merge_duplicates_command::Options { max_length_difference_ms, ignore_case, dry_run };
+            merge_duplicates_command::run(&pool, options).await
+        }
         Command::ImportNavidrome { db, path_maps, libraries, password_key, dry_run } => {
             let path_maps = path_maps
                 .iter()

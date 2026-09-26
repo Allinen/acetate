@@ -582,3 +582,40 @@ async fn merging_settles_only_that_pairs_duplicate_flags(_: PgPoolOptions, conne
     assert_eq!(related["settled"][0]["track"], json!(dupe.d));
     Ok(())
 }
+
+#[sqlx::test]
+async fn merge_duplicates_merges_same_title_and_length(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
+    let lib = setup(connect).await?;
+    let dupe = make_duplicate(&lib).await?; // V is flagged: "looks like D"
+    let options = |dry_run| crate::merge_duplicates_command::Options { max_length_difference_ms: 1000, ignore_case: false, dry_run };
+
+    // Different titles ("Song V" and "Song V (copy)"): left alone.
+    sqlx::query("UPDATE files SET duration_ms = 180000").execute(&lib.owner).await?;
+    crate::merge_duplicates_command::run(&lib.owner, options(false)).await?;
+    assert_eq!(db::tracks::merged_into(&mut *lib.owner.acquire().await?, dupe.d).await?, None);
+
+    // Only the case differs: merged with --ignore-case only (a dry run changes nothing).
+    sqlx::query("UPDATE tracks SET title = 'SONG V' WHERE id = $1").bind(dupe.d).execute(&lib.owner).await?;
+    crate::merge_duplicates_command::run(&lib.owner, options(false)).await?;
+    assert_eq!(db::tracks::merged_into(&mut *lib.owner.acquire().await?, dupe.d).await?, None);
+    let ignoring_case = crate::merge_duplicates_command::Options { max_length_difference_ms: 1000, ignore_case: true, dry_run: true };
+    crate::merge_duplicates_command::run(&lib.owner, ignoring_case).await?;
+    assert_eq!(db::tracks::merged_into(&mut *lib.owner.acquire().await?, dupe.d).await?, None);
+
+    // Same title, 0.5 s apart, D's file the bigger one: D is merged into V (the older),
+    // with D's file. A dry run first changes nothing.
+    sqlx::query("UPDATE tracks SET title = 'Song V' WHERE id = $1").bind(dupe.d).execute(&lib.owner).await?;
+    sqlx::query("UPDATE files SET duration_ms = 180500, size_bytes = 9999999 WHERE id = $1").bind(dupe.d_file).execute(&lib.owner).await?;
+    crate::merge_duplicates_command::run(&lib.owner, options(true)).await?;
+    assert_eq!(db::tracks::merged_into(&mut *lib.owner.acquire().await?, dupe.d).await?, None);
+    crate::merge_duplicates_command::run(&lib.owner, options(false)).await?;
+    assert_eq!(db::tracks::merged_into(&mut *lib.owner.acquire().await?, dupe.d).await?, Some(lib.v));
+    assert_eq!(file_of(&lib, lib.v).await?, dupe.d_file);
+
+    // Nothing left to do.
+    let open: i64 = sqlx::query_scalar("SELECT count(*) FROM review_flags WHERE resolved_at IS NULL")
+        .fetch_one(&lib.owner)
+        .await?;
+    assert_eq!(open, 0);
+    Ok(())
+}

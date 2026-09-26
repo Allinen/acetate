@@ -1762,7 +1762,8 @@ async function showMerge(leftId, rightId) {
       h("h3", {}, "Or: keep both tracks, share one file"),
       h("p", { class: "muted" },
         "Both stay separate tracks with their own metadata; only the audio is stored once. The other " +
-        "file becomes a previous file of its track (it can be played again from there, or trashed)."),
+        "file becomes a previous file of its track (it can be played again from there, or trashed). " +
+        "The use case for this is having two separate entries for the same song. Otherwise always merge!"),
       h("div", { class: "row" },
         [[left, right], [right, left]].map(([keeps, gives]) => h("button", {
           type: "button",

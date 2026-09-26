@@ -1,0 +1,33 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT rf.track_id, listed.id::uuid AS \"other!\"\n        FROM review_flags rf\n        CROSS JOIN jsonb_array_elements_text(rf.related -> 'tracks') AS listed(id)\n        WHERE rf.kind = 'possible_duplicate' AND rf.resolved_at IS NULL\n        ORDER BY rf.id, listed.id\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "track_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "review_flags",
+            "name": "track_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "other!",
+        "type_info": "Uuid",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      null
+    ]
+  },
+  "hash": "a4f2399e7f5540630e9e8d0aaba7e4b5364e24e7a5c109795174dde01b127210"
+}
