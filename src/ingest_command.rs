@@ -12,7 +12,7 @@ use sqlx::PgPool;
 use crate::db;
 use crate::ingest::describe::{AlbumHint, Hints, MatchedBy, Report, ReportStatus};
 use crate::ingest::layouts::{id_folders, soundcloud, Layout};
-use crate::ingest::{self, IngestOptions};
+use crate::ingest::{self, comment_links, IngestOptions};
 use crate::ingest_client::Server;
 use crate::model::sources::ValidSource;
 use crate::storage::BlobStore;
@@ -176,6 +176,21 @@ pub async fn run(target: Target<'_>, dir: &Path, options: Options) -> anyhow::Re
         }
         if let Some(map) = &options.sc_map {
             map.apply(&mut info);
+        }
+        // Nothing from the path: a SoundCloud or store link in the comment says where the
+        // file is from (see `comment_links`), before --origin.
+        if info.track.is_none() {
+            let extension = path.extension().and_then(|e| e.to_str());
+            let comment = crate::ingest::tags::read_tags(path, extension).ok().and_then(|t| t.comment);
+            if let Some(origin) = comment.as_deref().and_then(comment_links::origin_from_comment) {
+                let what = match (origin.data["song_permalinks"][0].as_str(), origin.data["url"].as_str()) {
+                    (Some(permalink), _) => format!("SoundCloud {permalink}"),
+                    (None, Some(url)) => format!("{} {url}", origin.data["label"].as_str().unwrap_or("?")),
+                    _ => origin.platform.clone(),
+                };
+                info.warnings.push(format!("origin from the link in the comment: {what}"));
+                info.track = Some(origin);
+            }
         }
         let Some(origin) = info.track.clone().or_else(|| options.origin.clone()) else {
             totals.skipped += 1;

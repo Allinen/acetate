@@ -7,6 +7,7 @@
 //! Metadata is taken verbatim from the tags. Nothing is guessed: files without the
 //! required tags are rejected instead of being imported with made-up values.
 
+pub mod comment_links;
 pub mod describe;
 pub mod layouts;
 pub mod probe;

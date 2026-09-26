@@ -101,6 +101,8 @@ const CUSTOM_FIELDS: &[Field] = &[
     required("label", Str),
     // Anything else: who sent it, when, which server/channel...
     optional("description", Str),
+    // A link to it, e.g. the Tidal track a download came from.
+    optional("url", Str),
 ];
 
 /// Every supported (platform, kind) and its fields.
