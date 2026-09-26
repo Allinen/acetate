@@ -59,6 +59,8 @@ impl Kind {
 pub enum FieldType {
     Int,
     Str,
+    /// A list of strings, e.g. every permalink a SoundCloud song has had.
+    StrList,
 }
 
 pub struct Field {
@@ -76,7 +78,7 @@ pub struct Shape {
     pub fields: &'static [Field],
 }
 
-use FieldType::{Int, Str};
+use FieldType::{Int, Str, StrList};
 
 /// Shorthands to keep `SHAPES` readable.
 const fn required(name: &'static str, field_type: FieldType) -> Field {
@@ -104,12 +106,22 @@ const CUSTOM_FIELDS: &[Field] = &[
 /// Every supported (platform, kind) and its fields.
 pub const SHAPES: &[Shape] = &[
     // ---- SoundCloud ----
+    // The lists hold every value seen over time (deduplicated), as the migration's lookup
+    // gathers them; the single-value fields are the older form. Permalinks are the part
+    // after "soundcloud.com/" ("artist/song").
     Shape {
         platform: "soundcloud",
         kind: Kind::Track,
         id_field: Some("song_id"),
         fields: &[
             required("song_id", Int),
+            // The uploaded files' ids: a song whose audio was replaced has several.
+            optional("song_uids", StrList),
+            optional("song_permalinks", StrList),
+            optional("song_descriptions", StrList),
+            // `display_date` (else `created_at`) of each capture.
+            optional("release_dates", StrList),
+            optional("created_at", StrList),
             optional("song_uid", Str),
             optional("song_permalink", Str),
             optional("song_description", Str),
@@ -118,14 +130,23 @@ pub const SHAPES: &[Shape] = &[
     Shape {
         platform: "soundcloud",
         kind: Kind::Album,
-        id_field: None,
-        fields: &[required("album_permalink", Str)],
+        id_field: Some("album_id"),
+        fields: &[
+            optional("album_id", Int),
+            optional("album_permalinks", StrList),
+            optional("release_dates", StrList),
+            optional("album_permalink", Str),
+        ],
     },
     Shape {
         platform: "soundcloud",
         kind: Kind::Artist,
-        id_field: None,
-        fields: &[required("artist_permalink", Str)],
+        id_field: Some("artist_id"),
+        fields: &[
+            optional("artist_id", Int),
+            optional("artist_permalinks", StrList),
+            optional("artist_permalink", Str),
+        ],
     },
     // ---- NetEase ----
     Shape {
@@ -136,7 +157,7 @@ pub const SHAPES: &[Shape] = &[
             required("song_id", Int),
             // The song's index on its NetEase album, exactly as NetEase has it (it can skip
             // numbers or repeat them). The track's own position on the album is a clean
-            // 1, 2, 3... derived from it (see `netease::AlbumMap`); this keeps the original.
+            // 1, 2, 3... derived from it (see `id_folders::IdMap`); this keeps the original.
             optional("song_index", Int),
         ],
     },
@@ -148,6 +169,56 @@ pub const SHAPES: &[Shape] = &[
     },
     Shape {
         platform: "netease",
+        kind: Kind::Artist,
+        id_field: Some("artist_id"),
+        fields: &[required("artist_id", Int)],
+    },
+    // ---- QQ Music ----
+    // QQ has two ids for each song, album and artist: a number (`*_id`, the one that
+    // identifies the source here) and a short text id (`*_mid`), which its links use.
+    Shape {
+        platform: "qq",
+        kind: Kind::Track,
+        id_field: Some("song_id"),
+        fields: &[
+            required("song_id", Int),
+            optional("song_mid", Str),
+            // The song's index on its QQ album, verbatim (like NetEase's `song_index`).
+            optional("song_index", Int),
+        ],
+    },
+    Shape {
+        platform: "qq",
+        kind: Kind::Album,
+        id_field: Some("album_id"),
+        fields: &[required("album_id", Int), optional("album_mid", Str)],
+    },
+    Shape {
+        platform: "qq",
+        kind: Kind::Artist,
+        id_field: Some("artist_id"),
+        fields: &[required("artist_id", Int), optional("artist_mid", Str)],
+    },
+    // ---- Kuwo ----
+    Shape {
+        platform: "kuwo",
+        kind: Kind::Track,
+        id_field: Some("song_id"),
+        fields: &[
+            // Optional: some Kuwo downloads came without their song id (`--tag-fallback`).
+            optional("song_id", Int),
+            // The song's index on its Kuwo album, verbatim (like NetEase's `song_index`).
+            optional("song_index", Int),
+        ],
+    },
+    Shape {
+        platform: "kuwo",
+        kind: Kind::Album,
+        id_field: Some("album_id"),
+        fields: &[required("album_id", Int)],
+    },
+    Shape {
+        platform: "kuwo",
         kind: Kind::Artist,
         id_field: Some("artist_id"),
         fields: &[required("artist_id", Int)],
@@ -258,11 +329,13 @@ pub fn validate(kind: Kind, source: NewSource) -> Result<ValidSource, InvalidSou
                 let ok = match field.field_type {
                     Int => value.is_i64(),
                     Str => value.is_string(),
+                    StrList => value.as_array().is_some_and(|items| items.iter().all(|i| i.is_string())),
                 };
                 if !ok {
                     let expected = match field.field_type {
                         Int => "an integer",
                         Str => "a string",
+                        StrList => "a list of strings",
                     };
                     return err(format!("`{}` must be {expected}, got {value}", field.name));
                 }
@@ -356,9 +429,11 @@ mod tests {
             for b in &SHAPES[i + 1..] {
                 assert!(!(a.platform == b.platform && a.kind == b.kind), "{} twice", a.platform);
             }
+            // The id field must be one of the fields. It may be optional (Kuwo songs whose
+            // id is unknown): a source without it is found by its data instead, like a
+            // custom source (see `db::sources::add_snapshot`).
             if let Some(id) = a.id_field {
-                let field = a.fields.iter().find(|f| f.name == id);
-                assert!(field.is_some_and(|f| f.required), "{}: id field must be required", a.platform);
+                assert!(a.fields.iter().any(|f| f.name == id), "{}: id field must be a field", a.platform);
             }
         }
     }

@@ -218,6 +218,7 @@ pub fn router(state: AppState) -> Router {
                 .merge(require(&[EditMetadata], put(catalog::edit_artist))),
         )
         .route("/api/artists/{id}/tracks", require(&[Browse], get(catalog::artist_tracks)))
+        .route("/api/artists/{id}/aliases/{alias_id}/uses", require(&[Browse], get(catalog::alias_uses)))
         .route("/api/artists/{id}/merge", require(&[EditMetadata], post(catalog::merge_artist)))
         .route("/api/artists/{id}/sources", require(&[EditSources], post(sources::add_artist_source)))
         // Uploads are streamed to disk, so a large limit doesn't mean large memory use.

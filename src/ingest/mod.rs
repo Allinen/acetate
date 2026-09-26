@@ -369,6 +369,18 @@ pub async fn ingest_in(
         tags.artists = given_artists;
         given.push("artist");
     }
+    // The original file's name from the description, only if the tags have none.
+    if tags.original_filename.is_none() {
+        tags.original_filename = options.hints.original_filename.clone();
+    }
+    // A date from the description: only if the tags have none, unless it's meant to win.
+    let tag_date = tags.date.clone();
+    let dated_by_hint = options.hints.release_date.is_some()
+        && (tags.date.is_none() || options.hints.release_date_over_tags)
+        && tags.date != options.hints.release_date;
+    if dated_by_hint {
+        tags.date = options.hints.release_date.clone();
+    }
     let missing: Vec<&'static str> = [
         ("title", tags.title.is_none()),
         ("artist", tags.artists.is_empty()),
@@ -385,9 +397,24 @@ pub async fn ingest_in(
     //    only hashes them.
     let sha256 = file.sha256.clone();
     let size_bytes = file.size as i64;
-    let mut covers = Vec::new();
-    for picture in &tags.pictures {
-        covers.push((put_image(store, &picture.data, dry_run).await?, picture.mime.clone()));
+    // (blob, mime, where it's from); the same image only once.
+    let mut covers: Vec<(String, Option<String>, &'static str)> = Vec::new();
+    if !options.hints.skip_embedded_covers {
+        for picture in &tags.pictures {
+            let sha = put_image(store, &picture.data, dry_run).await?;
+            if !covers.iter().any(|(s, _, _)| *s == sha) {
+                covers.push((sha, picture.mime.clone(), "embedded"));
+            }
+        }
+    }
+    for (n, bytes) in options.hints.track_covers.iter().enumerate() {
+        let Some(image) = crate::model::image_info(bytes) else {
+            return Err(Rejected::Invalid(format!("track cover {}: not a JPEG, PNG, WebP or GIF image", n + 1)).into());
+        };
+        let sha = put_image(store, bytes, dry_run).await?;
+        if !covers.iter().any(|(s, _, _)| *s == sha) {
+            covers.push((sha, Some(image.mime.to_string()), "description"));
+        }
     }
     let mut album_cover_blobs = Vec::new();
     for (bytes, image) in album_covers {
@@ -400,14 +427,17 @@ pub async fn ingest_in(
     //    (see `db::as_system`); what the uploader gets back is filtered afterwards.
     let system = db::as_system(conn).await?;
     // The first revision says where its values came from.
-    let (variant_label, revision_reason) = if given.is_empty() {
-        ("File tags".to_string(), "imported_from_file".to_string())
-    } else {
-        (
-            "File tags + given by hand".to_string(),
-            format!("imported_from_file; given by hand (not from the tags): {}", given.join(", ")),
-        )
-    };
+    let variant_label = if given.is_empty() { "File tags" } else { "File tags + given by hand" }.to_string();
+    let mut revision_reason = "imported_from_file".to_string();
+    if !given.is_empty() {
+        revision_reason += &format!("; given by hand (not from the tags): {}", given.join(", "));
+    }
+    if dated_by_hint {
+        revision_reason += &match &tag_date {
+            None => "; release date from the description (the tags have none)".to_string(),
+            Some(date) => format!("; release date from the description (the tags say {date})"),
+        };
+    }
     let new_file = NewFileInfo {
         volume: &file.volume,
         cover_volume: store.default_volume(),
@@ -696,8 +726,9 @@ async fn insert_file_row(
 ) -> anyhow::Result<()> {
     // `original_filename` is set only for original files ("og files", the file as the
     // artist named it), and is their name. The old tag-based library kept that name in an
-    // ORIGINALFILENAME-like tag, so that's where it's read from for now. It's never filled
-    // in from the name a file was uploaded with (that's `uploaded_filename`).
+    // ORIGINALFILENAME-like tag, so that's where it's read from (or, without one, from the
+    // description; see `ingest_in`). It's never filled in from the name a file was
+    // uploaded with (that's `uploaded_filename`).
     let original_filename = tags.original_filename.as_deref();
     let embedded_tags = json!({ "tags": tags.raw });
 
@@ -747,12 +778,32 @@ async fn create_track_rows(
     conn: &mut PgConnection,
     options: &IngestOptions,
     file: &NewFileInfo<'_>,
-    covers: &[(String, Option<String>)],
+    covers: &[(String, Option<String>, &'static str)],
     album_covers: &[(String, ImageInfo)],
 ) -> anyhow::Result<Report> {
     let tags = file.tags;
-    let hints = &options.hints;
     let mut resolver = Resolver::default();
+    // With `lax_artist_names`, a hint for a name the tags don't have may go to the one tag
+    // artist without a hint (see `describe::lax_artist_names`).
+    // Ids for the first ARTIST, whatever its name (see `Hints::first_artist_sources`).
+    let first;
+    let hints = match tags.artists.first() {
+        Some(name) if !options.hints.first_artist_sources.is_empty() => {
+            first = describe::with_first_artist(&options.hints, name);
+            &first
+        }
+        _ => &options.hints,
+    };
+    let lax;
+    let hints = if hints.lax_artist_names {
+        let tag_artists: Vec<String> = tags.artists.iter().chain(&tags.album_artists).cloned().collect();
+        let note;
+        (lax, note) = describe::lax_artist_names(hints, &tag_artists);
+        resolver.warnings.extend(note);
+        &lax
+    } else {
+        hints
+    };
     // The file row is written last (see the comment on tracks.file_id in the schema),
     // so its id is generated up front.
     let file_id = Uuid::now_v7();
@@ -806,6 +857,23 @@ async fn create_track_rows(
         });
     }
 
+    // COMPOSER: producer credits, after the artists. Someone already credited (e.g. a
+    // self-produced track) is credited again as producer, since that's also true.
+    for name in &tags.composers {
+        let artist = resolver.artist(conn, hints, name).await?;
+        if credits.iter().any(|c| c.artist_id == artist.id && c.role == "producer") {
+            continue;
+        }
+        if !artist.ambiguous.is_empty() {
+            ambiguous.push((name.clone(), artist.id, artist.ambiguous));
+        }
+        credits.push(Credit {
+            artist_id: artist.id,
+            role: "producer".to_string(),
+            alias_id: artist.alias_id,
+        });
+    }
+
     // Revision 0: exactly what the tags said. (Title presence was checked by the caller.)
     let metadata = TrackMetadata {
         title: tags.title.clone().context("title is required")?,
@@ -823,8 +891,10 @@ async fn create_track_rows(
         for name in album_artist_names {
             album_artists.push(resolver.artist(conn, hints, name).await?);
         }
+        // The album's own date if the description has one, else the track's.
+        let album_date = hints.album.as_ref().and_then(|a| a.release_date.as_deref()).or(tags.date.as_deref());
         let id = resolver
-            .album(conn, hints, album_title, &album_artists, single, tags.date.as_deref())
+            .album(conn, hints, album_title, &album_artists, single, album_date)
             .await?;
         album_id = Some(id);
         albums.push(AlbumMembership {
@@ -860,14 +930,14 @@ async fn create_track_rows(
     )
     .await?;
 
-    for (position, (cover_sha, mime)) in covers.iter().enumerate() {
+    for (position, (cover_sha, mime, source)) in covers.iter().enumerate() {
         db::ingest::insert_track_cover(
             conn,
             track_id,
             cover_sha,
             mime.as_deref(),
             position as i16,
-            "embedded",
+            source,
         )
         .await?;
     }
@@ -928,7 +998,7 @@ async fn create_track_rows(
     )
     .await?;
     db::blobs::register(conn, file.sha256, file.volume, Some(file.size_bytes)).await?;
-    for (cover_sha, _) in covers {
+    for (cover_sha, _, _) in covers {
         db::blobs::register(conn, cover_sha, file.cover_volume, None).await?;
     }
     // If this file was listed as not imported before (e.g. its tags were fixed since), it

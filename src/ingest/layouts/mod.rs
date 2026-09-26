@@ -8,10 +8,11 @@
 //! Layouts never guess: a path that doesn't fit gives no ids (and a warning), rather than
 //! ids read from the wrong part of a name. To support another downloader, add a layout.
 
-pub mod netease;
+pub mod id_folders;
+pub mod soundcloud;
 pub mod ytdlp;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde_json::json;
 
@@ -21,8 +22,11 @@ use crate::model::sources::{self, Kind, NewSource, ValidSource};
 /// Which layout to read paths with (`--layout`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Layout {
-    /// NetEase downloads (see `netease`).
-    Netease,
+    /// Downloads with platform ids in the folder and file names: NetEase, QQ Music (see
+    /// `id_folders`).
+    IdFolders(id_folders::Platform),
+    /// SoundCloud discographies: `<artist id>/{FLACs|streams}/...` (see `soundcloud`).
+    Soundcloud,
     /// yt-dlp's `Title [id].ext`, from one platform (`--platform`).
     Ytdlp(ytdlp::Platform),
     /// Nothing from the path: only the tags (and `--origin`).
@@ -42,11 +46,30 @@ pub struct PathInfo {
     /// Finds the album's cover in a `--covers` folder (for NetEase: the album id).
     pub album_cover_key: Option<String>,
     /// The track's position on the album, when the layout knows it better than the tags
-    /// (from a NetEase album map, see `netease::AlbumMap`).
+    /// (from an id map, see `id_folders::IdMap`).
     pub album_track_number: Option<i16>,
     /// Whether the album is a single, if the folders say (see `release_kind`). None: they
     /// don't, and the tags decide.
     pub album_is_single: Option<bool>,
+    /// The release date, for files whose tags have none (from an id map), or over theirs
+    /// with `release_date_over_tags`.
+    pub release_date: Option<String>,
+    pub release_date_over_tags: bool,
+    /// The album's own release date (see `AlbumHint::release_date`).
+    pub album_release_date: Option<String>,
+    /// The track's status (e.g. "deleted"), when the layout knows it. None: `--status`.
+    pub status: Option<String>,
+    /// Ids for the first ARTIST, whatever its name (see `Hints::first_artist_sources`).
+    pub first_artist_sources: Vec<ValidSource>,
+    /// Covers to fetch for the track and for its album (see `soundcloud::Artworks`).
+    pub track_cover_urls: Vec<String>,
+    pub album_cover_urls: Vec<String>,
+    /// Where saved copies of those covers may be (SoundCloud: the artist's `Covers/`).
+    pub cover_folder: Option<PathBuf>,
+    /// Leave out the embedded pictures (see `Hints::skip_embedded_covers`).
+    pub skip_embedded_covers: bool,
+    /// The original file's name, for files whose tags have none (see `Hints::original_filename`).
+    pub original_filename: Option<String>,
     pub warnings: Vec<String>,
 }
 
@@ -55,7 +78,8 @@ impl Layout {
     /// what's above it (e.g. `/home/me/Music - 2024`) isn't part of the layout.
     pub fn read(&self, root: &Path, path: &Path) -> PathInfo {
         let mut info = match self {
-            Layout::Netease => netease::read(root, path),
+            Layout::IdFolders(platform) => id_folders::read(*platform, root, path),
+            Layout::Soundcloud => soundcloud::read(root, path),
             Layout::Ytdlp(platform) => ytdlp::read(*platform, path),
             Layout::Tags => PathInfo::default(),
         };

@@ -105,11 +105,14 @@ async function sourceWidget(kind, initial = null) {
     const shape = shapes.find((s) => s.platform === platform.value);
     if (!shape) return;
     for (const field of shape.fields) {
-      const input = h("input", {
-        type: field.type === "int" ? "number" : "text",
-        placeholder: field.required ? "required" : "optional",
-        required: field.required,
-      });
+      // A list ("strs"): one value per line.
+      const input = field.type === "strs"
+        ? h("textarea", { rows: 2, placeholder: `${field.required ? "required" : "optional"}, one per line` })
+        : h("input", {
+          type: field.type === "int" ? "number" : "text",
+          placeholder: field.required ? "required" : "optional",
+          required: field.required,
+        });
       inputs[field.name] = { input, field };
       const label = field.name + (field.name === shape.id_field ? " (id)" : "");
       fieldsBox.append(h("label", {}, label, input));
@@ -124,7 +127,9 @@ async function sourceWidget(kind, initial = null) {
   render();
   if (initial) {
     for (const [name, value] of Object.entries(initial.data ?? {})) {
-      if (inputs[name]) inputs[name].input.value = Array.isArray(value) ? value[0] ?? "" : value;
+      if (!inputs[name]) continue;
+      inputs[name].input.value = inputs[name].field.type === "strs" && Array.isArray(value) ? value.join("\n")
+        : Array.isArray(value) ? value[0] ?? "" : value;
     }
   }
 
@@ -135,7 +140,9 @@ async function sourceWidget(kind, initial = null) {
     const data = {};
     for (const [name, { input, field }] of Object.entries(inputs)) {
       if (input.value === "") continue;
-      data[name] = field.type === "int" ? Number(input.value) : input.value;
+      data[name] = field.type === "int" ? Number(input.value)
+        : field.type === "strs" ? input.value.split("\n").map((v) => v.trim()).filter((v) => v)
+        : input.value;
     }
     const source = { platform: platform.value, data };
     if (initial) source.source_id = initial.id;
@@ -1004,17 +1011,41 @@ async function showArtist(id) {
     const name = h("input", { value: a.name, required: true });
     const disambiguation = h("input", { value: a.disambiguation, placeholder: "to tell apart artists with the same name" });
     // Alias rows keep their id, so renaming one updates every credit using it.
-    const aliasRows = a.aliases.map((al) => ({ id: al.id, input: h("input", { value: al.name }) }));
+    const aliasRows = a.aliases.map((al) => ({ id: al.id, input: h("input", { value: al.name }), uses: null }));
     const aliasList = h("div", {});
+    // An alias still credited somewhere can't be removed: ✕ lists where, to change first.
+    async function removeAlias(r) {
+      if (r.id) {
+        const uses = await api(`/api/artists/${id}/aliases/${r.id}/uses`);
+        if (uses.tracks.length || uses.albums.length || uses.not_visible) {
+          r.uses = uses;
+          renderAliases();
+          return;
+        }
+      }
+      aliasRows.splice(aliasRows.indexOf(r), 1);
+      renderAliases();
+    }
+    function aliasUses(u) {
+      return h("div", { class: "muted" },
+        "Still credited on these; change their credits first:",
+        h("ul", {},
+          u.tracks.map((t) => h("li", {}, "track ", h("a", { href: `#/track/${t.track_id}` }, t.title),
+            t.variant ? ` (variant "${t.variant}")` : null)),
+          u.albums.map((al) => h("li", {}, "album ", h("a", { href: `#/album/${al.album_id}` }, al.title))),
+          u.not_visible ? h("li", {}, "tracks or albums you can't see") : null));
+    }
     function renderAliases() {
-      aliasList.replaceChildren(h("div", { class: "stack" }, aliasRows.map((r, i) => h("div", { class: "row" },
-        r.input,
-        h("button", { type: "button", class: "small", onclick: () => { aliasRows.splice(i, 1); renderAliases(); } }, "✕")))));
+      aliasList.replaceChildren(h("div", { class: "stack" }, aliasRows.map((r) => h("div", {},
+        h("div", { class: "row" },
+          r.input,
+          h("button", { type: "button", class: "small", onclick: () => removeAlias(r).catch((err) => alert(err.message)) }, "✕")),
+        r.uses ? aliasUses(r.uses) : null))));
     }
     renderAliases();
     const addAlias = h("button", {
       type: "button", class: "small",
-      onclick: () => { aliasRows.push({ id: null, input: h("input", { placeholder: "exact spelling" }) }); renderAliases(); },
+      onclick: () => { aliasRows.push({ id: null, input: h("input", { placeholder: "exact spelling" }), uses: null }); renderAliases(); },
     }, "+ alias");
     const reason = h("input", { placeholder: "why (optional)" });
     const status = h("span", {});

@@ -1891,8 +1891,10 @@ pub async fn write_artist(
         system.end(conn).await?;
         if uses > 0 {
             let name = &existing[alias_id].0;
+            let seen = alias_uses_seen(conn, *alias_id).await?;
             return Err(invalid(format!(
-                "alias `{name}` is still credited on tracks or albums; change those credits first"
+                "alias `{name}` is still credited on {}; change those credits first",
+                seen.describe()
             )));
         }
     }
@@ -1968,7 +1970,7 @@ async fn alias_uses(conn: &mut PgConnection, alias_id: Uuid) -> sqlx::Result<i64
     let pattern = serde_json::json!({ "credits": [{ "alias_id": alias_id }] });
     let count = sqlx::query_scalar!(
         r#"
-        SELECT (SELECT count(*) FROM album_credits WHERE alias_id = $1)
+        SELECT (SELECT count(DISTINCT album_id) FROM album_credits WHERE alias_id = $1)
              + (SELECT count(DISTINCT r.variant_id) FROM track_revisions r
                 WHERE r.data @> $2
                   AND r.id = (SELECT r2.id FROM track_revisions r2
@@ -1981,6 +1983,89 @@ async fn alias_uses(conn: &mut PgConnection, alias_id: Uuid) -> sqlx::Result<i64
     .fetch_one(conn)
     .await?;
     Ok(count)
+}
+
+/// Where an alias is credited (as `alias_uses` counts), as far as the user can see: so an
+/// editor knows which credits to change before removing it.
+#[derive(Debug, Serialize)]
+pub struct AliasUses {
+    pub tracks: Vec<AliasTrackUse>,
+    pub albums: Vec<AliasAlbumUse>,
+    /// Also credited on tracks or albums the user can't see (which ones isn't said).
+    pub not_visible: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AliasTrackUse {
+    pub track_id: Uuid,
+    pub title: String,
+    /// The variant's label, if the credit is on one that isn't the track's primary.
+    pub variant: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AliasAlbumUse {
+    pub album_id: Uuid,
+    pub title: String,
+}
+
+impl AliasUses {
+    /// `track "A", track "B" (variant "Live"), album "C"`, and the hidden ones if any.
+    pub fn describe(&self) -> String {
+        let mut parts: Vec<String> = self
+            .tracks
+            .iter()
+            .map(|t| match &t.variant {
+                Some(label) => format!("track \"{}\" (variant \"{label}\")", t.title),
+                None => format!("track \"{}\"", t.title),
+            })
+            .chain(self.albums.iter().map(|a| format!("album \"{}\"", a.title)))
+            .collect();
+        if self.not_visible {
+            parts.push("tracks or albums you can't see".to_string());
+        }
+        parts.join(", ")
+    }
+}
+
+/// See `AliasUses`. Reads with the connection's own access; only whether there are more
+/// is checked as the system.
+pub async fn alias_uses_seen(conn: &mut PgConnection, alias_id: Uuid) -> anyhow::Result<AliasUses> {
+    let pattern = serde_json::json!({ "credits": [{ "alias_id": alias_id }] });
+    let tracks = sqlx::query_as!(
+        AliasTrackUse,
+        r#"
+        SELECT t.id AS "track_id!", t.title AS "title!",
+               CASE WHEN t.primary_variant_id = v.id THEN NULL ELSE v.label END AS variant
+        FROM track_revisions r
+        JOIN track_variants v ON v.id = r.variant_id
+        JOIN tracks t ON t.id = v.track_id
+        WHERE r.data @> $1
+          AND r.id = (SELECT r2.id FROM track_revisions r2
+                      WHERE r2.variant_id = r.variant_id ORDER BY r2.id DESC LIMIT 1)
+        ORDER BY lower(t.title), t.id, v.id
+        "#,
+        pattern
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    let albums = sqlx::query_as!(
+        AliasAlbumUse,
+        r#"
+        SELECT DISTINCT a.id AS "album_id!", a.title AS "title!"
+        FROM album_credits c JOIN albums a ON a.id = c.album_id
+        WHERE c.alias_id = $1
+        ORDER BY 2, 1
+        "#,
+        alias_id
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    let system = super::as_system(conn).await?;
+    let all = alias_uses(conn, alias_id).await?;
+    system.end(conn).await?;
+    let seen = i64::try_from(tracks.len() + albums.len()).unwrap_or(i64::MAX);
+    Ok(AliasUses { tracks, albums, not_visible: all > seen })
 }
 
 /// The latest data of an artist.

@@ -94,7 +94,11 @@ pub async fn shapes() -> Json<serde_json::Value> {
                 .map(|f| {
                     serde_json::json!({
                         "name": f.name,
-                        "type": match f.field_type { FieldType::Int => "int", FieldType::Str => "str" },
+                        "type": match f.field_type {
+                            FieldType::Int => "int",
+                            FieldType::Str => "str",
+                            FieldType::StrList => "strs",
+                        },
                         "required": f.required,
                     })
                 })

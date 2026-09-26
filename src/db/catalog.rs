@@ -466,3 +466,15 @@ pub async fn vocabularies(conn: &mut PgConnection) -> sqlx::Result<Vocabularies>
         .await?,
     })
 }
+
+/// Whether `alias_id` is one of the (visible) artist's aliases.
+pub async fn is_alias_of(conn: &mut PgConnection, artist_id: Uuid, alias_id: Uuid) -> sqlx::Result<bool> {
+    sqlx::query_scalar!(
+        r#"SELECT EXISTS (SELECT 1 FROM artist_aliases al JOIN artists a ON a.id = al.artist_id
+                          WHERE al.id = $1 AND al.artist_id = $2) AS "exists!""#,
+        alias_id,
+        artist_id
+    )
+    .fetch_one(conn)
+    .await
+}

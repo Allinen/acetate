@@ -209,6 +209,22 @@ fn default_true() -> bool {
     true
 }
 
+/// `GET /api/artists/{id}/aliases/{alias_id}/uses`: the tracks and albums crediting the
+/// alias (see `revisions::AliasUses`). An alias still in use can't be removed; this says
+/// which credits to change first.
+pub async fn alias_uses(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path((artist_id, alias_id)): Path<(Uuid, Uuid)>,
+) -> Result<Json<revisions::AliasUses>, AppError> {
+    let mut tx = state.db(&user).await?;
+    let of_artist = db::catalog::is_alias_of(&mut tx, artist_id, alias_id).await?;
+    if !of_artist {
+        return Err(AppError::NotFound);
+    }
+    Ok(Json(revisions::alias_uses_seen(&mut tx, alias_id).await?))
+}
+
 /// `POST /api/artists/{id}/merge`, JSON `{"into": "...", "keep_name_as_alias": true}`:
 /// this artist is the same as `into`. Its credits, aliases and sources move there (each
 /// changed track/album gets a revision); this artist then redirects to `into`.

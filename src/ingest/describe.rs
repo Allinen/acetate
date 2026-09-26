@@ -27,6 +27,65 @@ use crate::model::ImageInfo;
 pub struct Hints {
     pub artists: Vec<ArtistHint>,
     pub album: Option<AlbumHint>,
+    /// An artist hint whose name isn't in the tags may go to the one tag artist without a
+    /// hint (see `lax_artist_names`). Off unless asked for (`--lax-artist-name`).
+    pub lax_artist_names: bool,
+    /// The release date, used only if the file's tags have none (e.g. from an id map), or
+    /// instead of theirs with `release_date_over_tags`. The first revision says so.
+    pub release_date: Option<String>,
+    /// `release_date` wins over the tags' date (e.g. SoundCloud's own date, where the tags
+    /// have whatever the uploader's software wrote).
+    pub release_date_over_tags: bool,
+    /// Ids for the first artist in the ARTIST tag, whatever its name: e.g. the uploader of a
+    /// SoundCloud song, whose folder has only an id. Added as a hint for that name.
+    pub first_artist_sources: Vec<ValidSource>,
+    /// Images to add as the track's covers, after the embedded ones.
+    pub track_covers: Vec<Vec<u8>>,
+    /// Leave out the file's embedded pictures (e.g. when they're resized copies of the
+    /// `track_covers`).
+    pub skip_embedded_covers: bool,
+    /// The original file's name (`files.original_filename`), if the tags have none: e.g.
+    /// from the SoundCloud download's own record of it.
+    pub original_filename: Option<String>,
+}
+
+/// For `Hints::first_artist_sources`: the hints with those ids given to `name` (the first
+/// ARTIST), added to its hint if there's one already.
+pub fn with_first_artist(hints: &Hints, name: &str) -> Hints {
+    let mut hints = hints.clone();
+    let sources = std::mem::take(&mut hints.first_artist_sources);
+    match hints.artists.iter_mut().find(|h| h.name.to_lowercase() == name.to_lowercase()) {
+        Some(hint) => hint.sources.extend(sources),
+        None => hints.artists.push(ArtistHint { name: name.to_string(), id: None, sources, platform_name: None }),
+    }
+    hints
+}
+
+/// For `Hints::lax_artist_names`: if exactly one hint's name isn't among the file's tag
+/// artists (ARTIST and ALBUM ARTIST), and exactly one tag artist has no hint, that hint
+/// goes to that tag artist. E.g. a folder "jaywren - 1001554" for a file tagged
+/// "mothfecal" (another name of the same artist). The hint's own name is kept as
+/// `platform_name`: it decides which artist it is, and the tag's spelling becomes an alias
+/// of it. Anything less clear-cut is left as it is. Returns the hints and what was done.
+pub fn lax_artist_names(hints: &Hints, tag_artists: &[String]) -> (Hints, Option<String>) {
+    let same = |a: &str, b: &str| a.to_lowercase() == b.to_lowercase();
+    let unmatched: Vec<usize> = (0..hints.artists.len())
+        .filter(|&i| !tag_artists.iter().any(|t| same(t, &hints.artists[i].name)))
+        .collect();
+    let mut without_hint: Vec<&String> =
+        tag_artists.iter().filter(|t| !hints.artists.iter().any(|h| same(&h.name, t))).collect();
+    without_hint.dedup_by(|a, b| same(a, b));
+    let ([hint_index], [tag_name]) = (unmatched.as_slice(), without_hint.as_slice()) else {
+        return (hints.clone(), None);
+    };
+    let mut lax = hints.clone();
+    let hint = &mut lax.artists[*hint_index];
+    let note = format!(
+        "the ids given for \"{}\" went to the tag artist \"{tag_name}\" (--lax-artist-name)",
+        hint.name
+    );
+    hint.platform_name = Some(std::mem::replace(&mut hint.name, tag_name.to_string()));
+    (lax, Some(note))
 }
 
 /// About one artist named in the file's ARTIST or ALBUM ARTIST tags.
@@ -38,6 +97,10 @@ pub struct ArtistHint {
     pub id: Option<Uuid>,
     /// Where the artist can be found, e.g. their NetEase artist id.
     pub sources: Vec<ValidSource>,
+    /// The artist's name on the platform, when the tags call it something else (see
+    /// `lax_artist_names`). Matching by name then uses this name, and the tags' spelling
+    /// becomes an alias.
+    pub platform_name: Option<String>,
 }
 
 /// About the album in the file's ALBUM tag.
@@ -52,6 +115,8 @@ pub struct AlbumHint {
     /// Whether the album is a single (only the first artist primary, the others featured;
     /// on an album, see `ingest`). None: decided from the tags (a track count of 1).
     pub single: Option<bool>,
+    /// The album's own release date, instead of the track's (for finding and creating it).
+    pub release_date: Option<String>,
 }
 
 /// How an artist or album was found.
@@ -153,19 +218,28 @@ impl Resolver {
         } else if let Some(id) = self.by_platform_id(conn, Kind::Artist, hint_sources).await? {
             (self.credit_as(conn, id, name).await?, MatchedBy::PlatformId)
         } else {
-            // By name. An artist with a *different* id on the file's platform is another
-            // artist with the same name, so it's ruled out before anything is written (no
-            // alias added to it, e.g. "FOO" to a different artist "Foo").
+            // By name: the platform's name for the artist if the tags call it something
+            // else (see `lax_artist_names`), else the tags'. An artist with a *different*
+            // id on the file's platform is another artist with the same name, so it's
+            // ruled out before anything is written (no alias added to it, e.g. "FOO" to a
+            // different artist "Foo").
+            let lookup = hint.and_then(|h| h.platform_name.as_deref()).unwrap_or(name);
             let mut usable = Vec::new();
             let mut conflict = None;
-            for candidate in db::ingest::artists_named(conn, name).await? {
+            for candidate in db::ingest::artists_named(conn, lookup).await? {
                 match conflicting_id(conn, SourceOwner::Artist(candidate.artist_id), hint_sources).await? {
                     Some(platform) => conflict = Some(platform),
                     None => usable.push(candidate),
                 }
             }
             if !usable.is_empty() {
-                (db::ingest::use_match(conn, name, &usable).await?, MatchedBy::Name)
+                let found = db::ingest::use_match(conn, lookup, &usable).await?;
+                if lookup == name {
+                    (found, MatchedBy::Name)
+                } else {
+                    // Credited under the tags' spelling, as an alias.
+                    (self.credit_as(conn, found.id, name).await?, MatchedBy::Name)
+                }
             } else {
                 if let Some(platform) = conflict {
                     self.warnings.push(format!(
@@ -173,7 +247,12 @@ impl Resolver {
                          different {platform} id"
                     ));
                 }
-                (db::ingest::create_named_artist(conn, name).await?, MatchedBy::Created)
+                let created = db::ingest::create_named_artist(conn, lookup).await?;
+                if lookup == name {
+                    (created, MatchedBy::Created)
+                } else {
+                    (self.credit_as(conn, created.id, name).await?, MatchedBy::Created)
+                }
             }
         };
 
@@ -241,7 +320,8 @@ impl Resolver {
     /// Warns about artist hints for names that aren't in the tags (nothing was done with them).
     pub fn check_unused_hints(&mut self, hints: &Hints) {
         for hint in &hints.artists {
-            if !self.artists.iter().any(|(name, _)| *name == hint.name) {
+            // Ignoring case, like `artist` finds a hint.
+            if !self.artists.iter().any(|(name, _)| name.to_lowercase() == hint.name.to_lowercase()) {
                 self.warnings.push(format!(
                     "\"{}\" isn't in the file's ARTIST or ALBUM ARTIST tags, so what was given \
                      about it wasn't used",
@@ -630,6 +710,7 @@ impl NewDescription {
                 name: artist.name,
                 id: artist.id,
                 sources: check(Kind::Artist, artist.sources)?,
+                platform_name: None,
             });
         }
 
@@ -649,6 +730,7 @@ impl NewDescription {
                     covers,
                     track_number: album.track_number,
                     single: album.single,
+                    release_date: None,
                 })
             }
         };
@@ -657,7 +739,7 @@ impl NewDescription {
             origin,
             status: self.status,
             track_sources,
-            hints: Hints { artists, album },
+            hints: Hints { artists, album, ..Default::default() },
             restrict_to: self.restrict_to,
             volume: self.volume,
         })

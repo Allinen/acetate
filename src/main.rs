@@ -68,7 +68,8 @@ enum Command {
     Ingest {
         /// The folder to import (all audio files below it).
         dir: PathBuf,
-        /// How the folder is laid out: `netease` (`Artist - <id>/…/Album - <id>/… - <song id>.flac`),
+        /// How the folder is laid out: `netease`, `qq` or `kuwo` (`Artist - <id>/…/Album - <id>/… - <song id>.flac`),
+        /// `soundcloud` (`<user id>/{FLACs|streams}/…/… - <song id> - <song uid>.wav`),
         /// `ytdlp` (`Title [<id>].ext`, needs `--platform`) or `tags` (nothing from paths).
         #[arg(long)]
         layout: LayoutArg,
@@ -82,11 +83,13 @@ enum Command {
         /// A folder of album covers named `<title> - <album id>.jpg` (for `netease`).
         #[arg(long)]
         covers: Option<PathBuf>,
-        /// A JSON map of NetEase song ids to `{"album_id", "song_index"}`: the album and
-        /// position of songs, also ones outside album folders (album_id -1: no album).
-        /// Required with `--layout netease`.
-        #[arg(long)]
-        netease_albums: Option<PathBuf>,
+        /// A JSON map of song ids to `{"album_id", "song_index"}` (QQ also: `song_mid`,
+        /// `album_mid`, `song_artists`): the album and position of songs, also ones outside
+        /// album folders (album_id -1 or 0: no album). Required with `--layout netease`, `qq`
+        /// and `kuwo`. (`--netease-albums` is its old name.) For `--layout soundcloud`, the
+        /// SoundCloud lookup (songs, albums and uploaders, see the README); also required.
+        #[arg(long, alias = "netease-albums")]
+        id_map: Option<PathBuf>,
         /// Initial status for the new tracks.
         #[arg(long, default_value = "released")]
         status: String,
@@ -101,6 +104,17 @@ enum Command {
         /// reflink takes no extra space; a copy takes the file's full size).
         #[arg(long)]
         reflink_only: bool,
+        /// For `netease`/`qq`/`kuwo`: a file without a song id in its name is looked up in
+        /// the id map by its tags' title and artist (only an exact, single match). For
+        /// `kuwo`, one that isn't found still comes in, with Kuwo as its origin but no song id.
+        #[arg(long)]
+        tag_fallback: bool,
+        /// When the ids from the path or id map are for a name the tags don't have, and
+        /// exactly one tag artist has no ids, they go to that artist: matched by the
+        /// platform's name, with the tags' spelling as an alias (e.g. a "jaywren" folder
+        /// for a file tagged "mothfecal").
+        #[arg(long)]
+        lax_artist_name: bool,
         /// Work out and print what would happen, without changing anything.
         #[arg(long)]
         dry_run: bool,
@@ -218,6 +232,9 @@ enum Command {
 #[derive(Clone, Copy, clap::ValueEnum)]
 enum LayoutArg {
     Netease,
+    Qq,
+    Kuwo,
+    Soundcloud,
     Ytdlp,
     Tags,
 }
@@ -309,18 +326,23 @@ async fn main() -> anyhow::Result<()> {
             platform,
             origin,
             covers,
-            netease_albums,
+            id_map,
             status,
             restrict_to,
             volume,
             reflink_only,
+            tag_fallback,
+            lax_artist_name,
             dry_run,
         } => {
             let volume = cli_volume(&store, volume)?;
-            use crate::ingest::layouts::{ytdlp, Layout};
+            use crate::ingest::layouts::{id_folders, soundcloud, ytdlp, Layout};
             let layout = match (layout, platform) {
-                (LayoutArg::Netease, None) => Layout::Netease,
+                (LayoutArg::Netease, None) => Layout::IdFolders(id_folders::Platform::Netease),
+                (LayoutArg::Qq, None) => Layout::IdFolders(id_folders::Platform::Qq),
+                (LayoutArg::Kuwo, None) => Layout::IdFolders(id_folders::Platform::Kuwo),
                 (LayoutArg::Tags, None) => Layout::Tags,
+                (LayoutArg::Soundcloud, None) => Layout::Soundcloud,
                 (LayoutArg::Ytdlp, Some(PlatformArg::Soundcloud)) => Layout::Ytdlp(ytdlp::Platform::Soundcloud),
                 (LayoutArg::Ytdlp, Some(PlatformArg::Youtube)) => Layout::Ytdlp(ytdlp::Platform::Youtube),
                 (LayoutArg::Ytdlp, None) => anyhow::bail!("--layout ytdlp needs --platform"),
@@ -337,24 +359,37 @@ async fn main() -> anyhow::Result<()> {
                 Some(names) => Some(group_ids(&pool, &names).await?),
                 None => None,
             };
-            // Every NetEase song is in the map, and without it songs outside album folders
-            // would get no NetEase album: so the netease layout never runs without it.
-            let netease_albums = match (netease_albums, layout) {
-                (Some(path), _) => Some(crate::ingest::layouts::netease::AlbumMap::load(&path)?),
-                (None, Layout::Netease) => anyhow::bail!(
-                    "--layout netease needs --netease-albums <map.json> (the song id -> album map)"
-                ),
-                (None, _) => None,
+            // Every song is in the map, and without it songs outside album folders would get
+            // no album id: so these layouts never run without it.
+            let (id_map, sc_map) = match (id_map, layout) {
+                (Some(path), Layout::IdFolders(platform)) => (Some(id_folders::IdMap::load(platform, &path)?), None),
+                (Some(path), Layout::Soundcloud) => (None, Some(soundcloud::ScMap::load(&path)?)),
+                (Some(_), _) => anyhow::bail!("--id-map is only for --layout netease, qq, kuwo or soundcloud"),
+                (None, Layout::IdFolders(_)) => {
+                    anyhow::bail!("--layout netease/qq/kuwo needs --id-map <map.json> (the song id -> album map)")
+                }
+                (None, Layout::Soundcloud) => anyhow::bail!("--layout soundcloud needs --id-map <lookup.json>"),
+                (None, _) => (None, None),
             };
+            // Covers named by album id: only NetEase's come like that (QQ's are by song).
+            if covers.is_some() && layout != Layout::IdFolders(id_folders::Platform::Netease) {
+                anyhow::bail!("--covers is only for --layout netease");
+            }
+            if tag_fallback && id_map.is_none() {
+                anyhow::bail!("--tag-fallback is only for --layout netease, qq or kuwo");
+            }
             let options = ingest_command::Options {
                 layout,
                 origin,
                 covers,
-                netease_albums,
+                id_map,
+                sc_map,
                 status,
                 restrict_to,
                 volume,
                 reflink_only,
+                tag_fallback,
+                lax_artist_names: lax_artist_name,
                 dry_run,
             };
             ingest_command::run(&pool, &store, &dir, options).await

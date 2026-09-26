@@ -36,6 +36,8 @@ pub struct TagInfo {
     pub album: Option<String>,
     /// The same from ALBUM ARTIST: the album's credits (may differ from the track's).
     pub album_artists: Vec<String>,
+    /// From COMPOSER, split like ARTIST: credited as producers (see `ingest`).
+    pub composers: Vec<String>,
     pub track_number: Option<u32>,
     /// How many tracks the album has (TRACKTOTAL, or the "10" in TRACK "3/10").
     pub track_total: Option<u32>,
@@ -140,6 +142,7 @@ pub fn read_tags(path: &Path, extension: Option<&str>) -> anyhow::Result<TagInfo
     }
     info.album = tag.album().map(|s| s.to_string()).filter(|s| !s.trim().is_empty());
     info.album_artists = split_artists(strings(tag, ItemKey::AlbumArtist));
+    info.composers = split_artists(strings(tag, ItemKey::Composer));
     info.track_number = tag.track();
     info.track_total = tag.track_total();
     info.disc_number = tag.disk();

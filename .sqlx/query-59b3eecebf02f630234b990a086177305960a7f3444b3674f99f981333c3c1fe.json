@@ -1,0 +1,47 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT t.id AS \"track_id!\", t.title AS \"title!\",\n               CASE WHEN t.primary_variant_id = v.id THEN NULL ELSE v.label END AS variant\n        FROM track_revisions r\n        JOIN track_variants v ON v.id = r.variant_id\n        JOIN tracks t ON t.id = v.track_id\n        WHERE r.data @> $1\n          AND r.id = (SELECT r2.id FROM track_revisions r2\n                      WHERE r2.variant_id = r.variant_id ORDER BY r2.id DESC LIMIT 1)\n        ORDER BY lower(t.title), t.id, v.id\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "track_id!",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tracks",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "title!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tracks",
+            "name": "title"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "variant",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Jsonb"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "59b3eecebf02f630234b990a086177305960a7f3444b3674f99f981333c3c1fe"
+}

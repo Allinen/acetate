@@ -54,11 +54,14 @@ fn mira_vale(artist_id: i64, album_id: Option<i64>) -> Hints {
             name: "Mira Vale".into(),
             id: None,
             sources: vec![netease(Kind::Artist, "artist_id", artist_id)],
+            platform_name: None,
         }],
+        lax_artist_names: false,
         album: album_id.map(|id| AlbumHint {
             sources: vec![netease(Kind::Album, "album_id", id)],
             ..Default::default()
         }),
+        ..Default::default()
     }
 }
 
@@ -254,8 +257,10 @@ async fn users_only_get_what_they_can_see(
             name: "Mira Vale".into(),
             id: Some(lib.x),
             sources: Vec::new(),
+            platform_name: None,
         }],
         album: None,
+        ..Default::default()
     };
     let err = ingest_file(&lib.app, &store, "01 - Glass Harbor.flac", &options(Some(lib.carol), 1, hints), false)
         .await
@@ -278,7 +283,7 @@ async fn users_only_get_what_they_can_see(
 }
 
 #[sqlx::test]
-async fn original_filename_comes_only_from_the_tags(
+async fn original_filename_comes_from_the_tags_else_the_description(
     _: PgPoolOptions,
     connect: PgConnectOptions,
 ) -> anyhow::Result<()> {
@@ -287,10 +292,12 @@ async fn original_filename_comes_only_from_the_tags(
     let store = BlobStore::open(dir.path())?;
 
     // Glass Harbor has ORIGINALFILENAME=glass_harbor_MASTER_v7.wav; Undertow has none, so
-    // it has no original filename (not the name it was uploaded with).
-    for file in ["01 - Glass Harbor.flac", "02 - Undertow.flac"] {
-        ingest_file(&lib.owner, &store, file, &options(None, 1, Hints::default()), false).await?;
-    }
+    // it has no original filename (not the name it was uploaded with). A described name
+    // is only used without one in the tags.
+    let described = Hints { original_filename: Some("described.wav".into()), ..Default::default() };
+    ingest_file(&lib.owner, &store, "01 - Glass Harbor.flac", &options(None, 1, described.clone()), false).await?;
+    ingest_file(&lib.owner, &store, "02 - Undertow.flac", &options(None, 2, Hints::default()), false).await?;
+    ingest_file(&lib.owner, &store, "salt-and-static.m4a", &options(None, 3, described), false).await?;
     let names: Vec<(String, Option<String>)> = sqlx::query_as(
         "SELECT uploaded_filename, original_filename FROM files ORDER BY uploaded_filename",
     )
@@ -299,6 +306,7 @@ async fn original_filename_comes_only_from_the_tags(
     let find = |uploaded: &str| names.iter().find(|(u, _)| u == uploaded).unwrap().1.clone();
     assert_eq!(find("01 - Glass Harbor.flac").as_deref(), Some("glass_harbor_MASTER_v7.wav"));
     assert_eq!(find("02 - Undertow.flac"), None);
+    assert_eq!(find("salt-and-static.m4a").as_deref(), Some("described.wav"));
     Ok(())
 }
 
@@ -572,8 +580,10 @@ async fn a_hint_matches_its_tag_name_ignoring_case(
             name: "mira vale".into(),
             id: None,
             sources: vec![netease(Kind::Artist, "artist_id", 10)],
+            platform_name: None,
         }],
         album: None,
+        ..Default::default()
     };
     let report = ingest_file(&lib.owner, &store, "01 - Glass Harbor.flac", &options(None, 1, hints), false).await?;
     assert_eq!(netease_ids(&lib.owner, artist(&report, "Mira Vale").id.unwrap()).await?, vec!["10".to_string()]);
@@ -628,5 +638,233 @@ async fn similar_titles_are_flagged_only_at_about_the_same_length(
     assert!(!flagged_as_glass_harbor(pool, other, &mira).await?, "5 s apart: another song, whatever the title says");
     set_length(pool, glass, None).await?;
     assert!(flagged_as_glass_harbor(pool, other, &mira).await?, "unknown length: not ruled out");
+    Ok(())
+}
+
+#[sqlx::test]
+async fn lax_artist_names_give_a_lone_tag_artist_the_platform_artist(
+    _: PgPoolOptions,
+    connect: PgConnectOptions,
+) -> anyhow::Result<()> {
+    let lib = setup(connect).await?;
+    let dir = tempfile::tempdir()?;
+    let store = BlobStore::open(dir.path())?;
+    // The folder says "Jay Wren - 10"; the file is tagged "Mira Vale" (another name).
+    let kay_angel = |lax| Hints {
+        artists: vec![ArtistHint {
+            name: "Jay Wren".into(),
+            id: None,
+            sources: vec![netease(Kind::Artist, "artist_id", 10)],
+            platform_name: None,
+        }],
+        lax_artist_names: lax,
+        ..Default::default()
+    };
+
+    // Strict (the default): the id isn't used.
+    let strict = ingest_file(&lib.owner, &store, "01 - Glass Harbor.flac", &options(None, 1, kay_angel(false)), true).await?;
+    assert_eq!(artist(&strict, "Mira Vale").matched_by, MatchedBy::Created);
+    assert!(strict.warnings.iter().any(|w| w.contains("\"Jay Wren\" isn't in the file's")), "{:?}", strict.warnings);
+
+    // Lax: it's Jay Wren (created under the platform's name), credited as "Mira Vale".
+    let lax = ingest_file(&lib.owner, &store, "01 - Glass Harbor.flac", &options(None, 1, kay_angel(true)), false).await?;
+    assert!(lax.warnings.iter().any(|w| w.contains("went to the tag artist \"Mira Vale\"")), "{:?}", lax.warnings);
+    let kay = artist(&lax, "Mira Vale").id.unwrap();
+    let name: String = sqlx::query_scalar("SELECT name FROM artists WHERE id = $1").bind(kay).fetch_one(&lib.owner).await?;
+    assert_eq!(name, "Jay Wren");
+    assert_eq!(aliases_of(&lib.owner, kay).await?, vec!["Mira Vale".to_string()]);
+    assert_eq!(netease_ids(&lib.owner, kay).await?, vec!["10".to_string()]);
+    let alias_credited: bool = sqlx::query_scalar(
+        "SELECT al.alias = 'Mira Vale' FROM track_credits c JOIN artist_aliases al ON al.id = c.alias_id WHERE c.artist_id = $1",
+    )
+    .bind(kay)
+    .fetch_one(&lib.owner)
+    .await?;
+    assert!(alias_credited);
+
+    // Two tag artists without ids ("Mira Vale feat. Oskar Lind", album artist "Mira Vale"):
+    // not clear-cut, so nothing's moved even when lax.
+    let unclear = ingest_file(&lib.owner, &store, "02 - Undertow.flac", &options(None, 2, kay_angel(true)), true).await?;
+    assert!(unclear.warnings.iter().any(|w| w.contains("\"Jay Wren\" isn't in the file's")), "{:?}", unclear.warnings);
+    Ok(())
+}
+
+#[sqlx::test]
+async fn a_described_release_date_is_only_used_without_one_in_the_tags(
+    _: PgPoolOptions,
+    connect: PgConnectOptions,
+) -> anyhow::Result<()> {
+    let lib = setup(connect).await?;
+    let dir = tempfile::tempdir()?;
+    let store = BlobStore::open(dir.path())?;
+    let dated = Hints { release_date: Some("2021-09-06".into()), ..Default::default() };
+    let first_revision = async |track: Uuid| -> anyhow::Result<(Option<String>, String)> {
+        Ok(sqlx::query_as(
+            "SELECT t.release_date, r.reason FROM tracks t JOIN track_revisions r ON r.track_id = t.id WHERE t.id = $1",
+        )
+        .bind(track)
+        .fetch_one(&lib.owner)
+        .await?)
+    };
+
+    // The tags have a date: it's theirs.
+    let tagged = ingest_file(&lib.owner, &store, "02 - Undertow.flac", &options(None, 1, dated.clone()), false).await?;
+    let (date, reason) = first_revision(tagged.track_id.unwrap()).await?;
+    assert_eq!(date.as_deref(), Some("2021-06-04"));
+    assert_eq!(reason, "imported_from_file");
+
+    // They don't: the described one, and the revision says so.
+    let opts = IngestOptions {
+        given: ingest::Given { title: None, artists: vec!["Typed Artist".into()] },
+        ..options(None, 2, dated)
+    };
+    let undated = ingest_file(&lib.owner, &store, "no-artist.opus", &opts, false).await?;
+    let (date, reason) = first_revision(undated.track_id.unwrap()).await?;
+    assert_eq!(date.as_deref(), Some("2021-09-06"));
+    assert!(reason.contains("release date from the description"), "{reason}");
+    Ok(())
+}
+
+#[sqlx::test]
+async fn an_alias_in_use_says_where_when_removed(
+    _: PgPoolOptions,
+    connect: PgConnectOptions,
+) -> anyhow::Result<()> {
+    let lib = setup(connect).await?;
+    let dir = tempfile::tempdir()?;
+    let store = BlobStore::open(dir.path())?;
+    // Jay Wren, credited as "Mira Vale" (see the lax artist names test).
+    let hints = Hints {
+        artists: vec![ArtistHint {
+            name: "Jay Wren".into(),
+            id: None,
+            sources: vec![netease(Kind::Artist, "artist_id", 10)],
+            platform_name: None,
+        }],
+        lax_artist_names: true,
+        ..Default::default()
+    };
+    let report = ingest_file(&lib.owner, &store, "01 - Glass Harbor.flac", &options(None, 1, hints), false).await?;
+    let kay = artist(&report, "Mira Vale").id.unwrap();
+
+    let mut tx = db::begin(&lib.app, Some(lib.carol)).await?;
+    let detail = db::catalog::get_artist(&mut tx, kay, false).await?.unwrap();
+    let alias = detail.aliases[0].id;
+    let uses = db::revisions::alias_uses_seen(&mut tx, alias).await?;
+    let titles: Vec<&str> = uses.tracks.iter().map(|t| t.title.as_str()).collect();
+    assert_eq!(titles, ["Glass Harbor"]);
+    assert!(!uses.not_visible);
+
+    // Removing it is refused, naming the track.
+    let data = crate::model::ArtistData { name: "Jay Wren".into(), ..Default::default() };
+    let err = db::revisions::write_artist(&mut tx, kay, detail.revision_id, &data, db::revisions::Source::Edit, "")
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("track \"Glass Harbor\""), "{err}");
+    Ok(())
+}
+
+#[sqlx::test]
+async fn composers_are_credited_as_producers_after_the_artists(
+    _: PgPoolOptions,
+    connect: PgConnectOptions,
+) -> anyhow::Result<()> {
+    use lofty::config::WriteOptions;
+    use lofty::file::TaggedFileExt;
+    use lofty::tag::{Accessor, ItemKey, TagExt};
+
+    let lib = setup(connect).await?;
+    let dir = tempfile::tempdir()?;
+    let store = BlobStore::open(dir.path())?;
+    // Undertow with COMPOSER "Mira Vale; Kit Harlow": Mira Vale (already the artist) and
+    // someone new.
+    let path = dir.path().join("undertow.flac");
+    std::fs::copy(Path::new(env!("CARGO_MANIFEST_DIR")).join("test-audio/02 - Undertow.flac"), &path)?;
+    let mut file = lofty::read_from_path(&path)?;
+    let tag = file.primary_tag_mut().unwrap();
+    tag.insert_text(ItemKey::Composer, "Mira Vale; Kit Harlow".into());
+    tag.set_title("Undertow (produced)".into()); // not a duplicate of the fixture
+    tag.save_to_path(&path, WriteOptions::default())?;
+
+    let pending = ingest::receive_path(&store, &path, "main").await?;
+    let report = ingest::ingest_with_report(&lib.owner, &store, pending, &options(None, 1, Hints::default()), false).await?;
+    let credits: Vec<(String, String)> = sqlx::query_as(
+        "SELECT a.name, c.role FROM track_credits c JOIN artists a ON a.id = c.artist_id
+         WHERE c.track_id = $1 ORDER BY c.position",
+    )
+    .bind(report.track_id.unwrap())
+    .fetch_all(&lib.owner)
+    .await?;
+    let credits: Vec<(&str, &str)> = credits.iter().map(|(a, r)| (a.as_str(), r.as_str())).collect();
+    assert_eq!(
+        credits,
+        [("Mira Vale feat. Oskar Lind", "primary"), ("Mira Vale", "producer"), ("Kit Harlow", "producer")]
+    );
+    Ok(())
+}
+
+/// A PNG header (1×1): enough to count as an image.
+fn tiny_png(tag: u8) -> Vec<u8> {
+    let mut png = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 0x0D, b'I', b'H', b'D', b'R'];
+    png.extend([0, 0, 0, 1, 0, 0, 0, 1, 8, 2, 0, 0, 0, 0, 0, 0, tag]);
+    png
+}
+
+#[sqlx::test]
+async fn soundcloud_hints_date_uploader_and_covers(
+    _: PgPoolOptions,
+    connect: PgConnectOptions,
+) -> anyhow::Result<()> {
+    let lib = setup(connect).await?;
+    let dir = tempfile::tempdir()?;
+    let store = BlobStore::open(dir.path())?;
+    let uploader = sources::validate(
+        Kind::Artist,
+        NewSource { platform: "soundcloud".into(), source_id: None, captured_at: None, data: json!({ "artist_id": 777 }) },
+    )?;
+    let hints = Hints {
+        release_date: Some("2020-02-02T02:02:02Z".into()),
+        release_date_over_tags: true,
+        first_artist_sources: vec![uploader],
+        track_covers: vec![tiny_png(1), tiny_png(2), tiny_png(1)],
+        skip_embedded_covers: true,
+        album: Some(AlbumHint { release_date: Some("2020-01-01".into()), ..Default::default() }),
+        ..Default::default()
+    };
+    // Glass Harbor: ARTIST "Mira Vale", a date in the tags and an embedded PNG.
+    let report = ingest_file(&lib.owner, &store, "01 - Glass Harbor.flac", &options(None, 1, hints), false).await?;
+    let track = report.track_id.unwrap();
+
+    // The given date wins, and the revision says what the tags had.
+    let (date, reason): (Option<String>, String) = sqlx::query_as(
+        "SELECT t.release_date, r.reason FROM tracks t JOIN track_revisions r ON r.track_id = t.id WHERE t.id = $1",
+    )
+    .bind(track)
+    .fetch_one(&lib.owner)
+    .await?;
+    assert_eq!(date.as_deref(), Some("2020-02-02T02:02:02Z"));
+    assert!(reason.contains("the tags say 2021-06-04T11:11:11Z"), "{reason}");
+    let album_date: Option<String> = sqlx::query_scalar("SELECT release_date FROM albums WHERE id = $1")
+        .bind(report.album.as_ref().unwrap().id.unwrap())
+        .fetch_one(&lib.owner)
+        .await?;
+    assert_eq!(album_date.as_deref(), Some("2020-01-01"), "the album's own date");
+
+    // The uploader's id went to the first ARTIST.
+    let mira = artist(&report, "Mira Vale").id.unwrap();
+    let ids: Vec<String> = sqlx::query_scalar(
+        "SELECT external_id FROM sources WHERE artist_id = $1 AND platform = 'soundcloud'",
+    )
+    .bind(mira)
+    .fetch_all(&lib.owner)
+    .await?;
+    assert_eq!(ids, ["777"]);
+
+    // Only the given covers (each once), not the embedded one.
+    let covers: Vec<String> = sqlx::query_scalar("SELECT source FROM covers WHERE track_id = $1 ORDER BY position")
+        .bind(track)
+        .fetch_all(&lib.owner)
+        .await?;
+    assert_eq!(covers, ["description", "description"]);
     Ok(())
 }

@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT (SELECT count(DISTINCT album_id) FROM album_credits WHERE alias_id = $1)\n             + (SELECT count(DISTINCT r.variant_id) FROM track_revisions r\n                WHERE r.data @> $2\n                  AND r.id = (SELECT r2.id FROM track_revisions r2\n                              WHERE r2.variant_id = r.variant_id ORDER BY r2.id DESC LIMIT 1))\n          AS \"count!\"\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "count!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Jsonb"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "ed45ed3088fff8dddc124a17ac6176454f5da5cf3a1ed89f12f210359114ddab"
+}

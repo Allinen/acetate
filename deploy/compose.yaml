@@ -8,6 +8,7 @@
 
 services:
   postgres:
+    container_name: acetate-postgres
     image: postgres:18
     restart: unless-stopped
     # Runs as the owner of POSTGRES_DATA (the same user as Acetate), so it creates its
@@ -29,6 +30,7 @@ services:
       retries: 20
 
   acetate:
+    container_name: acetate
     image: ${ACETATE_IMAGE:-localhost:5000/acetate:latest}
     restart: unless-stopped
     depends_on:
