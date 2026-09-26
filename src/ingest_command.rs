@@ -6,12 +6,14 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
+use globset::{Glob, GlobSet, GlobSetBuilder};
 use sqlx::PgPool;
 
 use crate::db;
 use crate::ingest::describe::{AlbumHint, Hints, MatchedBy, Report, ReportStatus};
 use crate::ingest::layouts::{id_folders, soundcloud, Layout};
 use crate::ingest::{self, IngestOptions};
+use crate::ingest_client::Server;
 use crate::model::sources::ValidSource;
 use crate::storage::BlobStore;
 
@@ -46,6 +48,8 @@ pub struct Options {
     pub lax_artist_names: bool,
     /// See `Hints::no_composers`.
     pub no_composers: bool,
+    /// `--include` / `--exclude`.
+    pub filter: PathFilter,
     pub dry_run: bool,
 }
 
@@ -61,30 +65,94 @@ struct Totals {
     copied: usize,
 }
 
-pub async fn run(pool: &PgPool, store: &BlobStore, dir: &Path, options: Options) -> anyhow::Result<()> {
-    // Absolute, so the layout sees the folder's real name even for `.`.
-    let root = std::fs::canonicalize(dir).with_context(|| format!("opening {}", dir.display()))?;
-    let mut files = Vec::new();
-    find_audio_files(&root, &mut files)?;
+/// Which paths `--include` / `--exclude` let through: relative to the folder given, with
+/// `/` between folders. No includes: everything that isn't excluded.
+pub struct PathFilter {
+    include: Option<GlobSet>,
+    exclude: Option<GlobSet>,
+}
+
+impl PathFilter {
+    pub fn new(include: &[String], exclude: &[String]) -> anyhow::Result<PathFilter> {
+        let set = |patterns: &[String]| -> anyhow::Result<Option<GlobSet>> {
+            if patterns.is_empty() {
+                return Ok(None);
+            }
+            let mut builder = GlobSetBuilder::new();
+            for pattern in patterns {
+                builder.add(Glob::new(pattern).with_context(|| format!("bad glob {pattern:?}"))?);
+            }
+            Ok(Some(builder.build()?))
+        };
+        Ok(PathFilter { include: set(include)?, exclude: set(exclude)? })
+    }
+
+    pub fn allows(&self, relative: &Path) -> bool {
+        let text = relative.to_string_lossy().replace('\\', "/");
+        self.include.as_ref().is_none_or(|set| set.is_match(&text))
+            && !self.exclude.as_ref().is_some_and(|set| set.is_match(&text))
+    }
+}
+
+/// Where the files go.
+pub enum Target<'a> {
+    /// This Acetate: its database and storage.
+    Local { pool: &'a PgPool, store: &'a BlobStore },
+    /// Another Acetate, over HTTP (`--server`).
+    Server(Server),
+}
+
+/// What became of one file.
+pub(crate) enum Outcome {
+    Done(Report),
+    /// Refused (e.g. missing tags): listed on the Review page (on a real run).
+    Skipped(String),
+    Failed(String),
+}
+
+pub async fn run(target: Target<'_>, dir: &Path, options: Options) -> anyhow::Result<()> {
+    // Absolute, so the layout sees the folder's real name even for `.`. A single file
+    // counts as a folder holding just it.
+    let given = std::fs::canonicalize(dir).with_context(|| format!("opening {}", dir.display()))?;
+    let (root, mut files) = if given.is_file() {
+        let parent = given.parent().map(Path::to_path_buf).unwrap_or_else(|| given.clone());
+        (parent, vec![given])
+    } else {
+        let mut files = Vec::new();
+        find_audio_files(&given, &mut files)?;
+        (given, files)
+    };
+    let found = files.len();
+    files.retain(|path| options.filter.allows(path.strip_prefix(&root).unwrap_or(path)));
     files.sort();
     let covers = match &options.covers {
         Some(dir) => cover_index(dir)?,
         None => HashMap::new(),
     };
     println!(
-        "{} audio files in {}{}",
+        "{} audio files in {}{}{}",
         files.len(),
         root.display(),
-        if options.dry_run { " (dry run: nothing will be changed)" } else { "" }
+        if files.len() < found { format!(" ({} left out by --include/--exclude)", found - files.len()) } else { String::new() },
+        match (&target, options.dry_run) {
+            (_, false) => String::new(),
+            (Target::Local { .. }, true) => " (dry run: nothing will be changed)".to_string(),
+            // Each file is its own request, so it can't see what earlier ones would have
+            // created: an artist new to the server is "new" for every file.
+            (Target::Server(_), true) => " (dry run, file by file: nothing will be changed; artists and albums \
+                                          new to the server show as new for every file)"
+                .to_string(),
+        }
     );
 
-    // A dry run is one transaction for the whole folder, rolled back at the end, so a
-    // file sees the artists and albums earlier files would have created. Each file gets a
-    // savepoint, so one that fails doesn't undo the others. A real run commits file by file
-    // instead: stopping halfway keeps what's done, and running again skips it (duplicates).
-    let mut dry_run_tx = match options.dry_run {
-        true => Some(db::begin(pool, None).await?),
-        false => None,
+    // A local dry run is one transaction for the whole folder, rolled back at the end, so
+    // a file sees the artists and albums earlier files would have created. Each file gets
+    // a savepoint, so one that fails doesn't undo the others. A real run commits file by
+    // file instead: stopping halfway keeps what's done, and running again skips it
+    // (duplicates).
+    let mut dry_run_tx = match (&target, options.dry_run) {
+        (Target::Local { pool, .. }, true) => Some(db::begin(pool, None).await?),
+        _ => None,
     };
     let mut totals = Totals::default();
 
@@ -162,9 +230,18 @@ pub async fn run(pool: &PgPool, store: &BlobStore, dir: &Path, options: Options)
             },
             local_path: Some(path.display().to_string()),
             given: Default::default(),
+            tags_from: None,
             volume: options.volume.clone(),
         };
 
+        let (pool, store) = match &target {
+            Target::Local { pool, store } => (*pool, *store),
+            Target::Server(server) => {
+                let outcome = server.send(path, &ingest_options, options.dry_run).await?;
+                tally(&mut totals, &shown, outcome, &info.warnings);
+                continue;
+            }
+        };
         let volume = options.volume.as_deref().unwrap_or(store.default_volume());
         // A reflink if possible; otherwise a copy, unless --reflink-only.
         let received = match store.reflink_in(path, volume).await {
@@ -203,49 +280,62 @@ pub async fn run(pool: &PgPool, store: &BlobStore, dir: &Path, options: Options)
             },
         };
 
-        match result {
-            Ok(report) => {
-                print_report(&shown, &report, &info.warnings);
-                match report.status {
-                    ReportStatus::Created => totals.created += 1,
-                    ReportStatus::Duplicate => totals.duplicates += 1,
-                }
-                if !report.same_song_as.is_empty() {
-                    totals.same_song += 1;
-                }
-            }
-            Err(err) if ingest::is_refusal(&err) => {
-                totals.skipped += 1;
-                eprintln!("skipped    {shown}: {err}");
-            }
-            Err(err) => {
-                totals.failed += 1;
-                eprintln!("error      {shown}: {err:#}");
-            }
-        }
+        let outcome = match result {
+            Ok(report) => Outcome::Done(report),
+            Err(err) if ingest::is_refusal(&err) => Outcome::Skipped(err.to_string()),
+            Err(err) => Outcome::Failed(format!("{err:#}")),
+        };
+        tally(&mut totals, &shown, outcome, &info.warnings);
     }
 
     if let Some(tx) = dry_run_tx {
         tx.rollback().await?;
-    } else if totals.skipped + totals.failed > 0 {
+    } else if !options.dry_run && totals.skipped + totals.failed > 0 {
         println!("\nFiles that didn't import are listed on the Review page (with their audio).");
     }
     println!(
         "\n{} created ({} with the same song id as an existing track, flagged), {} duplicates, \
-         {} skipped, {} failed\nfiles taken in: {} reflinked (no extra space), {} copied{}",
-        totals.created,
-        totals.same_song,
-        totals.duplicates,
-        totals.skipped,
-        totals.failed,
-        totals.reflinked,
-        totals.copied,
-        if options.dry_run { "\ndry run: nothing was changed" } else { "" }
+         {} skipped, {} failed",
+        totals.created, totals.same_song, totals.duplicates, totals.skipped, totals.failed,
     );
+    match &target {
+        Target::Local { .. } => println!(
+            "files taken in: {} reflinked (no extra space), {} copied",
+            totals.reflinked, totals.copied
+        ),
+        Target::Server(server) => println!("sent to {}", server.url()),
+    }
+    if options.dry_run {
+        println!("dry run: nothing was changed");
+    }
     if totals.failed > 0 {
         anyhow::bail!("{} files failed", totals.failed);
     }
     Ok(())
+}
+
+/// Prints what became of a file and counts it.
+fn tally(totals: &mut Totals, shown: &str, outcome: Outcome, path_warnings: &[String]) {
+    match outcome {
+        Outcome::Done(report) => {
+            print_report(shown, &report, path_warnings);
+            match report.status {
+                ReportStatus::Created => totals.created += 1,
+                ReportStatus::Duplicate => totals.duplicates += 1,
+            }
+            if !report.same_song_as.is_empty() {
+                totals.same_song += 1;
+            }
+        }
+        Outcome::Skipped(reason) => {
+            totals.skipped += 1;
+            eprintln!("skipped    {shown}: {reason}");
+        }
+        Outcome::Failed(reason) => {
+            totals.failed += 1;
+            eprintln!("error      {shown}: {reason}");
+        }
+    }
 }
 
 fn print_report(shown: &str, report: &Report, path_warnings: &[String]) {
@@ -327,4 +417,23 @@ fn file_name(path: &Path) -> String {
     path.file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| path.display().to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn include_and_exclude_globs() {
+        let only_flacs = PathFilter::new(&["**/FLACs/**".into()], &["*.aif".into()]).unwrap();
+        assert!(only_flacs.allows(Path::new("1001776/FLACs/Singles/a - 1 - x.wav")));
+        assert!(!only_flacs.allows(Path::new("1001776/streams/Singles/a - 1 - x.m4a")));
+        assert!(!only_flacs.allows(Path::new("100001739/FLACs/Albums/1/01 - a - 1 - x.aif")), "excluded wins");
+        let everything = PathFilter::new(&[], &[]).unwrap();
+        assert!(everything.allows(Path::new("anything.flac")));
+        // `*` crosses folders.
+        let wavs = PathFilter::new(&["*.wav".into()], &[]).unwrap();
+        assert!(wavs.allows(Path::new("a/b/c.wav")));
+        assert!(PathFilter::new(&["[".into()], &[]).is_err());
+    }
 }

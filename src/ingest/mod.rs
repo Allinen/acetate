@@ -52,12 +52,28 @@ pub struct IngestOptions {
     /// What a description says about the artists and album (see `describe`). Empty for
     /// plain uploads.
     pub hints: Hints,
-    /// Where the file was on disk (CLI), for the review list if it doesn't import.
+    /// Where the file was on disk (the CLI's, or what an HTTP client says): kept as
+    /// `files.imported_from`, and shown in the review list if it doesn't import.
     pub local_path: Option<String>,
     /// Values typed in by hand for what the tags lack (see `Given`).
     pub given: Given,
     /// Which storage volume the audio goes to (None: the default one). Admins choose.
     pub volume: Option<String>,
+    /// Read the metadata from this copy of the file instead of the file itself (see
+    /// `TagsFrom`).
+    pub tags_from: Option<TagsFrom>,
+}
+
+/// A tagged copy of the file being imported, whose tags (and embedded pictures) are the
+/// metadata, while the file stored is the untouched original: e.g. a pristine download
+/// of an original file, tagged by hand in a local copy. The copy itself isn't kept; its
+/// raw tags are kept next to the file's own (`files.embedded_tags.tags_from_copy`).
+#[derive(Debug, Clone)]
+pub struct TagsFrom {
+    /// Where the copy is (a temp file while the request lasts).
+    pub path: PathBuf,
+    /// The copy's own name (its extension helps tell its format).
+    pub filename: String,
 }
 
 /// Title and artists given by hand for a file whose tags lack them (the Review page's
@@ -359,6 +375,22 @@ pub async fn ingest_in(
 
     // 2. Probe and read tags, and make sure the tags are good enough.
     let (probe, mut tags) = read_file_info(&file.path, &options.uploaded_filename).await?;
+    // With a tagged copy, its tags are the metadata; the file's own stay in its raw dump,
+    // as do its audio properties.
+    let mut copy_tags = None;
+    if let Some(copy) = &options.tags_from {
+        let (_, from_copy) = read_file_info(&copy.path, &copy.filename).await?;
+        let own = std::mem::take(&mut tags);
+        copy_tags = Some(json!({ "filename": copy.filename, "tags": from_copy.raw }));
+        tags = TagInfo {
+            raw: own.raw,
+            bitrate_kbps: own.bitrate_kbps,
+            duration_ms: own.duration_ms,
+            // The file's own original filename if it says one, else the copy's.
+            original_filename: own.original_filename.or(from_copy.original_filename.clone()),
+            ..from_copy
+        };
+    }
     let mut given = Vec::new();
     if let Some(title) = options.given.title.as_ref().filter(|t| !t.trim().is_empty()) {
         tags.title = Some(title.clone());
@@ -432,6 +464,9 @@ pub async fn ingest_in(
     if !given.is_empty() {
         revision_reason += &format!("; given by hand (not from the tags): {}", given.join(", "));
     }
+    if let Some(copy) = &options.tags_from {
+        revision_reason += &format!("; metadata from the tags of a copy ({}), not the stored file's", copy.filename);
+    }
     if dated_by_hint {
         revision_reason += &match &tag_date {
             None => "; release date from the description (the tags have none)".to_string(),
@@ -447,6 +482,7 @@ pub async fn ingest_in(
         size_bytes,
         probe: &probe,
         tags: &tags,
+        copy_tags: copy_tags.as_ref(),
     };
     let mut report = create_track_rows(conn, options, &new_file, &covers, &album_cover_blobs).await?;
     system.end(conn).await?;
@@ -533,6 +569,9 @@ async fn duplicate_in(
         db::sources::add_snapshot(conn, SourceOwner::Track(track_id), source).await?;
     }
     db::problems::resolve_imported(conn, sha256, track_id, "already in the library").await?;
+    if let Some(path) = &options.local_path {
+        db::ingest::fill_in_imported_from(conn, sha256, path).await?;
+    }
     system.end(conn).await?;
     let visible = db::sources::owner_exists(conn, SourceOwner::Track(track_id)).await?;
     Ok(Some(Report::duplicate(visible.then_some(track_id))))
@@ -630,6 +669,8 @@ pub async fn add_file_to_track(
         file.size as i64,
         &probe,
         &tags,
+        None, // a replacement or a file added by hand: no path to record
+        None,
     )
     .await?;
     db::blobs::register(&mut tx, &file.sha256, &file.volume, Some(file.size as i64)).await?;
@@ -723,6 +764,8 @@ async fn insert_file_row(
     size_bytes: i64,
     probe: &ProbeInfo,
     tags: &TagInfo,
+    imported_from: Option<&str>,
+    copy_tags: Option<&serde_json::Value>,
 ) -> anyhow::Result<()> {
     // `original_filename` is set only for original files ("og files", the file as the
     // artist named it), and is their name. The old tag-based library kept that name in an
@@ -730,7 +773,10 @@ async fn insert_file_row(
     // description; see `ingest_in`). It's never filled in from the name a file was
     // uploaded with (that's `uploaded_filename`).
     let original_filename = tags.original_filename.as_deref();
-    let embedded_tags = json!({ "tags": tags.raw });
+    let mut embedded_tags = json!({ "tags": tags.raw });
+    if let Some(copy) = copy_tags {
+        embedded_tags["tags_from_copy"] = copy.clone();
+    }
 
     db::ingest::insert_file(
         conn,
@@ -752,6 +798,7 @@ async fn insert_file_row(
                 .or(tags.duration_ms)
                 .and_then(|d| i64::try_from(d).ok()),
             embedded_tags: &embedded_tags,
+            imported_from,
         },
     )
     .await?;
@@ -770,6 +817,8 @@ struct NewFileInfo<'a> {
     size_bytes: i64,
     probe: &'a ProbeInfo,
     tags: &'a TagInfo,
+    /// The raw tags of the copy the metadata was read from, if any (see `TagsFrom`).
+    copy_tags: Option<&'a serde_json::Value>,
 }
 
 /// Creates the track and everything around it. `covers`: the embedded pictures' blobs;
@@ -996,6 +1045,8 @@ async fn create_track_rows(
         file.size_bytes,
         file.probe,
         tags,
+        options.local_path.as_deref(),
+        file.copy_tags,
     )
     .await?;
     db::blobs::register(conn, file.sha256, file.volume, Some(file.size_bytes)).await?;

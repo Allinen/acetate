@@ -24,6 +24,8 @@ use lofty::tag::{Accessor, ItemKey, ItemValue, Tag, TagType};
 use serde::Serialize;
 use serde_json::json;
 
+mod id3_repeated;
+
 #[derive(Debug, Clone, Default)]
 pub struct TagInfo {
     /// Every tag in the file, verbatim.
@@ -124,6 +126,27 @@ pub fn read_tags(path: &Path, extension: Option<&str>) -> anyhow::Result<TagInfo
             tagged_file.tags().iter().map(generic_dump).collect()
         }
     };
+    // Text frames given more than once (lofty and the id3 crate keep only one of each).
+    let repeated = match tagged_file.file_type() {
+        FileType::Mpeg | FileType::Aac | FileType::Wav | FileType::Aiff | FileType::Flac => {
+            id3_repeated::repeated_text_frames(path).unwrap_or_else(|err| {
+                tracing::warn!("scanning ID3 frames failed: {err:#}");
+                Vec::new()
+            })
+        }
+        _ => Vec::new(),
+    };
+    if !repeated.is_empty() {
+        // Keep every frame in the raw dump, as it's in the file.
+        if let Some(raw) = info.raw.iter_mut().find(|t| t.format == "id3v2") {
+            for (id, values) in &repeated {
+                raw.items.retain(|item| item.key != *id);
+                for value in values {
+                    raw.items.push(RawItem::new(id.clone(), json!(value)));
+                }
+            }
+        }
+    }
     info.original_filename = find_original_filename(&info.raw);
     let primary_format = raw_format_name(tagged_file.primary_tag_type());
 
@@ -143,6 +166,19 @@ pub fn read_tags(path: &Path, extension: Option<&str>) -> anyhow::Result<TagInfo
     info.album = tag.album().map(|s| s.to_string()).filter(|s| !s.trim().is_empty());
     info.album_artists = split_artists(strings(tag, ItemKey::AlbumArtist));
     info.composers = split_artists(strings(tag, ItemKey::Composer));
+    // ARTIST / ALBUM ARTIST / COMPOSER given as several frames (one per name, as some
+    // taggers write ID3v2.3): all of them, in order.
+    if primary_format == Some("id3v2") {
+        for (id, values) in &repeated {
+            let values = split_artists(values.clone());
+            match id.as_str() {
+                "TPE1" => info.artists = values,
+                "TPE2" => info.album_artists = values,
+                "TCOM" => info.composers = values,
+                _ => {}
+            }
+        }
+    }
     info.track_number = tag.track();
     info.track_total = tag.track_total();
     info.disc_number = tag.disk();
@@ -732,3 +768,4 @@ mod tests {
         assert_eq!(fourcc_to_string(b"trkn"), "trkn");
     }
 }
+

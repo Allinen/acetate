@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE files SET imported_from = $2 WHERE sha256 = $1 AND purged_at IS NULL AND imported_from IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b16e79c750597ceef84c5d0ecdc0ff18357f59b20d80a223a6ba3b2647eafbed"
+}

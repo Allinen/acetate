@@ -43,6 +43,22 @@ pub async fn find_file_by_sha256(
     Ok(row.map(|track_id| StoredFile { track_id }))
 }
 
+/// The tracks having a file (current or previous, not purged) imported from `path`.
+pub async fn tracks_imported_from(conn: &mut PgConnection, path: &str) -> sqlx::Result<Vec<Uuid>> {
+    sqlx::query_scalar!(
+        r#"
+        SELECT DISTINCT COALESCE(t.id, h.track_id) AS "track_id!"
+        FROM files f
+        LEFT JOIN tracks t ON t.file_id = f.id
+        LEFT JOIN track_file_history h ON h.old_file_id = f.id
+        WHERE f.imported_from = $1 AND f.purged_at IS NULL AND COALESCE(t.id, h.track_id) IS NOT NULL
+        "#,
+        path
+    )
+    .fetch_all(conn)
+    .await
+}
+
 pub struct NewFile<'a> {
     pub id: Uuid,
     /// Where the file came from (required).
@@ -60,6 +76,8 @@ pub struct NewFile<'a> {
     pub bit_depth: Option<i16>,
     pub duration_ms: Option<i64>,
     pub embedded_tags: &'a serde_json::Value,
+    /// Its path on the machine it was imported from, if known (`files.imported_from`).
+    pub imported_from: Option<&'a str>,
 }
 
 pub async fn insert_file(conn: &mut PgConnection, f: &NewFile<'_>) -> sqlx::Result<()> {
@@ -67,8 +85,8 @@ pub async fn insert_file(conn: &mut PgConnection, f: &NewFile<'_>) -> sqlx::Resu
         r#"
         INSERT INTO files (id, origin_snapshot_id, sha256, original_filename, uploaded_filename,
                            size_bytes, container, codec, bitrate, sample_rate, channels,
-                           bit_depth, duration_ms, embedded_tags)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+                           bit_depth, duration_ms, embedded_tags, imported_from)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
         "#,
         f.id,
         f.origin_snapshot_id,
@@ -84,10 +102,24 @@ pub async fn insert_file(conn: &mut PgConnection, f: &NewFile<'_>) -> sqlx::Resu
         f.bit_depth,
         f.duration_ms,
         f.embedded_tags,
+        f.imported_from,
     )
     .execute(conn)
     .await?;
     Ok(())
+}
+
+/// Records where an already stored file was imported from, if that isn't known yet (an
+/// import that finds the file stored). As the system: files are otherwise immutable.
+pub async fn fill_in_imported_from(conn: &mut PgConnection, sha256: &str, path: &str) -> sqlx::Result<bool> {
+    let updated = sqlx::query!(
+        "UPDATE files SET imported_from = $2 WHERE sha256 = $1 AND purged_at IS NULL AND imported_from IS NULL",
+        sha256,
+        path
+    )
+    .execute(conn)
+    .await?;
+    Ok(updated.rows_affected() > 0)
 }
 
 /// An artist found (or created) for a name from the tags, and how to credit it.

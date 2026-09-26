@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT DISTINCT COALESCE(t.id, h.track_id) AS \"track_id!\"\n        FROM files f\n        LEFT JOIN tracks t ON t.file_id = f.id\n        LEFT JOIN track_file_history h ON h.old_file_id = f.id\n        WHERE f.imported_from = $1 AND f.purged_at IS NULL AND COALESCE(t.id, h.track_id) IS NOT NULL\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "track_id!",
+        "type_info": "Uuid",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "979e83cf47f402f86bff76c1523ccf1720da3d5e08640d759757e9e7077d561e"
+}

@@ -4,6 +4,7 @@ mod config;
 mod db;
 mod duplicate_albums_command;
 mod ingest;
+mod ingest_client;
 mod ingest_command;
 mod merge_duplicates_command;
 mod model;
@@ -65,64 +66,7 @@ enum Command {
     },
     /// Import a whole folder, reading platform ids from the folder layout to match artists
     /// and albums (see the README, "Automated ingestion"). The metadata comes from the tags.
-    Ingest {
-        /// The folder to import (all audio files below it).
-        dir: PathBuf,
-        /// How the folder is laid out: `netease`, `qq` or `kuwo` (`Artist - <id>/…/Album - <id>/… - <song id>.flac`),
-        /// `soundcloud` (`<user id>/{FLACs|streams}/…/… - <song id> - <song uid>.wav`),
-        /// `ytdlp` (`Title [<id>].ext`, needs `--platform`) or `tags` (nothing from paths).
-        #[arg(long)]
-        layout: LayoutArg,
-        /// For `--layout ytdlp`: where the files are from.
-        #[arg(long)]
-        platform: Option<PlatformArg>,
-        /// Where the files came from when the path doesn't say (required for `tags`):
-        /// a label (`--origin vk`) or a source snapshot as JSON, as for `import --origin`.
-        #[arg(long)]
-        origin: Option<String>,
-        /// A folder of album covers named `<title> - <album id>.jpg` (for `netease`).
-        #[arg(long)]
-        covers: Option<PathBuf>,
-        /// A JSON map of song ids to `{"album_id", "song_index"}` (QQ also: `song_mid`,
-        /// `album_mid`, `song_artists`): the album and position of songs, also ones outside
-        /// album folders (album_id -1 or 0: no album). Required with `--layout netease`, `qq`
-        /// and `kuwo`. (`--netease-albums` is its old name.) For `--layout soundcloud`, the
-        /// SoundCloud lookup (songs, albums and uploaders, see the README); also required.
-        #[arg(long, alias = "netease-albums")]
-        id_map: Option<PathBuf>,
-        /// Initial status for the new tracks.
-        #[arg(long, default_value = "released")]
-        status: String,
-        /// Create the tracks restricted to these groups (comma-separated names).
-        #[arg(long)]
-        restrict_to: Option<String>,
-        /// Which storage volume the audio goes to (a name from ACETATE_VOLUMES; default:
-        /// the first).
-        #[arg(long)]
-        volume: Option<String>,
-        /// Stop at the first file that can't be reflinked instead of copying it (a
-        /// reflink takes no extra space; a copy takes the file's full size).
-        #[arg(long)]
-        reflink_only: bool,
-        /// For `netease`/`qq`/`kuwo`: a file without a song id in its name is looked up in
-        /// the id map by its tags' title and artist (only an exact, single match). For
-        /// `kuwo`, one that isn't found still comes in, with Kuwo as its origin but no song id.
-        #[arg(long)]
-        tag_fallback: bool,
-        /// When the ids from the path or id map are for a name the tags don't have, and
-        /// exactly one tag artist has no ids, they go to that artist: matched by the
-        /// platform's name, with the tags' spelling as an alias (e.g. a "jaywren" folder
-        /// for a file tagged "mothfecal").
-        #[arg(long)]
-        lax_artist_name: bool,
-        /// Don't credit the COMPOSER tag's names as producers (e.g. for store downloads,
-        /// where COMPOSER is the songwriter's legal name).
-        #[arg(long)]
-        no_composers: bool,
-        /// Work out and print what would happen, without changing anything.
-        #[arg(long)]
-        dry_run: bool,
-    },
+    Ingest(IngestArgs),
     /// Check, without changing anything, that files are safely stored in Acetate: every
     /// file below <dir> (e.g. an old library, before deleting it by hand), or with
     /// `--blobs`, every stored blob. Never writes, moves or deletes anything in <dir>.
@@ -233,6 +177,82 @@ enum Command {
     },
 }
 
+/// `acetate ingest`'s options (a struct of its own, so `--server` can run it without a
+/// database here).
+#[derive(clap::Args)]
+struct IngestArgs {
+    /// The folder to import (all audio files below it), or a single file.
+    dir: PathBuf,
+    /// How the folder is laid out: `netease`, `qq` or `kuwo` (`Artist - <id>/…/Album - <id>/… - <song id>.flac`),
+    /// `soundcloud` (`<user id>/{FLACs|streams}/…/… - <song id> - <song uid>.wav`),
+    /// `ytdlp` (`Title [<id>].ext`, needs `--platform`) or `tags` (nothing from paths).
+    #[arg(long)]
+    layout: LayoutArg,
+    /// For `--layout ytdlp`: where the files are from.
+    #[arg(long)]
+    platform: Option<PlatformArg>,
+    /// Where the files came from when the path doesn't say (required for `tags`):
+    /// a label (`--origin vk`) or a source snapshot as JSON, as for `import --origin`.
+    #[arg(long)]
+    origin: Option<String>,
+    /// A folder of album covers named `<title> - <album id>.jpg` (for `netease`).
+    #[arg(long)]
+    covers: Option<PathBuf>,
+    /// A JSON map of song ids to `{"album_id", "song_index"}` (QQ also: `song_mid`,
+    /// `album_mid`, `song_artists`): the album and position of songs, also ones outside
+    /// album folders (album_id -1 or 0: no album). Required with `--layout netease`, `qq`
+    /// and `kuwo`. (`--netease-albums` is its old name.) For `--layout soundcloud`, the
+    /// SoundCloud lookup (songs, albums and uploaders, see the README); also required.
+    #[arg(long, alias = "netease-albums")]
+    id_map: Option<PathBuf>,
+    /// Initial status for the new tracks.
+    #[arg(long, default_value = "released")]
+    status: String,
+    /// Create the tracks restricted to these groups (comma-separated names).
+    #[arg(long)]
+    restrict_to: Option<String>,
+    /// Which storage volume the audio goes to (a name from ACETATE_VOLUMES; default:
+    /// the first).
+    #[arg(long)]
+    volume: Option<String>,
+    /// Stop at the first file that can't be reflinked instead of copying it (a
+    /// reflink takes no extra space; a copy takes the file's full size).
+    #[arg(long)]
+    reflink_only: bool,
+    /// For `netease`/`qq`/`kuwo`: a file without a song id in its name is looked up in
+    /// the id map by its tags' title and artist (only an exact, single match). For
+    /// `kuwo`, one that isn't found still comes in, with Kuwo as its origin but no song id.
+    #[arg(long)]
+    tag_fallback: bool,
+    /// When the ids from the path or id map are for a name the tags don't have, and
+    /// exactly one tag artist has no ids, they go to that artist: matched by the
+    /// platform's name, with the tags' spelling as an alias (e.g. a "jaywren" folder
+    /// for a file tagged "mothfecal").
+    #[arg(long)]
+    lax_artist_name: bool,
+    /// Don't credit the COMPOSER tag's names as producers (e.g. for store downloads,
+    /// where COMPOSER is the songwriter's legal name).
+    #[arg(long)]
+    no_composers: bool,
+    /// Work out and print what would happen, without changing anything.
+    #[arg(long)]
+    dry_run: bool,
+    /// Send the files to the Acetate at this URL (e.g. `http://nas:3000`) instead of
+    /// importing them here: the same folder reading, sent over HTTP (`POST /api/ingest`).
+    /// Needs the environment variable ACETATE_TOKEN (a session token, from
+    /// `POST /api/auth/login`). No database is needed here.
+    #[arg(long)]
+    server: Option<String>,
+    /// Only files whose path (relative to <dir>) matches one of these globs, e.g.
+    /// `--include '**/FLACs/**'` (repeatable). `*` matches across folders too.
+    #[arg(long)]
+    include: Vec<String>,
+    /// Leave out files whose path (relative to <dir>) matches one of these globs, e.g.
+    /// `--exclude '*.aif'` (repeatable). Wins over --include.
+    #[arg(long)]
+    exclude: Vec<String>,
+}
+
 #[derive(Clone, Copy, clap::ValueEnum)]
 enum LayoutArg {
     Netease,
@@ -259,6 +279,18 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let cli = Cli::parse();
+
+    // `acetate ingest --server`: a client of another Acetate, so no database or storage
+    // (and no configuration) is needed here.
+    if let Command::Ingest(args) = &cli.command
+        && let Some(server) = &args.server
+    {
+        let token = std::env::var("ACETATE_TOKEN")
+            .context("--server needs ACETATE_TOKEN: a session token (the `token` from POST /api/auth/login)")?;
+        let server = ingest_client::Server::connect(server, &token).await?;
+        let options = ingest_options(args, None).await?;
+        return ingest_command::run(ingest_command::Target::Server(server), &args.dir, options).await;
+    }
     let config = Config::from_env()?;
 
     // Say what's happening, and fail fast and clearly if the database isn't there
@@ -320,85 +352,14 @@ async fn main() -> anyhow::Result<()> {
                 hints: Default::default(),
                 local_path: None, // set per file
                 given: Default::default(),
+                tags_from: None,
                 volume,
             };
             import(pool, store, paths, options).await
         }
-        Command::Ingest {
-            dir,
-            layout,
-            platform,
-            origin,
-            covers,
-            id_map,
-            status,
-            restrict_to,
-            volume,
-            reflink_only,
-            tag_fallback,
-            lax_artist_name,
-            no_composers,
-            dry_run,
-        } => {
-            let volume = cli_volume(&store, volume)?;
-            use crate::ingest::layouts::{id_folders, soundcloud, ytdlp, Layout};
-            let layout = match (layout, platform) {
-                (LayoutArg::Netease, None) => Layout::IdFolders(id_folders::Platform::Netease),
-                (LayoutArg::Qq, None) => Layout::IdFolders(id_folders::Platform::Qq),
-                (LayoutArg::Kuwo, None) => Layout::IdFolders(id_folders::Platform::Kuwo),
-                (LayoutArg::Tags, None) => Layout::Tags,
-                (LayoutArg::Soundcloud, None) => Layout::Soundcloud,
-                (LayoutArg::Ytdlp, Some(PlatformArg::Soundcloud)) => Layout::Ytdlp(ytdlp::Platform::Soundcloud),
-                (LayoutArg::Ytdlp, Some(PlatformArg::Youtube)) => Layout::Ytdlp(ytdlp::Platform::Youtube),
-                (LayoutArg::Ytdlp, None) => anyhow::bail!("--layout ytdlp needs --platform"),
-                (_, Some(_)) => anyhow::bail!("--platform is only for --layout ytdlp"),
-            };
-            let origin = match origin {
-                Some(json) => Some(parse_source(&json)?),
-                None if layout == Layout::Tags => {
-                    anyhow::bail!("--layout tags needs --origin: where did the files come from?")
-                }
-                None => None,
-            };
-            let restrict_to = match restrict_to {
-                Some(names) => Some(group_ids(&pool, &names).await?),
-                None => None,
-            };
-            // Every song is in the map, and without it songs outside album folders would get
-            // no album id: so these layouts never run without it.
-            let (id_map, sc_map) = match (id_map, layout) {
-                (Some(path), Layout::IdFolders(platform)) => (Some(id_folders::IdMap::load(platform, &path)?), None),
-                (Some(path), Layout::Soundcloud) => (None, Some(soundcloud::ScMap::load(&path)?)),
-                (Some(_), _) => anyhow::bail!("--id-map is only for --layout netease, qq, kuwo or soundcloud"),
-                (None, Layout::IdFolders(_)) => {
-                    anyhow::bail!("--layout netease/qq/kuwo needs --id-map <map.json> (the song id -> album map)")
-                }
-                (None, Layout::Soundcloud) => anyhow::bail!("--layout soundcloud needs --id-map <lookup.json>"),
-                (None, _) => (None, None),
-            };
-            // Covers named by album id: only NetEase's come like that (QQ's are by song).
-            if covers.is_some() && layout != Layout::IdFolders(id_folders::Platform::Netease) {
-                anyhow::bail!("--covers is only for --layout netease");
-            }
-            if tag_fallback && id_map.is_none() {
-                anyhow::bail!("--tag-fallback is only for --layout netease, qq or kuwo");
-            }
-            let options = ingest_command::Options {
-                layout,
-                origin,
-                covers,
-                id_map,
-                sc_map,
-                status,
-                restrict_to,
-                volume,
-                reflink_only,
-                tag_fallback,
-                lax_artist_names: lax_artist_name,
-                no_composers,
-                dry_run,
-            };
-            ingest_command::run(&pool, &store, &dir, options).await
+        Command::Ingest(args) => {
+            let options = ingest_options(&args, Some((&pool, &store))).await?;
+            ingest_command::run(ingest_command::Target::Local { pool: &pool, store: &store }, &args.dir, options).await
         }
         Command::Verify { dir, blobs, list_ok, list_missing } => match (dir, blobs) {
             (None, true) => verify_command::verify_blobs(&pool, &store).await,
@@ -539,6 +500,74 @@ async fn import(
         println!("Files that didn't import are listed on the Review page (with their audio).");
     }
     Ok(())
+}
+
+/// `acetate ingest`'s options from its arguments. `local`: this machine's database and
+/// storage (None with `--server`: group names and volumes are then the server's business).
+async fn ingest_options(args: &IngestArgs, local: Option<(&sqlx::PgPool, &BlobStore)>) -> anyhow::Result<ingest_command::Options> {
+    use crate::ingest::layouts::{id_folders, soundcloud, ytdlp, Layout};
+    let volume = match local {
+        Some((_, store)) => cli_volume(store, args.volume.clone())?,
+        None => args.volume.clone(),
+    };
+    let layout = match (args.layout, args.platform) {
+        (LayoutArg::Netease, None) => Layout::IdFolders(id_folders::Platform::Netease),
+        (LayoutArg::Qq, None) => Layout::IdFolders(id_folders::Platform::Qq),
+        (LayoutArg::Kuwo, None) => Layout::IdFolders(id_folders::Platform::Kuwo),
+        (LayoutArg::Tags, None) => Layout::Tags,
+        (LayoutArg::Soundcloud, None) => Layout::Soundcloud,
+        (LayoutArg::Ytdlp, Some(PlatformArg::Soundcloud)) => Layout::Ytdlp(ytdlp::Platform::Soundcloud),
+        (LayoutArg::Ytdlp, Some(PlatformArg::Youtube)) => Layout::Ytdlp(ytdlp::Platform::Youtube),
+        (LayoutArg::Ytdlp, None) => anyhow::bail!("--layout ytdlp needs --platform"),
+        (_, Some(_)) => anyhow::bail!("--platform is only for --layout ytdlp"),
+    };
+    let origin = match &args.origin {
+        Some(json) => Some(parse_source(json)?),
+        None if layout == Layout::Tags => {
+            anyhow::bail!("--layout tags needs --origin: where did the files come from?")
+        }
+        None => None,
+    };
+    let restrict_to = match (&args.restrict_to, local) {
+        (Some(names), Some((pool, _))) => Some(group_ids(pool, names).await?),
+        (Some(_), None) => anyhow::bail!("--restrict-to isn't supported with --server yet"),
+        (None, _) => None,
+    };
+    // Every song is in the map, and without it songs outside album folders would get
+    // no album id: so these layouts never run without it.
+    let (id_map, sc_map) = match (&args.id_map, layout) {
+        (Some(path), Layout::IdFolders(platform)) => (Some(id_folders::IdMap::load(platform, path)?), None),
+        (Some(path), Layout::Soundcloud) => (None, Some(soundcloud::ScMap::load(path)?)),
+        (Some(_), _) => anyhow::bail!("--id-map is only for --layout netease, qq, kuwo or soundcloud"),
+        (None, Layout::IdFolders(_)) => {
+            anyhow::bail!("--layout netease/qq/kuwo needs --id-map <map.json> (the song id -> album map)")
+        }
+        (None, Layout::Soundcloud) => anyhow::bail!("--layout soundcloud needs --id-map <lookup.json>"),
+        (None, _) => (None, None),
+    };
+    // Covers named by album id: only NetEase's come like that (QQ's are by song).
+    if args.covers.is_some() && layout != Layout::IdFolders(id_folders::Platform::Netease) {
+        anyhow::bail!("--covers is only for --layout netease");
+    }
+    if args.tag_fallback && id_map.is_none() {
+        anyhow::bail!("--tag-fallback is only for --layout netease, qq or kuwo");
+    }
+    Ok(ingest_command::Options {
+        layout,
+        origin,
+        covers: args.covers.clone(),
+        id_map,
+        sc_map,
+        status: args.status.clone(),
+        restrict_to,
+        volume,
+        reflink_only: args.reflink_only,
+        tag_fallback: args.tag_fallback,
+        lax_artist_names: args.lax_artist_name,
+        no_composers: args.no_composers,
+        filter: ingest_command::PathFilter::new(&args.include, &args.exclude)?,
+        dry_run: args.dry_run,
+    })
 }
 
 /// A `--volume` given on the command line, checked against the configured ones.

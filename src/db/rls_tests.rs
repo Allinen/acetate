@@ -165,6 +165,7 @@ pub(super) async fn make_track(
             bit_depth: None,
             duration_ms: None,
             embedded_tags: &json!({}),
+            imported_from: None,
         },
     )
     .await?;

@@ -4,8 +4,9 @@
 //! Generic: nothing here depends on how the library was imported into Acetate. Things are
 //! matched by content:
 //! * a Navidrome track (`media_file`) is the Acetate track whose file (current or previous)
-//!   has the same bytes: the file is read from disk where Navidrome says it is (with
-//!   `--path-map` for Docker mounts and the like) and hashed;
+//!   was imported from the same path (`files.imported_from`; fast, nothing is read), else
+//!   the one whose file has the same bytes: the file is read from disk where Navidrome
+//!   says it is (with `--path-map` for Docker mounts and the like) and hashed;
 //! * an album, the Acetate album its tracks are on;
 //! * an artist, the Acetate artist with that name or alias (its tracks decide between
 //!   artists with the same name).
@@ -207,8 +208,9 @@ pub async fn run(pool: &PgPool, mut options: Options) -> anyhow::Result<()> {
 
     let s = &matcher.stats;
     println!(
-        "\ntracks:  {} matched, {} not in Acetate, {} not on disk, {} can't be read",
-        s.tracks_found, s.tracks_not_in_acetate, s.tracks_not_on_disk, s.tracks_unreadable
+        "\ntracks:  {} matched ({} by the path they were imported from, the rest by content), {} not in Acetate, \
+         {} not on disk, {} can't be read",
+        s.tracks_found, s.tracks_found_by_path, s.tracks_not_in_acetate, s.tracks_not_on_disk, s.tracks_unreadable
     );
     println!("albums:  {} matched, {} not found, {} unclear (tracks on several albums)", s.albums_found, s.albums_not_found, s.albums_unclear);
     println!("artists: {} matched, {} not found, {} unclear (several with that name)", s.artists_found, s.artists_not_found, s.artists_unclear);
@@ -323,6 +325,8 @@ fn item_id_of(item: Item) -> Uuid {
 #[derive(Default)]
 struct Stats {
     tracks_found: usize,
+    /// Of `tracks_found`, by the path they were imported from (not hashed).
+    tracks_found_by_path: usize,
     tracks_not_in_acetate: usize,
     tracks_not_on_disk: usize,
     tracks_unreadable: usize,
@@ -387,6 +391,18 @@ impl Matcher<'_> {
         let Some(path) = self.path_of(media_file_id).await? else {
             return Ok(None);
         };
+        // Imported from this very path: that's it, no need to read the file. (Only if
+        // it's one track: a path reused for several imports says nothing.)
+        if let Some(text) = path.to_str() {
+            if let [track] = db::ingest::tracks_imported_from(conn, text).await?[..] {
+                let track = sqlx::query_scalar!(r#"SELECT COALESCE(merged_into, id) AS "id!" FROM tracks WHERE id = $1"#, track)
+                    .fetch_one(&mut *conn)
+                    .await?;
+                self.stats.tracks_found += 1;
+                self.stats.tracks_found_by_path += 1;
+                return Ok(Some(track));
+            }
+        }
         let hashed = {
             let path = path.clone();
             tokio::task::spawn_blocking(move || crate::storage::hash_file(&path)).await?

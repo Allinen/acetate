@@ -24,7 +24,10 @@ pub struct IngestParams {
 /// `POST /api/ingest[?dry_run=true]`, multipart form:
 /// * `description`: JSON (see `NewDescription`, and the README for an example);
 /// * `file`: the audio file;
-/// * any image parts named in the description's `album.covers`.
+/// * `tags_file` (optional): a tagged copy of the file. Its tags and pictures are the
+///   metadata, and it isn't kept; the stored file is `file`, untouched (see
+///   `ingest::TagsFrom`);
+/// * any image parts named in the description's `album.covers` and `track.covers`.
 ///
 /// Returns what was done (or would be): the track, how each artist and the album were
 /// found, warnings. The metadata comes from the file's tags; the description gives ids.
@@ -37,6 +40,9 @@ pub async fn ingest(
     let bad_request = |err: axum::extract::multipart::MultipartError| AppError::BadRequest(err.to_string());
     let mut description: Option<NewDescription> = None;
     let mut file: Option<(String, PendingBlob)> = None;
+    // A tagged copy to read the metadata from (see `ingest::TagsFrom`): staged like the
+    // file, read, and deleted when the request ends.
+    let mut tags_file: Option<(String, PendingBlob)> = None;
     let mut images: HashMap<String, Vec<u8>> = HashMap::new();
 
     while let Some(mut field) = multipart.next_field().await.map_err(bad_request)? {
@@ -48,9 +54,10 @@ pub async fn ingest(
                     AppError::BadRequest(format!("invalid description JSON: {err}"))
                 })?);
             }
-            "file" => {
-                if file.is_some() {
-                    return Err(AppError::BadRequest("send one file per request".to_string()));
+            "file" | "tags_file" => {
+                let slot = if name == "file" { &mut file } else { &mut tags_file };
+                if slot.is_some() {
+                    return Err(AppError::BadRequest(format!("send one `{name}` per request")));
                 }
                 let filename = field.file_name().unwrap_or_default().to_string();
                 // Streamed to disk while hashing, like uploads.
@@ -58,7 +65,7 @@ pub async fn ingest(
                 while let Some(chunk) = field.chunk().await.map_err(bad_request)? {
                     writer.write(&chunk).await?;
                 }
-                file = Some((filename, writer.finish().await?));
+                *slot = Some((filename, writer.finish().await?));
             }
             _ => {
                 let mut bytes = Vec::new();
@@ -104,9 +111,13 @@ pub async fn ingest(
         sources: description.track_sources,
         restrict_to: description.restrict_to,
         hints: description.hints,
-        local_path: None,
+        local_path: description.imported_from,
         given: Default::default(),
         volume: description.volume,
+        tags_from: tags_file.as_ref().map(|(filename, copy)| ingest::TagsFrom {
+            path: copy.path().to_path_buf(),
+            filename: filename.clone(),
+        }),
     };
     let report =
         ingest::ingest_with_report(&state.pool, &state.store, pending, &options, params.dry_run)

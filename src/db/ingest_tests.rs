@@ -43,6 +43,7 @@ fn options(user: Option<Uuid>, song_id: i64, hints: Hints) -> IngestOptions {
         hints,
         local_path: None,
         given: Default::default(),
+        tags_from: None,
         volume: None,
     }
 }
@@ -878,5 +879,80 @@ async fn soundcloud_hints_date_uploader_and_covers(
         .fetch_all(&lib.owner)
         .await?;
     assert_eq!(covers, ["description", "description"]);
+    Ok(())
+}
+
+#[sqlx::test]
+async fn the_path_a_file_came_from_is_kept_and_filled_in_once(
+    _: PgPoolOptions,
+    connect: PgConnectOptions,
+) -> anyhow::Result<()> {
+    let lib = setup(connect).await?;
+    let dir = tempfile::tempdir()?;
+    let store = BlobStore::open(dir.path())?;
+    let imported_from = || async {
+        sqlx::query_scalar::<_, Option<String>>("SELECT imported_from FROM files WHERE uploaded_filename = '02 - Undertow.flac'")
+            .fetch_one(&lib.owner)
+            .await
+    };
+    let from = |path: Option<&str>| IngestOptions { local_path: path.map(str::to_string), ..options(None, 1, Hints::default()) };
+
+    // Uploaded without a path: unknown.
+    ingest_file(&lib.owner, &store, "02 - Undertow.flac", &from(None), false).await?;
+    assert_eq!(imported_from().await?, None);
+    // Imported again from a folder: the path is filled in (it's a duplicate otherwise)...
+    ingest_file(&lib.owner, &store, "02 - Undertow.flac", &from(Some("/music/a/Undertow.flac")), false).await?;
+    assert_eq!(imported_from().await?.as_deref(), Some("/music/a/Undertow.flac"));
+    // ...and not changed by another copy elsewhere.
+    ingest_file(&lib.owner, &store, "02 - Undertow.flac", &from(Some("/music/b/Undertow.flac")), false).await?;
+    assert_eq!(imported_from().await?.as_deref(), Some("/music/a/Undertow.flac"));
+
+    let mut tx = lib.owner.begin().await?;
+    assert_eq!(db::ingest::tracks_imported_from(&mut tx, "/music/a/Undertow.flac").await?.len(), 1);
+    assert!(db::ingest::tracks_imported_from(&mut tx, "/music/b/Undertow.flac").await?.is_empty());
+    Ok(())
+}
+
+#[sqlx::test]
+async fn metadata_can_come_from_a_tagged_copy_of_an_untouched_file(
+    _: PgPoolOptions,
+    connect: PgConnectOptions,
+) -> anyhow::Result<()> {
+    let lib = setup(connect).await?;
+    let dir = tempfile::tempdir()?;
+    let store = BlobStore::open(dir.path())?;
+    // The untouched file has no tags at all; its copy is Glass Harbor, fully tagged.
+    let copy = Path::new(env!("CARGO_MANIFEST_DIR")).join("test-audio/01 - Glass Harbor.flac");
+    let opts = IngestOptions {
+        tags_from: Some(ingest::TagsFrom { path: copy, filename: "01 - Glass Harbor.flac".into() }),
+        ..options(None, 1, Hints::default())
+    };
+    let report = ingest_file(&lib.owner, &store, "untitled_bounce_final_v3.flac", &opts, false).await?;
+    let track = report.track_id.unwrap();
+
+    let (title, artist, reason): (String, String, String) = sqlx::query_as(
+        "SELECT t.title, t.artist_display, r.reason FROM tracks t JOIN track_revisions r ON r.track_id = t.id WHERE t.id = $1",
+    )
+    .bind(track)
+    .fetch_one(&lib.owner)
+    .await?;
+    assert_eq!((title.as_str(), artist.as_str()), ("Glass Harbor", "Mira Vale"));
+    assert!(reason.contains("metadata from the tags of a copy (01 - Glass Harbor.flac)"), "{reason}");
+
+    // The stored file is the untouched one: its own (empty) tags, the copy's next to them,
+    // and the copy's original filename and picture.
+    let (uploaded, original, own, from_copy): (String, Option<String>, serde_json::Value, serde_json::Value) = sqlx::query_as(
+        "SELECT f.uploaded_filename, f.original_filename, f.embedded_tags->'tags', f.embedded_tags->'tags_from_copy'->'filename'
+         FROM tracks t JOIN files f ON f.id = t.file_id WHERE t.id = $1",
+    )
+    .bind(track)
+    .fetch_one(&lib.owner)
+    .await?;
+    assert_eq!(uploaded, "untitled_bounce_final_v3.flac");
+    assert_eq!(original.as_deref(), Some("glass_harbor_MASTER_v7.wav"));
+    assert_eq!(own, json!([{ "format": "vorbis_comments", "items": [] }]), "the file's own tags: none");
+    assert_eq!(from_copy, json!("01 - Glass Harbor.flac"));
+    let covers: i64 = sqlx::query_scalar("SELECT count(*) FROM covers WHERE track_id = $1").bind(track).fetch_one(&lib.owner).await?;
+    assert_eq!(covers, 1, "the copy's embedded picture");
     Ok(())
 }

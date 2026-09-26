@@ -203,6 +203,7 @@ pub(super) async fn add_file(conn: &mut sqlx::PgConnection, track: Uuid, name: &
             bit_depth: None,
             duration_ms: None,
             embedded_tags: &serde_json::json!({}),
+            imported_from: None,
         },
     )
     .await?;

@@ -163,6 +163,7 @@ pub async fn import(
             artists: with.artists,
         },
         volume: None,
+        tags_from: None, // a tagged copy was only there for the original request
     };
     let report = ingest::ingest_staged(&state.pool, &state.store, &file, &options, false).await?;
     Ok(Json(report))

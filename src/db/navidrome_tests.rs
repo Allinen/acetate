@@ -55,6 +55,7 @@ async fn navidrome_users_and_annotations_move_over(
         hints: Hints::default(),
         local_path: None,
         given: Default::default(),
+        tags_from: None,
         volume: None,
     };
     let pending = ingest::receive_path(&store, &audio.join("01 - Glass Harbor.flac"), "main").await?;

@@ -111,6 +111,7 @@ pub async fn upload(
             hints: Default::default(),
             local_path: None,
             given: Default::default(),
+            tags_from: None,
         };
         // One bad file shouldn't fail the whole batch, so errors are reported per file.
         let (status, track_id, error) =

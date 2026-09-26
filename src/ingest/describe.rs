@@ -123,7 +123,7 @@ pub struct AlbumHint {
 }
 
 /// How an artist or album was found.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MatchedBy {
     /// The description gave its Acetate id.
@@ -136,7 +136,7 @@ pub enum MatchedBy {
     Created,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Resolved {
     /// The name from the tags (an album: its title).
     pub name: String,
@@ -146,7 +146,7 @@ pub struct Resolved {
     pub matched_by: MatchedBy,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReportStatus {
     Created,
@@ -156,7 +156,7 @@ pub enum ReportStatus {
 }
 
 /// What ingesting one file did (or, in a dry run, would do).
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Report {
     pub status: ReportStatus,
     /// For a duplicate of a track the user can't see: None.
@@ -584,7 +584,9 @@ fn source_json(source: &ValidSource) -> serde_json::Value {
 }
 
 /// What a file was imported with, as a description (`NewDescription`'s JSON), to import
-/// it again later the same way (see `db::problems`). Album cover images aren't included.
+/// it again later the same way (see `db::problems`), or to send it to a server
+/// (`acetate ingest --server`). Cover images aren't included (they're form parts), nor
+/// the path (`imported_from`, kept separately).
 pub fn description_json(
     origin: &ValidSource,
     status: &str,
@@ -609,16 +611,28 @@ pub fn description_json(
             "sources": a.sources.iter().map(source_json).collect::<Vec<_>>(),
             "track_number": a.track_number,
             "single": a.single,
+            "release_date": a.release_date,
         })
+    });
+    let first_artist = (!hints.first_artist_sources.is_empty()).then(|| {
+        serde_json::json!({ "sources": hints.first_artist_sources.iter().map(source_json).collect::<Vec<_>>() })
     });
     serde_json::json!({
         "origin": source_json(origin),
         "status": status,
-        "track": { "sources": track_sources.iter().map(source_json).collect::<Vec<_>>() },
+        "track": {
+            "sources": track_sources.iter().map(source_json).collect::<Vec<_>>(),
+            "skip_embedded_covers": hints.skip_embedded_covers,
+            "release_date": hints.release_date,
+            "release_date_over_tags": hints.release_date_over_tags,
+            "original_filename": hints.original_filename,
+        },
         "album": album,
         "artists": artists,
+        "first_artist": first_artist,
         "restrict_to": restrict_to,
         "no_composers": hints.no_composers,
+        "lax_artist_names": hints.lax_artist_names,
     })
 }
 
@@ -645,11 +659,42 @@ pub struct NewDescription {
     /// Don't credit COMPOSER as producers (see `Hints::no_composers`).
     #[serde(default)]
     pub no_composers: bool,
+    /// See `Hints::lax_artist_names`.
+    #[serde(default)]
+    pub lax_artist_names: bool,
+    /// Ids for the first artist in the ARTIST tag, whatever its name (see
+    /// `Hints::first_artist_sources`).
+    #[serde(default)]
+    pub first_artist: Option<NewFirstArtistHint>,
+    /// The file's path where it's sent from (`files.imported_from`).
+    #[serde(default)]
+    pub imported_from: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NewTrackHint {
+    #[serde(default)]
+    pub sources: Vec<NewSource>,
+    /// Names of the form's image parts to add as the track's covers.
+    #[serde(default)]
+    pub covers: Vec<String>,
+    /// Leave out the file's embedded pictures (see `Hints::skip_embedded_covers`).
+    #[serde(default)]
+    pub skip_embedded_covers: bool,
+    /// See `Hints::release_date` and `release_date_over_tags`.
+    #[serde(default)]
+    pub release_date: Option<String>,
+    #[serde(default)]
+    pub release_date_over_tags: bool,
+    /// The original file's name, if the tags have none (see `Hints::original_filename`).
+    #[serde(default)]
+    pub original_filename: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NewFirstArtistHint {
     #[serde(default)]
     pub sources: Vec<NewSource>,
 }
@@ -671,6 +716,9 @@ pub struct NewAlbumHint {
     /// track count ("1/1" is a single).
     #[serde(default)]
     pub single: Option<bool>,
+    /// The album's own release date (see `AlbumHint::release_date`).
+    #[serde(default)]
+    pub release_date: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -691,6 +739,7 @@ pub struct ValidDescription {
     pub hints: Hints,
     pub restrict_to: Option<Vec<Uuid>>,
     pub volume: Option<String>,
+    pub imported_from: Option<String>,
 }
 
 impl NewDescription {
@@ -737,18 +786,42 @@ impl NewDescription {
                     covers,
                     track_number: album.track_number,
                     single: album.single,
-                    release_date: None,
+                    release_date: album.release_date,
                 })
             }
+        };
+
+        let mut track_covers = Vec::new();
+        for name in &self.track.covers {
+            let Some(bytes) = take_cover(name) else {
+                return Err(format!("track cover \"{name}\": no form part with that name"));
+            };
+            track_covers.push(bytes);
+        }
+        let first_artist_sources = match self.first_artist {
+            Some(first) => check(Kind::Artist, first.sources)?,
+            None => Vec::new(),
         };
 
         Ok(ValidDescription {
             origin,
             status: self.status,
             track_sources,
-            hints: Hints { artists, album, no_composers: self.no_composers, ..Default::default() },
+            hints: Hints {
+                artists,
+                album,
+                lax_artist_names: self.lax_artist_names,
+                release_date: self.track.release_date,
+                release_date_over_tags: self.track.release_date_over_tags,
+                first_artist_sources,
+                track_covers,
+                skip_embedded_covers: self.track.skip_embedded_covers,
+                original_filename: self.track.original_filename,
+                no_composers: self.no_composers,
+            },
             restrict_to: self.restrict_to,
             volume: self.volume,
+            imported_from: self.imported_from,
         })
     }
 }
