@@ -1062,22 +1062,25 @@ pub async fn merge_tracks(
         super::annotations::Item::Track(into),
     )
     .await?;
+    // Review flags: "are these two duplicates?" is answered, for these two only (a flag on
+    // the kept track that also names other tracks stays open for those). The duplicate's
+    // own flags are all closed: it's only a redirect now.
     let resolution = format!("merged into {into}");
-    let flags = sqlx::query_scalar!(
-        r#"
-        UPDATE review_flags
-        SET resolved_at = now(), resolved_by = current_app_user(), resolution = $3
-        WHERE resolved_at IS NULL
-          AND (track_id = $1
-               OR (track_id = $2 AND kind = 'possible_duplicate' AND related -> 'tracks' ? $1::text))
-        RETURNING id
-        "#,
-        from,
-        into,
-        resolution
-    )
-    .fetch_all(&mut *conn)
-    .await?;
+    let mut flags = super::review::settle_duplicate_pair(conn, into, from, &resolution).await?;
+    flags.extend(
+        sqlx::query_scalar!(
+            r#"
+            UPDATE review_flags
+            SET resolved_at = now(), resolved_by = current_app_user(), resolution = $2
+            WHERE resolved_at IS NULL AND track_id = $1
+            RETURNING id
+            "#,
+            from,
+            resolution
+        )
+        .fetch_all(&mut *conn)
+        .await?,
+    );
 
     let record = MergeRecord {
         kept_variant,
@@ -1160,6 +1163,8 @@ struct MergeRecord {
     sources: super::sources::MovedSources,
     shares: Vec<Uuid>,
     redirected: Vec<Uuid>,
+    /// The review flags the merge settled. Kept for the record only: an undo doesn't open
+    /// them again (whoever undid the merge knows about the two tracks).
     flags: Vec<Uuid>,
     /// Users' plays, stars and ratings of the duplicate, combined into the kept track's.
     /// (Missing in merges recorded before annotations existed.)
@@ -1497,7 +1502,7 @@ pub async fn undo_track_merge(conn: &mut PgConnection, merge_id: Uuid, reason: &
         .await?;
     super::sources::unmove_all(conn, &record.sources, SourceOwner::Track(dupe), SourceOwner::Track(kept)).await?;
 
-    // 7. Links, flags and redirects as they were.
+    // 7. Links and redirects as they were. (Review flags stay settled, see `MergeRecord::flags`.)
     sqlx::query!("UPDATE shares SET track_id = $2 WHERE id = ANY($1)", &record.shares, dupe)
         .execute(&mut *conn)
         .await?;
@@ -1506,12 +1511,6 @@ pub async fn undo_track_merge(conn: &mut PgConnection, merge_id: Uuid, reason: &
     sqlx::query!("UPDATE tracks SET merged_into = $2 WHERE id = ANY($1)", &record.redirected, dupe)
         .execute(&mut *conn)
         .await?;
-    sqlx::query!(
-        "UPDATE review_flags SET resolved_at = NULL, resolved_by = NULL, resolution = '' WHERE id = ANY($1)",
-        &record.flags
-    )
-    .execute(&mut *conn)
-    .await?;
     sqlx::query!(
         "UPDATE track_merges SET undone_at = now(), undone_by = current_app_user() WHERE id = $1",
         merge_id

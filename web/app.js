@@ -465,6 +465,8 @@ const q = encodeURIComponent;
 const findArtists = (text) => api(`/api/artists?q=${q(text)}&limit=8`);
 const findAlbums = (text) => api(`/api/albums?q=${q(text)}&limit=8`);
 const findTracks = (text) => api(`/api/search?q=${q(text)}&limit=8`).then((r) => r.tracks);
+// A search leaving out one item: merging or relating something to itself is never meant.
+const without = (search, id) => (text) => search(text).then((hits) => hits.filter((x) => x.id !== id));
 
 // Editable list of credits. Returns { element, read() }.
 async function creditsEditor(initial) {
@@ -737,9 +739,9 @@ async function showTrack(id) {
     })] : null,
     can("edit_metadata") && can("replace_file") ? h("details", {},
       h("summary", {}, "Merge a duplicate into this track…"),
-      h("div", { class: "row" }, picker("the duplicate…", findTracks,
+      h("div", { class: "row" }, picker("the duplicate…", without(findTracks, t.id),
         (x) => [x.title, h("span", { class: "muted" }, " · ", x.artist_display)],
-        (x) => { if (x.id !== t.id) location.hash = `#/merge/${t.id}/${x.id}`; }))) : null,
+        (x) => { location.hash = `#/merge/${t.id}/${x.id}`; }))) : null,
 
     h("h3", {}, "Albums"),
     t.albums.length ? t.albums.map((a) => h("div", {},
@@ -949,8 +951,7 @@ async function trackEditor(t, reload) {
   renderRelations();
   const kind = h("select", {}, vocab.relation_kinds.map((k) =>
     h("option", { value: k.kind }, k.template.replace("%A", "this").replace("%B", "…"))));
-  const addRelation = picker("related track…", findTracks, (x) => [x.title, h("span", { class: "muted" }, " · ", x.artist_display)], (x) => {
-    if (x.id === t.id) return;
+  const addRelation = picker("related track…", without(findTracks, t.id), (x) => [x.title, h("span", { class: "muted" }, " · ", x.artist_display)], (x) => {
     const k = vocab.relation_kinds.find((k) => k.kind === kind.value);
     relations.push({ kind: k.kind, track_id: x.id, title: x.title, template: k.template });
     names.track.set(x.id, x.title);
@@ -1039,10 +1040,9 @@ async function showArtist(id) {
     const keepName = h("input", { type: "checkbox", checked: true });
     const flagTracks = h("input", { type: "checkbox", checked: true });
     const mergeStatus = h("span", {});
-    const choose = picker("merge into…", findArtists,
+    const choose = picker("merge into…", without(findArtists, a.id),
       (x) => [x.name, x.disambiguation ? ` (${x.disambiguation})` : ""],
       (x) => {
-        if (x.id === a.id) return;
         target = x;
         targetLabel.replaceChildren(h("a", { href: `#/artist/${x.id}` }, x.name), x.disambiguation ? ` (${x.disambiguation})` : "");
       });

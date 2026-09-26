@@ -205,7 +205,8 @@ async fn merging_is_refused_when_it_should_be(_: PgPoolOptions, connect: PgConne
 }
 
 /// Everything about a track that a merge changes and an undo must give back, as the
-/// system sees it (hidden relations included), in a stable order.
+/// system sees it (hidden relations included), in a stable order. Not review flags: an
+/// undo leaves those settled.
 async fn snapshot(lib: &Library, track: Uuid) -> anyhow::Result<serde_json::Value> {
     let mut tx = db::begin(&lib.owner, None).await?;
     let t = db::tracks::get_track(&mut tx, track, true).await?.expect("track exists");
@@ -213,10 +214,6 @@ async fn snapshot(lib: &Library, track: Uuid) -> anyhow::Result<serde_json::Valu
     let shares: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM shares WHERE track_id = $1 ORDER BY id")
         .bind(track)
         .fetch_all(&mut *tx)
-        .await?;
-    let open_flags: i64 = sqlx::query_scalar("SELECT count(*) FROM review_flags WHERE track_id = $1 AND resolved_at IS NULL")
-        .bind(track)
-        .fetch_one(&mut *tx)
         .await?;
     Ok(json!({
         "title": t.title,
@@ -235,7 +232,6 @@ async fn snapshot(lib: &Library, track: Uuid) -> anyhow::Result<serde_json::Valu
         "relations": sorted(t.relations.iter().map(|r| format!("{} {}", r.kind, r.track_id)).collect()),
         "albums": sorted(t.albums.iter().map(|a| format!("{} {:?}", a.album_id, a.track_number)).collect()),
         "shares": shares,
-        "open_flags": open_flags,
     }))
 }
 
@@ -269,6 +265,10 @@ async fn undo_gives_both_tracks_back(_: PgPoolOptions, connect: PgConnectOptions
     assert_eq!(snapshot(&lib, lib.v).await?, v_before);
     assert_eq!(snapshot(&lib, dupe.d).await?, d_before);
     assert_eq!(snapshot(&lib, lib.o).await?, o_before, "the third track's relation came back");
+    let open_flags: i64 = sqlx::query_scalar("SELECT count(*) FROM review_flags WHERE resolved_at IS NULL")
+        .fetch_one(&lib.owner)
+        .await?;
+    assert_eq!(open_flags, 0, "\"V looks like D\" stays settled after the undo");
     let mut tx = db::begin(&lib.app, Some(lib.carol)).await?;
     assert_eq!(db::tracks::merged_into(&mut tx, dupe.d).await?, None);
     assert!(db::tracks::list_tracks(&mut tx, None, 100).await?.iter().any(|t| t.id == dupe.d));
@@ -415,11 +415,7 @@ async fn sharing_a_file_and_taking_it_back(_: PgPoolOptions, connect: PgConnectO
     tx.commit().await?;
     assert_eq!((switched.old_file_id, switched.new_file_id), (dupe.d_file, dupe.v_file));
     assert_eq!(file_of(&lib, dupe.d).await?, dupe.v_file);
-    // V itself is untouched, except that its "looks like D" flag is settled now.
-    let mut v_after = snapshot(&lib, lib.v).await?;
-    assert_eq!(v_after["open_flags"], json!(0));
-    v_after["open_flags"] = v_before["open_flags"].clone();
-    assert_eq!(v_after, v_before);
+    assert_eq!(snapshot(&lib, lib.v).await?, v_before, "V itself is untouched");
 
     let mut tx = db::begin(&lib.app, Some(lib.carol)).await?;
     let d = db::tracks::get_track(&mut tx, dupe.d, true).await?.unwrap();
@@ -556,5 +552,33 @@ async fn sharing_a_file_settles_only_that_pairs_duplicate_flags(_: PgPoolOptions
     let (resolved, _, related) = state(d_o).await?;
     assert!(!resolved);
     assert_eq!(related, json!({ "tracks": [lib.o] }));
+    Ok(())
+}
+
+#[sqlx::test]
+async fn merging_settles_only_that_pairs_duplicate_flags(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
+    let lib = setup(connect).await?;
+    let dupe = make_duplicate(&lib).await?;
+    // Besides "V looks like D": "V looks like D and O".
+    let v_d_o: Uuid = sqlx::query_scalar(
+        "INSERT INTO review_flags (kind, track_id, related) VALUES ('possible_duplicate', $1, $2) RETURNING id",
+    )
+    .bind(lib.v)
+    .bind(json!({ "tracks": [dupe.d, lib.o] }))
+    .fetch_one(&lib.owner)
+    .await?;
+
+    let mut tx = db::begin(&lib.app, Some(lib.carol)).await?;
+    db::revisions::merge_tracks(&mut tx, lib.v, dupe.d, &MergePicks::default(), None, None, "").await?;
+    tx.commit().await?;
+
+    let (resolved, related): (bool, serde_json::Value) =
+        sqlx::query_as("SELECT resolved_at IS NOT NULL, related FROM review_flags WHERE id = $1")
+            .bind(v_d_o)
+            .fetch_one(&lib.owner)
+            .await?;
+    assert!(!resolved, "still open: is V a duplicate of O?");
+    assert_eq!(related["tracks"], json!([lib.o]));
+    assert_eq!(related["settled"][0]["track"], json!(dupe.d));
     Ok(())
 }
