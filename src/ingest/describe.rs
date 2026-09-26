@@ -7,7 +7,7 @@
 //! and get attached as sources so the next file finds them by id instead of by name.
 //!
 //! Order, for each artist named in the tags: the explicit id, else an artist that already
-//! has one of the given platform ids, else the name (`find_or_create_artist`). An album:
+//! has one of the given platform ids, else the name (`artists_named`). An album:
 //! the explicit id, else the platform id, else title + album artists + release date
 //! (`find_album`). See the README, "Automated ingestion".
 
@@ -20,7 +20,7 @@ use crate::db::covers::{CoverOwner, NewCover};
 use crate::db::ingest::FoundArtist;
 use crate::db::revisions::{EditRejected, Source};
 use crate::model::sources::{self, Kind, NewSource, SourceOwner, ValidSource};
-use crate::model::{ArtistData, ImageInfo};
+use crate::model::ImageInfo;
 
 /// Everything a description adds to a file. Empty (the default) for plain uploads.
 #[derive(Debug, Clone, Default)]
@@ -137,7 +137,13 @@ impl Resolver {
         if let Some((_, found)) = self.artists.iter().find(|(n, _)| n == name) {
             return Ok(found.clone());
         }
-        let hint = hints.artists.iter().find(|h| h.name == name);
+        // The hint for this name: spelled exactly the same, else the same ignoring case
+        // (a folder "foo - 123" for the tag "FOO").
+        let hint = hints
+            .artists
+            .iter()
+            .find(|h| h.name == name)
+            .or_else(|| hints.artists.iter().find(|h| h.name.to_lowercase() == name.to_lowercase()));
         let empty = Vec::new();
         let hint_sources = hint.map_or(&empty, |h| &h.sources);
 
@@ -147,32 +153,27 @@ impl Resolver {
         } else if let Some(id) = self.by_platform_id(conn, Kind::Artist, hint_sources).await? {
             (self.credit_as(conn, id, name).await?, MatchedBy::PlatformId)
         } else {
-            let found = db::ingest::find_or_create_artist(conn, name).await?;
-            if found.created {
-                (found, MatchedBy::Created)
-            } else if let Some(conflict) =
-                conflicting_id(conn, SourceOwner::Artist(found.id), hint_sources).await?
-            {
-                // Same name, but a different id on the same platform: another artist.
-                self.warnings.push(format!(
-                    "created a new artist \"{name}\": the existing one with that name has a \
-                     different {conflict} id"
-                ));
-                let data = ArtistData {
-                    name: name.to_string(),
-                    ..Default::default()
-                };
-                let id = db::revisions::create_artist(conn, &data, Source::Import, "imported_from_file")
-                    .await?;
-                let found = FoundArtist {
-                    id,
-                    alias_id: None,
-                    ambiguous: Vec::new(),
-                    created: true,
-                };
-                (found, MatchedBy::Created)
+            // By name. An artist with a *different* id on the file's platform is another
+            // artist with the same name, so it's ruled out before anything is written (no
+            // alias added to it, e.g. "FOO" to a different artist "Foo").
+            let mut usable = Vec::new();
+            let mut conflict = None;
+            for candidate in db::ingest::artists_named(conn, name).await? {
+                match conflicting_id(conn, SourceOwner::Artist(candidate.artist_id), hint_sources).await? {
+                    Some(platform) => conflict = Some(platform),
+                    None => usable.push(candidate),
+                }
+            }
+            if !usable.is_empty() {
+                (db::ingest::use_match(conn, name, &usable).await?, MatchedBy::Name)
             } else {
-                (found, MatchedBy::Name)
+                if let Some(platform) = conflict {
+                    self.warnings.push(format!(
+                        "created a new artist \"{name}\": the existing one with that name has a \
+                         different {platform} id"
+                    ));
+                }
+                (db::ingest::create_named_artist(conn, name).await?, MatchedBy::Created)
             }
         };
 
@@ -307,7 +308,6 @@ impl Resolver {
             id: artist_id,
             alias_id,
             ambiguous: Vec::new(),
-            created: false,
         })
     }
 

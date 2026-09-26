@@ -99,23 +99,27 @@ pub struct FoundArtist {
     /// All artists the name matched, if more than one (then the best match was used, and
     /// ingest flags it for review).
     pub ambiguous: Vec<Uuid>,
-    /// True if no artist matched and this one was just created.
-    pub created: bool,
 }
 
-/// Finds the artist a name from the tags refers to, creating what's missing:
-/// * exactly an artist's name or listed alias: that (a merged artist's name leads to the
-///   artist it was merged into);
-/// * the same apart from case ("mira vale" for "Mira Vale"): that artist, with the
-///   spelling added as a new alias, so the tags' exact spelling is kept;
-/// * otherwise a new artist.
+/// An artist a name matched (`artists_named`).
+#[derive(Debug, Clone)]
+pub struct NameMatch {
+    pub artist_id: Uuid,
+    /// The alias it matched (None = the artist's own name).
+    pub alias_id: Option<Uuid>,
+    /// Spelled exactly the same, case included.
+    pub exact: bool,
+}
+
+/// The artists a name from the tags can mean, best first, without changing anything:
+/// * exactly an artist's name or listed alias (a merged artist's name leads to the artist
+///   it was merged into);
+/// * the same apart from case ("mira vale" for "Mira Vale").
 ///
-/// If several artists match, exact spellings win, then names over aliases, then the oldest.
-pub async fn find_or_create_artist(
-    conn: &mut PgConnection,
-    name: &str,
-) -> anyhow::Result<FoundArtist> {
-    let matches = sqlx::query!(
+/// Exact spellings come first, then names over aliases, then the oldest.
+pub async fn artists_named(conn: &mut PgConnection, name: &str) -> sqlx::Result<Vec<NameMatch>> {
+    sqlx::query_as!(
+        NameMatch,
         r#"
         SELECT artist_id AS "artist_id!", alias_id, exact AS "exact!" FROM (
             SELECT COALESCE(a.merged_into, a.id) AS artist_id,
@@ -132,24 +136,43 @@ pub async fn find_or_create_artist(
         "#,
         name
     )
-    .fetch_all(&mut *conn)
-    .await?;
+    .fetch_all(conn)
+    .await
+}
 
-    let Some(best) = matches.first() else {
-        let data = ArtistData {
-            name: name.to_string(),
-            ..Default::default()
-        };
-        let id =
-            revisions::create_artist(conn, &data, Source::Import, "imported_from_file").await?;
-        return Ok(FoundArtist {
-            id,
-            alias_id: None,
-            ambiguous: Vec::new(),
-            created: true,
-        });
+/// A new artist with this name, for when nothing matches.
+pub async fn create_named_artist(conn: &mut PgConnection, name: &str) -> anyhow::Result<FoundArtist> {
+    let data = ArtistData {
+        name: name.to_string(),
+        ..Default::default()
     };
+    let id = revisions::create_artist(conn, &data, Source::Import, "imported_from_file").await?;
+    Ok(FoundArtist {
+        id,
+        alias_id: None,
+        ambiguous: Vec::new(),
+    })
+}
 
+/// The artist a name means, by name only (no platform ids to go by): the best match
+/// (`artists_named`, `use_match`), or a new artist if nothing matches. For tests.
+#[cfg(test)]
+pub async fn find_or_create_artist(conn: &mut PgConnection, name: &str) -> anyhow::Result<FoundArtist> {
+    let matches = artists_named(conn, name).await?;
+    if matches.is_empty() {
+        create_named_artist(conn, name).await
+    } else {
+        use_match(conn, name, &matches).await
+    }
+}
+
+/// Credits the best of `matches` (from `artists_named`, not empty) under `name`. A
+/// spelling that differs only in case is added to that artist as a new alias, so the tags'
+/// exact spelling is kept.
+pub async fn use_match(conn: &mut PgConnection, name: &str, matches: &[NameMatch]) -> anyhow::Result<FoundArtist> {
+    let Some(best) = matches.first() else {
+        anyhow::bail!("use_match needs at least one match");
+    };
     let mut ids: Vec<Uuid> = matches.iter().map(|m| m.artist_id).collect();
     ids.sort();
     ids.dedup(); // an artist can match by name and by alias
@@ -172,7 +195,6 @@ pub async fn find_or_create_artist(
         id: best.artist_id,
         alias_id,
         ambiguous,
-        created: false,
     })
 }
 

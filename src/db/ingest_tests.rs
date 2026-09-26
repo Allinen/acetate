@@ -18,7 +18,7 @@ use crate::db;
 use crate::db::revisions::EditRejected;
 use crate::ingest::describe::{AlbumHint, ArtistHint, Hints, MatchedBy, Report, ReportStatus};
 use crate::ingest::{self, IngestOptions};
-use crate::model::sources::{self, Kind, NewSource, ValidSource};
+use crate::model::sources::{self, Kind, NewSource, SourceOwner, ValidSource};
 use crate::storage::BlobStore;
 
 fn netease(kind: Kind, field: &str, id: i64) -> ValidSource {
@@ -494,5 +494,139 @@ async fn audio_goes_to_the_chosen_volume_and_covers_to_the_default(
     .fetch_all(&lib.owner)
     .await?;
     assert!(!covers.is_empty() && covers.iter().all(|v| v == "main"), "{covers:?}");
+    Ok(())
+}
+
+/// An artist with another spelling of the name, `name`, as NetEase artist `netease_id`.
+async fn existing_artist(lib: &super::rls_tests::Library, name: &str, netease_id: i64) -> anyhow::Result<Uuid> {
+    let mut tx = db::begin(&lib.owner, None).await?;
+    let data = crate::model::ArtistData { name: name.into(), ..Default::default() };
+    let id = db::revisions::create_artist(&mut tx, &data, db::revisions::Source::Edit, "").await?;
+    db::sources::add_snapshot(&mut tx, SourceOwner::Artist(id), &netease(Kind::Artist, "artist_id", netease_id)).await?;
+    tx.commit().await?;
+    Ok(id)
+}
+
+async fn netease_ids(pool: &PgPool, artist: Uuid) -> anyhow::Result<Vec<String>> {
+    let mut tx = db::begin(pool, None).await?;
+    Ok(db::ingest::platform_ids_of(&mut tx, SourceOwner::Artist(artist), "netease", false).await?)
+}
+
+async fn aliases_of(pool: &PgPool, artist: Uuid) -> anyhow::Result<Vec<String>> {
+    Ok(sqlx::query_scalar("SELECT alias FROM artist_aliases WHERE artist_id = $1 ORDER BY alias")
+        .bind(artist)
+        .fetch_all(pool)
+        .await?)
+}
+
+#[sqlx::test]
+async fn same_name_in_another_case_with_another_id_is_another_artist(
+    _: PgPoolOptions,
+    connect: PgConnectOptions,
+) -> anyhow::Result<()> {
+    let lib = setup(connect).await?;
+    let dir = tempfile::tempdir()?;
+    let store = BlobStore::open(dir.path())?;
+    let upper = existing_artist(&lib, "MIRA VALE", 11).await?;
+
+    // "Mira Vale" is NetEase artist 10: not the "MIRA VALE" that is 11.
+    let report = ingest_file(&lib.owner, &store, "01 - Glass Harbor.flac", &options(None, 1, mira_vale(10, None)), false).await?;
+    let mira = artist(&report, "Mira Vale");
+    assert_eq!(mira.matched_by, MatchedBy::Created);
+    assert_ne!(mira.id, Some(upper));
+    assert_eq!(netease_ids(&lib.owner, mira.id.unwrap()).await?, vec!["10".to_string()]);
+    assert_eq!(netease_ids(&lib.owner, upper).await?, vec!["11".to_string()]);
+    assert_eq!(aliases_of(&lib.owner, upper).await?, Vec::<String>::new(), "no \"Mira Vale\" alias on the other artist");
+    Ok(())
+}
+
+#[sqlx::test]
+async fn same_name_in_another_case_without_a_conflict_is_the_same_artist(
+    _: PgPoolOptions,
+    connect: PgConnectOptions,
+) -> anyhow::Result<()> {
+    let lib = setup(connect).await?;
+    let dir = tempfile::tempdir()?;
+    let store = BlobStore::open(dir.path())?;
+    let upper = existing_artist(&lib, "MIRA VALE", 10).await?;
+
+    // No ids at all for this file: the name decides, and the spelling becomes an alias.
+    let report = ingest_file(&lib.owner, &store, "01 - Glass Harbor.flac", &options(None, 1, Hints::default()), false).await?;
+    assert_eq!(artist(&report, "Mira Vale").id, Some(upper));
+    assert_eq!(aliases_of(&lib.owner, upper).await?, vec!["Mira Vale".to_string()]);
+    Ok(())
+}
+
+#[sqlx::test]
+async fn a_hint_matches_its_tag_name_ignoring_case(
+    _: PgPoolOptions,
+    connect: PgConnectOptions,
+) -> anyhow::Result<()> {
+    let lib = setup(connect).await?;
+    let dir = tempfile::tempdir()?;
+    let store = BlobStore::open(dir.path())?;
+
+    // The folder says "mira vale - 10", the tag "Mira Vale": still NetEase artist 10.
+    let hints = Hints {
+        artists: vec![ArtistHint {
+            name: "mira vale".into(),
+            id: None,
+            sources: vec![netease(Kind::Artist, "artist_id", 10)],
+        }],
+        album: None,
+    };
+    let report = ingest_file(&lib.owner, &store, "01 - Glass Harbor.flac", &options(None, 1, hints), false).await?;
+    assert_eq!(netease_ids(&lib.owner, artist(&report, "Mira Vale").id.unwrap()).await?, vec!["10".to_string()]);
+    Ok(())
+}
+
+/// Whether `track`, if it were called "Glass Harbor" by `artists`, gets a possible
+/// duplicate flag (the flags from before are cleared first).
+async fn flagged_as_glass_harbor(pool: &PgPool, track: Uuid, artists: &[Uuid]) -> anyhow::Result<bool> {
+    sqlx::query("DELETE FROM review_flags").execute(pool).await?;
+    let mut tx = db::begin(pool, None).await?;
+    db::review::flag_possible_duplicates(&mut tx, track, "Glass Harbor", artists, &[]).await?;
+    tx.commit().await?;
+    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM review_flags WHERE track_id = $1")
+        .bind(track)
+        .fetch_one(pool)
+        .await?;
+    Ok(n > 0)
+}
+
+async fn set_length(pool: &PgPool, track: Uuid, ms: Option<i64>) -> anyhow::Result<()> {
+    sqlx::query("UPDATE files SET duration_ms = $2 WHERE id = (SELECT file_id FROM tracks WHERE id = $1)")
+        .bind(track)
+        .bind(ms)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+#[sqlx::test]
+async fn similar_titles_are_flagged_only_at_about_the_same_length(
+    _: PgPoolOptions,
+    connect: PgConnectOptions,
+) -> anyhow::Result<()> {
+    let lib = setup(connect).await?;
+    let dir = tempfile::tempdir()?;
+    let store = BlobStore::open(dir.path())?;
+    // "Glass Harbor" by Mira Vale and "Undertow", both 4 s long.
+    let glass = ingest_file(&lib.owner, &store, "01 - Glass Harbor.flac", &options(None, 1, Hints::default()), false).await?;
+    let other = ingest_file(&lib.owner, &store, "02 - Undertow.flac", &options(None, 2, Hints::default()), false).await?;
+    let (glass, other) = (glass.track_id.unwrap(), other.track_id.unwrap());
+    let mira: Vec<Uuid> = sqlx::query_scalar("SELECT artist_id FROM track_credits WHERE track_id = $1")
+        .bind(glass)
+        .fetch_all(&lib.owner)
+        .await?;
+    let pool = &lib.owner;
+
+    assert!(flagged_as_glass_harbor(pool, other, &mira).await?, "same title, same length");
+    set_length(pool, glass, Some(6_500)).await?;
+    assert!(flagged_as_glass_harbor(pool, other, &mira).await?, "2.5 s apart: rips differ like that");
+    set_length(pool, glass, Some(9_000)).await?;
+    assert!(!flagged_as_glass_harbor(pool, other, &mira).await?, "5 s apart: another song, whatever the title says");
+    set_length(pool, glass, None).await?;
+    assert!(flagged_as_glass_harbor(pool, other, &mira).await?, "unknown length: not ruled out");
     Ok(())
 }

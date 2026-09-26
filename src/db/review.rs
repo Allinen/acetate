@@ -13,6 +13,11 @@ use uuid::Uuid;
 /// duplicate. "Northbound" vs "Northbound (Live)" is about 0.6.
 const DUPLICATE_SIMILARITY: f32 = 0.5;
 
+/// How far apart two tracks' lengths may be (in milliseconds) and still be the same song.
+/// Encoders and rips differ by a second or so; songs that differ by more are different
+/// songs (an edit, the extended version), whatever their titles say.
+const DUPLICATE_MAX_LENGTH_DIFFERENCE_MS: i64 = 3_000;
+
 /// Flags a track whose artist name from the tags matched several artists; `chosen` (the
 /// oldest) was credited.
 pub async fn flag_ambiguous_artist(
@@ -72,7 +77,8 @@ pub async fn flag_same_song(
     Ok(())
 }
 
-/// Flags a new track if tracks by the same artists have a similar title. `except`: tracks
+/// Flags a new track if tracks by the same artists have a similar title and about the same
+/// length (a track or file without a known length isn't ruled out). `except`: tracks
 /// already flagged for another reason (see `flag_same_song`).
 ///
 /// Starts from the artists' tracks rather than from all similar titles: an artist has at
@@ -86,12 +92,18 @@ pub async fn flag_possible_duplicates(
 ) -> sqlx::Result<()> {
     let similar = sqlx::query_scalar!(
         r#"
+        WITH new AS (
+            SELECT f.duration_ms FROM tracks t JOIN files f ON f.id = t.file_id WHERE t.id = $1
+        )
         SELECT t.id FROM tracks t
+        JOIN files f ON f.id = t.file_id
         WHERE t.id IN (SELECT track_id FROM track_credits WHERE artist_id = ANY($3))
           AND t.id <> $1
           AND t.id <> ALL($5)
           AND t.merged_into IS NULL
           AND similarity(t.title, $2) >= $4
+          AND (f.duration_ms IS NULL OR (SELECT duration_ms FROM new) IS NULL
+               OR abs(f.duration_ms - (SELECT duration_ms FROM new)) <= $6)
         ORDER BY similarity(t.title, $2) DESC, t.id
         LIMIT 10
         "#,
@@ -100,6 +112,7 @@ pub async fn flag_possible_duplicates(
         artist_ids,
         DUPLICATE_SIMILARITY,
         except,
+        DUPLICATE_MAX_LENGTH_DIFFERENCE_MS,
     )
     .fetch_all(&mut *conn)
     .await?;
