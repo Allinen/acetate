@@ -78,7 +78,11 @@ pub async fn use_file_of(conn: &mut PgConnection, track_id: Uuid, other_id: Uuid
         "" => format!("uses the file of \"{title}\" ({other_id})"),
         given => given.to_string(),
     };
-    switch(conn, track_id, current, wanted, &reason).await
+    let switched = switch(conn, track_id, current, wanted, &reason).await?;
+    // Deciding to keep both as separate tracks answers "are these duplicates?" for these
+    // two (and only these two: other possible duplicates of either stay flagged).
+    super::review::settle_duplicate_pair(conn, track_id, other_id, &format!("shared file: {reason}")).await?;
+    Ok(switched)
 }
 
 /// Makes a track play one of its previous files again (e.g. after `use_file_of`, or to

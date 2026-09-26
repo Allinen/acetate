@@ -415,7 +415,11 @@ async fn sharing_a_file_and_taking_it_back(_: PgPoolOptions, connect: PgConnectO
     tx.commit().await?;
     assert_eq!((switched.old_file_id, switched.new_file_id), (dupe.d_file, dupe.v_file));
     assert_eq!(file_of(&lib, dupe.d).await?, dupe.v_file);
-    assert_eq!(snapshot(&lib, lib.v).await?, v_before, "V itself is untouched");
+    // V itself is untouched, except that its "looks like D" flag is settled now.
+    let mut v_after = snapshot(&lib, lib.v).await?;
+    assert_eq!(v_after["open_flags"], json!(0));
+    v_after["open_flags"] = v_before["open_flags"].clone();
+    assert_eq!(v_after, v_before);
 
     let mut tx = db::begin(&lib.app, Some(lib.carol)).await?;
     let d = db::tracks::get_track(&mut tx, dupe.d, true).await?.unwrap();
@@ -499,5 +503,58 @@ async fn merging_tracks_that_share_a_file(_: PgPoolOptions, connect: PgConnectOp
     tx.commit().await?;
     assert_eq!(snapshot(&lib, lib.v).await?, v_before);
     assert_eq!(snapshot(&lib, dupe.d).await?, d_before);
+    Ok(())
+}
+
+#[sqlx::test]
+async fn sharing_a_file_settles_only_that_pairs_duplicate_flags(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
+    let lib = setup(connect).await?;
+    let dupe = make_duplicate(&lib).await?; // already flags V: "looks like D"
+    let flag = |track: Uuid, tracks: Vec<Uuid>| {
+        let pool = lib.owner.clone();
+        async move {
+            let id: Uuid = sqlx::query_scalar(
+                "INSERT INTO review_flags (kind, track_id, related) VALUES ('possible_duplicate', $1, $2) RETURNING id",
+            )
+            .bind(track)
+            .bind(json!({ "tracks": tracks }))
+            .fetch_one(&pool)
+            .await?;
+            anyhow::Ok(id)
+        }
+    };
+    let v_d: Uuid = sqlx::query_scalar("SELECT id FROM review_flags WHERE track_id = $1").bind(lib.v).fetch_one(&lib.owner).await?;
+    let v_d_o = flag(lib.v, vec![dupe.d, lib.o]).await?; // V looks like D and O
+    let d_v = flag(dupe.d, vec![lib.v]).await?; // the other way round
+    let d_o = flag(dupe.d, vec![lib.o]).await?; // nothing to do with V
+
+    let mut tx = db::begin(&lib.app, Some(lib.carol)).await?;
+    db::track_files::use_file_of(&mut tx, dupe.d, lib.v, "").await?;
+    tx.commit().await?;
+
+    let state = |id: Uuid| {
+        let pool = lib.owner.clone();
+        async move {
+            let row: (bool, String, serde_json::Value) =
+                sqlx::query_as("SELECT resolved_at IS NOT NULL, resolution, related FROM review_flags WHERE id = $1")
+                    .bind(id)
+                    .fetch_one(&pool)
+                    .await?;
+            anyhow::Ok(row)
+        }
+    };
+    for id in [v_d, d_v] {
+        let (resolved, resolution, _) = state(id).await?;
+        assert!(resolved && resolution.starts_with("shared file"), "{resolution}");
+    }
+    // Still open about O; D is off its list, noted as settled.
+    let (resolved, _, related) = state(v_d_o).await?;
+    assert!(!resolved);
+    assert_eq!(related["tracks"], json!([lib.o]));
+    assert_eq!(related["settled"][0]["track"], json!(dupe.d));
+    // Untouched.
+    let (resolved, _, related) = state(d_o).await?;
+    assert!(!resolved);
+    assert_eq!(related, json!({ "tracks": [lib.o] }));
     Ok(())
 }

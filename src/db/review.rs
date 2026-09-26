@@ -207,3 +207,48 @@ pub async fn resolve(conn: &mut PgConnection, id: Uuid, resolution: &str) -> sql
     .await?;
     Ok(result.rows_affected() > 0)
 }
+
+/// Settles the "possible duplicate" question between two tracks only, e.g. after they
+/// were made to share a file: they're not the same track, and that's decided. Flags about
+/// other tracks stay as they are.
+///
+/// A flag on one of them naming only the other is resolved with `resolution`. A flag that
+/// names more tracks stays open for those: the other one is taken off its list and noted
+/// under `related.settled` (with the resolution and when). Returns the flags changed.
+pub async fn settle_duplicate_pair(
+    conn: &mut PgConnection,
+    a: Uuid,
+    b: Uuid,
+    resolution: &str,
+) -> sqlx::Result<Vec<Uuid>> {
+    let mut changed = Vec::new();
+    // Both directions: a flag on `a` naming `b`, and one on `b` naming `a`.
+    for (flagged, other) in [(a, b), (b, a)] {
+        let ids = sqlx::query_scalar!(
+            r#"
+            UPDATE review_flags SET
+                -- The last track on the list: the whole flag is settled (the list stays, as
+                -- a record of what it was about).
+                resolved_at = CASE WHEN jsonb_array_length(related -> 'tracks') = 1 THEN now() END,
+                resolved_by = CASE WHEN jsonb_array_length(related -> 'tracks') = 1 THEN current_app_user() END,
+                resolution = CASE WHEN jsonb_array_length(related -> 'tracks') = 1 THEN $3 ELSE resolution END,
+                -- Otherwise: off the list, onto `settled`.
+                related = CASE WHEN jsonb_array_length(related -> 'tracks') = 1 THEN related ELSE
+                    jsonb_set(related, '{tracks}', (related -> 'tracks') - $2::text)
+                    || jsonb_build_object('settled', COALESCE(related -> 'settled', '[]'::jsonb)
+                        || jsonb_build_array(jsonb_build_object('track', $2::uuid, 'resolution', $3::text, 'at', now())))
+                END
+            WHERE track_id = $1 AND kind = 'possible_duplicate' AND resolved_at IS NULL
+              AND (related -> 'tracks') ? $2::text
+            RETURNING id
+            "#,
+            flagged,
+            other.to_string(),
+            resolution
+        )
+        .fetch_all(&mut *conn)
+        .await?;
+        changed.extend(ids);
+    }
+    Ok(changed)
+}
