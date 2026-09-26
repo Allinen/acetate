@@ -859,7 +859,8 @@ async fn create_track_rows(
 
     // COMPOSER: producer credits, after the artists. Someone already credited (e.g. a
     // self-produced track) is credited again as producer, since that's also true.
-    for name in &tags.composers {
+    let composers: &[String] = if hints.no_composers { &[] } else { &tags.composers };
+    for name in composers {
         let artist = resolver.artist(conn, hints, name).await?;
         if credits.iter().any(|c| c.artist_id == artist.id && c.role == "producer") {
             continue;

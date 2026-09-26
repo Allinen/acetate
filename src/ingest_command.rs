@@ -44,6 +44,8 @@ pub struct Options {
     pub tag_fallback: bool,
     /// See `describe::lax_artist_names`.
     pub lax_artist_names: bool,
+    /// See `Hints::no_composers`.
+    pub no_composers: bool,
     pub dry_run: bool,
 }
 
@@ -156,6 +158,7 @@ pub async fn run(pool: &PgPool, store: &BlobStore, dir: &Path, options: Options)
                 track_covers,
                 skip_embedded_covers: info.skip_embedded_covers,
                 original_filename: info.original_filename,
+                no_composers: options.no_composers,
             },
             local_path: Some(path.display().to_string()),
             given: Default::default(),

@@ -800,6 +800,18 @@ async fn composers_are_credited_as_producers_after_the_artists(
         credits,
         [("Mira Vale feat. Oskar Lind", "primary"), ("Mira Vale", "producer"), ("Kit Harlow", "producer")]
     );
+
+    // With `no_composers`, only the artists. (Another title, so it's not the same file.)
+    let mut file = lofty::read_from_path(&path)?;
+    let tag = file.primary_tag_mut().unwrap();
+    tag.set_title("Undertow (no producers)".into());
+    tag.save_to_path(&path, WriteOptions::default())?;
+    let pending = ingest::receive_path(&store, &path, "main").await?;
+    let hints = Hints { no_composers: true, ..Default::default() };
+    let report = ingest::ingest_with_report(&lib.owner, &store, pending, &options(None, 2, hints), true).await?;
+    // (Mira Vale is still there as the album artist.)
+    let names: Vec<&str> = report.artists.iter().map(|a| a.name.as_str()).collect();
+    assert_eq!(names, ["Mira Vale feat. Oskar Lind", "Mira Vale"]);
     Ok(())
 }
 

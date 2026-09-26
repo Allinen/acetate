@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use axum::Json;
 use axum::extract::{Multipart, Query, State};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use super::covers::MAX_COVER_BYTES;
 use super::{AppError, AppState};
@@ -33,7 +33,7 @@ pub async fn ingest(
     user: CurrentUser,
     Query(params): Query<IngestParams>,
     mut multipart: Multipart,
-) -> Result<Json<Report>, AppError> {
+) -> Result<Json<IngestResponse>, AppError> {
     let bad_request = |err: axum::extract::multipart::MultipartError| AppError::BadRequest(err.to_string());
     let mut description: Option<NewDescription> = None;
     let mut file: Option<(String, PendingBlob)> = None;
@@ -111,5 +111,14 @@ pub async fn ingest(
     let report =
         ingest::ingest_with_report(&state.pool, &state.store, pending, &options, params.dry_run)
             .await?;
-    Ok(Json(report))
+    Ok(Json(IngestResponse { report, dry_run: params.dry_run }))
+}
+
+/// The ingest report, and whether it was a dry run (then "created" means "would be
+/// created": nothing was kept).
+#[derive(Serialize)]
+pub struct IngestResponse {
+    #[serde(flatten)]
+    report: Report,
+    dry_run: bool,
 }

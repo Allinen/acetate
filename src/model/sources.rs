@@ -114,7 +114,9 @@ pub const SHAPES: &[Shape] = &[
         kind: Kind::Track,
         id_field: Some("song_id"),
         fields: &[
-            required("song_id", Int),
+            // Optional: a download may only say its permalink (e.g. in a comment). Such a
+            // source is matched by its data (see `db::sources::add_snapshot`).
+            optional("song_id", Int),
             // The uploaded files' ids: a song whose audio was replaced has several.
             optional("song_uids", StrList),
             optional("song_permalinks", StrList),
@@ -147,6 +149,28 @@ pub const SHAPES: &[Shape] = &[
             optional("artist_permalinks", StrList),
             optional("artist_permalink", Str),
         ],
+    },
+    // ---- DistroKid ----
+    // Releases are identified by their album uuid (the one in DistroKid's links and file
+    // names), a track by its album's uuid and position. Artists have a numeric id (the
+    // "1000777" in "1000777 Records DK") and a uuid.
+    Shape {
+        platform: "distrokid",
+        kind: Kind::Track,
+        id_field: None,
+        fields: &[required("album_uuid", Str), optional("index", Int)],
+    },
+    Shape {
+        platform: "distrokid",
+        kind: Kind::Album,
+        id_field: Some("album_uuid"),
+        fields: &[required("album_uuid", Str)],
+    },
+    Shape {
+        platform: "distrokid",
+        kind: Kind::Artist,
+        id_field: Some("artist_id"),
+        fields: &[optional("artist_id", Int), optional("artist_uuid", Str)],
     },
     // ---- NetEase ----
     Shape {
@@ -415,12 +439,36 @@ mod tests {
         // Unknown field.
         assert!(validate(Kind::Track, new("netease", json!({ "song_id": 1, "x": 2 }))).is_err());
         // Missing required field.
-        assert!(validate(Kind::Track, new("soundcloud", json!({ "song_permalink": "x" }))).is_err());
+        assert!(validate(Kind::Track, new("netease", json!({ "song_index": 1 }))).is_err());
+        assert!(validate(Kind::Track, new("distrokid", json!({ "index": 1 }))).is_err());
+        // A list where one value is expected, and the other way round.
+        assert!(validate(Kind::Track, new("soundcloud", json!({ "song_permalinks": "a/b" }))).is_err());
+        assert!(validate(Kind::Track, new("soundcloud", json!({ "song_permalinks": ["a/b", 1] }))).is_err());
         // Not an object.
         assert!(validate(Kind::Track, new("netease", json!([]))).is_err());
         // Unknown platform / kind combination.
         assert!(validate(Kind::Track, new("spotify", json!({}))).is_err());
         assert!(validate(Kind::Album, new("youtube", json!({}))).is_err());
+    }
+
+    #[test]
+    fn soundcloud_song_by_permalink_only() {
+        let v = validate(Kind::Track, new("soundcloud", json!({ "song_permalinks": ["1kori/spinback"] }))).unwrap();
+        assert_eq!(v.external_id, None);
+    }
+
+    #[test]
+    fn distrokid() {
+        let track = validate(
+            Kind::Track,
+            new("distrokid", json!({ "album_uuid": "C47AFBE2-678D-4595-926C7586E304CA81", "index": 1 })),
+        )
+        .unwrap();
+        assert_eq!(track.external_id, None);
+        let album = validate(Kind::Album, new("distrokid", json!({ "album_uuid": "C47AFBE2-678D-4595-926C7586E304CA81" }))).unwrap();
+        assert_eq!(album.external_id.as_deref(), Some("C47AFBE2-678D-4595-926C7586E304CA81"));
+        let artist = validate(Kind::Artist, new("distrokid", json!({ "artist_id": 1001517, "artist_uuid": "x" }))).unwrap();
+        assert_eq!(artist.external_id.as_deref(), Some("1001517"));
     }
 
     #[test]

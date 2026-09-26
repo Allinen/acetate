@@ -47,6 +47,9 @@ pub struct Hints {
     /// The original file's name (`files.original_filename`), if the tags have none: e.g.
     /// from the SoundCloud download's own record of it.
     pub original_filename: Option<String>,
+    /// Don't credit COMPOSER as producers (e.g. store downloads, whose COMPOSER is the
+    /// songwriter's legal name). `--no-composers`.
+    pub no_composers: bool,
 }
 
 /// For `Hints::first_artist_sources`: the hints with those ids given to `name` (the first
@@ -615,6 +618,7 @@ pub fn description_json(
         "album": album,
         "artists": artists,
         "restrict_to": restrict_to,
+        "no_composers": hints.no_composers,
     })
 }
 
@@ -638,6 +642,9 @@ pub struct NewDescription {
     /// The storage volume for the audio (admins only; left out: the default one).
     #[serde(default)]
     pub volume: Option<String>,
+    /// Don't credit COMPOSER as producers (see `Hints::no_composers`).
+    #[serde(default)]
+    pub no_composers: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -739,7 +746,7 @@ impl NewDescription {
             origin,
             status: self.status,
             track_sources,
-            hints: Hints { artists, album, ..Default::default() },
+            hints: Hints { artists, album, no_composers: self.no_composers, ..Default::default() },
             restrict_to: self.restrict_to,
             volume: self.volume,
         })

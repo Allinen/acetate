@@ -115,6 +115,10 @@ enum Command {
         /// for a file tagged "mothfecal").
         #[arg(long)]
         lax_artist_name: bool,
+        /// Don't credit the COMPOSER tag's names as producers (e.g. for store downloads,
+        /// where COMPOSER is the songwriter's legal name).
+        #[arg(long)]
+        no_composers: bool,
         /// Work out and print what would happen, without changing anything.
         #[arg(long)]
         dry_run: bool,
@@ -333,6 +337,7 @@ async fn main() -> anyhow::Result<()> {
             reflink_only,
             tag_fallback,
             lax_artist_name,
+            no_composers,
             dry_run,
         } => {
             let volume = cli_volume(&store, volume)?;
@@ -390,6 +395,7 @@ async fn main() -> anyhow::Result<()> {
                 reflink_only,
                 tag_fallback,
                 lax_artist_names: lax_artist_name,
+                no_composers,
                 dry_run,
             };
             ingest_command::run(&pool, &store, &dir, options).await
