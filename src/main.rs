@@ -125,7 +125,9 @@ enum Command {
     /// of the trash where the kept track had none; moves covers album merges left on the
     /// merged album; and gives an album a copy of the cover a merged album without covers
     /// of its own (e.g. a single) showed from its tracklist. Album fixes are recorded in
-    /// each merge, so an undo takes them back too.
+    /// each merge, so an undo takes them back too. For merges from importing a stored file
+    /// again (before 2026-09-27): an album that import brought (e.g. the single) without
+    /// covers gets copies of the covers it came with.
     FixMergedCovers {
         /// Only list what would be moved.
         #[arg(long)]
@@ -240,6 +242,11 @@ struct IngestArgs {
     /// the same file never comes twice.
     #[arg(long)]
     no_merge_duplicates: bool,
+    /// Don't take the origin from a SoundCloud or store link in the COMMENT (see the
+    /// README): `--origin` is used for files whose path gives none, e.g. files that
+    /// aren't from the page they link to.
+    #[arg(long)]
+    no_comment_links: bool,
     /// Start at file N, as the progress shows it (`[N/total]`), e.g. to go on after an
     /// interrupted run. The same folder, filters and flags give the same order.
     #[arg(long, value_name = "N")]
@@ -576,6 +583,7 @@ async fn ingest_options(args: &IngestArgs, local: Option<(&sqlx::PgPool, &BlobSt
         lax_artist_names: args.lax_artist_name,
         no_composers: args.no_composers,
         no_duplicate_merge: args.no_merge_duplicates,
+        comment_links: !args.no_comment_links,
         resume_from: args.resume_from,
         filter: ingest_command::PathFilter::new(&args.include, &args.exclude)?,
         dry_run: args.dry_run,

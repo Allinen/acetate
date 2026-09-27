@@ -1098,7 +1098,7 @@ async fn an_album_made_for_a_track_gets_its_covers(
     let track = first.track_id.unwrap();
     let album_cover = covers_of(track).await?;
     assert_eq!(album_cover.len(), 1);
-    assert_eq!(covers_of(first.album.unwrap().id.unwrap()).await?, album_cover);
+    assert_eq!(covers_of(first.album.as_ref().unwrap().id.unwrap()).await?, album_cover);
 
     // Again as a single, from a tagged copy whose cover is the single's own.
     let copy = dir.path().join("single copy.flac");
@@ -1123,6 +1123,20 @@ async fn an_album_made_for_a_track_gets_its_covers(
         .fetch_one(&lib.owner)
         .await?;
     assert_eq!(covers_of(single).await?, [single_cover.clone()]);
-    assert_eq!(covers_of(track).await?, [album_cover[0].clone(), single_cover]);
+    assert_eq!(covers_of(track).await?, [album_cover[0].clone(), single_cover.clone()]);
+
+    // Singles made that way before this: no covers. `fix-merged-covers` gives them the
+    // import's (simulated here by taking the single's away, in this test database only).
+    sqlx::query("DELETE FROM covers WHERE album_id = $1").bind(single).execute(pool).await?;
+    let merge: Uuid = sqlx::query_scalar("SELECT id FROM track_merges").fetch_one(pool).await?;
+    let mut tx = pool.begin().await?;
+    let copied = db::revisions::copy_reimport_covers_to_albums(&mut tx, merge).await?;
+    tx.commit().await?;
+    assert_eq!(copied, [("Tidelines".to_string(), 1)]);
+    assert_eq!(covers_of(single).await?, [single_cover]);
+    // The album the track was on before isn't touched, and running it again does nothing.
+    assert_eq!(covers_of(first.album.as_ref().unwrap().id.unwrap()).await?, album_cover);
+    let mut tx = pool.begin().await?;
+    assert!(db::revisions::copy_reimport_covers_to_albums(&mut tx, merge).await?.is_empty());
     Ok(())
 }

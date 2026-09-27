@@ -242,6 +242,7 @@ pub async fn fix_merged_covers(pool: &PgPool, dry_run: bool) -> anyhow::Result<(
     .fetch_all(&mut *tx)
     .await?;
     let mut restored_total = 0;
+    let mut reimports = Vec::new();
     for merge in track_merges {
         let restored = db::revisions::restore_trashed_covers(&mut tx, merge.id).await?;
         if !restored.is_empty() {
@@ -254,6 +255,21 @@ pub async fn fix_merged_covers(pool: &PgPool, dry_run: bool) -> anyhow::Result<(
                 merge.reason
             );
             restored_total += restored.len();
+        }
+        reimports.push(merge);
+    }
+
+    // Albums made by importing a stored file again (e.g. the single), without covers:
+    // the covers that import came with. Before the album merges, which then carry them
+    // along like any cover.
+    let mut reimport_total = 0;
+    for merge in &reimports {
+        for (album, count) in db::revisions::copy_reimport_covers_to_albums(&mut tx, merge.id).await? {
+            println!(
+                "{verb} copy {count} covers to \"{album}\", from importing \"{}\" again (track merge {})",
+                merge.merged_title, merge.id
+            );
+            reimport_total += count;
         }
     }
 
@@ -296,7 +312,8 @@ pub async fn fix_merged_covers(pool: &PgPool, dry_run: bool) -> anyhow::Result<(
         tx.commit().await?;
     }
     println!(
-        "track covers taken out of the trash: {restored_total}; album covers moved: {moved_total}, copied: {copied_total}{}",
+        "track covers taken out of the trash: {restored_total}; covers copied to albums from re-imports: {reimport_total}; \
+         album covers moved: {moved_total}, copied: {copied_total}{}",
         if dry_run { " (dry run: nothing was changed)" } else { "" }
     );
     Ok(())

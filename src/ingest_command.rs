@@ -50,6 +50,9 @@ pub struct Options {
     pub no_composers: bool,
     /// See `Hints::no_duplicate_merge`.
     pub no_duplicate_merge: bool,
+    /// Take the origin from a link in the comment when the path gives none (see
+    /// `comment_links`). Off: `--origin` instead.
+    pub comment_links: bool,
     /// Start at this file (1-based, as the progress shows it: `[8726/12984]`), after
     /// filtering and sorting. The ones before are left out as if done.
     pub resume_from: Option<usize>,
@@ -197,7 +200,7 @@ pub async fn run(target: Target<'_>, dir: &Path, options: Options) -> anyhow::Re
         }
         // Nothing from the path: a SoundCloud or store link in the comment says where the
         // file is from (see `comment_links`), before --origin.
-        if info.track.is_none() {
+        if info.track.is_none() && options.comment_links {
             let extension = path.extension().and_then(|e| e.to_str());
             let comment = crate::ingest::tags::read_tags(path, extension).ok().and_then(|t| t.comment);
             if let Some(origin) = comment.as_deref().and_then(comment_links::origin_from_comment) {

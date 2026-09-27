@@ -1630,6 +1630,89 @@ async fn revision_data(conn: &mut PgConnection, revision_id: Uuid) -> sqlx::Resu
         .await
 }
 
+/// For merges made by importing a stored file again (`ingest::merge_duplicate`) before an
+/// album an import creates got the track's covers (before 2026-09-27): an album the
+/// re-import brought (e.g. the single), which the kept track wasn't on before and which
+/// still has no covers of its own, gets copies of the covers that came with that import
+/// (the merged-away track's), in their order. So it shows its own cover instead of its
+/// first track's main one, the other release's. Returns (album title, covers copied) for
+/// each album that got some. The merge's undo is unaffected (the copies stay with the
+/// album, which goes back to the merged-away track with it).
+pub async fn copy_reimport_covers_to_albums(
+    conn: &mut PgConnection,
+    merge_id: Uuid,
+) -> anyhow::Result<Vec<(String, usize)>> {
+    let merge = sqlx::query!(
+        "SELECT from_track_id, picks, moved FROM track_merges WHERE id = $1 AND undone_at IS NULL",
+        merge_id
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    let picks: MergePicks = serde_json::from_value(merge.picks)?;
+    if !picks.leave_identical {
+        return Ok(Vec::new()); // a merge by hand, not a re-import
+    }
+    let Some(moved) = merge.moved else {
+        return Ok(Vec::new());
+    };
+    let record: MergeRecord = serde_json::from_value(moved)?;
+
+    // The albums the import brought: the merged-away track's before the merge, minus the
+    // kept track's before the merge.
+    let albums_in = async |conn: &mut PgConnection, revision: Option<Uuid>| -> anyhow::Result<Vec<Uuid>> {
+        let Some(revision) = revision else {
+            return Ok(Vec::new());
+        };
+        let data = sqlx::query_scalar!("SELECT data FROM track_revisions WHERE id = $1", revision)
+            .fetch_one(&mut *conn)
+            .await?;
+        let facts: TrackFacts = serde_json::from_value(data)?;
+        Ok(facts.albums.iter().map(|a| a.album_id).collect())
+    };
+    let kept_before = albums_in(conn, record.kept_external_before).await?;
+    let brought: Vec<Uuid> = albums_in(conn, record.dupe_external_before)
+        .await?
+        .into_iter()
+        .filter(|album| !kept_before.contains(album))
+        .collect();
+
+    // The import's covers, in its order: the ones that moved (with their positions from
+    // before) and the ones left behind as identical.
+    let mut covers: Vec<(i16, Uuid)> = record.dupe_covers.iter().map(|c| (c.position, c.id)).collect();
+    for left in cover_positions(conn, merge.from_track_id).await? {
+        covers.push((left.position, left.id));
+    }
+    covers.sort();
+
+    let mut copied = Vec::new();
+    for album in brought {
+        let row = sqlx::query!(
+            r#"
+            SELECT title, merged_into IS NOT NULL AS "merged!",
+                   EXISTS (SELECT 1 FROM covers c WHERE c.album_id = a.id AND c.trashed_at IS NULL) AS "has_covers!"
+            FROM albums a WHERE id = $1
+            "#,
+            album
+        )
+        .fetch_one(&mut *conn)
+        .await?;
+        // Merged since: its covers went with it (see `album_merges`).
+        if row.merged || row.has_covers {
+            continue;
+        }
+        let mut count = 0;
+        for (_, cover) in &covers {
+            if super::album_merges::copy_if_new(conn, *cover, album).await?.is_some() {
+                count += 1;
+            }
+        }
+        if count > 0 {
+            copied.push((row.title, count));
+        }
+    }
+    Ok(copied)
+}
+
 /// For track merges made before every cover was kept (before 2026-09-26): the side not
 /// picked had its covers put in the trash. Takes those out again, in their old order,
 /// after the covers of the track that holds them now (a later merge may have moved them
