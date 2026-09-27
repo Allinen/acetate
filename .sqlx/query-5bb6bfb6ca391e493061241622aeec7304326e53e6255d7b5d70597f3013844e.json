@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT t.id, t.title, t.artist_display, at.disc_number, at.track_number, f.duration_ms,\n               (SELECT c.id FROM covers c WHERE c.track_id = t.id AND c.trashed_at IS NULL\n                ORDER BY c.position, c.id LIMIT 1) AS cover_id\n        FROM album_tracks at\n        JOIN tracks t ON t.id = at.track_id\n        JOIN files f ON f.id = t.file_id\n        WHERE at.album_id = $1\n        ORDER BY at.disc_number NULLS FIRST, at.track_number NULLS LAST, t.title\n        ",
+  "query": "\n        SELECT t.id, t.title, t.artist_display, t.status, t.release_date,\n               f.duration_ms, f.codec, f.id AS file_id\n        FROM tracks t\n        JOIN files f ON f.id = t.file_id\n        WHERE t.id IN (SELECT track_id FROM track_credits WHERE artist_id = $1)\n          AND t.merged_into IS NULL\n          AND t.id < COALESCE($2, 'ffffffff-ffff-ffff-ffff-ffffffffffff'::uuid)\n        ORDER BY t.id DESC\n        LIMIT $3\n        ",
   "describe": {
     "columns": [
       {
@@ -38,23 +38,23 @@
       },
       {
         "ordinal": 3,
-        "name": "disc_number",
-        "type_info": "Int2",
+        "name": "status",
+        "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "album_tracks",
-            "name": "disc_number"
+            "table": "tracks",
+            "name": "status"
           }
         }
       },
       {
         "ordinal": 4,
-        "name": "track_number",
-        "type_info": "Int2",
+        "name": "release_date",
+        "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "album_tracks",
-            "name": "track_number"
+            "table": "tracks",
+            "name": "release_date"
           }
         }
       },
@@ -71,25 +71,44 @@
       },
       {
         "ordinal": 6,
-        "name": "cover_id",
+        "name": "codec",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "files",
+            "name": "codec"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "file_id",
         "type_info": "Uuid",
-        "origin": "Expression"
+        "origin": {
+          "Table": {
+            "table": "files",
+            "name": "id"
+          }
+        }
       }
     ],
     "parameters": {
       "Left": [
-        "Uuid"
+        "Uuid",
+        "Uuid",
+        "Int8"
       ]
     },
     "nullable": [
       false,
       false,
       false,
+      false,
       true,
       true,
       true,
-      null
+      false
     ]
   },
-  "hash": "c41996f7c4b4085bc0a99f6736b9bb5e4aabb86acb324bce00ccb356c4726f4a"
+  "hash": "5bb6bfb6ca391e493061241622aeec7304326e53e6255d7b5d70597f3013844e"
 }

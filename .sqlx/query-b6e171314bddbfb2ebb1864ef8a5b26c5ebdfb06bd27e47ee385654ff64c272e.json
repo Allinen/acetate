@@ -1,0 +1,79 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT a.id, a.title, a.kind, a.release_date,\n               COALESCE((SELECT string_agg(COALESCE(al.alias, ar.name), ', ' ORDER BY c.position)\n                         FROM album_credits c\n                         JOIN artists ar ON ar.id = c.artist_id\n                         LEFT JOIN artist_aliases al ON al.id = c.alias_id\n                         WHERE c.album_id = a.id), '') AS \"artist_display!\",\n               COALESCE(\n                   (SELECT c.id FROM covers c WHERE c.album_id = a.id AND c.trashed_at IS NULL\n                    ORDER BY c.position, c.id LIMIT 1),\n                   (SELECT c.id FROM album_tracks at\n                    JOIN tracks t ON t.id = at.track_id\n                    JOIN covers c ON c.track_id = t.id AND c.trashed_at IS NULL\n                    WHERE at.album_id = a.id\n                    ORDER BY at.disc_number NULLS FIRST, at.track_number NULLS LAST, t.title, c.position\n                    LIMIT 1)\n               ) AS display_cover_id\n        FROM albums a\n        WHERE a.merged_into IS NULL\n          AND a.id < COALESCE($1, 'ffffffff-ffff-ffff-ffff-ffffffffffff'::uuid)\n        ORDER BY a.id DESC\n        LIMIT $2\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "albums",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "title",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "albums",
+            "name": "title"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "kind",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "albums",
+            "name": "kind"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "release_date",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "albums",
+            "name": "release_date"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "artist_display!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 5,
+        "name": "display_cover_id",
+        "type_info": "Uuid",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      null,
+      null
+    ]
+  },
+  "hash": "b6e171314bddbfb2ebb1864ef8a5b26c5ebdfb06bd27e47ee385654ff64c272e"
+}

@@ -126,7 +126,7 @@ pub async fn artist_tracks(
         TrackSummary,
         r#"
         SELECT t.id, t.title, t.artist_display, t.status, t.release_date,
-               f.duration_ms, f.codec
+               f.duration_ms, f.codec, f.id AS file_id
         FROM tracks t
         JOIN files f ON f.id = t.file_id
         WHERE t.id IN (SELECT track_id FROM track_credits WHERE artist_id = $1)
@@ -189,6 +189,8 @@ pub struct AlbumTrack {
     pub duration_ms: Option<i64>,
     /// The track's main cover, if it has one.
     pub cover_id: Option<Uuid>,
+    /// The file it plays (`GET /api/files/{id}/stream`).
+    pub file_id: Uuid,
 }
 
 /// Where a merged album leads (None: not merged, or not visible).
@@ -240,7 +242,8 @@ pub async fn get_album(
         r#"
         SELECT t.id, t.title, t.artist_display, at.disc_number, at.track_number, f.duration_ms,
                (SELECT c.id FROM covers c WHERE c.track_id = t.id AND c.trashed_at IS NULL
-                ORDER BY c.position, c.id LIMIT 1) AS cover_id
+                ORDER BY c.position, c.id LIMIT 1) AS cover_id,
+               f.id AS file_id
         FROM album_tracks at
         JOIN tracks t ON t.id = at.track_id
         JOIN files f ON f.id = t.file_id
@@ -291,6 +294,55 @@ pub async fn get_album(
         merges: super::album_merges::merges_into(conn, id).await?,
         revisions,
     }))
+}
+
+// ---- Browsing ----
+
+/// An album in the library list (`GET /api/library/albums`).
+#[derive(Debug, Serialize)]
+pub struct AlbumListItem {
+    pub id: Uuid,
+    pub title: String,
+    pub kind: String,
+    pub release_date: Option<String>,
+    /// The album artists as credited (aliases included), in order.
+    pub artist_display: String,
+    /// The album's own main cover, else its first track's (as on the album page).
+    pub display_cover_id: Option<Uuid>,
+}
+
+/// Albums, newest first, paged like tracks (`before` = the last id of the previous page).
+pub async fn list_albums(conn: &mut PgConnection, before: Option<Uuid>, limit: i64) -> sqlx::Result<Vec<AlbumListItem>> {
+    sqlx::query_as!(
+        AlbumListItem,
+        r#"
+        SELECT a.id, a.title, a.kind, a.release_date,
+               COALESCE((SELECT string_agg(COALESCE(al.alias, ar.name), ', ' ORDER BY c.position)
+                         FROM album_credits c
+                         JOIN artists ar ON ar.id = c.artist_id
+                         LEFT JOIN artist_aliases al ON al.id = c.alias_id
+                         WHERE c.album_id = a.id), '') AS "artist_display!",
+               COALESCE(
+                   (SELECT c.id FROM covers c WHERE c.album_id = a.id AND c.trashed_at IS NULL
+                    ORDER BY c.position, c.id LIMIT 1),
+                   (SELECT c.id FROM album_tracks at
+                    JOIN tracks t ON t.id = at.track_id
+                    JOIN covers c ON c.track_id = t.id AND c.trashed_at IS NULL
+                    WHERE at.album_id = a.id
+                    ORDER BY at.disc_number NULLS FIRST, at.track_number NULLS LAST, t.title, c.position
+                    LIMIT 1)
+               ) AS display_cover_id
+        FROM albums a
+        WHERE a.merged_into IS NULL
+          AND a.id < COALESCE($1, 'ffffffff-ffff-ffff-ffff-ffffffffffff'::uuid)
+        ORDER BY a.id DESC
+        LIMIT $2
+        "#,
+        before,
+        limit
+    )
+    .fetch_all(conn)
+    .await
 }
 
 // ---- Search ----

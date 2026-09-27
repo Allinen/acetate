@@ -13,6 +13,7 @@ mod lyrics;
 mod catalog;
 mod groups;
 mod media;
+mod playlists;
 mod rate_limit;
 mod problems;
 mod review;
@@ -22,6 +23,7 @@ mod tracks;
 mod trash;
 mod upload;
 mod ingest;
+mod library;
 mod users;
 
 use axum::extract::DefaultBodyLimit;
@@ -33,6 +35,7 @@ use serde_json::json;
 use sqlx::{PgPool, Postgres, Transaction};
 use std::sync::Arc;
 
+use tower_http::compression::CompressionLayer;
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
 
@@ -218,6 +221,21 @@ pub fn router(state: AppState) -> Router {
                 .merge(require(&[EditMetadata], put(catalog::edit_artist))),
         )
         .route("/api/artists/{id}/tracks", require(&[Browse], get(catalog::artist_tracks)))
+        .route("/api/library/albums", require(&[Browse], get(catalog::list_albums)))
+        // The whole library for local browsing: big, so compressed (only this route; audio
+        // and covers are compressed already).
+        .route("/api/catalog", require(&[Browse], get(library::catalog)).layer(CompressionLayer::new()))
+        // Playlists: everyone logged in has their own (see `db::playlists`).
+        .route("/api/playlists", require(&[Browse], get(playlists::list).post(playlists::create)))
+        .route(
+            "/api/playlists/{id}",
+            require(&[Browse], get(playlists::get).patch(playlists::update).delete(playlists::trash)),
+        )
+        .route("/api/playlists/{id}/restore", require(&[Browse], post(playlists::restore)))
+        .route("/api/playlists/{id}/entries", require(&[Browse], post(playlists::add).delete(playlists::remove)))
+        .route("/api/playlists/{id}/order", require(&[Browse], put(playlists::reorder)))
+        .route("/api/playlists/{id}/log", require(&[Browse], get(playlists::log)))
+        .route("/api/playlists/{id}/log/{change}/undo", require(&[Browse], post(playlists::undo)))
         .route("/api/artists/{id}/aliases/{alias_id}/uses", require(&[Browse], get(catalog::alias_uses)))
         .route("/api/artists/{id}/merge", require(&[EditMetadata], post(catalog::merge_artist)))
         .route("/api/artists/{id}/sources", require(&[EditSources], post(sources::add_artist_source)))

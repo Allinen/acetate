@@ -225,6 +225,24 @@ pub async fn alias_uses(
     Ok(Json(revisions::alias_uses_seen(&mut tx, alias_id).await?))
 }
 
+#[derive(Debug, Deserialize)]
+pub struct BrowseParams {
+    before: Option<Uuid>,
+    limit: Option<i64>,
+}
+
+/// `GET /api/library/albums?before=&limit=`: albums, newest first (up to 500 a page), with
+/// their album artists and the cover to show. Only albums the user can see.
+pub async fn list_albums(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Query(params): Query<BrowseParams>,
+) -> Result<Json<Vec<db::catalog::AlbumListItem>>, AppError> {
+    let mut tx = state.db(&user).await?;
+    let limit = params.limit.unwrap_or(100).clamp(1, 500);
+    Ok(Json(db::catalog::list_albums(&mut tx, params.before, limit).await?))
+}
+
 /// `POST /api/artists/{id}/merge`, JSON `{"into": "...", "keep_name_as_alias": true}`:
 /// this artist is the same as `into`. Its credits, aliases and sources move there (each
 /// changed track/album gets a revision); this artist then redirects to `into`.

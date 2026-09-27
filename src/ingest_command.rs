@@ -11,7 +11,7 @@ use sqlx::PgPool;
 
 use crate::db;
 use crate::ingest::describe::{AlbumHint, Hints, MatchedBy, Report, ReportStatus};
-use crate::ingest::layouts::{id_folders, soundcloud, Layout};
+use crate::ingest::layouts::{id_folders, instrumentals, soundcloud, Layout};
 use crate::ingest::{self, comment_links, IngestOptions};
 use crate::ingest_client::Server;
 use crate::model::sources::ValidSource;
@@ -33,6 +33,10 @@ pub struct Options {
     pub id_map: Option<id_folders::IdMap>,
     /// The SoundCloud lookup (see `soundcloud::ScMap`).
     pub sc_map: Option<soundcloud::ScMap>,
+    /// The Traktrain lookup, for `--layout instrumentals` (see `instrumentals::TraktrainMap`).
+    pub traktrain: Option<instrumentals::TraktrainMap>,
+    /// Put every new track on the Review page with this note (`--flag`).
+    pub flag: Option<String>,
     /// For tracks whose status the layout doesn't say.
     pub status: String,
     pub restrict_to: Option<Vec<uuid::Uuid>>,
@@ -187,7 +191,7 @@ pub async fn run(target: Target<'_>, dir: &Path, options: Options) -> anyhow::Re
         if let (true, None, Some(map)) = (options.tag_fallback, &info.track, &options.id_map) {
             // Unreadable tags: no title or artists to go by (ingest reports the file).
             let extension = path.extension().and_then(|e| e.to_str());
-            let tags = crate::ingest::tags::read_tags(path, extension).ok();
+            let tags = ingest::tags::read_tags(path, extension).ok();
             let title = tags.as_ref().and_then(|t| t.title.clone());
             let artists = tags.map(|t| t.artists).unwrap_or_default();
             map.fall_back_to_tags(&mut info, title.as_deref(), &artists);
@@ -197,6 +201,9 @@ pub async fn run(target: Target<'_>, dir: &Path, options: Options) -> anyhow::Re
         }
         if let Some(map) = &options.sc_map {
             map.apply(&mut info);
+        }
+        if let Some(map) = &options.traktrain {
+            map.apply(path, &mut info);
         }
         // Nothing from the path: a SoundCloud or store link in the comment says where the
         // file is from (see `comment_links`), before --origin.
@@ -264,6 +271,8 @@ pub async fn run(target: Target<'_>, dir: &Path, options: Options) -> anyhow::Re
                 original_filename: info.original_filename,
                 no_composers: options.no_composers,
                 no_duplicate_merge: options.no_duplicate_merge,
+                given: info.given,
+                flag: options.flag.clone(),
             },
             local_path: Some(path.display().to_string()),
             given: Default::default(),

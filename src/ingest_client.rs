@@ -60,6 +60,35 @@ impl Server {
         &self.url
     }
 
+    /// The ids of these groups on the server (`GET /api/groups`, which needs
+    /// `manage_access` or `manage_users`), for `--restrict-to`.
+    pub async fn group_ids(&self, names: &[String]) -> anyhow::Result<Vec<uuid::Uuid>> {
+        #[derive(Deserialize)]
+        struct Group {
+            id: uuid::Uuid,
+            name: String,
+        }
+        let response = self.client.get(format!("{}/api/groups", self.url)).bearer_auth(&self.token).send().await?;
+        if !response.status().is_success() {
+            let status = response.status();
+            let message = response.json::<ErrorBody>().await.map(|b| b.error).unwrap_or_default();
+            anyhow::bail!("can't list the server's groups for --restrict-to ({status}: {message})");
+        }
+        let groups: Vec<Group> = response.json().await?;
+        let mut ids = Vec::new();
+        let mut unknown = Vec::new();
+        for name in names {
+            match groups.iter().find(|g| &g.name == name) {
+                Some(group) => ids.push(group.id),
+                None => unknown.push(name.as_str()),
+            }
+        }
+        if !unknown.is_empty() {
+            anyhow::bail!("unknown groups on {}: {}", self.url, unknown.join(", "));
+        }
+        Ok(ids)
+    }
+
     /// Sends one file with its description. A refusal (bad tags, a source that doesn't fit)
     /// is `Skipped`, other failures `Failed`. An error stops the run: the token stopped
     /// working, or the file can't be read.
@@ -78,7 +107,7 @@ impl Server {
             &options.status,
             &options.sources,
             &options.hints,
-            None,
+            options.restrict_to.as_deref(),
         );
         description["imported_from"] = serde_json::json!(options.local_path);
         description["volume"] = serde_json::json!(options.volume);

@@ -268,6 +268,7 @@ audio.addEventListener("timeupdate", () => {
 // Plays any stream URL (normal files, or through a share link).
 function playSrc(src, title, artist, coverSrc, note) {
   playing = null;
+  queue = null; // playing something else ends a queue (`playQueue` sets it again)
   audio.src = src;
   audio.play().catch((err) => {
     playerInfo.replaceChildren(errorBox(`Can't play: ${err.message}`));
@@ -691,6 +692,7 @@ async function showTrack(id) {
         h("h2", {}, t.title),
         h("div", {}, t.artist_display),
         annotationBox("track", t.id, t.annotation),
+        addToPlaylistBox(t.id),
         h("div", { class: "row" },
           h("span", { class: "tag" }, t.status),
           t.is_restricted ? h("span", { class: "tag" }, "restricted") : null,
@@ -1273,7 +1275,9 @@ function albumMergeRow(m) {
     preview);
 }
 
-// #/review: things ingest flagged for a person to look at.
+// #/review: things ingest flagged for a person to look at. "Fix later" flags (a quick
+// import's) are shown on their own, so they don't bury the rest.
+let reviewFilter = "exclude=fix_later";
 async function showReview() {
   selectedId = null;
   markSelected();
@@ -1281,7 +1285,7 @@ async function showReview() {
   let flags, problems;
   try {
     [flags, problems] = await Promise.all([
-      can("edit_metadata") ? api("/api/review") : [],
+      can("edit_metadata") ? api(`/api/review?${reviewFilter}`) : [],
       can("upload") ? api("/api/ingest-problems") : [],
     ]);
   } catch (err) {
@@ -1291,13 +1295,16 @@ async function showReview() {
   setDetail(
     h("h2", {}, "Review"),
     can("upload") ? [h("h3", {}, `Files that didn't import (${problems.length})`), problemList(problems)] : null,
-    can("edit_metadata") ? h("h3", {}, "Flags") : null,
+    can("edit_metadata") ? h("div", { class: "row" }, h("h3", {}, "Flags"),
+      h("select", { onchange: (e) => { reviewFilter = e.target.value; showReview(); } },
+        [["exclude=fix_later", "to check"], ["kind=fix_later", "fix later"], ["", "all"]].map(([value, label]) =>
+          h("option", { value, selected: value === reviewFilter }, label)))) : null,
     !can("edit_metadata") ? null : flags.length ? flags.map((f) => {
       const resolution = h("input", { placeholder: "what you did (optional)" });
       const status = h("span", {});
       return h("div", { class: "box stack" },
         h("div", { class: "row" },
-          h("span", { class: "tag" }, { possible_duplicate: "possible duplicate", ambiguous_artist: "ambiguous artist", merged_artist: "artist merged" }[f.kind] ?? f.kind),
+          h("span", { class: "tag" }, { possible_duplicate: "possible duplicate", ambiguous_artist: "ambiguous artist", merged_artist: "artist merged", fix_later: "fix later" }[f.kind] ?? f.kind),
           h("a", { href: `#/track/${f.track_id}` }, f.track_title),
           h("span", { class: "muted" }, f.track_artist, " · ", fmtTime(f.created_at))),
         f.kind === "possible_duplicate"
@@ -1306,6 +1313,8 @@ async function showReview() {
                 can("edit_metadata") && can("replace_file")
                   ? h("a", { href: `#/merge/${f.track_id}/${x.id}`, class: "tag" }, "compare & merge")
                   : null, " "]))
+          : f.kind === "fix_later"
+          ? h("div", {}, "Imported to fix later: ", h("em", {}, f.related.note ?? ""))
           : f.kind === "merged_artist"
           ? h("div", {}, `Was credited to "${f.related.from_name}", which was merged into `,
               h("a", { href: `#/artist/${f.related.into}` }, f.related_artists.find((x) => x.id === f.related.into)?.name ?? "another artist"),
@@ -1493,6 +1502,8 @@ function route() {
   else if (kind === "artist" && id) showArtist(id);
   else if (kind === "album" && id) showAlbum(id);
   else if (kind === "shares") showShares();
+  else if (kind === "playlists") showPlaylists();
+  else if (kind === "playlist" && id) showPlaylist(id);
   else if (kind === "account") showAccount();
   else if (kind === "review") showReview();
   else if (kind === "groups") showGroups();
@@ -1556,12 +1567,182 @@ async function start() {
   accountButton.textContent = "Log out";
   document.getElementById("upload-toggle").hidden = !can("upload");
   document.getElementById("shares-link").hidden = !can("share");
+  document.getElementById("playlists-link").hidden = !can("browse");
   document.getElementById("review-link").hidden = !can("edit_metadata") && !can("upload");
   document.getElementById("groups-link").hidden = !can("manage_users");
   document.getElementById("trash-link").hidden = !(can("edit_metadata") || can("edit_sources"));
   window.addEventListener("hashchange", route);
   loadTracks(true);
   route();
+}
+
+// ---------------------------------------------------------------------------
+// Playlists
+// ---------------------------------------------------------------------------
+
+// A plain queue for playing a playlist: when a track ends, the next one plays. Playing
+// anything else ends it.
+let queue = null; // { items: [{fileId, title, artist, coverId, trackId}], index }
+function playQueue(items, index) {
+  const it = items[index];
+  if (!it) return;
+  play(it.fileId, it.title, it.artist, it.coverId, `${index + 1} of ${items.length}`, it.trackId);
+  queue = { items, index };
+}
+audio.addEventListener("ended", () => {
+  if (queue && queue.index + 1 < queue.items.length) playQueue(queue.items, queue.index + 1);
+});
+
+// #/playlists: yours and public ones, a form for a new one, and yours in the trash.
+async function showPlaylists() {
+  selectedId = null;
+  markSelected();
+  setDetail(h("p", { class: "muted" }, "Loading…"));
+  try {
+    const [lists, trashed] = await Promise.all([api("/api/playlists"), api("/api/playlists?trash=true")]);
+    const name = h("input", { placeholder: "name", required: true });
+    const pub = h("input", { type: "checkbox" });
+    const status = h("span", {});
+    const form = h("form", { class: "row box" }, name, h("label", {}, pub, " public"),
+      h("button", { type: "submit" }, "New playlist"), status);
+    form.addEventListener("submit", (e) => {
+      e.preventDefault();
+      save(status, () => postJson("/api/playlists", { name: name.value, public: pub.checked }),
+        (r) => { location.hash = `#/playlist/${r.id}`; });
+    });
+    const row = (p) => h("div", { class: "box row" },
+      h("a", { href: `#/playlist/${p.id}` }, p.name),
+      p.public ? h("span", { class: "tag" }, "public") : h("span", { class: "tag" }, "private"),
+      h("span", { class: "muted" }, `${p.entries} tracks · ${fmtDuration(p.duration_ms)}`),
+      p.mine ? null : h("span", { class: "muted" }, `by ${p.owner}`));
+    setDetail(
+      h("h2", {}, "Playlists"),
+      form,
+      lists.length ? lists.map(row) : h("p", { class: "muted" }, "No playlists yet."),
+      trashed.length ? h("details", {}, h("summary", {}, `In the trash (${trashed.length})`),
+        trashed.map((p) => h("div", { class: "box row" }, p.name,
+          h("span", { class: "muted" }, `trashed ${fmtTime(p.trashed_at)}`),
+          h("button", { class: "small", onclick: async () => {
+            await postJson(`/api/playlists/${p.id}/restore`, {});
+            showPlaylists();
+          } }, "Restore")))) : null);
+  } catch (err) {
+    setDetail(errorBox(err));
+  }
+}
+
+// #/playlist/<id>: its tracks (play all or from one), and for the owner: rename, public,
+// reorder, remove, trash, and the log with undo.
+async function showPlaylist(id) {
+  selectedId = null;
+  markSelected();
+  setDetail(h("p", { class: "muted" }, "Loading…"));
+  let p;
+  try {
+    p = await api(`/api/playlists/${id}`);
+  } catch (err) {
+    setDetail(errorBox(err));
+    return;
+  }
+  const reload = () => showPlaylist(id);
+  const status = h("span", {});
+  const items = p.entries.map((e) => ({
+    fileId: e.file_id, title: e.title, artist: e.artist_display, coverId: e.cover_id, trackId: e.track_id,
+  }));
+  const ids = p.entries.map((e) => e.id);
+  const move = (i, by) => {
+    const order = [...ids];
+    const [moved] = order.splice(i, 1);
+    order.splice(i + by, 0, moved);
+    save(status, () => putJson(`/api/playlists/${id}/order`, { entries: order }), reload);
+  };
+  const remove = (entry) => save(status, () => api(`/api/playlists/${id}/entries`, {
+    method: "DELETE", headers: { "content-type": "application/json" }, body: JSON.stringify({ entries: [entry] }),
+  }), reload);
+  const entryRow = (e, i) => h("tr", {},
+    h("td", { class: "muted" }, String(i + 1)),
+    h("td", {}, h("button", { class: "small", title: "Play from here", onclick: () => playQueue(items, i) }, "▶")),
+    h("td", {}, h("a", { href: `#/track/${e.track_id}` }, e.title)),
+    h("td", { class: "muted" }, e.artist_display),
+    h("td", { class: "muted" }, fmtDuration(e.duration_ms)),
+    p.mine ? h("td", { class: "row" },
+      h("button", { class: "small", disabled: i === 0, onclick: () => move(i, -1) }, "↑"),
+      h("button", { class: "small", disabled: i === ids.length - 1, onclick: () => move(i, 1) }, "↓"),
+      h("button", { class: "small", onclick: () => remove(e.id) }, "✕")) : null);
+
+  let owner = null;
+  if (p.mine) {
+    const name = h("input", { value: p.name, required: true });
+    const description = h("input", { value: p.description, placeholder: "description" });
+    const pub = h("input", { type: "checkbox", checked: p.public });
+    const form = h("form", { class: "row" }, name, description, h("label", {}, pub, " public"),
+      h("button", { type: "submit", class: "small" }, "Save"),
+      h("button", { type: "button", class: "small", onclick: () => {
+        if (confirm(`Put "${p.name}" in the trash? It can be restored from the Playlists page.`)) {
+          save(status, () => api(`/api/playlists/${id}`, { method: "DELETE" }), () => { location.hash = "#/playlists"; });
+        }
+      } }, "Trash"));
+    form.addEventListener("submit", (e) => {
+      e.preventDefault();
+      save(status, () => api(`/api/playlists/${id}`, {
+        method: "PATCH", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: name.value, description: description.value, public: pub.checked }),
+      }), reload);
+    });
+    const log = await api(`/api/playlists/${id}/log`).catch(() => []);
+    const describe = (l) => {
+      const n = l.detail.entries?.length ?? l.detail.entries;
+      return {
+        add: `added ${n} track${n === 1 ? "" : "s"}`,
+        remove: `removed ${n} track${n === 1 ? "" : "s"}`,
+        reorder: "changed the order",
+        undo: `undid a change: ${l.detail.summary ?? ""}`,
+        import: `imported (${l.detail.from ?? ""}, ${l.detail.entries ?? 0} tracks)`,
+      }[l.action] ?? l.action;
+    };
+    owner = h("div", {},
+      form,
+      h("details", {}, h("summary", {}, `Changes (${log.length})`),
+        log.map((l) => h("div", { class: "row" },
+          h("span", { class: "muted" }, fmtTime(l.at)),
+          h("span", {}, describe(l), l.by ? ` · ${l.by}` : ""),
+          l.undone_at ? h("span", { class: "muted" }, "undone")
+            : ["add", "remove", "reorder"].includes(l.action)
+              ? h("button", { class: "small", onclick: () => save(status,
+                  () => postJson(`/api/playlists/${id}/log/${l.id}/undo`, {}), reload) }, "Undo")
+              : null))));
+  }
+
+  setDetail(
+    h("h2", {}, p.name),
+    h("div", { class: "muted" }, p.mine ? "yours" : `by ${p.owner}`, " · ", p.public ? "public" : "private",
+      ` · ${p.entries.length} tracks · ${fmtDuration(p.duration_ms)}`),
+    p.description ? h("p", {}, p.description) : null,
+    h("div", { class: "row" },
+      h("button", { disabled: !items.length, onclick: () => playQueue(items, 0) }, "▶ Play all"), status),
+    owner,
+    p.entries.length ? h("table", {}, h("tbody", {}, p.entries.map(entryRow)))
+      : h("p", { class: "muted" }, "Empty. Add tracks from a track's page."));
+}
+
+// On a track's page: add it to one of your playlists (again, if it's in it already).
+function addToPlaylistBox(trackId) {
+  const box = h("div", { class: "row" });
+  api("/api/playlists").then((lists) => {
+    const mine = lists.filter((p) => p.mine);
+    if (!mine.length) return;
+    const select = h("select", {}, mine.map((p) => h("option", { value: p.id }, p.name)));
+    const status = h("span", {});
+    box.replaceChildren(select, h("button", { class: "small", onclick: async () => {
+      try {
+        const current = await api(`/api/playlists/${select.value}`);
+        const already = current.entries.some((e) => e.track_id === trackId);
+        await postJson(`/api/playlists/${select.value}/entries`, { tracks: [trackId] });
+        status.replaceChildren(h("span", { class: "ok" }, already ? "added (it was in it already)" : "added"));
+      } catch (err) { status.replaceChildren(errorBox(err)); }
+    } }, "Add to playlist"), status);
+  }).catch(() => {});
+  return box;
 }
 
 // ---------------------------------------------------------------------------

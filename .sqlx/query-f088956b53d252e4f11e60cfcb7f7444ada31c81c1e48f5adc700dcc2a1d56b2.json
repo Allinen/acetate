@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE playlist_entries SET track_id = $2 WHERE id = ANY($1) AND track_id = $3",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "UuidArray",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f088956b53d252e4f11e60cfcb7f7444ada31c81c1e48f5adc700dcc2a1d56b2"
+}

@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE playlist_entries e SET position = (o.n - 1)::integer\n        FROM unnest($2::uuid[]) WITH ORDINALITY AS o(id, n)\n        WHERE e.id = o.id AND e.playlist_id = $1\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "UuidArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b195000ae11a716ebd38301caf3b9485d62e8475e03748d4d6155e7ff7a3e0d2"
+}

@@ -11,6 +11,9 @@
 //! * an artist, the Acetate artist with that name or alias (its tracks decide between
 //!   artists with the same name).
 //!
+//! Playlists come along too: each owner's, in Navidrome's order, with the tracks found
+//! as above (smart playlists, having no fixed tracks, are left out).
+//!
 //! What can't be matched surely is reported, never guessed. Navidrome's database is only
 //! read, and so are the music files. Running it again doesn't count anything twice: values
 //! only go up (see `raise`).
@@ -195,6 +198,74 @@ pub async fn run(pool: &PgPool, mut options: Options) -> anyhow::Result<()> {
         entry.1 = entry.1.combined(&annotation);
     }
 
+    // ---- Playlists ----
+    // In Navidrome's order; the owner mapped like annotations. Smart playlists (rules)
+    // have no fixed tracks and are left out. One imported before is brought up to date
+    // if nobody changed it since, else left as it is (see `playlists::import`).
+    let playlist_rows = sqlx::query(
+        "SELECT id, name, comment, public, owner_id, COALESCE(rules, '') AS rules FROM playlist ORDER BY name",
+    )
+    .fetch_all(&nd)
+    .await?;
+    let mut playlist_lines = Vec::new();
+    let (mut playlists_made, mut playlists_refreshed, mut playlists_there, mut smart) = (0, 0, 0, 0);
+    for row in &playlist_rows {
+        let nd_id: String = row.try_get("id")?;
+        let name: String = row.try_get("name")?;
+        let rules: String = row.try_get("rules")?;
+        if !rules.trim().is_empty() {
+            smart += 1;
+            continue;
+        }
+        let nd_owner: String = row.try_get("owner_id")?;
+        let Some(&owner) = user_ids.get(&nd_owner) else {
+            playlist_lines.push(format!("\"{name}\": its owner isn't a user here, left out"));
+            continue;
+        };
+        let comment: String = row.try_get("comment")?;
+        let public = row.try_get::<i64, _>("public")? != 0;
+        let entries = sqlx::query("SELECT media_file_id FROM playlist_tracks WHERE playlist_id = ? ORDER BY id")
+            .bind(&nd_id)
+            .fetch_all(&nd)
+            .await?;
+        let (mut tracks, mut missing, mut elsewhere) = (Vec::new(), 0, 0);
+        for entry in &entries {
+            let media_file: String = entry.try_get("media_file_id")?;
+            if !matcher.in_libraries("media_file", &media_file).await? {
+                elsewhere += 1;
+                continue;
+            }
+            match matcher.track(&mut tx, &media_file).await? {
+                Some(track) => tracks.push(track),
+                None => missing += 1,
+            }
+        }
+        let (_, result) =
+            db::playlists::import(&mut tx, owner, &format!("navidrome:{nd_id}"), &name, &comment, public, &tracks).await?;
+        use db::playlists::Imported;
+        let mut line = match result {
+            Imported::Made => {
+                playlists_made += 1;
+                format!("\"{name}\": {} of {} tracks", tracks.len(), entries.len())
+            }
+            Imported::Refreshed => {
+                playlists_refreshed += 1;
+                format!("\"{name}\": imported before, unchanged since: now {} of {} tracks", tracks.len(), entries.len())
+            }
+            Imported::Kept => {
+                playlists_there += 1;
+                format!("\"{name}\": imported before and changed since, left as it is")
+            }
+        };
+        if result != Imported::Kept && missing > 0 {
+            line += &format!(" ({missing} not matched: not in Acetate, or not on disk here)");
+        }
+        if result != Imported::Kept && elsewhere > 0 {
+            line += &format!(" ({elsewhere} in other libraries, left out)");
+        }
+        playlist_lines.push(line);
+    }
+
     // ---- Write ----
     let mut written = 0;
     for ((user_id, _), (item, imported)) in &found {
@@ -220,10 +291,14 @@ pub async fn run(pool: &PgPool, mut options: Options) -> anyhow::Result<()> {
     if s.notes.len() > 40 {
         println!("  ... and {} more", s.notes.len() - 40);
     }
-    let playlists: i64 = sqlx::query_scalar("SELECT count(*) FROM playlist").fetch_one(&nd).await.unwrap_or(0);
     println!("annotations: {written} written ({} matched)", found.len());
-    if playlists > 0 {
-        println!("playlists: {playlists} not imported (Acetate has no playlists yet)");
+    println!(
+        "playlists: {playlists_made} imported, {playlists_refreshed} brought up to date (unchanged since imported), \
+         {playlists_there} left as they are (changed since imported){}",
+        if smart > 0 { format!(", {smart} smart playlists left out (no fixed tracks)") } else { String::new() }
+    );
+    for line in &playlist_lines {
+        println!("  {line}");
     }
     if options.dry_run {
         tx.rollback().await?;
@@ -256,6 +331,8 @@ async fn check_schema(nd: &SqlitePool) -> anyhow::Result<bool> {
         ("annotation", &["user_id", "item_id", "item_type", "play_count", "play_date", "rating", "starred", "starred_at", "rated_at"]),
         ("media_file", &["id", "path", "album_id"]),
         ("artist", &["id", "name"]),
+        ("playlist", &["id", "name", "comment", "public", "owner_id", "rules"]),
+        ("playlist_tracks", &["id", "playlist_id", "media_file_id"]),
     ];
     let mut missing = Vec::new();
     for (table, columns) in needed {

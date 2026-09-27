@@ -1139,6 +1139,16 @@ pub async fn merge_tracks(
     // 7. Sources (same platform id: joined).
     let sources = super::sources::move_all(conn, SourceOwner::Track(from), SourceOwner::Track(into)).await?;
 
+    // Playlists: entries of the duplicate play the kept track now (anyone's playlists,
+    // private ones too: this runs as the system).
+    let playlist_entries = sqlx::query_scalar!(
+        "UPDATE playlist_entries SET track_id = $2 WHERE track_id = $1 RETURNING id",
+        from,
+        into
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+
     // 8. Links to the duplicate lead to the kept track.
     let shares = sqlx::query_scalar!(
         "UPDATE shares SET track_id = $2 WHERE track_id = $1 RETURNING id",
@@ -1206,6 +1216,7 @@ pub async fn merge_tracks(
         redirected,
         flags,
         annotations,
+        playlist_entries,
     };
     let merge_id = sqlx::query_scalar!(
         r#"
@@ -1272,6 +1283,10 @@ struct MergeRecord {
     /// (Missing in merges recorded before annotations existed.)
     #[serde(default)]
     annotations: Vec<super::annotations::CombinedAnnotation>,
+    /// Playlist entries of the duplicate, now pointing at the kept track. (Missing in
+    /// merges recorded before playlists existed.)
+    #[serde(default)]
+    playlist_entries: Vec<Uuid>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1598,10 +1613,18 @@ pub async fn undo_track_merge(conn: &mut PgConnection, merge_id: Uuid, reason: &
         .await?;
     }
 
-    // 6. Lyrics and sources.
+    // 6. Lyrics, sources, playlist entries (those still on the kept track).
     sqlx::query!("UPDATE lyrics SET track_id = $2 WHERE id = ANY($1)", &record.lyrics, dupe)
         .execute(&mut *conn)
         .await?;
+    sqlx::query!(
+        "UPDATE playlist_entries SET track_id = $2 WHERE id = ANY($1) AND track_id = $3",
+        &record.playlist_entries,
+        dupe,
+        kept
+    )
+    .execute(&mut *conn)
+    .await?;
     super::sources::unmove_all(conn, &record.sources, SourceOwner::Track(dupe), SourceOwner::Track(kept)).await?;
 
     // 7. Links and redirects as they were. (Review flags stay settled, see `MergeRecord::flags`.)

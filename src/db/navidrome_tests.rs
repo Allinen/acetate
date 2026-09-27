@@ -77,7 +77,13 @@ async fn navidrome_users_and_annotations_move_over(
         "CREATE TABLE library_artist (library_id integer, artist_id varchar)",
         "CREATE TABLE artist (id varchar primary key, name varchar)",
         "CREATE TABLE media_file_artists (media_file_id varchar, artist_id varchar)",
-        "CREATE TABLE playlist (id varchar primary key)",
+        "CREATE TABLE playlist (id varchar primary key, name varchar, comment varchar, public bool, owner_id varchar, rules varchar)",
+        "CREATE TABLE playlist_tracks (id integer, playlist_id varchar, media_file_id varchar)",
+        // Dora's playlist: Glass Harbor twice, a file not in Acetate, one in the other
+        // library. And a smart playlist (rules), which has no fixed tracks.
+        "INSERT INTO playlist VALUES ('pl1', 'Favourites', 'the best', 1, 'u1', NULL)",
+        "INSERT INTO playlist_tracks VALUES (1, 'pl1', 'mf1'), (2, 'pl1', 'mf2'), (3, 'pl1', 'mfb'), (4, 'pl1', 'mf1')",
+        "INSERT INTO playlist VALUES ('pl2', 'Recent', '', 0, 'u1', '{\"all\":[]}')",
         "CREATE TABLE annotation (user_id varchar, item_id varchar, item_type varchar, play_count integer, play_date datetime, rating integer, starred bool, starred_at datetime, rated_at datetime)",
         "INSERT INTO library VALUES (1, 'Music Library', '/music')",
         // Another library, whose files aren't on this machine (like an HDD on the server).
@@ -144,5 +150,22 @@ async fn navidrome_users_and_annotations_move_over(
         .fetch_one(&lib.owner)
         .await?;
     assert_eq!(annotated, 2, "Glass Harbor and Tidelines only");
+
+    // Her playlist, once (the second run left it alone): Glass Harbor twice, in order,
+    // public as it was. The smart one isn't there.
+    let playlists: Vec<(uuid::Uuid, String, String, bool)> = sqlx::query_as(
+        "SELECT id, name, description, public FROM playlists WHERE owner_id = $1",
+    )
+    .bind(dora)
+    .fetch_all(&lib.owner)
+    .await?;
+    assert_eq!(playlists.len(), 1);
+    let (playlist, name, description, public) = &playlists[0];
+    assert_eq!((name.as_str(), description.as_str(), *public), ("Favourites", "the best", true));
+    let tracks: Vec<uuid::Uuid> = sqlx::query_scalar("SELECT track_id FROM playlist_entries WHERE playlist_id = $1 ORDER BY position")
+        .bind(playlist)
+        .fetch_all(&lib.owner)
+        .await?;
+    assert_eq!(tracks, [track, track]);
     Ok(())
 }

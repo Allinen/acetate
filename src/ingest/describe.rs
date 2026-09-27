@@ -54,7 +54,30 @@ pub struct Hints {
     /// `ingest::merge_duplicate`). Quicker when files are never stored twice.
     /// `--no-merge-duplicates`.
     pub no_duplicate_merge: bool,
+    /// Title and artists given with the description, e.g. from a platform's lookup, for
+    /// files whose tags lack them (see `GivenValues`).
+    pub given: GivenValues,
+    /// Put the new track on the Review page with this note ("fix later": `--flag`).
+    pub flag: Option<String>,
 }
+
+/// Values given with a description instead of (or where there are none) the tags': the
+/// first revision says each one's origin, so it's clear they're not from the file.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct GivenValues {
+    /// Used only if the tags have no title.
+    pub title: Option<String>,
+    /// Where it's from, for the revision ("Traktrain", "the file name").
+    pub title_from: String,
+    /// Used if the tags have no artist, or always with `artists_over_tags`.
+    pub artists: Vec<String>,
+    pub artists_from: String,
+    /// The given artists are the track's (and its album's), whatever the tags say: e.g.
+    /// an instrumental's producer, where ARTIST is the uploading channel.
+    pub artists_over_tags: bool,
+}
+
 
 /// For `Hints::first_artist_sources`: the hints with those ids given to `name` (the first
 /// ARTIST), added to its hint if there's one already.
@@ -642,6 +665,8 @@ pub fn description_json(
         "restrict_to": restrict_to,
         "no_composers": hints.no_composers,
         "no_duplicate_merge": hints.no_duplicate_merge,
+        "given": hints.given,
+        "flag": hints.flag,
         "lax_artist_names": hints.lax_artist_names,
     })
 }
@@ -672,6 +697,12 @@ pub struct NewDescription {
     /// A file already stored only gets the new origin (see `Hints::no_duplicate_merge`).
     #[serde(default)]
     pub no_duplicate_merge: bool,
+    /// Title and artists given instead of the tags' (see `GivenValues`).
+    #[serde(default)]
+    pub given: GivenValues,
+    /// Put the new track on the Review page with this note (see `Hints::flag`).
+    #[serde(default)]
+    pub flag: Option<String>,
     /// See `Hints::lax_artist_names`.
     #[serde(default)]
     pub lax_artist_names: bool,
@@ -832,6 +863,8 @@ impl NewDescription {
                 original_filename: self.track.original_filename,
                 no_composers: self.no_composers,
                 no_duplicate_merge: self.no_duplicate_merge,
+                given: self.given,
+                flag: self.flag.filter(|f| !f.trim().is_empty()),
             },
             restrict_to: self.restrict_to,
             volume: self.volume,

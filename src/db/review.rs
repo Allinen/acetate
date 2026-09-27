@@ -38,6 +38,19 @@ pub async fn flag_ambiguous_artist(
     Ok(())
 }
 
+/// Puts a track on the Review page to be fixed later, with the importer's note (e.g.
+/// "imported quickly: check title and credits").
+pub async fn flag_fix_later(conn: &mut PgConnection, track_id: Uuid, note: &str) -> sqlx::Result<()> {
+    sqlx::query!(
+        "INSERT INTO review_flags (kind, track_id, related) VALUES ('fix_later', $1, $2)",
+        track_id,
+        json!({ "note": note })
+    )
+    .execute(conn)
+    .await?;
+    Ok(())
+}
+
 /// Flags a track whose credits a merge moved from `from` to `into`, so someone can check
 /// the result (e.g. "A feat. B" merged into A: B may need crediting again).
 pub async fn flag_merged_artist(
@@ -152,11 +165,14 @@ pub struct Flag {
 }
 
 /// Open (or resolved) flags, newest first, a page at a time (`before` = last id seen).
+/// `kind`: only that kind; `exclude`: all but that kind.
 pub async fn list(
     conn: &mut PgConnection,
     resolved: bool,
     before: Option<Uuid>,
     limit: i64,
+    kind: Option<&str>,
+    exclude: Option<&str>,
 ) -> sqlx::Result<Vec<Flag>> {
     sqlx::query_as!(
         Flag,
@@ -181,12 +197,16 @@ pub async fn list(
         LEFT JOIN users u ON u.id = f.resolved_by
         WHERE (f.resolved_at IS NOT NULL) = $1
           AND f.id < COALESCE($2, 'ffffffff-ffff-ffff-ffff-ffffffffffff'::uuid)
+          AND ($4::text IS NULL OR f.kind = $4)
+          AND ($5::text IS NULL OR f.kind <> $5)
         ORDER BY f.id DESC
         LIMIT $3
         "#,
         resolved,
         before,
-        limit
+        limit,
+        kind,
+        exclude
     )
     .fetch_all(conn)
     .await

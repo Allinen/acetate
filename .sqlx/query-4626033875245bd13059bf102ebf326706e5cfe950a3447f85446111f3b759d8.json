@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT t.id, t.title, t.artist_display, t.status, t.release_date,\n               f.duration_ms, f.codec\n        FROM tracks t\n        JOIN files f ON f.id = t.file_id\n        WHERE (t.title ILIKE $1 OR t.artist_display ILIKE $1)\n          AND t.merged_into IS NULL\n          AND t.id < COALESCE($2, 'ffffffff-ffff-ffff-ffff-ffffffffffff'::uuid)\n        ORDER BY t.id DESC\n        LIMIT $3\n        ",
+  "query": "\n        SELECT t.id, t.title, t.artist_display, t.status, t.release_date,\n               f.duration_ms, f.codec, f.id AS file_id\n        FROM tracks t\n        JOIN files f ON f.id = t.file_id\n        WHERE (t.title ILIKE $1 OR t.artist_display ILIKE $1)\n          AND t.merged_into IS NULL\n          AND t.id < COALESCE($2, 'ffffffff-ffff-ffff-ffff-ffffffffffff'::uuid)\n        ORDER BY t.id DESC\n        LIMIT $3\n        ",
   "describe": {
     "columns": [
       {
@@ -79,6 +79,17 @@
             "name": "codec"
           }
         }
+      },
+      {
+        "ordinal": 7,
+        "name": "file_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "files",
+            "name": "id"
+          }
+        }
       }
     ],
     "parameters": {
@@ -95,8 +106,9 @@
       false,
       true,
       true,
-      true
+      true,
+      false
     ]
   },
-  "hash": "17f69c2ad41a2e69679cb8d12f7a6e4c00e4f5e1f8cd8c0201e3d3abb3eb0e36"
+  "hash": "4626033875245bd13059bf102ebf326706e5cfe950a3447f85446111f3b759d8"
 }

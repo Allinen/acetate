@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE playlists SET name = COALESCE($2, name), description = COALESCE($3, description),\n                             public = COALESCE($4, public), updated_at = now()\n        WHERE id = $1\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text",
+        "Bool"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "cda6c84a2aad2e3a2567be8da3c4bf1d5f717883925fed999c11394ca8bf1720"
+}

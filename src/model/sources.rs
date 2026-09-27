@@ -262,6 +262,50 @@ pub const SHAPES: &[Shape] = &[
             optional("song_release_date", Str),
         ],
     },
+    Shape {
+        platform: "youtube",
+        kind: Kind::Artist,
+        id_field: Some("channel"),
+        // The channel's handle (without "@") or its id ("UC..."), as a download folder
+        // names it.
+        fields: &[required("channel", Str)],
+    },
+    // ---- Traktrain (beats) ----
+    Shape {
+        platform: "traktrain",
+        kind: Kind::Track,
+        id_field: Some("track_id"),
+        fields: &[
+            required("track_id", Int),
+            optional("name", Str),
+            optional("bpm", Int),
+            optional("tags", StrList),
+            // Traktrain's genre ids, as text.
+            optional("genre_ids", StrList),
+            // Where the audio is on Traktrain's storage ("<user id>/<uuid>.mp3").
+            optional("audio_key", Str),
+            optional("status", Str),
+        ],
+    },
+    Shape {
+        platform: "traktrain",
+        kind: Kind::Artist,
+        id_field: Some("user_id"),
+        fields: &[required("user_id", Int), optional("slug", Str), optional("brand", Str)],
+    },
+    // ---- BeatStars (beats) ----
+    Shape {
+        platform: "beatstars",
+        kind: Kind::Track,
+        id_field: Some("track_id"),
+        fields: &[required("track_id", Int)],
+    },
+    Shape {
+        platform: "beatstars",
+        kind: Kind::Artist,
+        id_field: Some("slug"),
+        fields: &[required("slug", Str)],
+    },
     // ---- Custom: anything without a real platform (Discord, Google Drive...) ----
     Shape {
         platform: "custom",

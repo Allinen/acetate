@@ -9,6 +9,7 @@
 //! ids read from the wrong part of a name. To support another downloader, add a layout.
 
 pub mod id_folders;
+pub mod instrumentals;
 pub mod soundcloud;
 pub mod ytdlp;
 
@@ -27,6 +28,8 @@ pub enum Layout {
     IdFolders(id_folders::Platform),
     /// SoundCloud discographies: `<artist id>/{FLACs|streams}/...` (see `soundcloud`).
     Soundcloud,
+    /// Instrumentals: `<producer>/<site>@<account>/...` (see `instrumentals`).
+    Instrumentals,
     /// yt-dlp's `Title [id].ext`, from one platform (`--platform`).
     Ytdlp(ytdlp::Platform),
     /// Nothing from the path: only the tags (and `--origin`).
@@ -70,6 +73,8 @@ pub struct PathInfo {
     pub skip_embedded_covers: bool,
     /// The original file's name, for files whose tags have none (see `Hints::original_filename`).
     pub original_filename: Option<String>,
+    /// Title and artists given instead of the tags' (see `describe::GivenValues`).
+    pub given: crate::ingest::describe::GivenValues,
     pub warnings: Vec<String>,
 }
 
@@ -80,6 +85,7 @@ impl Layout {
         let mut info = match self {
             Layout::IdFolders(platform) => id_folders::read(*platform, root, path),
             Layout::Soundcloud => soundcloud::read(root, path),
+            Layout::Instrumentals => instrumentals::read(root, path),
             Layout::Ytdlp(platform) => ytdlp::read(*platform, path),
             Layout::Tags => PathInfo::default(),
         };

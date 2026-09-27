@@ -187,6 +187,7 @@ struct IngestArgs {
     dir: PathBuf,
     /// How the folder is laid out: `netease`, `qq` or `kuwo` (`Artist - <id>/…/Album - <id>/… - <song id>.flac`),
     /// `soundcloud` (`<user id>/{FLACs|streams}/…/… - <song id> - <song uid>.wav`),
+/// `instrumentals` (`<producer>/<site>@<account>/…`; `--id-map`: the Traktrain lookup),
     /// `ytdlp` (`Title [<id>].ext`, needs `--platform`) or `tags` (nothing from paths).
     #[arg(long)]
     layout: LayoutArg,
@@ -247,6 +248,10 @@ struct IngestArgs {
     /// aren't from the page they link to.
     #[arg(long)]
     no_comment_links: bool,
+    /// Put every new track on the Review page with this note, to fix later (e.g.
+    /// `--flag "imported quickly: check title and credits"`).
+    #[arg(long, value_name = "NOTE")]
+    flag: Option<String>,
     /// Start at file N, as the progress shows it (`[N/total]`), e.g. to go on after an
     /// interrupted run. The same folder, filters and flags give the same order.
     #[arg(long, value_name = "N")]
@@ -276,6 +281,7 @@ enum LayoutArg {
     Qq,
     Kuwo,
     Soundcloud,
+    Instrumentals,
     Ytdlp,
     Tags,
 }
@@ -305,7 +311,7 @@ async fn main() -> anyhow::Result<()> {
         let token = std::env::var("ACETATE_TOKEN")
             .context("--server needs ACETATE_TOKEN: a session token (the `token` from POST /api/auth/login)")?;
         let server = ingest_client::Server::connect(server, &token).await?;
-        let options = ingest_options(args, None).await?;
+        let options = ingest_options(args, Groups::Remote(&server)).await?;
         return ingest_command::run(ingest_command::Target::Server(server), &args.dir, options).await;
     }
     let config = Config::from_env()?;
@@ -375,7 +381,7 @@ async fn main() -> anyhow::Result<()> {
             import(pool, store, paths, options).await
         }
         Command::Ingest(args) => {
-            let options = ingest_options(&args, Some((&pool, &store))).await?;
+            let options = ingest_options(&args, Groups::Local(&pool, &store)).await?;
             ingest_command::run(ingest_command::Target::Local { pool: &pool, store: &store }, &args.dir, options).await
         }
         Command::Verify { dir, blobs, list_ok, list_missing } => match (dir, blobs) {
@@ -519,13 +525,20 @@ async fn import(
     Ok(())
 }
 
-/// `acetate ingest`'s options from its arguments. `local`: this machine's database and
-/// storage (None with `--server`: group names and volumes are then the server's business).
-async fn ingest_options(args: &IngestArgs, local: Option<(&sqlx::PgPool, &BlobStore)>) -> anyhow::Result<ingest_command::Options> {
+/// Where `acetate ingest` looks up group names (`--restrict-to`) and volumes.
+enum Groups<'a> {
+    /// This machine's database and storage.
+    Local(&'a sqlx::PgPool, &'a BlobStore),
+    /// The server `--server` sends to (volumes are checked there).
+    Remote(&'a ingest_client::Server),
+}
+
+/// `acetate ingest`'s options from its arguments.
+async fn ingest_options(args: &IngestArgs, groups: Groups<'_>) -> anyhow::Result<ingest_command::Options> {
     use crate::ingest::layouts::{id_folders, soundcloud, ytdlp, Layout};
-    let volume = match local {
-        Some((_, store)) => cli_volume(store, args.volume.clone())?,
-        None => args.volume.clone(),
+    let volume = match groups {
+        Groups::Local(_, store) => cli_volume(store, args.volume.clone())?,
+        Groups::Remote(_) => args.volume.clone(),
     };
     let layout = match (args.layout, args.platform) {
         (LayoutArg::Netease, None) => Layout::IdFolders(id_folders::Platform::Netease),
@@ -533,6 +546,7 @@ async fn ingest_options(args: &IngestArgs, local: Option<(&sqlx::PgPool, &BlobSt
         (LayoutArg::Kuwo, None) => Layout::IdFolders(id_folders::Platform::Kuwo),
         (LayoutArg::Tags, None) => Layout::Tags,
         (LayoutArg::Soundcloud, None) => Layout::Soundcloud,
+        (LayoutArg::Instrumentals, None) => Layout::Instrumentals,
         (LayoutArg::Ytdlp, Some(PlatformArg::Soundcloud)) => Layout::Ytdlp(ytdlp::Platform::Soundcloud),
         (LayoutArg::Ytdlp, Some(PlatformArg::Youtube)) => Layout::Ytdlp(ytdlp::Platform::Youtube),
         (LayoutArg::Ytdlp, None) => anyhow::bail!("--layout ytdlp needs --platform"),
@@ -545,17 +559,22 @@ async fn ingest_options(args: &IngestArgs, local: Option<(&sqlx::PgPool, &BlobSt
         }
         None => None,
     };
-    let restrict_to = match (&args.restrict_to, local) {
-        (Some(names), Some((pool, _))) => Some(group_ids(pool, names).await?),
-        (Some(_), None) => anyhow::bail!("--restrict-to isn't supported with --server yet"),
+    let restrict_to = match (&args.restrict_to, groups) {
+        (Some(names), Groups::Local(pool, _)) => Some(group_ids(pool, names).await?),
+        (Some(names), Groups::Remote(server)) => Some(server.group_ids(&group_names(names)).await?),
         (None, _) => None,
     };
     // Every song is in the map, and without it songs outside album folders would get
     // no album id: so these layouts never run without it.
+    let mut traktrain = None;
     let (id_map, sc_map) = match (&args.id_map, layout) {
         (Some(path), Layout::IdFolders(platform)) => (Some(id_folders::IdMap::load(platform, path)?), None),
         (Some(path), Layout::Soundcloud) => (None, Some(soundcloud::ScMap::load(path)?)),
-        (Some(_), _) => anyhow::bail!("--id-map is only for --layout netease, qq, kuwo or soundcloud"),
+        (Some(path), Layout::Instrumentals) => {
+            traktrain = Some(crate::ingest::layouts::instrumentals::TraktrainMap::load(path)?);
+            (None, None)
+        }
+        (Some(_), _) => anyhow::bail!("--id-map is only for --layout netease, qq, kuwo, soundcloud or instrumentals"),
         (None, Layout::IdFolders(_)) => {
             anyhow::bail!("--layout netease/qq/kuwo needs --id-map <map.json> (the song id -> album map)")
         }
@@ -575,6 +594,8 @@ async fn ingest_options(args: &IngestArgs, local: Option<(&sqlx::PgPool, &BlobSt
         covers: args.covers.clone(),
         id_map,
         sc_map,
+        traktrain,
+        flag: args.flag.clone().filter(|f| !f.trim().is_empty()),
         status: args.status.clone(),
         restrict_to,
         volume,
@@ -623,12 +644,13 @@ async fn check_volumes(pool: &sqlx::PgPool, store: &BlobStore) -> anyhow::Result
 }
 
 /// Comma-separated group names -> their ids. Empty = no groups (admins only).
+/// `--restrict-to friends, family` → the names.
+fn group_names(names: &str) -> Vec<String> {
+    names.split(',').map(|n| n.trim().to_string()).filter(|n| !n.is_empty()).collect()
+}
+
 async fn group_ids(pool: &sqlx::PgPool, names: &str) -> anyhow::Result<Vec<Uuid>> {
-    let names: Vec<String> = names
-        .split(',')
-        .map(|n| n.trim().to_string())
-        .filter(|n| !n.is_empty())
-        .collect();
+    let names = group_names(names);
     let mut tx = db::begin(pool, None).await?;
     match db::groups::ids_by_name(&mut tx, &names).await? {
         Ok(ids) => Ok(ids),

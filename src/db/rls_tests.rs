@@ -212,9 +212,10 @@ async fn restricted_track_is_hidden_everywhere(_: PgPoolOptions, connect: PgConn
         .await?;
     assert_eq!(files, 0, "H's file");
 
-    // X is only credited on H: it doesn't exist as far as carol can tell.
-    assert!(db::catalog::get_artist(&mut tx, lib.x, true).await?.is_none());
-    assert!(db::catalog::search_artists(&mut tx, "X", 20).await?.iter().all(|a| a.id != lib.x));
+    // X is only credited on H. Artists are visible to everyone logged in (migration
+    // 0027): carol sees the name, but none of its tracks.
+    assert!(db::catalog::get_artist(&mut tx, lib.x, true).await?.is_some());
+    assert!(db::catalog::artist_tracks(&mut tx, lib.x, None, 100).await?.is_empty());
 
     // Things that include V and H show V only.
     let album = db::catalog::get_album(&mut tx, lib.album, true).await?.unwrap();
@@ -225,7 +226,7 @@ async fn restricted_track_is_hidden_everywhere(_: PgPoolOptions, connect: PgConn
     let v = db::tracks::get_track(&mut tx, lib.v, true).await?.unwrap();
     assert!(v.relations.is_empty(), "the relation with H");
     assert_mentions_none("V's details and history", &v, &hidden);
-    let flags = db::review::list(&mut tx, false, None, 100).await?;
+    let flags = db::review::list(&mut tx, false, None, 100, None, None).await?;
     assert_mentions_none("review flags", &flags, &hidden);
     drop(tx);
 
@@ -357,29 +358,101 @@ async fn cascades_reach_hidden_tracks(_: PgPoolOptions, connect: PgConnectOption
 }
 
 #[sqlx::test]
-async fn a_merged_artist_is_as_hidden_as_where_it_went(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
+async fn an_album_of_only_restricted_tracks_stays_hidden(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
     let lib = setup(connect).await?;
-    // Z and X are both only credited on hidden tracks: bob (friends) sees them, carol doesn't.
+    // Album B has only T, restricted to friends; album C has T and a public track U.
+    let mut tx = db::begin(&lib.owner, None).await?;
+    let album = |title: &str| AlbumData { title: title.into(), ..Default::default() };
+    let b = db::revisions::create_album(&mut tx, &album("Album B"), Source::Import, "").await?;
+    let c = db::revisions::create_album(&mut tx, &album("Album C"), Source::Import, "").await?;
+    let empty = db::revisions::create_album(&mut tx, &album("Empty"), Source::Import, "").await?;
+    let (t, _) = make_track(&mut tx, "Song T", &[lib.x], Some(b)).await?;
+    db::access::set(&mut tx, t, true, &[lib.friends], "test").await?;
+    let (_u, _) = make_track(&mut tx, "Song U", &[lib.both], Some(c)).await?;
+    sqlx::query("INSERT INTO album_tracks (album_id, track_id) VALUES ($1, $2)")
+        .bind(c)
+        .bind(t)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+
+    let seen = |user: Uuid| {
+        let lib = &lib;
+        async move {
+            let mut tx = db::begin(&lib.app, Some(user)).await?;
+            let mut ids: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM albums WHERE id = ANY($1)")
+                .bind(&[b, c, empty][..])
+                .fetch_all(&mut *tx)
+                .await?;
+            ids.sort();
+            anyhow::Ok(ids)
+        }
+    };
+    let sorted = |mut ids: Vec<Uuid>| {
+        ids.sort();
+        ids
+    };
+    assert_eq!(seen(lib.carol).await?, sorted(vec![c, empty]), "carol: not B");
+    assert_eq!(seen(lib.bob).await?, sorted(vec![b, c, empty]), "bob (friends)");
+    assert_eq!(seen(lib.alice).await?, sorted(vec![b, c, empty]), "alice (admin)");
+
+    // T made public: B is visible to all. Restricted again: hidden again.
+    let mut tx = db::begin(&lib.owner, None).await?;
+    db::access::set(&mut tx, t, false, &[], "test").await?;
+    tx.commit().await?;
+    assert_eq!(seen(lib.carol).await?, sorted(vec![b, c, empty]));
+    let mut tx = db::begin(&lib.owner, None).await?;
+    db::access::set(&mut tx, t, true, &[lib.friends], "test").await?;
+    tx.commit().await?;
+    assert_eq!(seen(lib.carol).await?, sorted(vec![c, empty]));
+
+    // U taken off C: C has only T left, and is hidden from carol too.
+    let mut tx = db::begin(&lib.owner, None).await?;
+    sqlx::query("DELETE FROM album_tracks WHERE album_id = $1 AND track_id <> $2")
+        .bind(c)
+        .bind(t)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    assert_eq!(seen(lib.carol).await?, vec![empty]);
+    Ok(())
+}
+
+#[sqlx::test]
+async fn artists_are_visible_when_logged_in_and_through_a_share_only_its_own(
+    _: PgPoolOptions,
+    connect: PgConnectOptions,
+) -> anyhow::Result<()> {
+    let lib = setup(connect).await?;
+    // Z is only credited on a hidden track, then merged into X (also only on hidden H).
     let mut tx = db::begin(&lib.owner, None).await?;
     let z = db::ingest::find_or_create_artist(&mut tx, "Z").await?.id;
     let (t, _) = make_track(&mut tx, "Song T", &[z], None).await?;
     db::access::set(&mut tx, t, true, &[lib.friends], "test").await?;
     tx.commit().await?;
-
     let mut tx = db::begin(&lib.app, Some(lib.bob)).await?;
     db::revisions::merge_artist(&mut tx, z, lib.x, false, false, "").await?;
     tx.commit().await?;
 
-    // Z has no credits left, but isn't visible to everyone like an artist credited nowhere.
-    for (user, visible) in [(lib.bob, 2), (lib.carol, 0)] {
+    for user in [lib.bob, lib.carol] {
         let mut tx = db::begin(&lib.app, Some(user)).await?;
-        let seen: i64 = sqlx::query_scalar("SELECT count(*) FROM artists WHERE id = ANY($1)")
-            .bind(&[z, lib.x][..])
-            .fetch_one(&mut *tx)
-            .await?;
-        assert_eq!(seen, visible, "user {user}");
+        assert_eq!(artists_seen(&mut tx, vec![z, lib.x, lib.both]).await?, 3, "user {user}");
     }
+    // A share of O (credited to Both) shows Both, not X or Z.
+    let mut tx = db::begin(&lib.owner, Some(lib.bob)).await?;
+    let token_hash = crate::auth::token_hash("share of O");
+    db::shares::create(&mut tx, &token_hash, Some(lib.o), None, None).await?;
+    tx.commit().await?;
+    let share = db::shares::find_active(&lib.app, &token_hash).await?.unwrap();
+    let mut tx = db::begin_share(&lib.app, share.id).await?;
+    assert_eq!(artists_seen(&mut tx, vec![z, lib.x]).await?, 0);
+    assert_eq!(artists_seen(&mut tx, vec![lib.both]).await?, 1);
     Ok(())
+}
+
+/// How many of `ids` are visible artists.
+async fn artists_seen(tx: &mut sqlx::PgConnection, ids: Vec<Uuid>) -> sqlx::Result<i64> {
+    sqlx::query_scalar("SELECT count(*) FROM artists WHERE id = ANY($1)").bind(ids).fetch_one(tx).await
 }
 
 /// What a share shows: its tracks, and how many tracks a query without the share's own

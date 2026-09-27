@@ -252,34 +252,38 @@ async fn users_only_get_what_they_can_see(
     let dir = tempfile::tempdir()?;
     let store = BlobStore::open(dir.path())?;
 
-    // X is only credited on a track carol can't see: naming it by id is "not found".
+    // An album with only H, which carol can't see: naming it by id is "not found".
+    let mut tx = db::begin(&lib.owner, None).await?;
+    let secret = db::revisions::create_album(
+        &mut tx,
+        &crate::model::AlbumData { title: "Secret".into(), ..Default::default() },
+        db::revisions::Source::Import,
+        "",
+    )
+    .await?;
+    sqlx::query("INSERT INTO album_tracks (album_id, track_id) VALUES ($1, $2)")
+        .bind(secret)
+        .bind(lib.h)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
     let hints = Hints {
-        artists: vec![ArtistHint {
-            name: "Mira Vale".into(),
-            id: Some(lib.x),
-            sources: Vec::new(),
-            platform_name: None,
-        }],
-        album: None,
+        album: Some(AlbumHint { id: Some(secret), ..Default::default() }),
         ..Default::default()
     };
     let err = ingest_file(&lib.app, &store, "01 - Glass Harbor.flac", &options(Some(lib.carol), 1, hints), false)
         .await
         .unwrap_err();
-    assert!(matches!(err.downcast_ref::<EditRejected>(), Some(EditRejected::NotFound("artist"))), "{err:#}");
+    assert!(matches!(err.downcast_ref::<EditRejected>(), Some(EditRejected::NotFound("album"))), "{err:#}");
 
-    // A NetEase artist id that X has: carol's file is matched to X (the id says so), and X
-    // becomes visible to her through her own track. With the track restricted away from
-    // her, she'd get no id back.
+    // X is only credited on H, but artists are visible to everyone logged in (migration
+    // 0027): naming it by id works, and so does matching it by a platform id.
     let mut tx = db::begin(&lib.owner, None).await?;
     db::sources::add_snapshot(&mut tx, crate::model::sources::SourceOwner::Artist(lib.x), &netease(Kind::Artist, "artist_id", 99)).await?;
     tx.commit().await?;
-    let mut opts = options(Some(lib.carol), 1, mira_vale(99, None));
-    opts.restrict_to = Some(vec![lib.friends]);
-    let report = ingest_file(&lib.app, &store, "01 - Glass Harbor.flac", &opts, false).await?;
+    let report = ingest_file(&lib.app, &store, "01 - Glass Harbor.flac", &options(Some(lib.carol), 1, mira_vale(99, None)), false).await?;
     let found = artist(&report, "Mira Vale");
-    assert_eq!(found.matched_by, MatchedBy::PlatformId);
-    assert_eq!(found.id, None, "X stays hidden from carol");
+    assert_eq!((found.matched_by, found.id), (MatchedBy::PlatformId, Some(lib.x)));
     Ok(())
 }
 
@@ -1138,5 +1142,42 @@ async fn an_album_made_for_a_track_gets_its_covers(
     assert_eq!(covers_of(first.album.as_ref().unwrap().id.unwrap()).await?, album_cover);
     let mut tx = pool.begin().await?;
     assert!(db::revisions::copy_reimport_covers_to_albums(&mut tx, merge).await?.is_empty());
+    Ok(())
+}
+
+#[sqlx::test]
+async fn given_values_and_the_fix_later_flag(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
+    let lib = setup(connect).await?;
+    let dir = tempfile::tempdir()?;
+    let store = BlobStore::open(dir.path())?;
+    // Glass Harbor has a title and ARTIST "Mira Vale": the producer folder wins for the
+    // artist; the given title isn't used, since the tags have one.
+    let hints = Hints {
+        given: crate::ingest::describe::GivenValues {
+            title: Some("from the file name".into()),
+            title_from: "the file name".into(),
+            artists: vec!["Some Producer".into()],
+            artists_from: "the producer folder \"Some Producer\"".into(),
+            artists_over_tags: true,
+        },
+        flag: Some("imported quickly".into()),
+        ..Default::default()
+    };
+    let report = ingest_file(&lib.owner, &store, "01 - Glass Harbor.flac", &options(None, 1, hints), false).await?;
+    let track = report.track_id.unwrap();
+    let (title, artist, reason): (String, String, String) = sqlx::query_as(
+        "SELECT t.title, t.artist_display, r.reason FROM tracks t JOIN track_revisions r ON r.track_id = t.id WHERE t.id = $1",
+    )
+    .bind(track)
+    .fetch_one(&lib.owner)
+    .await?;
+    assert_eq!((title.as_str(), artist.as_str()), ("Glass Harbor", "Some Producer"));
+    assert!(reason.contains("given with the description: artist from the producer folder \"Some Producer\", over the tags"), "{reason}");
+    assert!(!reason.contains("title from"), "{reason}");
+    let note: serde_json::Value = sqlx::query_scalar("SELECT related FROM review_flags WHERE kind = 'fix_later' AND track_id = $1")
+        .bind(track)
+        .fetch_one(&lib.owner)
+        .await?;
+    assert_eq!(note, json!({ "note": "imported quickly" }));
     Ok(())
 }

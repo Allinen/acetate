@@ -13,6 +13,8 @@ pub struct TrackSummary {
     pub release_date: Option<String>,
     pub duration_ms: Option<i64>,
     pub codec: Option<String>,
+    /// The file it plays (`GET /api/files/{id}/stream`).
+    pub file_id: Uuid,
 }
 
 /// One page of tracks, newest first.
@@ -29,7 +31,7 @@ pub async fn list_tracks(
         TrackSummary,
         r#"
         SELECT t.id, t.title, t.artist_display, t.status, t.release_date,
-               f.duration_ms, f.codec
+               f.duration_ms, f.codec, f.id AS file_id
         FROM tracks t
         JOIN files f ON f.id = t.file_id
         WHERE t.merged_into IS NULL  -- merged tracks only redirect
@@ -62,7 +64,7 @@ pub async fn search_tracks(
         TrackSummary,
         r#"
         SELECT t.id, t.title, t.artist_display, t.status, t.release_date,
-               f.duration_ms, f.codec
+               f.duration_ms, f.codec, f.id AS file_id
         FROM tracks t
         JOIN files f ON f.id = t.file_id
         WHERE (t.title ILIKE $1 OR t.artist_display ILIKE $1)

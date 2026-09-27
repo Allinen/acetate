@@ -13,6 +13,8 @@ pub mod catalog;
 pub mod covers;
 pub mod groups;
 pub mod ingest;
+pub mod library;
+pub mod playlists;
 pub mod review;
 pub mod revisions;
 pub mod shares;
@@ -39,6 +41,10 @@ mod navidrome_tests;
 mod plan_tests;
 #[cfg(test)]
 mod album_merge_tests;
+#[cfg(test)]
+mod playlist_tests;
+#[cfg(test)]
+mod library_tests;
 
 use std::time::Duration;
 

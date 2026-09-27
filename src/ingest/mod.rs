@@ -574,6 +574,29 @@ async fn new_track(
     if dated_by_hint {
         tags.date = options.hints.release_date.clone();
     }
+    // Values given with the description (see `describe::GivenValues`): a title where the
+    // tags have none; artists where they have none, or always if they're meant to win.
+    let described = &options.hints.given;
+    let mut described_notes = Vec::new();
+    if let Some(title) = described.title.as_ref().filter(|t| !t.trim().is_empty()) {
+        if tags.title.is_none() {
+            tags.title = Some(title.clone());
+            described_notes.push(format!("title from {}", described.title_from));
+        }
+    }
+    let described_artists = tags::split_artists(described.artists.clone());
+    if !described_artists.is_empty()
+        && (tags.artists.is_empty() || described.artists_over_tags)
+        && tags.artists != described_artists
+    {
+        let over = !tags.artists.is_empty();
+        tags.artists = described_artists.clone();
+        // The album is theirs too (its tags' ALBUM ARTIST would be the same wrong name).
+        if described.artists_over_tags && !tags.album_artists.is_empty() {
+            tags.album_artists = described_artists;
+        }
+        described_notes.push(format!("artist from {}{}", described.artists_from, if over { ", over the tags" } else { "" }));
+    }
     let missing: Vec<&'static str> = [
         ("title", tags.title.is_none()),
         ("artist", tags.artists.is_empty()),
@@ -627,6 +650,9 @@ async fn new_track(
     }
     if let Some(copy) = &options.tags_from {
         revision_reason += &format!("; metadata from the tags of a copy ({}), not the stored file's", copy.filename);
+    }
+    if !described_notes.is_empty() {
+        revision_reason += &format!("; given with the description: {}", described_notes.join(", "));
     }
     if shared_file.is_some() {
         revision_reason += "; the same file as a track already in the library (plays that file)";
@@ -1279,6 +1305,10 @@ async fn create_track_rows(
 
     if let Some(groups) = &options.restrict_to {
         db::access::set(conn, track_id, true, groups, "restricted when uploaded").await?;
+    }
+    // "Fix later": on the Review page with the importer's note.
+    if let Some(note) = &hints.flag {
+        db::review::flag_fix_later(conn, track_id, note).await?;
     }
 
     Ok(Report {
