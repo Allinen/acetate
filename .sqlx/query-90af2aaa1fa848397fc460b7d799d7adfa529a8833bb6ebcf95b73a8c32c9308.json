@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE track_variants SET track_id = $1, label = label || $3 WHERE id = ANY($2)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "UuidArray",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "90af2aaa1fa848397fc460b7d799d7adfa529a8833bb6ebcf95b73a8c32c9308"
+}

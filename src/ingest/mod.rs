@@ -27,7 +27,7 @@ use crate::db::revisions::Source;
 use crate::model::{AlbumMembership, Credit, ImageInfo, LyricsData, TrackFacts, TrackMetadata};
 use crate::model::sources::{SourceOwner, ValidSource};
 use crate::storage::{BlobStore, PendingBlob};
-use describe::{Hints, Report, ReportStatus, Resolver};
+use describe::{Hints, MatchedBy, Report, ReportStatus, Resolver};
 use probe::ProbeInfo;
 use tags::TagInfo;
 
@@ -368,12 +368,172 @@ pub async fn ingest_in(
     // Explicit ids have to be ones the uploader can see (checked with their access).
     describe::check_explicit_ids(conn, &options.hints).await?;
 
-    // 1. Same bytes already stored? Then there's nothing to do but note the sources.
+    // 1. Same bytes already stored? What this import says that the track doesn't have yet
+    //    (another album, other metadata...) is merged into it (`merge_duplicate`). Else,
+    //    or with nothing new, there's nothing to do but note the sources.
+    if !options.hints.no_duplicate_merge {
+        if let Some(report) = merge_duplicate(conn, store, file, options, dry_run).await? {
+            return Ok(report);
+        }
+    }
     if let Some(mut report) = duplicate_in(conn, &file.sha256, options).await? {
         report.album_covers_added = covers_for_known_album(conn, store, options, dry_run).await?;
         return Ok(report);
     }
+    new_track(conn, store, file, options, dry_run, None).await
+}
 
+/// A file that's already stored, imported again: whatever this import says that its track
+/// doesn't have yet is added, the way merging two tracks does it. The file is imported as a
+/// new track that plays the stored file (nothing is copied), which is then merged into the
+/// track that has it, keeping that track's metadata (see `revisions::merge_tracks`, with
+/// `leave_identical`): another album (e.g. the single, when it came in on the album),
+/// covers, lyrics, ids for its artists and album, and metadata the track never had, as
+/// another variant (only from a tagged copy or values given by hand: the file's own tags
+/// are the same bytes as before). It's a merge like any other, so it can be undone.
+///
+/// None when there's nothing new (then nothing is kept, and it's a plain duplicate), when
+/// the stored file isn't a track's current file, or when the uploader can't see that track.
+async fn merge_duplicate(
+    conn: &mut PgConnection,
+    store: &BlobStore,
+    file: &StagedFile,
+    options: &IngestOptions,
+    dry_run: bool,
+) -> anyhow::Result<Option<Report>> {
+    let system = db::as_system(conn).await?;
+    let found = db::ingest::current_file_by_sha256(conn, &file.sha256).await?;
+    system.end(conn).await?;
+    let Some((file_id, existing)) = found else {
+        return Ok(None);
+    };
+    if !db::sources::owner_exists(conn, SourceOwner::Track(existing)).await? {
+        return Ok(None);
+    }
+
+    // Tried in a savepoint: rolled back if it brings nothing new.
+    let mut attempt = sqlx::Connection::begin(&mut *conn).await?;
+    let system = db::as_system(&mut attempt).await?;
+    let snapshots_before = db::ingest::album_and_artist_snapshots(&mut attempt).await?;
+    system.end(&mut attempt).await?;
+    let created = match new_track(&mut attempt, store, file, options, dry_run, Some(file_id)).await {
+        Ok(report) => report,
+        // E.g. tags too poor for a track of its own: then it's a plain duplicate.
+        Err(_) => {
+            attempt.rollback().await?;
+            return Ok(None);
+        }
+    };
+    let Some(new) = created.track_id else {
+        attempt.rollback().await?;
+        return Ok(None);
+    };
+
+    // What the new track has that the stored one doesn't.
+    let system = db::as_system(&mut attempt).await?;
+    let mut added = Vec::new();
+    let albums = sqlx::query!(
+        r#"
+        SELECT a.title, a.kind FROM album_tracks n JOIN albums a ON a.id = n.album_id
+        WHERE n.track_id = $1
+          AND NOT EXISTS (SELECT 1 FROM album_tracks e WHERE e.track_id = $2 AND e.album_id = n.album_id)
+        "#,
+        new,
+        existing
+    )
+    .fetch_all(&mut *attempt)
+    .await?;
+    for album in albums {
+        let kind = if album.kind == "single" { "single" } else { "album" };
+        added.push(format!("on the {kind} \"{}\"", album.title));
+    }
+    // Metadata the track has never had (in any revision of any variant). Only when it
+    // comes from elsewhere than the file (a tagged copy, values given by hand): the file's
+    // own tags are the same bytes as before, so a difference there would only come from
+    // how tags are read now, or from edits made since.
+    let metadata_from_elsewhere = options.tags_from.is_some()
+        || options.given.title.is_some()
+        || !options.given.artists.is_empty();
+    let mut new_metadata = false;
+    if metadata_from_elsewhere {
+        if let Some(metadata) = db::revisions::primary_metadata(&mut attempt, new).await? {
+            if !db::revisions::metadata_is_known(&mut attempt, existing, &metadata).await? {
+                new_metadata = true;
+                added.push("its tags' metadata, which differs (as another variant)".to_string());
+            }
+        }
+    }
+    let covers = sqlx::query_scalar!(
+        r#"
+        SELECT count(*) AS "n!" FROM covers d
+        WHERE d.track_id = $1 AND d.trashed_at IS NULL
+          AND NOT EXISTS (SELECT 1 FROM covers k WHERE k.track_id = $2 AND k.trashed_at IS NULL
+                                                 AND k.blob_sha256 = d.blob_sha256)
+        "#,
+        new,
+        existing
+    )
+    .fetch_one(&mut *attempt)
+    .await?;
+    if covers > 0 {
+        added.push(format!("{covers} cover{}", if covers == 1 { "" } else { "s" }));
+    }
+    let lyrics = sqlx::query_scalar!(
+        r#"
+        SELECT count(*) AS "n!" FROM lyrics n
+        WHERE n.track_id = $1 AND NOT EXISTS (SELECT 1 FROM lyrics e WHERE e.track_id = $2 AND e.body = n.body)
+        "#,
+        new,
+        existing
+    )
+    .fetch_one(&mut *attempt)
+    .await?;
+    if lyrics > 0 {
+        added.push("lyrics".to_string());
+    }
+    if created.album_covers_added > 0 {
+        added.push(format!("{} album cover{}", created.album_covers_added, if created.album_covers_added == 1 { "" } else { "s" }));
+    }
+    if db::ingest::album_and_artist_snapshots(&mut attempt).await? > snapshots_before {
+        added.push("ids for its artists or album".to_string());
+    }
+    system.end(&mut attempt).await?;
+
+    if added.is_empty() {
+        attempt.rollback().await?;
+        return Ok(None);
+    }
+    let reason = format!(
+        "imported again as \"{}\" (the same file): {}",
+        options.uploaded_filename,
+        added.join(", ")
+    );
+    let picks = db::revisions::MergePicks { leave_identical: true, leave_variants: !new_metadata, ..Default::default() };
+    let merged = db::revisions::merge_tracks(&mut attempt, existing, new, &picks, None, None, &reason).await?;
+    attempt.commit().await?;
+    added.push(format!("(merge {}, can be undone)", merged.merge_id));
+    Ok(Some(Report {
+        status: ReportStatus::Duplicate,
+        track_id: Some(existing),
+        same_song_as: Vec::new(),
+        artists: created.artists,
+        album: created.album,
+        album_covers_added: created.album_covers_added,
+        warnings: created.warnings,
+        added,
+    }))
+}
+
+/// Steps 2 to 4 of `ingest_in`: a new track for the file. `shared_file`: the file is
+/// already stored (this id); the new track plays that one (see `merge_duplicate`).
+async fn new_track(
+    conn: &mut PgConnection,
+    store: &BlobStore,
+    file: &StagedFile,
+    options: &IngestOptions,
+    dry_run: bool,
+    shared_file: Option<Uuid>,
+) -> anyhow::Result<Report> {
     // 2. Probe and read tags, and make sure the tags are good enough.
     let (probe, mut tags) = read_file_info(&file.path, &options.uploaded_filename).await?;
     // With a tagged copy, its tags are the metadata; the file's own stay in its raw dump,
@@ -468,6 +628,9 @@ pub async fn ingest_in(
     if let Some(copy) = &options.tags_from {
         revision_reason += &format!("; metadata from the tags of a copy ({}), not the stored file's", copy.filename);
     }
+    if shared_file.is_some() {
+        revision_reason += "; the same file as a track already in the library (plays that file)";
+    }
     if dated_by_hint {
         revision_reason += &match &tag_date {
             None => "; release date from the description (the tags have none)".to_string(),
@@ -484,6 +647,7 @@ pub async fn ingest_in(
         probe: &probe,
         tags: &tags,
         copy_tags: copy_tags.as_ref(),
+        shared_file,
     };
     let mut report = create_track_rows(conn, options, &new_file, &covers, &album_cover_blobs).await?;
     system.end(conn).await?;
@@ -820,6 +984,8 @@ struct NewFileInfo<'a> {
     tags: &'a TagInfo,
     /// The raw tags of the copy the metadata was read from, if any (see `TagsFrom`).
     copy_tags: Option<&'a serde_json::Value>,
+    /// The file is already stored, as this row: the track plays it too (no new file row).
+    shared_file: Option<Uuid>,
 }
 
 /// Creates the track and everything around it. `covers`: the embedded pictures' blobs;
@@ -855,8 +1021,8 @@ async fn create_track_rows(
         hints
     };
     // The file row is written last (see the comment on tracks.file_id in the schema),
-    // so its id is generated up front.
-    let file_id = Uuid::now_v7();
+    // so its id is generated up front. A file already stored is played as it is.
+    let file_id = file.shared_file.unwrap_or_else(Uuid::now_v7);
 
     // Credits: one per artist in the ARTIST tag (see `tags::split_artists`). A value like
     // "A feat. B" is NOT split; it's one credit. Fixing that is an edit.
@@ -995,6 +1161,30 @@ async fn create_track_rows(
     let mut album_covers_added = 0;
     if let Some(album_id) = album_id {
         album_covers_added = describe::add_album_covers(conn, album_id, album_covers, file.cover_volume).await?;
+        // An album this import created, still without covers of its own (none given):
+        // the track's, copied, in order. So it shows its own cover rather than borrowing
+        // its first track's, which may be another release's (e.g. a single made for a
+        // track that came in on an album first, see `merge_duplicate`).
+        let created = resolver.report_album.as_ref().is_some_and(|a| a.matched_by == MatchedBy::Created);
+        let has_covers = sqlx::query_scalar!(
+            r#"SELECT EXISTS (SELECT 1 FROM covers WHERE album_id = $1 AND trashed_at IS NULL) AS "e!""#,
+            album_id
+        )
+        .fetch_one(&mut *conn)
+        .await?;
+        if created && !has_covers {
+            let track_covers = sqlx::query_scalar!(
+                "SELECT id FROM covers WHERE track_id = $1 AND trashed_at IS NULL ORDER BY position, id",
+                track_id
+            )
+            .fetch_all(&mut *conn)
+            .await?;
+            for cover in track_covers {
+                if db::album_merges::copy_if_new(conn, cover, album_id).await?.is_some() {
+                    album_covers_added += 1;
+                }
+            }
+        }
     }
 
     for body in &tags.lyrics {
@@ -1037,20 +1227,22 @@ async fn create_track_rows(
     }
     let origin =
         db::sources::add_snapshot(conn, SourceOwner::Track(track_id), &options.origin).await?;
-    insert_file_row(
-        conn,
-        file_id,
-        origin.snapshot_id,
-        &options.uploaded_filename,
-        file.sha256,
-        file.size_bytes,
-        file.probe,
-        tags,
-        options.local_path.as_deref(),
-        file.copy_tags,
-    )
-    .await?;
-    db::blobs::register(conn, file.sha256, file.volume, Some(file.size_bytes)).await?;
+    if file.shared_file.is_none() {
+        insert_file_row(
+            conn,
+            file_id,
+            origin.snapshot_id,
+            &options.uploaded_filename,
+            file.sha256,
+            file.size_bytes,
+            file.probe,
+            tags,
+            options.local_path.as_deref(),
+            file.copy_tags,
+        )
+        .await?;
+        db::blobs::register(conn, file.sha256, file.volume, Some(file.size_bytes)).await?;
+    }
     for (cover_sha, _, _) in covers {
         db::blobs::register(conn, cover_sha, file.cover_volume, None).await?;
     }
@@ -1060,7 +1252,20 @@ async fn create_track_rows(
 
     // Things a person should look at: an artist name that matched several artists, the
     // same song id as another track, and tracks by the same artists with a similar title.
-    // Nothing is merged automatically.
+    // Nothing is merged automatically. (Not for a track playing a stored file: it's about
+    // to be merged into the track that has it, see `merge_duplicate`.)
+    if file.shared_file.is_some() {
+        return Ok(Report {
+            status: ReportStatus::Created,
+            track_id: Some(track_id),
+            same_song_as: Vec::new(),
+            artists: resolver.report_artists,
+            album: resolver.report_album,
+            album_covers_added,
+            warnings: resolver.warnings,
+            added: Vec::new(),
+        });
+    }
     for (name, chosen, artists) in &ambiguous {
         db::review::flag_ambiguous_artist(conn, track_id, name, *chosen, artists).await?;
     }
@@ -1084,6 +1289,7 @@ async fn create_track_rows(
         album: resolver.report_album,
         album_covers_added,
         warnings: resolver.warnings,
+        added: Vec::new(),
     })
 }
 

@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT count(*) AS \"n!\" FROM covers d\n        WHERE d.track_id = $1 AND d.trashed_at IS NULL\n          AND NOT EXISTS (SELECT 1 FROM covers k WHERE k.track_id = $2 AND k.trashed_at IS NULL\n                                                 AND k.blob_sha256 = d.blob_sha256)\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "n!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "191e1d014dbec2747ba128454e878ca5dd9bf7897f4283709ba1f65660c700a7"
+}

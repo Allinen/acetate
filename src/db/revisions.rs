@@ -706,6 +706,61 @@ pub async fn set_primary_variant(
 }
 
 /// The latest internal revision of a variant of `track_id`: (revision id, data).
+/// Whether `candidate` is metadata the track has, or has had: any revision of any of its
+/// variants. Credits are compared by the artist they lead to now (following merges) and
+/// role, not by alias: a name that now resolves to the artist a credit's artist was merged
+/// into is the same credit. (For `ingest::merge_duplicate`: tags that match the track's
+/// history aren't new.)
+pub async fn metadata_is_known(
+    conn: &mut PgConnection,
+    track_id: Uuid,
+    candidate: &TrackMetadata,
+) -> anyhow::Result<bool> {
+    let rows = sqlx::query_scalar!(
+        "SELECT r.data FROM track_revisions r JOIN track_variants v ON v.id = r.variant_id WHERE v.track_id = $1",
+        track_id
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    let known: Vec<TrackMetadata> = rows
+        .into_iter()
+        .filter(|data| data.get("title").is_some())
+        .filter_map(|data| serde_json::from_value(data).ok())
+        .collect();
+    let normalized = |m: &TrackMetadata, now: &HashMap<Uuid, Uuid>| {
+        let credits: Vec<(Uuid, String)> = m
+            .credits
+            .iter()
+            .map(|c| (*now.get(&c.artist_id).unwrap_or(&c.artist_id), c.role.clone()))
+            .collect();
+        (m.title.clone(), m.release_date.clone(), m.genres.clone(), m.comment.clone(), credits)
+    };
+    let ids: Vec<Uuid> = known.iter().chain(std::iter::once(candidate)).flat_map(|m| m.credits.iter().map(|c| c.artist_id)).collect();
+    let now: HashMap<Uuid, Uuid> = sqlx::query!(
+        r#"SELECT id AS "id!", COALESCE(merged_into, id) AS "now!" FROM artists WHERE id = ANY($1)"#,
+        &ids
+    )
+    .fetch_all(&mut *conn)
+    .await?
+    .into_iter()
+    .map(|r| (r.id, r.now))
+    .collect();
+    let wanted = normalized(candidate, &now);
+    Ok(known.iter().any(|m| normalized(m, &now) == wanted))
+}
+
+/// A track's current metadata: its primary variant's latest revision.
+pub async fn primary_metadata(conn: &mut PgConnection, track_id: Uuid) -> anyhow::Result<Option<TrackMetadata>> {
+    let variant = sqlx::query_scalar!("SELECT primary_variant_id FROM tracks WHERE id = $1", track_id)
+        .fetch_optional(&mut *conn)
+        .await?
+        .flatten();
+    let Some(variant) = variant else {
+        return Ok(None);
+    };
+    Ok(latest_internal(conn, track_id, variant).await?.map(|(_, data)| data))
+}
+
 async fn latest_internal(
     conn: &mut PgConnection,
     track_id: Uuid,
@@ -818,12 +873,21 @@ pub struct MergePicks {
     pub file: Side,
     /// Whose covers come first (the first is the main cover); the other side's follow.
     pub covers: Side,
+    /// What the duplicate has that the kept track has too (a variant whose metadata the
+    /// kept track has or had, see `metadata_is_known`; a cover with the same image) stays
+    /// with the duplicate instead of being doubled. For a file imported again (see `ingest`); off for merges by hand.
+    pub leave_identical: bool,
+    /// None of the duplicate's variants move: its metadata isn't news (e.g. the same file
+    /// imported again, whose tags are the same bytes). For `ingest`; off for merges by hand.
+    pub leave_variants: bool,
 }
 
 #[derive(Debug, Serialize)]
 pub struct MergedTracks {
     /// The track that was kept.
     pub track_id: Uuid,
+    /// The merge (`track_merges`), e.g. to undo it.
+    pub merge_id: Uuid,
     pub variants_moved: usize,
     pub lyrics_moved: usize,
 }
@@ -940,14 +1004,31 @@ pub async fn merge_tracks(
     let kept_external = write_external(conn, into, None, &facts, Source::Edit, &reason).await?;
 
     // 3. Variants: the duplicate's become the kept track's, with their revisions (the
-    //    foreign key moves those along). The duplicate keeps no current metadata.
-    let variants = sqlx::query_as!(
+    //    foreign key moves those along). The duplicate keeps no current metadata. With
+    //    `leave_identical`, one whose metadata the kept track has or had stays behind.
+    let mut variants = sqlx::query_as!(
         MovedVariant,
         "SELECT id, label FROM track_variants WHERE track_id = $1 ORDER BY id",
         from
     )
     .fetch_all(&mut *conn)
     .await?;
+    if picks.leave_variants {
+        variants.clear();
+    } else if picks.leave_identical {
+        let mut differing = Vec::new();
+        for variant in variants {
+            let known = match latest_internal(conn, from, variant.id).await? {
+                Some((_, data)) => metadata_is_known(conn, into, &data).await?,
+                None => false,
+            };
+            if !known {
+                differing.push(variant);
+            }
+        }
+        variants = differing;
+    }
+    let moved_variant_ids: Vec<Uuid> = variants.iter().map(|v| v.id).collect();
     sqlx::query!("UPDATE tracks SET primary_variant_id = NULL WHERE id = $1", from)
         .execute(&mut *conn)
         .await?;
@@ -956,9 +1037,9 @@ pub async fn merge_tracks(
         .await?;
     let from_label = format!(" (from \"{dupe_title}\")");
     sqlx::query!(
-        "UPDATE track_variants SET track_id = $1, label = label || $3 WHERE track_id = $2",
+        "UPDATE track_variants SET track_id = $1, label = label || $3 WHERE id = ANY($2)",
         into,
-        from,
+        &moved_variant_ids,
         from_label
     )
     .execute(&mut *conn)
@@ -1005,13 +1086,32 @@ pub async fn merge_tracks(
         Some(id)
     };
 
-    // 5. Covers: all of them move over; the picked side's come first.
+    // 5. Covers: all of them move over; the picked side's come first. With
+    //    `leave_identical`, an image the kept track has already stays behind.
     let kept_covers = cover_positions(conn, into).await?;
-    let dupe_covers = cover_positions(conn, from).await?;
+    let leave: Vec<Uuid> = if picks.leave_identical {
+        sqlx::query_scalar!(
+            r#"
+            SELECT d.id FROM covers d
+            WHERE d.track_id = $1
+              AND EXISTS (SELECT 1 FROM covers k WHERE k.track_id = $2 AND k.trashed_at IS NULL
+                                                     AND k.blob_sha256 = d.blob_sha256)
+            "#,
+            from,
+            into
+        )
+        .fetch_all(&mut *conn)
+        .await?
+    } else {
+        Vec::new()
+    };
+    let dupe_covers: Vec<CoverPosition> =
+        cover_positions(conn, from).await?.into_iter().filter(|c| !leave.contains(&c.id)).collect();
     let dupe_all_covers = sqlx::query_scalar!(
-        "UPDATE covers SET track_id = $2 WHERE track_id = $1 RETURNING id",
+        "UPDATE covers SET track_id = $2 WHERE track_id = $1 AND NOT (id = ANY($3)) RETURNING id",
         from,
-        into
+        into,
+        &leave
     )
     .fetch_all(&mut *conn)
     .await?;
@@ -1107,10 +1207,11 @@ pub async fn merge_tracks(
         flags,
         annotations,
     };
-    sqlx::query!(
+    let merge_id = sqlx::query_scalar!(
         r#"
         INSERT INTO track_merges (into_track_id, from_track_id, picks, reason, moved)
         VALUES ($1, $2, $3, $4, $5)
+        RETURNING id
         "#,
         into,
         from,
@@ -1118,12 +1219,13 @@ pub async fn merge_tracks(
         reason,
         serde_json::to_value(&record)?
     )
-    .execute(&mut *conn)
+    .fetch_one(&mut *conn)
     .await?;
 
     system.end(conn).await?;
     Ok(MergedTracks {
         track_id: into,
+        merge_id,
         variants_moved: record.variants.len(),
         lyrics_moved: lyrics.len(),
     })

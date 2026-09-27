@@ -50,6 +50,10 @@ pub struct Hints {
     /// Don't credit COMPOSER as producers (e.g. store downloads, whose COMPOSER is the
     /// songwriter's legal name). `--no-composers`.
     pub no_composers: bool,
+    /// A file already stored only gets the new origin (not merged, see
+    /// `ingest::merge_duplicate`). Quicker when files are never stored twice.
+    /// `--no-merge-duplicates`.
+    pub no_duplicate_merge: bool,
 }
 
 /// For `Hints::first_artist_sources`: the hints with those ids given to `name` (the first
@@ -168,6 +172,10 @@ pub struct Report {
     pub album: Option<Resolved>,
     pub album_covers_added: usize,
     pub warnings: Vec<String>,
+    /// For a file that was already stored: what this import added to its track (see
+    /// `ingest::merge_duplicate`), e.g. "on the album \"X\"". Empty: nothing.
+    #[serde(default)]
+    pub added: Vec<String>,
 }
 
 impl Report {
@@ -180,6 +188,7 @@ impl Report {
             album: None,
             album_covers_added: 0,
             warnings: Vec::new(),
+            added: Vec::new(),
         }
     }
 }
@@ -632,6 +641,7 @@ pub fn description_json(
         "first_artist": first_artist,
         "restrict_to": restrict_to,
         "no_composers": hints.no_composers,
+        "no_duplicate_merge": hints.no_duplicate_merge,
         "lax_artist_names": hints.lax_artist_names,
     })
 }
@@ -659,6 +669,9 @@ pub struct NewDescription {
     /// Don't credit COMPOSER as producers (see `Hints::no_composers`).
     #[serde(default)]
     pub no_composers: bool,
+    /// A file already stored only gets the new origin (see `Hints::no_duplicate_merge`).
+    #[serde(default)]
+    pub no_duplicate_merge: bool,
     /// See `Hints::lax_artist_names`.
     #[serde(default)]
     pub lax_artist_names: bool,
@@ -818,6 +831,7 @@ impl NewDescription {
                 skip_embedded_covers: self.track.skip_embedded_covers,
                 original_filename: self.track.original_filename,
                 no_composers: self.no_composers,
+                no_duplicate_merge: self.no_duplicate_merge,
             },
             restrict_to: self.restrict_to,
             volume: self.volume,

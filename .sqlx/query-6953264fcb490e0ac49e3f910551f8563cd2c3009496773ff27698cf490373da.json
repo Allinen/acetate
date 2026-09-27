@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "UPDATE covers SET track_id = $2 WHERE track_id = $1 RETURNING id",
+  "query": "UPDATE covers SET track_id = $2 WHERE track_id = $1 AND NOT (id = ANY($3)) RETURNING id",
   "describe": {
     "columns": [
       {
@@ -18,12 +18,13 @@
     "parameters": {
       "Left": [
         "Uuid",
-        "Uuid"
+        "Uuid",
+        "UuidArray"
       ]
     },
     "nullable": [
       false
     ]
   },
-  "hash": "361137292ae30ba096b1284249d915d2424c5158875e6368c1e7070965f55628"
+  "hash": "6953264fcb490e0ac49e3f910551f8563cd2c3009496773ff27698cf490373da"
 }

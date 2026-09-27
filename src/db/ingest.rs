@@ -43,6 +43,34 @@ pub async fn find_file_by_sha256(
     Ok(row.map(|track_id| StoredFile { track_id }))
 }
 
+/// The stored file with these bytes and the track playing it as its current file (the
+/// oldest, if several share it). None if there's none, or it's only a previous file.
+pub async fn current_file_by_sha256(conn: &mut PgConnection, sha256: &str) -> sqlx::Result<Option<(Uuid, Uuid)>> {
+    let row = sqlx::query!(
+        r#"
+        SELECT f.id AS file_id, t.id AS track_id
+        FROM files f JOIN tracks t ON t.file_id = f.id
+        WHERE f.sha256 = $1 AND f.purged_at IS NULL
+        ORDER BY t.id
+        LIMIT 1
+        "#,
+        sha256
+    )
+    .fetch_optional(conn)
+    .await?;
+    Ok(row.map(|r| (r.file_id, r.track_id)))
+}
+
+/// How many source snapshots albums and artists have: to tell whether an import added ids
+/// to any (see `ingest::merge_duplicate`).
+pub async fn album_and_artist_snapshots(conn: &mut PgConnection) -> sqlx::Result<i64> {
+    sqlx::query_scalar!(
+        r#"SELECT count(*) AS "n!" FROM source_snapshots ss JOIN sources s ON s.id = ss.source_id WHERE s.track_id IS NULL"#
+    )
+    .fetch_one(conn)
+    .await
+}
+
 /// The tracks having a file (current or previous, not purged) imported from `path`.
 pub async fn tracks_imported_from(conn: &mut PgConnection, path: &str) -> sqlx::Result<Vec<Uuid>> {
     sqlx::query_scalar!(

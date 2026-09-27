@@ -234,6 +234,16 @@ struct IngestArgs {
     /// where COMPOSER is the songwriter's legal name).
     #[arg(long)]
     no_composers: bool,
+    /// A file that's already stored only gets the new origin. Without this, what the
+    /// import says that its track doesn't have yet (another album, differing metadata,
+    /// covers, ids) is merged into it (an undoable merge). Quicker for libraries where
+    /// the same file never comes twice.
+    #[arg(long)]
+    no_merge_duplicates: bool,
+    /// Start at file N, as the progress shows it (`[N/total]`), e.g. to go on after an
+    /// interrupted run. The same folder, filters and flags give the same order.
+    #[arg(long, value_name = "N")]
+    resume_from: Option<usize>,
     /// Work out and print what would happen, without changing anything.
     #[arg(long)]
     dry_run: bool,
@@ -565,6 +575,8 @@ async fn ingest_options(args: &IngestArgs, local: Option<(&sqlx::PgPool, &BlobSt
         tag_fallback: args.tag_fallback,
         lax_artist_names: args.lax_artist_name,
         no_composers: args.no_composers,
+        no_duplicate_merge: args.no_merge_duplicates,
+        resume_from: args.resume_from,
         filter: ingest_command::PathFilter::new(&args.include, &args.exclude)?,
         dry_run: args.dry_run,
     })

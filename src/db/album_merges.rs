@@ -269,7 +269,7 @@ async fn move_covers(conn: &mut PgConnection, from: Uuid, into: Uuid) -> sqlx::R
 
 /// Adds a copy of a cover (its image) to the album's covers, after the others, unless the
 /// album already has that image. The cover may be in the trash (the image is still there).
-async fn copy_if_new(conn: &mut PgConnection, cover_id: Uuid, album_id: Uuid) -> anyhow::Result<Option<Uuid>> {
+pub(crate) async fn copy_if_new(conn: &mut PgConnection, cover_id: Uuid, album_id: Uuid) -> anyhow::Result<Option<Uuid>> {
     let Some(cover) = sqlx::query!(
         r#"
         SELECT blob_sha256, mime, width, height FROM covers c

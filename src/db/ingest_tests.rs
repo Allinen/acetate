@@ -956,3 +956,173 @@ async fn metadata_can_come_from_a_tagged_copy_of_an_untouched_file(
     assert_eq!(covers, 1, "the copy's embedded picture");
     Ok(())
 }
+
+async fn albums_of(pool: &PgPool, track: Uuid) -> anyhow::Result<Vec<(String, String)>> {
+    Ok(sqlx::query_as(
+        "SELECT a.title, a.kind FROM album_tracks at JOIN albums a ON a.id = at.album_id WHERE at.track_id = $1 ORDER BY a.kind",
+    )
+    .bind(track)
+    .fetch_all(pool)
+    .await?)
+}
+
+#[sqlx::test]
+async fn a_stored_file_imported_again_merges_what_is_new(
+    _: PgPoolOptions,
+    connect: PgConnectOptions,
+) -> anyhow::Result<()> {
+    let lib = setup(connect).await?;
+    let dir = tempfile::tempdir()?;
+    let store = BlobStore::open(dir.path())?;
+    let on = |album_id: i64, single: bool| Hints {
+        album: Some(AlbumHint {
+            sources: vec![netease(Kind::Album, "album_id", album_id)],
+            single: Some(single),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let merges = || async { count(&lib.owner, "SELECT count(*) FROM track_merges").await };
+
+    // On the album first.
+    let first = ingest_file(&lib.owner, &store, "01 - Glass Harbor.flac", &options(None, 1, on(100, false)), false).await?;
+    let track = first.track_id.unwrap();
+
+    // The same file again, same album: nothing new, a plain duplicate, no merge.
+    let again = ingest_file(&lib.owner, &store, "01 - Glass Harbor.flac", &options(None, 1, on(100, false)), false).await?;
+    assert_eq!(again.status, ReportStatus::Duplicate);
+    assert!(again.added.is_empty(), "{:?}", again.added);
+    assert_eq!(merges().await?, 0);
+
+    // As a single (another NetEase album): the track goes on the single too.
+    let dry = ingest_file(&lib.owner, &store, "01 - Glass Harbor.flac", &options(None, 1, on(200, true)), true).await?;
+    assert!(dry.added.iter().any(|a| a == "on the single \"Tidelines\""), "{:?}", dry.added);
+    assert_eq!(merges().await?, 0, "a dry run keeps nothing");
+    let single = ingest_file(&lib.owner, &store, "01 - Glass Harbor.flac", &options(None, 1, on(200, true)), false).await?;
+    assert_eq!((single.status, single.track_id), (ReportStatus::Duplicate, Some(track)));
+    assert!(single.added.iter().any(|a| a == "on the single \"Tidelines\""), "{:?}", single.added);
+    assert_eq!(
+        albums_of(&lib.owner, track).await?,
+        [("Tidelines".to_string(), "album".to_string()), ("Tidelines".to_string(), "single".to_string())]
+    );
+    assert_eq!(merges().await?, 1);
+    // Nothing doubled: same metadata (no new variant), same cover, same lyrics.
+    let variants = count(&lib.owner, "SELECT count(*) FROM track_variants v JOIN tracks t ON t.id = v.track_id WHERE t.merged_into IS NULL AND t.title = 'Glass Harbor'").await?;
+    assert_eq!(variants, 1);
+    let (covers, lyrics): (i64, i64) = sqlx::query_as(
+        "SELECT (SELECT count(*) FROM covers WHERE track_id = $1), (SELECT count(*) FROM lyrics WHERE track_id = $1)",
+    )
+    .bind(track)
+    .fetch_one(&lib.owner)
+    .await?;
+    assert_eq!(covers, 1);
+    assert!(lyrics <= 1);
+    // The merged-away track plays the same file; the kept one still has it.
+    let files = count(&lib.owner, "SELECT count(*) FROM files").await?;
+    assert_eq!(files, 4, "the library's 3, plus Glass Harbor once");
+
+    // Undone like any merge: off the single again.
+    let merge: Uuid = sqlx::query_scalar("SELECT id FROM track_merges").fetch_one(&lib.owner).await?;
+    let mut tx = db::begin(&lib.app, Some(lib.carol)).await?;
+    db::revisions::undo_track_merge(&mut tx, merge, "").await?;
+    tx.commit().await?;
+    assert_eq!(albums_of(&lib.owner, track).await?, [("Tidelines".to_string(), "album".to_string())]);
+
+    // Turned off: only the origin, as before.
+    let off = Hints { no_duplicate_merge: true, ..on(300, true) };
+    let plain = ingest_file(&lib.owner, &store, "01 - Glass Harbor.flac", &options(None, 1, off), false).await?;
+    assert!(plain.added.is_empty());
+    assert_eq!(albums_of(&lib.owner, track).await?.len(), 1);
+    Ok(())
+}
+
+#[sqlx::test]
+async fn a_tagged_copy_with_other_metadata_becomes_another_variant(
+    _: PgPoolOptions,
+    connect: PgConnectOptions,
+) -> anyhow::Result<()> {
+    let lib = setup(connect).await?;
+    let dir = tempfile::tempdir()?;
+    let store = BlobStore::open(dir.path())?;
+    // Stored with Glass Harbor's tags (from a copy); then again with Undertow's.
+    let copy = |name: &str| IngestOptions {
+        tags_from: Some(ingest::TagsFrom {
+            path: Path::new(env!("CARGO_MANIFEST_DIR")).join("test-audio").join(name),
+            filename: name.into(),
+        }),
+        ..options(None, 1, Hints::default())
+    };
+    let first = ingest_file(&lib.owner, &store, "untitled_bounce_final_v3.flac", &copy("01 - Glass Harbor.flac"), false).await?;
+    let track = first.track_id.unwrap();
+    let again = ingest_file(&lib.owner, &store, "untitled_bounce_final_v3.flac", &copy("02 - Undertow.flac"), false).await?;
+    assert_eq!(again.track_id, Some(track));
+    assert!(again.added.iter().any(|a| a.contains("differs (as another variant)")), "{:?}", again.added);
+    // The track's own metadata stays; Undertow's is a second variant.
+    let title: String = sqlx::query_scalar("SELECT title FROM tracks WHERE id = $1").bind(track).fetch_one(&lib.owner).await?;
+    assert_eq!(title, "Glass Harbor");
+    let variants: i64 = sqlx::query_scalar("SELECT count(*) FROM track_variants WHERE track_id = $1").bind(track).fetch_one(&lib.owner).await?;
+    assert_eq!(variants, 2);
+    Ok(())
+}
+
+#[sqlx::test]
+async fn an_album_made_for_a_track_gets_its_covers(
+    _: PgPoolOptions,
+    connect: PgConnectOptions,
+) -> anyhow::Result<()> {
+    use lofty::config::WriteOptions;
+    use lofty::file::TaggedFileExt;
+    use lofty::picture::{MimeType, Picture, PictureType};
+    use lofty::tag::TagExt;
+
+    let lib = setup(connect).await?;
+    let dir = tempfile::tempdir()?;
+    let store = BlobStore::open(dir.path())?;
+    let pool = &lib.owner;
+    // A track's or an album's covers (ids are unique across both), in order.
+    let covers_of = async |id: Uuid| -> anyhow::Result<Vec<String>> {
+        Ok(sqlx::query_scalar::<_, String>(
+            "SELECT blob_sha256 FROM covers WHERE (track_id = $1 OR album_id = $1) AND trashed_at IS NULL ORDER BY position",
+        )
+        .bind(id)
+        .fetch_all(pool)
+        .await?)
+    };
+
+    // On the album first (with Glass Harbor's embedded cover): the new album gets a copy.
+    let on = |album_id: i64, single: bool| Hints {
+        album: Some(AlbumHint { sources: vec![netease(Kind::Album, "album_id", album_id)], single: Some(single), ..Default::default() }),
+        ..Default::default()
+    };
+    let first = ingest_file(&lib.owner, &store, "01 - Glass Harbor.flac", &options(None, 1, on(100, false)), false).await?;
+    let track = first.track_id.unwrap();
+    let album_cover = covers_of(track).await?;
+    assert_eq!(album_cover.len(), 1);
+    assert_eq!(covers_of(first.album.unwrap().id.unwrap()).await?, album_cover);
+
+    // Again as a single, from a tagged copy whose cover is the single's own.
+    let copy = dir.path().join("single copy.flac");
+    std::fs::copy(Path::new(env!("CARGO_MANIFEST_DIR")).join("test-audio/01 - Glass Harbor.flac"), &copy)?;
+    let mut file = lofty::read_from_path(&copy)?;
+    let tag = file.primary_tag_mut().unwrap();
+    while !tag.pictures().is_empty() {
+        tag.remove_picture(0);
+    }
+    tag.push_picture(Picture::unchecked(tiny_png(7)).pic_type(PictureType::CoverFront).mime_type(MimeType::Png).build());
+    tag.save_to_path(&copy, WriteOptions::default())?;
+    let opts = IngestOptions {
+        tags_from: Some(ingest::TagsFrom { path: copy, filename: "single copy.flac".into() }),
+        ..options(None, 1, on(200, true))
+    };
+    let again = ingest_file(&lib.owner, &store, "01 - Glass Harbor.flac", &opts, false).await?;
+    assert!(again.added.iter().any(|a| a == "on the single \"Tidelines\""), "{:?}", again.added);
+
+    // The single shows its own cover; the track keeps the album's first, then the single's.
+    let single_cover = crate::storage::sha256_hex(&tiny_png(7));
+    let single: Uuid = sqlx::query_scalar("SELECT id FROM albums WHERE kind = 'single' AND title = 'Tidelines'")
+        .fetch_one(&lib.owner)
+        .await?;
+    assert_eq!(covers_of(single).await?, [single_cover.clone()]);
+    assert_eq!(covers_of(track).await?, [album_cover[0].clone(), single_cover]);
+    Ok(())
+}

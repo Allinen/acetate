@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT f.id AS file_id, t.id AS track_id\n        FROM files f JOIN tracks t ON t.file_id = f.id\n        WHERE f.sha256 = $1 AND f.purged_at IS NULL\n        ORDER BY t.id\n        LIMIT 1\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "file_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "files",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "track_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tracks",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "19ac39cd0607bef17c424a473ad3dd5367997df9b23915e00ef1f4099638a77e"
+}

@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT count(*) AS \"n!\" FROM lyrics n\n        WHERE n.track_id = $1 AND NOT EXISTS (SELECT 1 FROM lyrics e WHERE e.track_id = $2 AND e.body = n.body)\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "n!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "c5243a5eb80aaf55c740e391e7ae9f974469cc16048dcca9fa8d19cb79507631"
+}

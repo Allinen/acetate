@@ -48,6 +48,11 @@ pub struct Options {
     pub lax_artist_names: bool,
     /// See `Hints::no_composers`.
     pub no_composers: bool,
+    /// See `Hints::no_duplicate_merge`.
+    pub no_duplicate_merge: bool,
+    /// Start at this file (1-based, as the progress shows it: `[8726/12984]`), after
+    /// filtering and sorting. The ones before are left out as if done.
+    pub resume_from: Option<usize>,
     /// `--include` / `--exclude`.
     pub filter: PathFilter,
     pub dry_run: bool,
@@ -159,7 +164,20 @@ pub async fn run(target: Target<'_>, dir: &Path, options: Options) -> anyhow::Re
     // Fetches covers by URL, set up when the first one is needed.
     let mut artworks: Option<soundcloud::Artworks> = None;
 
+    // `--resume-from N`: the numbering stays the same as a full run's, so the progress
+    // lines match the interrupted run's.
+    let start = options.resume_from.unwrap_or(1);
+    if start == 0 || (start > files.len() && !files.is_empty()) {
+        anyhow::bail!("--resume-from {start}: there are files 1 to {}", files.len());
+    }
+    if start > 1 {
+        println!("resuming at [{start}/{}]: the {} before it are left out", files.len(), start - 1);
+    }
+
     for (index, path) in files.iter().enumerate() {
+        if index + 1 < start {
+            continue;
+        }
         // With the position, so a long run shows how far along it is.
         let shown = format!("[{}/{}] {}", index + 1, files.len(), path.strip_prefix(&root).unwrap_or(path).display());
         let mut info = options.layout.read(&root, path);
@@ -242,6 +260,7 @@ pub async fn run(target: Target<'_>, dir: &Path, options: Options) -> anyhow::Re
                 skip_embedded_covers: info.skip_embedded_covers,
                 original_filename: info.original_filename,
                 no_composers: options.no_composers,
+                no_duplicate_merge: options.no_duplicate_merge,
             },
             local_path: Some(path.display().to_string()),
             given: Default::default(),
@@ -359,11 +378,15 @@ fn print_report(shown: &str, report: &Report, path_warnings: &[String]) {
         ReportStatus::Created => println!("created    {id}  {shown}"),
         ReportStatus::Duplicate => println!("duplicate  {id}  {shown}"),
     }
-    if report.status == ReportStatus::Duplicate {
+    if report.status == ReportStatus::Duplicate && report.added.is_empty() {
         if report.album_covers_added > 0 {
             println!("    +{} album cover", report.album_covers_added);
         }
         return;
+    }
+    // A stored file imported again, with something new: merged into its track.
+    for added in &report.added {
+        println!("    + {added}");
     }
     let artists: Vec<String> = report
         .artists

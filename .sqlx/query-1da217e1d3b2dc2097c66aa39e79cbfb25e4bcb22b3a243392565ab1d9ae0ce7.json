@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT r.data FROM track_revisions r JOIN track_variants v ON v.id = r.variant_id WHERE v.track_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "data",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "track_revisions",
+            "name": "data"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "1da217e1d3b2dc2097c66aa39e79cbfb25e4bcb22b3a243392565ab1d9ae0ce7"
+}
