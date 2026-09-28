@@ -12,6 +12,7 @@ pub mod palette;
 pub mod player_bar;
 pub mod playlist;
 pub mod queue;
+pub mod settings;
 pub mod sidebar;
 pub mod track_table;
 pub mod track;
@@ -39,6 +40,7 @@ pub struct Pages {
     playlist: playlist::PlaylistPage,
     track: track::TrackPage,
     queue: queue::QueuePage,
+    pub settings: settings::SettingsPage,
 }
 
 impl Pages {
@@ -63,6 +65,10 @@ impl Pages {
             self.queue.show(ui, shell, player);
             return;
         }
+        if page == Page::Settings {
+            self.settings.show(ui, shell, player);
+            return;
+        }
         let Some(catalog) = shell.catalog.value.clone() else {
             ui.label(RichText::new(shell.library_status()).color(P.muted));
             return;
@@ -76,7 +82,7 @@ impl Pages {
             Page::Liked => self.playlist.show_liked(ui, shell, &catalog, player),
             Page::Playlist(id) => self.playlist.show(ui, shell, &catalog, id, player),
             Page::Track(id) => self.track.show(ui, shell, &catalog, id, player),
-            Page::NowPlaying | Page::Queue => {}
+            Page::NowPlaying | Page::Queue | Page::Settings => {}
         }
     }
 }

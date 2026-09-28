@@ -116,8 +116,12 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell, player: &PlayerView) {
         (None, Some(n)) => Some((n.0, P.accent)),
         (None, None) => None,
     };
-    let width = (full.right() - bar.right() - 70.0).max(80.0);
-    let right_rect = Rect::from_min_max(Pos2::new(full.right() - width, full.top()), Pos2::new(full.right() - 4.0, full.bottom()));
+    // The volume, at the far right; messages to its left.
+    let volume_rect = Rect::from_min_max(Pos2::new(full.right() - 150.0, full.top()), full.right_bottom());
+    volume(ui, shell, player, volume_rect);
+    let messages_right = volume_rect.left() - 16.0;
+    let width = (messages_right - bar.right() - 70.0).max(80.0);
+    let right_rect = Rect::from_min_max(Pos2::new(messages_right - width, full.top()), Pos2::new(messages_right, full.bottom()));
     if let Some((text, color)) = message {
         // Gone after a few seconds: draw again then.
         ctx.request_repaint_after(Duration::from_millis(500));
@@ -131,3 +135,63 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell, player: &PlayerView) {
         ui.painter().text(right_rect.right_center(), Align2::RIGHT_CENTER, format!("{place}{queued}"), font(12.0, medium()), P.faint);
     }
 }
+
+/// The volume: a speaker (click: mute) and a slider (click or drag; the wheel works too).
+fn volume(ui: &mut egui::Ui, shell: &mut Shell, player: &PlayerView, rect: Rect) {
+    let ctx = ui.ctx().clone();
+    let level = if player.muted { 0.0 } else { player.volume };
+    // The speaker: a box and a cone, and up to two arcs for how loud.
+    let speaker = Rect::from_center_size(Pos2::new(rect.left() + 12.0, rect.center().y), Vec2::splat(24.0));
+    let response = ui.interact(speaker, egui::Id::new("mute"), Sense::click());
+    let hover = ctx.animate_bool_with_time(response.id, response.hovered(), 0.12);
+    let color = widgets::lerp(P.muted, P.text, hover);
+    let c = speaker.center();
+    let painter = ui.painter();
+    painter.rect_filled(Rect::from_center_size(c - Vec2::new(4.0, 0.0), Vec2::new(4.0, 6.0)), 1, color);
+    painter.add(egui::Shape::convex_polygon(
+        vec![Pos2::new(c.x - 3.0, c.y - 3.0), Pos2::new(c.x + 2.0, c.y - 7.0), Pos2::new(c.x + 2.0, c.y + 7.0), Pos2::new(c.x - 3.0, c.y + 3.0)],
+        color,
+        egui::Stroke::NONE,
+    ));
+    if level == 0.0 {
+        let stroke = egui::Stroke::new(1.6, color);
+        painter.line_segment([Pos2::new(c.x + 5.0, c.y - 3.0), Pos2::new(c.x + 11.0, c.y + 3.0)], stroke);
+        painter.line_segment([Pos2::new(c.x + 5.0, c.y + 3.0), Pos2::new(c.x + 11.0, c.y - 3.0)], stroke);
+    } else {
+        for (n, radius) in [5.0, 9.0].into_iter().enumerate() {
+            if level > n as f32 * 0.5 {
+                let points: Vec<Pos2> = (0..=8).map(|i| c + Vec2::angled(-0.8 + 1.6 * i as f32 / 8.0) * radius + Vec2::new(2.0, 0.0)).collect();
+                painter.add(egui::Shape::line(points, egui::Stroke::new(1.6, color)));
+            }
+        }
+    }
+    if response.on_hover_text(if player.muted { "Unmute (m)" } else { "Mute (m)" }).clicked() {
+        shell.act(Action::ToggleMute);
+    }
+
+    // The slider.
+    let track = Rect::from_min_max(Pos2::new(speaker.right() + 8.0, rect.center().y - 8.0), Pos2::new(rect.right() - 6.0, rect.center().y + 8.0));
+    let response = ui.interact(track, egui::Id::new("volume"), Sense::click_and_drag());
+    let hover = ctx.animate_bool_with_time(response.id, response.hovered() || response.dragged(), 0.12);
+    if let Some(pointer) = response.interact_pointer_pos() {
+        if response.clicked() || response.dragged() {
+            shell.act(Action::SetVolume(((pointer.x - track.left()) / track.width()).clamp(0.0, 1.0)));
+        }
+    }
+    if response.hovered() {
+        let scroll = ui.input(|i| i.smooth_scroll_delta.y);
+        if scroll != 0.0 {
+            shell.act(Action::VolumeBy(scroll / 1000.0));
+        }
+    }
+    let bar = Rect::from_center_size(track.center(), Vec2::new(track.width(), 4.0 + hover * 2.0));
+    let painter = ui.painter();
+    painter.rect_filled(bar, 3, P.surface_hi);
+    let filled = Rect::from_min_size(bar.min, Vec2::new(bar.width() * level, bar.height()));
+    painter.rect_filled(filled, 3, widgets::lerp(P.muted, P.accent, hover));
+    if hover > 0.0 {
+        painter.circle_filled(Pos2::new(filled.right(), bar.center().y), 5.0 * hover, P.text);
+    }
+    response.on_hover_text(format!("Volume {}%  (9 / 0)", (player.volume * 100.0).round()));
+}
+

@@ -30,7 +30,7 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell, page: Page, username: &str) {
         Page::NowPlaying => Some(3),
         Page::Queue => Some(4),
         // Playlists are marked in their own list below.
-        Page::Liked | Page::Playlist(_) | Page::Track(_) => None,
+        Page::Liked | Page::Playlist(_) | Page::Track(_) | Page::Settings => None,
     };
     let height = 36.0;
     let top = ui.cursor().top();
@@ -100,9 +100,18 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell, page: Page, username: &str) {
         });
 
     ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
-        if ui.add(egui::Button::new(RichText::new("Log out").color(P.muted)).frame(false)).clicked() {
-            shell.act(Action::LogOut);
-        }
+        ui.horizontal(|ui| {
+            let settings = RichText::new("Settings").color(if page == Page::Settings { P.text } else { P.muted });
+            if ui.add(egui::Button::new(settings).frame(false)).on_hover_text("Ctrl+,").clicked() {
+                shell.act(Action::Go(Page::Settings));
+            }
+            if ui.add(egui::Button::new(RichText::new("Keys").color(P.muted)).frame(false)).on_hover_text("?").clicked() {
+                shell.act(Action::ShowKeys);
+            }
+            if ui.add(egui::Button::new(RichText::new("Log out").color(P.muted)).frame(false)).clicked() {
+                shell.act(Action::LogOut);
+            }
+        });
         ui.label(RichText::new(username).color(P.muted).font(font(13.0, medium())));
         let status = ui.label(RichText::new(shell.library_status()).color(P.faint).small());
         if status.on_hover_text("F5: check for changes now").clicked() {

@@ -9,6 +9,7 @@
 //! - `playback`: the queue and the audio.
 //! - `playlists`: playlists, kept locally like the catalog.
 //! - `resume`: the queue kept between runs.
+//! - `settings`: volume and sound output.
 //! - `ui`: the window, its pages and the pieces they're drawn with.
 
 mod api;
@@ -18,6 +19,7 @@ mod lyrics;
 mod playback;
 mod playlists;
 mod resume;
+mod settings;
 mod ui;
 
 fn main() -> eframe::Result {

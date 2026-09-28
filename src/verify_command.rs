@@ -43,8 +43,12 @@ pub struct Options {
 
 pub async fn verify_dir(pool: &PgPool, store: &BlobStore, dir: &Path, options: Options) -> anyhow::Result<()> {
     let root = std::fs::canonicalize(dir).with_context(|| format!("opening {}", dir.display()))?;
+    // The folder asked for must be readable (else there's nothing to check); anything
+    // below it that isn't is skipped with a warning, and reported.
+    std::fs::read_dir(&root).with_context(|| format!("reading {}", root.display()))?;
     let mut files = Vec::new();
-    list_files(&root, &mut files)?;
+    let mut unreadable_dirs = Vec::new();
+    list_files(&root, &mut files, &mut unreadable_dirs);
     files.sort();
     println!("{} files in {} (hashing, this reads every file once)", files.len(), root.display());
 
@@ -79,7 +83,8 @@ pub async fn verify_dir(pool: &PgPool, store: &BlobStore, dir: &Path, options: O
     // Hashing finishes in any order; list by path.
     results.sort();
     unreadable.sort();
-    report(&root, &results, &unreadable);
+    unreadable_dirs.sort();
+    report(&root, &results, &unreadable, &unreadable_dirs);
     let ok = |s: Status| matches!(s, Status::InLibrary | Status::ForReview);
     if let Some(path) = &options.list_ok {
         write_list(path, results.iter().filter(|(_, s)| ok(*s)).map(|(p, _)| p))?;
@@ -87,7 +92,8 @@ pub async fn verify_dir(pool: &PgPool, store: &BlobStore, dir: &Path, options: O
     }
     if let Some(path) = &options.list_missing {
         let not_ok = results.iter().filter(|(_, s)| !ok(*s)).map(|(p, _)| p);
-        write_list(path, not_ok.chain(unreadable.iter().map(|(p, _)| p)))?;
+        let skipped = unreadable.iter().chain(&unreadable_dirs).map(|(p, _)| p);
+        write_list(path, not_ok.chain(skipped))?;
         println!("files not stored listed in {}", path.display());
     }
     Ok(())
@@ -112,7 +118,7 @@ async fn lookup(pool: &PgPool, shas: &[String]) -> anyhow::Result<Vec<(bool, boo
     Ok(rows.into_iter().map(|r| (r.in_library, r.for_review)).collect())
 }
 
-fn report(root: &Path, results: &[(PathBuf, Status)], unreadable: &[(PathBuf, String)]) {
+fn report(root: &Path, results: &[(PathBuf, Status)], unreadable: &[(PathBuf, String)], unreadable_dirs: &[(PathBuf, String)]) {
     let count = |status: Status| results.iter().filter(|(_, s)| *s == status).count();
     println!();
     println!("stored in Acetate:        {}", count(Status::InLibrary));
@@ -120,6 +126,9 @@ fn report(root: &Path, results: &[(PathBuf, Status)], unreadable: &[(PathBuf, St
     println!("NOT stored:               {}", count(Status::Missing));
     println!("stored, blob damaged:     {}", count(Status::BlobDamaged));
     println!("couldn't be read:         {}", unreadable.len());
+    if !unreadable_dirs.is_empty() {
+        println!("folders that couldn't be read: {}  (the files in them weren't checked at all)", unreadable_dirs.len());
+    }
 
     let not_ok: Vec<&PathBuf> = results
         .iter()
@@ -127,7 +136,7 @@ fn report(root: &Path, results: &[(PathBuf, Status)], unreadable: &[(PathBuf, St
         .map(|(p, _)| p)
         .chain(unreadable.iter().map(|(p, _)| p))
         .collect();
-    if not_ok.is_empty() {
+    if not_ok.is_empty() && unreadable_dirs.is_empty() {
         println!("\nEverything here is stored in Acetate.");
         return;
     }
@@ -151,6 +160,9 @@ fn report(root: &Path, results: &[(PathBuf, Status)], unreadable: &[(PathBuf, St
     }
     for (path, err) in unreadable.iter().take(10) {
         println!("  couldn't read {}: {err}", path.display());
+    }
+    for (path, err) in unreadable_dirs.iter().take(20) {
+        println!("  couldn't read the folder {}: {err}", path.display());
     }
     for (path, _) in results.iter().filter(|(_, s)| *s == Status::BlobDamaged).take(10) {
         println!("  DAMAGED: {} is in the database but its blob is missing or the wrong size", path.display());
@@ -184,7 +196,11 @@ pub async fn verify_blobs(pool: &PgPool, store: &BlobStore) -> anyhow::Result<()
     let mut on_disk: Vec<(String, PathBuf)> = Vec::new();
     for volume in store.volumes() {
         let mut files = Vec::new();
-        list_files(volume.blobs_dir(), &mut files)?;
+        let mut unreadable = Vec::new();
+        list_files(volume.blobs_dir(), &mut files, &mut unreadable);
+        if !unreadable.is_empty() {
+            println!("volume {}: {} folders couldn't be read (their blobs weren't checked)", volume.name, unreadable.len());
+        }
         println!("volume {}: {} blobs in {}", volume.name, files.len(), volume.blobs_dir().display());
         on_disk.extend(files.into_iter().map(|p| (volume.name.clone(), p)));
     }
@@ -261,18 +277,30 @@ async fn hash_all(paths: Vec<PathBuf>) -> Vec<(PathBuf, std::io::Result<(String,
     results
 }
 
-/// All files below `dir`, recursively. Symlinked folders aren't followed.
-fn list_files(dir: &Path, out: &mut Vec<PathBuf>) -> anyhow::Result<()> {
-    for entry in std::fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
-        let entry = entry?;
-        let kind = entry.file_type()?;
-        if kind.is_dir() {
-            list_files(&entry.path(), out)?;
-        } else if kind.is_file() || kind.is_symlink() {
-            out.push(entry.path());
+/// All files below `dir`, recursively. Symlinked folders aren't followed. A folder (or
+/// an entry) that can't be read is skipped with a warning and added to `unreadable`:
+/// one unreadable folder doesn't stop the rest.
+fn list_files(dir: &Path, out: &mut Vec<PathBuf>, unreadable: &mut Vec<(PathBuf, String)>) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(err) => {
+            eprintln!("warning: can't read the folder {} ({err}); skipping it", dir.display());
+            unreadable.push((dir.to_path_buf(), err.to_string()));
+            return;
+        }
+    };
+    for entry in entries {
+        let kind = entry.and_then(|e| Ok((e.file_type()?, e.path())));
+        match kind {
+            Ok((kind, path)) if kind.is_dir() => list_files(&path, out, unreadable),
+            Ok((kind, path)) if kind.is_file() || kind.is_symlink() => out.push(path),
+            Ok(_) => {}
+            Err(err) => {
+                eprintln!("warning: can't read an entry in {} ({err}); skipping it", dir.display());
+                unreadable.push((dir.to_path_buf(), err.to_string()));
+            }
         }
     }
-    Ok(())
 }
 
 fn write_list<'a>(path: &Path, paths: impl Iterator<Item = &'a PathBuf>) -> anyhow::Result<()> {
@@ -282,4 +310,31 @@ fn write_list<'a>(path: &Path, paths: impl Iterator<Item = &'a PathBuf>) -> anyh
         text.push('\n');
     }
     std::fs::write(path, text).with_context(|| format!("writing {}", path.display()))
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn an_unreadable_folder_is_skipped_and_reported_not_fatal() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("ok")).unwrap();
+        std::fs::create_dir_all(dir.path().join("locked/inner")).unwrap();
+        std::fs::write(dir.path().join("ok/a.txt"), "a").unwrap();
+        std::fs::write(dir.path().join("locked/inner/b.txt"), "b").unwrap();
+        std::fs::set_permissions(dir.path().join("locked"), std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let (mut files, mut unreadable) = (Vec::new(), Vec::new());
+        super::list_files(dir.path(), &mut files, &mut unreadable);
+        // (As root the folder is readable anyway: then nothing is skipped.)
+        let running_as_root = std::fs::read_dir(dir.path().join("locked")).is_ok();
+        std::fs::set_permissions(dir.path().join("locked"), std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert!(files.contains(&dir.path().join("ok/a.txt")), "the rest is still listed");
+        if !running_as_root {
+            assert_eq!(unreadable.len(), 1);
+            assert_eq!(unreadable[0].0, dir.path().join("locked"));
+        }
+    }
 }

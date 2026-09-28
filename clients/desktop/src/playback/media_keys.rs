@@ -19,6 +19,7 @@ pub struct MediaKeys {
     controls: Mutex<MediaControls>,
     /// What the system was last told: (track, playing, paused), so it's only told changes.
     told: Mutex<Option<(Option<Uuid>, bool, bool)>>,
+    told_volume: Mutex<Option<f32>>,
     /// Where covers are kept on disk (the system shows them from there).
     covers: PathBuf,
 }
@@ -27,7 +28,11 @@ impl MediaKeys {
     /// Connects to the system's media controls. None if there are none (or it failed:
     /// the app works without them).
     pub fn start(controller: &Arc<Controller>, runtime: Handle, covers: PathBuf) -> Option<MediaKeys> {
-        let config = PlatformConfig { display_name: "Acetate", dbus_name: "acetate", hwnd: None };
+        // One name per running app (the MPRIS spec's way for several instances:
+        // `org.mpris.MediaPlayer2.acetate.instance<pid>`). A plain "acetate" is taken
+        // when Acetate is already running, and souvlaki then panics in its own thread.
+        let dbus_name = format!("acetate.instance{}", std::process::id());
+        let config = PlatformConfig { display_name: "Acetate", dbus_name: &dbus_name, hwnd: None };
         let mut controls = match MediaControls::new(config) {
             Ok(controls) => controls,
             Err(err) => {
@@ -52,6 +57,7 @@ impl MediaKeys {
                 MediaControlEvent::SetPosition(MediaPosition(at)) => c.seek(at),
                 MediaControlEvent::Seek(direction) => c.seek_by(signed(direction, Duration::from_secs(10))),
                 MediaControlEvent::SeekBy(direction, by) => c.seek_by(signed(direction, by)),
+                MediaControlEvent::SetVolume(volume) => c.set_volume(volume as f32, false),
                 _ => {}
             }
         });
@@ -59,7 +65,7 @@ impl MediaKeys {
             eprintln!("no media keys: {err:?}");
             return None;
         }
-        Some(MediaKeys { controls: Mutex::new(controls), told: Mutex::new(None), covers })
+        Some(MediaKeys { controls: Mutex::new(controls), told: Mutex::new(None), told_volume: Mutex::new(None), covers })
     }
 
     /// After a seek: the system is told the new position with the next update.
@@ -73,6 +79,13 @@ impl MediaKeys {
 
     /// Tells the system what plays, when it changed.
     pub fn update(&self, view: &PlayerView) {
+        let volume = if view.muted { 0.0 } else { view.volume };
+        let mut told_volume = self.told_volume.lock().unwrap();
+        if *told_volume != Some(volume) {
+            *told_volume = Some(volume);
+            let _ = self.controls.lock().unwrap().set_volume(volume as f64);
+        }
+        drop(told_volume);
         let current = view.current();
         let state = (current.map(|c| c.track_id), view.playing, view.paused);
         let mut told = self.told.lock().unwrap();

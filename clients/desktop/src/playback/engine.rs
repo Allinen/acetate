@@ -38,6 +38,11 @@ pub enum Command {
     Skip,
     /// Jump to this point of the current track.
     Seek(Duration),
+    /// Loudness, as an amplitude factor (0: silent, 1: as the file is).
+    Volume(f32),
+    /// Play through this output device (by its name; None: the system's default). What
+    /// played stops: the controller starts it again there.
+    Output(Option<String>),
 }
 
 /// What the audio thread reports, read by the controller.
@@ -94,14 +99,9 @@ pub fn start(
     let scope = Arc::new(Mutex::new(Scope::default()));
     let (shared, tap_scope) = (status.clone(), scope.clone());
     std::thread::spawn(move || {
-        let device = match DeviceSinkBuilder::open_default_sink() {
-            Ok(device) => device,
-            Err(err) => {
-                errors(format!("no audio output: {err}"));
-                return;
-            }
-        };
-        let player = Player::connect_new(device.mixer());
+        let Some(mut device) = open_output(None, &errors) else { return };
+        let mut player = Player::connect_new(device.mixer());
+        let mut volume = 1.0;
         let mut control: Option<Arc<Control>> = None;
         let mut switches_before = 0; // switches of chains that ended
         let open_track = |file: RemoteFile| -> Result<Track, String> { Ok(Box::new(Tap::new(decode(file)?, tap_scope.clone()))) };
@@ -163,7 +163,22 @@ pub fn start(
                     }
                     Command::Seek(position) => {
                         if let Err(err) = player.try_seek(position) {
-                            errors(format!("can't seek: {err}"));
+                            errors(format!("Couldn't jump there in the track: {err}"));
+                        }
+                    }
+                    Command::Volume(amplitude) => {
+                        volume = amplitude;
+                        player.set_volume(volume);
+                    }
+                    Command::Output(name) => {
+                        if let Some(opened) = open_output(name.as_deref(), &errors) {
+                            player.stop();
+                            if let Some(old) = control.take() {
+                                switches_before += old.switches.load(Relaxed);
+                            }
+                            device = opened;
+                            player = Player::connect_new(device.mixer());
+                            player.set_volume(volume);
                         }
                     }
                 },
@@ -178,6 +193,47 @@ pub fn start(
         }
     });
     (sender, status, scope)
+}
+
+/// The names of the output devices there are (the system's default first).
+pub fn outputs() -> Vec<String> {
+    use rodio::cpal::traits::{DeviceTrait, HostTrait};
+    let host = rodio::cpal::default_host();
+    let default = host.default_output_device().and_then(|d| d.description().ok()).map(|d| d.name().to_string());
+    let mut names: Vec<String> = host
+        .output_devices()
+        .map(|devices| devices.filter_map(|d| d.description().ok().map(|d| d.name().to_string())).collect())
+        .unwrap_or_default();
+    names.dedup();
+    if let Some(default) = default {
+        names.retain(|n| *n != default);
+        names.insert(0, default);
+    }
+    names
+}
+
+/// Opens an output device by name (None, or one that isn't there anymore: the default).
+fn open_output(name: Option<&str>, errors: &impl Fn(String)) -> Option<rodio::MixerDeviceSink> {
+    use rodio::cpal::traits::{DeviceTrait, HostTrait};
+    if let Some(name) = name {
+        let host = rodio::cpal::default_host();
+        let device = host
+            .output_devices()
+            .ok()
+            .and_then(|mut devices| devices.find(|d| d.description().ok().is_some_and(|desc| desc.name() == name)));
+        match device.map(DeviceSinkBuilder::from_device).map(|b| b.and_then(|b| b.open_stream())) {
+            Some(Ok(sink)) => return Some(sink),
+            Some(Err(err)) => errors(format!("Couldn't use the output “{name}” ({err}); using the default one.")),
+            None => errors(format!("The output “{name}” isn't there anymore; using the default one.")),
+        }
+    }
+    match DeviceSinkBuilder::open_default_sink() {
+        Ok(sink) => Some(sink),
+        Err(err) => {
+            errors(format!("No sound output: {err}. Is a sound device connected?"));
+            None
+        }
+    }
 }
 
 /// Plays the current track, then (gaplessly) the one in the control's "next" slot, and
@@ -298,7 +354,7 @@ fn decode(file: RemoteFile) -> Result<Decoder<RemoteFile>, String> {
         .with_seekable(true)
         .with_gapless(true)
         .build()
-        .map_err(|err| format!("can't decode it: {err}"))
+        .map_err(|err| format!("Couldn't play this file: it doesn't decode ({err})."))
 }
 
 /// Passes a source through unchanged, copying what's played (mono) into the `Scope`.

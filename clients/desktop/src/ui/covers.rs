@@ -68,6 +68,11 @@ impl Covers {
         }
     }
 
+    /// Whether this image couldn't be loaded (there's nothing to wait for).
+    pub fn failed(&self, key: CoverKey) -> bool {
+        matches!(self.states.get(&key), Some(State::Failed))
+    }
+
     /// The cover's texture and how far it has faded in (0 to 1), starting a load if it
     /// isn't there yet. None while loading (or if it failed).
     pub fn get(&mut self, ctx: &egui::Context, cover: Cover) -> Option<(TextureHandle, f32)> {

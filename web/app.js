@@ -29,7 +29,8 @@ async function api(path, options = {}) {
   // Session gone (expired, logged out elsewhere, password changed): back to the login form.
   if (response.status === 401 && path !== "/api/auth/login") showLogin();
   if (!response.ok) {
-    const message = body && body.error ? body.error : `${response.status} ${response.statusText}`;
+    // `message` is written for people; `error` is the short detail (older servers).
+    const message = body && (body.message || body.error) ? (body.message || body.error) : `${response.status} ${response.statusText}`;
     throw new Error(message);
   }
   return body;

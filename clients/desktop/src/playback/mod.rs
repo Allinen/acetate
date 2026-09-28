@@ -53,6 +53,9 @@ pub struct PlayerView {
     /// The current track plays again when it ends.
     pub repeat: bool,
     pub shuffle: bool,
+    /// The volume slider (0 to 1) and mute.
+    pub volume: f32,
+    pub muted: bool,
 }
 
 impl Default for PlayerView {
@@ -69,6 +72,8 @@ impl Default for PlayerView {
             playing: false,
             repeat: false,
             shuffle: false,
+            volume: 1.0,
+            muted: false,
         }
     }
 }
@@ -130,6 +135,8 @@ pub struct Controller {
     /// Play the current track again when it ends (instead of the next).
     repeat: std::sync::atomic::AtomicBool,
     shuffle: std::sync::atomic::AtomicBool,
+    /// The volume slider and mute, as the UI and the system's media controls see them.
+    volume: Mutex<(f32, bool)>,
     /// Plays reported to the server, with its answers, for the UI to take.
     pub played: Mutex<Vec<(Uuid, Result<Annotation, String>)>>,
     ctx: egui::Context,
@@ -157,6 +164,7 @@ impl Controller {
             media: std::sync::OnceLock::new(),
             repeat: Default::default(),
             shuffle: Default::default(),
+            volume: Mutex::new((1.0, false)),
             played: Mutex::default(),
             ctx,
         })
@@ -371,6 +379,31 @@ impl Controller {
         self.ctx.request_repaint();
     }
 
+    /// Sets the volume slider (0 to 1) and mute.
+    pub fn set_volume(&self, volume: f32, muted: bool) {
+        let volume = volume.clamp(0.0, 1.0);
+        *self.volume.lock().unwrap() = (volume, muted);
+        self.send(Command::Volume(crate::settings::volume_amplitude(volume, muted)));
+        self.view.lock().unwrap().volume = volume;
+        self.view.lock().unwrap().muted = muted;
+        self.ctx.request_repaint();
+    }
+
+    pub fn volume(&self) -> (f32, bool) {
+        *self.volume.lock().unwrap()
+    }
+
+    /// Plays through another sound output (by name; None: the default). What plays goes
+    /// on there, from where it was.
+    pub async fn set_output(self: &Arc<Self>, name: Option<String>) {
+        let status = *self.status.lock().unwrap();
+        self.send(Command::Output(name));
+        let current = self.state.lock().await.queue.current.as_ref().map(|c| c.item.clone());
+        if let (Some(item), true) = (current, status.playing) {
+            self.start(item, status.paused, status.position).await;
+        }
+    }
+
     pub fn set_paused(&self, paused: bool) {
         self.send(if paused { Command::Pause } else { Command::Resume });
     }
@@ -434,6 +467,9 @@ impl Controller {
                     None => (status.position, Instant::now()),
                 }
             };
+            // Read into a local first: a lock taken inside the struct below would be held
+            // until the whole statement ends, and a second one would wait on it forever.
+            let (volume, muted) = *self.volume.lock().unwrap();
             let q = &state.queue;
             let view = PlayerView {
                 current: q.current.as_ref().map(|c| c.item.clone()),
@@ -447,6 +483,8 @@ impl Controller {
                 playing: status.playing,
                 repeat: self.repeat.load(Relaxed),
                 shuffle: self.shuffle.load(Relaxed),
+                volume,
+                muted,
             };
             // A listen that counts is reported (here, not in the UI: it runs even while
             // the window isn't drawn).
@@ -530,6 +568,31 @@ fn shuffle<T>(items: &mut [T]) {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    /// The playback loop and the volume use the same locks: neither may wait on the
+    /// other forever (they once did, and the app never drew its window).
+    #[test]
+    fn the_loop_and_the_volume_dont_wait_on_each_other() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let dir = std::env::temp_dir().join(format!("acetate-controller-test-{}", std::process::id()));
+        let controller = runtime.block_on(async { Controller::new(Api::new(dir), egui::Context::default()) });
+        runtime.spawn(controller.clone().monitor());
+        for volume in [0.2, 0.7, 0.4] {
+            let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let (c, flag) = (controller.clone(), done.clone());
+            std::thread::spawn(move || {
+                c.set_volume(volume, false);
+                flag.store(true, Relaxed);
+            });
+            let started = Instant::now();
+            while !done.load(Relaxed) || (controller.view.lock().unwrap().volume - volume).abs() > 1e-6 {
+                assert!(started.elapsed() < Duration::from_secs(2), "stuck setting the volume to {volume}");
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+    }
+
     #[test]
     fn shuffling_keeps_every_item() {
         let mut items: Vec<u32> = (0..100).collect();

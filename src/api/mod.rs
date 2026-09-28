@@ -288,6 +288,8 @@ pub enum AppError {
     BadRequest(String),
     /// Not logged in (or the session is invalid): 401.
     Unauthorized(&'static str),
+    /// A login with a wrong username or password: 401 too, but not "log in again".
+    WrongLogin,
     /// Logged in, but not allowed: 403.
     Forbidden(String),
     /// Rate limited: 429, try again after this long.
@@ -299,12 +301,20 @@ pub enum AppError {
 }
 
 impl IntoResponse for AppError {
+    /// The body: `{"code", "message", "error"}`. `message` is for a person (what happened,
+    /// and what to do), so clients show it as it is; `code` is for code (a stable name
+    /// to act on: log in again on "unauthorized", offer a reload on "stale"); `error` is
+    /// the detail, as it always was.
     fn into_response(self) -> Response {
-        let (status, message) = match self {
+        let (status, code, detail) = match self {
             AppError::TooManyRequests(wait) => {
                 // Round up, so "try again in 0 seconds" never happens.
                 let secs = wait.as_secs() + 1;
-                let body = json!({ "error": format!("too many requests, try again in {secs} seconds") });
+                let body = json!({
+                    "code": "too_many_requests",
+                    "message": format!("Too many tries. Wait {secs} seconds, then try again."),
+                    "error": format!("too many requests, try again in {secs} seconds"),
+                });
                 return (
                     StatusCode::TOO_MANY_REQUESTS,
                     [(axum::http::header::RETRY_AFTER, secs.to_string())],
@@ -312,44 +322,81 @@ impl IntoResponse for AppError {
                 )
                     .into_response();
             }
-            AppError::NotFound => (StatusCode::NOT_FOUND, "not found".to_string()),
-            AppError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg),
-            AppError::Unauthorized(msg) => (StatusCode::UNAUTHORIZED, msg.to_string()),
-            AppError::Forbidden(msg) => (StatusCode::FORBIDDEN, msg),
-            AppError::Conflict(msg) => (StatusCode::CONFLICT, msg),
-            AppError::Gone(msg) => (StatusCode::GONE, msg),
+            AppError::NotFound => (StatusCode::NOT_FOUND, "not_found", "not found".to_string()),
+            AppError::BadRequest(msg) => (StatusCode::BAD_REQUEST, "invalid", msg),
+            AppError::Unauthorized(msg) => (StatusCode::UNAUTHORIZED, "unauthorized", msg.to_string()),
+            AppError::WrongLogin => (StatusCode::UNAUTHORIZED, "wrong_login", "wrong username or password".to_string()),
+            AppError::Forbidden(msg) => (StatusCode::FORBIDDEN, "forbidden", msg),
+            AppError::Conflict(msg) => (StatusCode::CONFLICT, "conflict", msg),
+            AppError::Gone(msg) => (StatusCode::GONE, "purged", msg),
             AppError::Internal(err) => {
                 if let Some(rejected) = err.downcast_ref::<Rejected>() {
                     // Refused input (bad file, missing tags...): the client's problem.
-                    let status = match rejected {
-                        Rejected::TrackNotFound(_) => StatusCode::NOT_FOUND,
-                        Rejected::AlreadyStored { .. } => StatusCode::CONFLICT,
-                        _ => StatusCode::UNPROCESSABLE_ENTITY,
+                    let (status, code) = match rejected {
+                        Rejected::TrackNotFound(_) => (StatusCode::NOT_FOUND, "not_found"),
+                        Rejected::AlreadyStored { .. } => (StatusCode::CONFLICT, "already_stored"),
+                        _ => (StatusCode::UNPROCESSABLE_ENTITY, "rejected"),
                     };
-                    (status, rejected.to_string())
+                    (status, code, rejected.to_string())
                 } else if let Some(rejected) = err.downcast_ref::<EditRejected>() {
-                    let status = match rejected {
-                        EditRejected::Stale { .. } => StatusCode::CONFLICT,
-                        EditRejected::Invalid(_) => StatusCode::BAD_REQUEST,
-                        EditRejected::NotFound(_) => StatusCode::NOT_FOUND,
+                    let (status, code) = match rejected {
+                        EditRejected::Stale { .. } => (StatusCode::CONFLICT, "stale"),
+                        EditRejected::Invalid(_) => (StatusCode::BAD_REQUEST, "invalid"),
+                        EditRejected::NotFound(_) => (StatusCode::NOT_FOUND, "not_found"),
                     };
-                    (status, rejected.to_string())
+                    (status, code, rejected.to_string())
                 } else if let Some(invalid) = err.downcast_ref::<InvalidSource>() {
-                    (StatusCode::UNPROCESSABLE_ENTITY, invalid.to_string())
+                    (StatusCode::UNPROCESSABLE_ENTITY, "invalid_source", invalid.to_string())
                 } else if let Some(msg) = foreign_key_violation(&err) {
-                    (StatusCode::BAD_REQUEST, msg)
+                    (StatusCode::BAD_REQUEST, "invalid_reference", msg)
                 } else if is_row_security_violation(&err) {
                     // A write that row-level security refused: normally the code checks
                     // first and says why, so this is the safety net.
-                    (StatusCode::FORBIDDEN, "not allowed".to_string())
+                    (StatusCode::FORBIDDEN, "forbidden", "not allowed".to_string())
                 } else {
                     tracing::error!("internal error: {err:#}");
-                    (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
+                    (StatusCode::INTERNAL_SERVER_ERROR, "internal", "internal error".to_string())
                 }
             }
         };
-        (status, Json(json!({ "error": message }))).into_response()
+        let message = human_message(code, &detail);
+        (status, Json(json!({ "code": code, "message": message, "error": detail }))).into_response()
     }
+}
+
+/// The sentence a person sees for an error: what happened and, where there's something to
+/// do, what. Where the detail already says it in words (why an edit was refused, which
+/// field is wrong), it's part of the sentence.
+fn human_message(code: &str, detail: &str) -> String {
+    let detail = sentence(detail);
+    match code {
+        "not_found" => "This isn't there (anymore), or you can't see it.".into(),
+        "unauthorized" => "You're not logged in, or your session ended. Log in again.".into(),
+        "wrong_login" => "Wrong username or password.".into(),
+        "forbidden" if detail == "Not allowed." => "You're not allowed to do this.".into(),
+        "forbidden" => format!("You're not allowed to do this: {detail}"),
+        "stale" => format!("Someone else changed this while you were editing it. Reload it, then make your change again. ({detail})"),
+        "purged" => format!("This file was purged: its audio is gone for good, only its record is left. ({detail})"),
+        "already_stored" => format!("This file is already in the library. ({detail})"),
+        "invalid_reference" => "Something this refers to doesn't exist (an unknown platform, status or role?).".into(),
+        "internal" => "Something went wrong on the server. Try again; if it keeps happening, the server's log says what.".into(),
+        // Invalid input, refused files, conflicts: the detail is the explanation.
+        _ => detail,
+    }
+}
+
+/// "only its owner can change it" → "Only its owner can change it."
+fn sentence(text: &str) -> String {
+    let text = text.trim();
+    let mut chars = text.chars();
+    let mut out: String = match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => return String::new(),
+    };
+    if !out.ends_with(['.', '!', '?', ')']) {
+        out.push('.');
+    }
+    out
 }
 
 /// A storage volume picked in a request: only admins choose (it's about the server's
@@ -390,4 +437,39 @@ fn foreign_key_violation(err: &anyhow::Error) -> Option<String> {
         "invalid reference ({})",
         db_err.constraint().unwrap_or("unknown constraint")
     ))
+}
+
+#[cfg(test)]
+mod error_tests {
+    use super::*;
+
+    async fn body(err: AppError) -> (StatusCode, serde_json::Value) {
+        let response = err.into_response();
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), 10_000).await.unwrap();
+        (status, serde_json::from_slice(&bytes).unwrap())
+    }
+
+    #[tokio::test]
+    async fn every_error_has_a_code_a_sentence_and_the_detail() {
+        let (status, b) = body(AppError::NotFound).await;
+        assert_eq!((status, b["code"].as_str()), (StatusCode::NOT_FOUND, Some("not_found")));
+        assert_eq!(b["message"], "This isn't there (anymore), or you can't see it.");
+        assert_eq!(b["error"], "not found", "the detail, as before");
+
+        let (_, b) = body(AppError::Forbidden("only its owner can change a playlist".into())).await;
+        assert_eq!(b["message"], "You're not allowed to do this: Only its owner can change a playlist.");
+
+        let stale = EditRejected::Stale { latest: None };
+        let (status, b) = body(AppError::Internal(stale.into())).await;
+        assert_eq!((status, b["code"].as_str()), (StatusCode::CONFLICT, Some("stale")));
+        assert!(b["message"].as_str().unwrap().starts_with("Someone else changed this"), "{b}");
+
+        let (_, b) = body(AppError::Internal(anyhow::anyhow!("disk on fire"))).await;
+        assert_eq!(b["code"], "internal");
+        assert!(!b.to_string().contains("disk on fire"), "internal details stay in the log");
+
+        let (_, b) = body(AppError::BadRequest("a rating is 0 to 10".into())).await;
+        assert_eq!(b["message"], "A rating is 0 to 10.");
+    }
 }

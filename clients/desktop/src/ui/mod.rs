@@ -7,10 +7,11 @@
 //! Keys, see `keys`: Ctrl+1–5 (anywhere) or 1–5 (outside text fields): albums, artists,
 //! tracks, now playing, queue · q add to the queue · Shift+Q play next · Esc / Alt+← back · Alt+→ forward · / filter · Space pause · Ctrl+←/→
 //! previous/next · Shift+←/→ seek 10 s · s star the selected one · Shift+S star what
-//! plays · i the selected track's page · +/− rate the selected one · r loop the track · z shuffle · F5 refresh the library · arrows or hjkl move ·
+//! plays · 9/0 volume down/up · m mute · i the selected track's page · +/− rate the selected one · r loop the track · z shuffle · F5 refresh the library · arrows or hjkl move ·
 //! Enter open or play · Shift+Enter play.
 
 pub mod covers;
+pub mod keymap;
 pub mod theme;
 pub mod widgets;
 mod views;
@@ -49,6 +50,7 @@ pub enum Page {
     Playlist(Uuid),
     /// Everything about one track.
     Track(Uuid),
+    Settings,
 }
 
 /// Something to do, asked for by a page, a key or a button.
@@ -74,6 +76,12 @@ pub enum Action {
     SeekBy(f32),
     /// Seek to this point of the current track.
     SeekTo(std::time::Duration),
+    /// Change the volume slider by this much (0 to 1 is all of it).
+    VolumeBy(f32),
+    SetVolume(f32),
+    ToggleMute,
+    /// Play through this sound output (None: the system's default).
+    SetOutput(Option<String>),
     /// Loop the current track (or stop looping it).
     ToggleRepeat,
     ToggleShuffle,
@@ -88,6 +96,8 @@ pub enum Action {
     NewPlaylist,
     RenamePlaylist(Uuid),
     RefreshLibrary,
+    /// Show every key (the `?` overlay).
+    ShowKeys,
     LoggedIn,
     LogOut,
 }
@@ -98,6 +108,8 @@ pub struct Shell {
     pub ctx: egui::Context,
     /// The logo, as a texture.
     pub logo: egui::TextureHandle,
+    /// Volume and sound output, kept between runs.
+    pub settings: crate::settings::Settings,
     pub runtime: Runtime,
     pub api: Api,
     pub controller: Arc<Controller>,
@@ -107,6 +119,8 @@ pub struct Shell {
     pub generation: u64,
     pub actions: Vec<Action>,
     pub data_dir: PathBuf,
+    /// Where copies of things are kept (scaled covers).
+    pub cache_dir: PathBuf,
     /// Stars, ratings and plays as shown (the catalog's, with this session's changes).
     pub marks: Marks,
     /// The queue kept between runs (set at login), and whether it was brought back yet.
@@ -165,7 +179,7 @@ impl Shell {
         for (track, answer) in std::mem::take(&mut *self.controller.played.lock().unwrap()) {
             match answer {
                 Ok(a) => self.marks.set(track, Mark { play_count: a.play_count, rating: a.rating, starred: a.starred }),
-                Err(err) => self.controller.report(format!("couldn't count the play: {err}")),
+                Err(err) => self.controller.report(format!("Couldn't count the play. {err}")),
             }
         }
         for (id, answer) in std::mem::take(&mut *self.mark_answers.lock().unwrap()) {
@@ -256,10 +270,16 @@ impl Shell {
         let state = *state;
         let new = cover.and_then(|c| self.covers.get(ui.ctx(), c));
         let old = state.previous.and_then(|(c, _)| self.covers.get(ui.ctx(), c));
-        if new.is_some() && state.since.is_infinite() {
+        // No cover (or one that couldn't be loaded) is there at once: the placeholder.
+        let none = cover.is_none_or(|c| self.covers.failed(c.key));
+        let ready = new.is_some() || none;
+        if ready && state.since.is_infinite() {
             self.cover_slots.get_mut(slot).unwrap().since = now;
         }
-        let t = if new.is_some() { ease_out((((now - state.since) as f32) / 0.4).clamp(0.0, 1.0)) } else { 0.0 };
+        let t = if ready { ease_out((((now - state.since.min(now)) as f32) / 0.4).clamp(0.0, 1.0)) } else { 0.0 };
+        if t < 1.0 {
+            ui.ctx().request_repaint();
+        }
         let painter = ui.painter();
         painter.add(
             egui::Shadow {
@@ -270,22 +290,34 @@ impl Shell {
             }
             .as_shape(rect, radius),
         );
-        match &old {
-            Some((texture, _)) if t < 1.0 => {
-                egui::Image::from_texture(texture).corner_radius(radius).paint_at(ui, rect);
-                ui.ctx().request_repaint();
-            }
-            None if t < 1.0 => widgets::placeholder(ui.painter(), rect, radius, seed),
-            _ => {}
-        }
-        if let Some((texture, _)) = new {
-            egui::Image::from_texture(&texture)
+        let image = |texture: &egui::TextureHandle, alpha: f32| {
+            egui::Image::from_texture(texture)
                 .corner_radius(radius)
-                .tint(egui::Color32::from_white_alpha((t * 255.0) as u8))
+                .tint(egui::Color32::from_white_alpha((alpha * 255.0) as u8))
                 .paint_at(ui, rect);
-            if t < 1.0 {
-                ui.ctx().request_repaint();
+        };
+        match (new, none) {
+            // The new cover fades in over the old one (or the placeholder).
+            (Some((texture, _)), _) => {
+                match &old {
+                    Some((old, _)) if t < 1.0 => image(old, 1.0),
+                    _ if t < 1.0 => widgets::placeholder(ui.painter(), rect, radius, seed),
+                    _ => {}
+                }
+                image(&texture, t);
             }
+            // No cover: the old one fades out, showing the placeholder under it.
+            (None, true) => {
+                widgets::placeholder(ui.painter(), rect, radius, seed);
+                if let Some((old, _)) = &old {
+                    image(old, 1.0 - t);
+                }
+            }
+            // Still loading: the old one stays until the new one is there.
+            (None, false) => match &old {
+                Some((old, _)) => image(old, 1.0),
+                None => widgets::placeholder(ui.painter(), rect, radius, seed),
+            },
         }
     }
 
@@ -364,7 +396,7 @@ impl Shell {
         let state = if self.catalog.refreshing {
             "checking for changes…".to_string()
         } else if let Some(err) = &self.catalog.error {
-            format!("offline copy ({err})")
+            format!("the copy kept here (couldn't check for changes: {err})")
         } else if self.catalog.confirmed_at.is_some() {
             "up to date".to_string()
         } else {
@@ -391,6 +423,11 @@ struct CoverSlot {
 
 pub struct App {
     shell: Shell,
+    /// When the settings last changed (they're saved a moment after: a slider drag
+    /// changes them many times).
+    settings_changed: Option<Instant>,
+    /// The `?` overlay (every key) is open.
+    keys_open: bool,
     spectrum: Spectrum,
     last_time: f64,
     pages: views::Pages,
@@ -411,7 +448,7 @@ impl App {
         let controller = runtime.block_on(async { Controller::new(api.clone(), cc.egui_ctx.clone()) });
         runtime.spawn(controller.clone().monitor());
         controller.attach_media_keys(runtime.handle().clone(), cache_dir.join("covers"));
-        let covers = Covers::new(api.clone(), runtime.handle().clone(), cache_dir);
+        let covers = Covers::new(api.clone(), runtime.handle().clone(), cache_dir.clone());
         let playlists = crate::playlists::Playlists::new(api.clone(), runtime.handle().clone(), cc.egui_ctx.clone());
         let details = |kind| (kind, api.clone(), runtime.handle().clone(), cc.egui_ctx.clone());
         let (k, a, r, c) = details("tracks");
@@ -423,6 +460,7 @@ impl App {
         let mut shell = Shell {
             ctx: cc.egui_ctx.clone(),
             logo: widgets::logo_texture(&cc.egui_ctx),
+            settings: crate::settings::Settings::load(&data_dir),
             runtime,
             api,
             controller,
@@ -431,6 +469,7 @@ impl App {
             generation: 0,
             actions: Vec::new(),
             data_dir,
+            cache_dir,
             marks: Marks::default(),
             cover_slots: Default::default(),
             resume: None,
@@ -447,8 +486,15 @@ impl App {
         if shell.api.session().is_some() {
             shell.load_library(&cc.egui_ctx);
         }
+        shell.controller.set_volume(shell.settings.volume, shell.settings.muted);
+        if let Some(output) = shell.settings.output.clone() {
+            let c = shell.controller.clone();
+            shell.runtime.spawn(async move { c.set_output(Some(output)).await });
+        }
         App {
             shell,
+            settings_changed: None,
+            keys_open: false,
             spectrum: Spectrum::new(64),
             last_time: 0.0,
             pages: views::Pages::default(),
@@ -466,6 +512,9 @@ impl App {
             self.page = page;
             self.page_since = now;
             self.pages.opened(page);
+            if page == Page::Settings {
+                self.pages.settings.opened(&self.shell);
+            }
             // Details shown as kept, and fetched again (cache first).
             match page {
                 Page::Track(id) => self.shell.track_details.open(id),
@@ -535,6 +584,21 @@ impl App {
                 }
                 Action::SeekBy(seconds) => self.shell.controller.seek_by(seconds),
                 Action::SeekTo(at) => self.shell.controller.seek(at),
+                Action::VolumeBy(by) => {
+                    let (volume, _) = self.shell.controller.volume();
+                    self.shell.controller.set_volume(volume + by, false);
+                }
+                Action::SetVolume(volume) => self.shell.controller.set_volume(volume, false),
+                Action::ToggleMute => {
+                    let (volume, muted) = self.shell.controller.volume();
+                    self.shell.controller.set_volume(volume, !muted);
+                }
+                Action::SetOutput(name) => {
+                    self.shell.settings.output = name.clone();
+                    self.shell.settings.save(&self.shell.data_dir);
+                    let c = self.shell.controller.clone();
+                    self.shell.runtime.spawn(async move { c.set_output(name).await });
+                }
                 Action::ToggleRepeat => {
                     let c = self.shell.controller.clone();
                     self.shell.runtime.spawn(async move { c.toggle_repeat().await });
@@ -559,6 +623,7 @@ impl App {
                 Action::NewPlaylist => self.pages.palette.open(ctx, views::palette::Mode::Name(None)),
                 Action::RenamePlaylist(id) => self.pages.palette.open(ctx, views::palette::Mode::Name(Some(id))),
                 Action::RefreshLibrary => self.shell.refresh_library(ctx),
+                Action::ShowKeys => self.keys_open = true,
                 Action::LoggedIn => {
                     self.shell.load_library(ctx);
                     self.page = Page::Albums;
@@ -592,8 +657,29 @@ impl App {
         });
     }
 
+    /// Saves volume changes (made anywhere: keys, the slider, the system's media controls)
+    /// a second after the last one.
+    fn keep_settings(&mut self, player: &PlayerView) {
+        let settings = &mut self.shell.settings;
+        if (player.volume, player.muted) != (settings.volume, settings.muted) {
+            settings.volume = player.volume;
+            settings.muted = player.muted;
+            self.settings_changed = Some(Instant::now());
+        }
+        if self.settings_changed.is_some_and(|at| at.elapsed() > std::time::Duration::from_secs(1)) {
+            self.settings_changed = None;
+            self.shell.settings.save(&self.shell.data_dir);
+        } else if self.settings_changed.is_some() {
+            self.shell.ctx.request_repaint_after(std::time::Duration::from_millis(1100));
+        }
+    }
+
     /// Keys that work everywhere (outside text fields).
     fn keys(&mut self, ctx: &egui::Context) {
+        // The key overlay takes its own keys (Esc closes it, not "back").
+        if self.keys_open {
+            return;
+        }
         let m = ctx.input(|i| i.modifiers);
         let key = |k: Key| ctx.input(|i| i.key_pressed(k));
         let pages = [
@@ -610,6 +696,12 @@ impl App {
         }
         if key(Key::F5) {
             self.shell.act(Action::RefreshLibrary);
+        }
+        if key(Key::F1) && !self.keys_open {
+            self.shell.act(Action::ShowKeys);
+        }
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, Key::Comma)) {
+            self.shell.act(Action::Go(Page::Settings));
         }
         if m.alt && key(Key::ArrowLeft) {
             self.shell.act(Action::Back);
@@ -659,10 +751,18 @@ impl App {
             self.shell.act(Action::Back);
         } else if key(Key::Space) {
             self.shell.act(Action::TogglePause);
+        } else if key(Key::Num9) {
+            self.shell.act(Action::VolumeBy(-0.05));
+        } else if key(Key::Num0) {
+            self.shell.act(Action::VolumeBy(0.05));
+        } else if !m.shift && key(Key::M) {
+            self.shell.act(Action::ToggleMute);
         } else if !m.shift && key(Key::R) {
             self.shell.act(Action::ToggleRepeat);
         } else if !m.shift && key(Key::Z) {
             self.shell.act(Action::ToggleShuffle);
+        } else if key(Key::Questionmark) || (m.shift && key(Key::Slash)) {
+            self.shell.act(Action::ShowKeys);
         } else if key(Key::Slash) {
             // Swallow the "/" itself, or the field would get it as text this frame.
             ctx.input_mut(|i| {
@@ -683,6 +783,11 @@ impl eframe::App for App {
         self.shell.covers.poll(&ctx);
         self.shell.take_updates();
         self.pages.login.poll(&mut self.shell);
+        // A request was refused as not logged in: back to the login screen, saying why.
+        if self.shell.api.take_expired() && self.shell.api.session().is_some() {
+            self.shell.act(Action::LogOut);
+            self.pages.login.ended("Your session ended (it was signed out, or it expired). Log in again.");
+        }
 
         let Some(session) = self.shell.api.session() else {
             egui::CentralPanel::default()
@@ -702,6 +807,7 @@ impl eframe::App for App {
         }
         let player = self.shell.controller.view.lock().unwrap().clone();
         self.shell.resume_queue(&player);
+        self.keep_settings(&player);
         // The next track's cover, loaded ahead, so it can fade in the moment it plays.
         if let Some(next) = player.next().and_then(|i| i.cover) {
             self.shell.covers.get(&ctx, next);
@@ -731,6 +837,7 @@ impl eframe::App for App {
                 self.pages.show(ui, &mut self.shell, self.page, &player, &mut self.spectrum, dt);
             });
         self.pages.palette.show(&ctx, &mut self.shell);
+        keymap::overlay(&ctx, &mut self.keys_open);
         self.apply(&ctx);
     }
 }

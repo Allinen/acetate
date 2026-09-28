@@ -89,7 +89,7 @@ impl RemoteFile {
     /// Starts downloading, and returns once the file's size is known.
     pub async fn open(api: &Api, file_id: Uuid) -> anyhow::Result<RemoteFile> {
         let response = api.file_from(file_id, 0).await?;
-        let len = total_length(&response).ok_or_else(|| anyhow::anyhow!("the server didn't say how big the file is"))?;
+        let len = total_length(&response).ok_or_else(|| anyhow::anyhow!("The server didn't say how big the file is, so it can't be played while it downloads."))?;
         let shared = Arc::new(Shared {
             state: Mutex::new(State {
                 data: vec![0; len as usize],
@@ -142,7 +142,7 @@ impl Read for RemoteFile {
             let (next, timeout) = self.shared.changed.wait_timeout(state, PATIENCE).unwrap();
             state = next;
             if timeout.timed_out() && state.available(self.position) == 0 {
-                return Err(io::Error::new(io::ErrorKind::TimedOut, "the download stalled"));
+                return Err(io::Error::new(io::ErrorKind::TimedOut, "The download stopped: no data for 30 seconds."));
             }
         }
     }

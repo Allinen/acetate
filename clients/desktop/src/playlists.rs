@@ -240,7 +240,7 @@ impl Playlists {
             let detail = api.send_json::<Detail>(Method::GET, &format!("/api/playlists/{id}"), None).await;
             let mut answers = vec![match detail {
                 Ok(detail) => Answer::Detail(id, number, detail),
-                Err(err) if err.to_string().starts_with("404") => Answer::Gone(id),
+                Err(err) if err.status == Some(404) => Answer::Gone(id),
                 Err(err) => Answer::Notice(format!("Couldn't load the playlist: {err:#}")),
             }];
             answers.extend(list(&api).await);

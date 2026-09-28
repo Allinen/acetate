@@ -47,6 +47,9 @@ const COMMANDS: &[Command] = &[
     Command { name: "Forward", keys: "Alt+→", action: || Action::Forward },
     Command { name: "Go to Liked songs", keys: "", action: || Action::Go(Page::Liked) },
     Command { name: "New playlist…", keys: "", action: || Action::NewPlaylist },
+    Command { name: "Settings", keys: "Ctrl+,", action: || Action::Go(Page::Settings) },
+    Command { name: "Show every key", keys: "?", action: || Action::ShowKeys },
+    Command { name: "Mute / unmute", keys: "m", action: || Action::ToggleMute },
     Command { name: "Log out", keys: "", action: || Action::LogOut },
 ];
 

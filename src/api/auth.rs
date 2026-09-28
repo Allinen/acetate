@@ -196,7 +196,7 @@ pub async fn login(
     // Same answer for "no such user" and "wrong password".
     let Some(login) = login.filter(|_| valid) else {
         state.rate_limits.login_failed(ip, username);
-        return Err(AppError::Unauthorized("wrong username or password"));
+        return Err(AppError::WrongLogin);
     };
     state.rate_limits.login_succeeded(username);
 

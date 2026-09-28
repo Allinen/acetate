@@ -3,11 +3,16 @@
 //!
 //! `Api` is a cheap handle (clone it freely): the HTTP client and the session are shared
 //! by all clones, so logging in or out is seen everywhere at once.
+//!
+//! Every request goes through `go`, so every failure is an `ApiError` whose text is a
+//! sentence for a person: the server's own `message` when it answered, else ours (it
+//! couldn't be reached, the connection dropped). A 401 on any request also marks the
+//! session as ended, for the app to go back to the login screen.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 use std::sync::{Arc, RwLock};
 
-use anyhow::Context;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -20,10 +25,34 @@ pub struct Session {
     pub username: String,
 }
 
-/// The server's error body: `{"error": "..."}`.
+/// A request that failed. Shown as `message`, a sentence for a person.
+#[derive(Debug, Clone)]
+pub struct ApiError {
+    /// The HTTP status, if the server answered.
+    pub status: Option<u16>,
+    /// The server's error code (`not_found`, `stale`…), or ours: `unreachable`,
+    /// `unexpected` (an answer this app can't read). For acting on (edit mode: offer to
+    /// reload on `stale`), not for showing.
+    #[allow(dead_code)]
+    pub code: String,
+    pub message: String,
+}
+
+impl std::fmt::Display for ApiError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for ApiError {}
+
+/// The server's error body (`message` since the server writes them for people; older
+/// servers only had `error`).
 #[derive(Deserialize)]
 struct ErrorBody {
-    error: String,
+    code: Option<String>,
+    message: Option<String>,
+    error: Option<String>,
 }
 
 /// The user's own plays, rating and star on something, as the server answers a change.
@@ -46,6 +75,8 @@ pub struct Api {
     client: reqwest::Client,
     session_file: Arc<PathBuf>,
     session: Arc<RwLock<Option<Session>>>,
+    /// A request was refused as not logged in: the session ended.
+    expired: Arc<AtomicBool>,
 }
 
 impl Api {
@@ -57,40 +88,50 @@ impl Api {
             // The catalog comes compressed (tens of MB otherwise).
             .zstd(true)
             .gzip(true)
+            .connect_timeout(std::time::Duration::from_secs(10))
             .build()
             .expect("an HTTP client");
-        Api { client, session_file: Arc::new(session_file), session: Arc::new(RwLock::new(session)) }
+        Api {
+            client,
+            session_file: Arc::new(session_file),
+            session: Arc::new(RwLock::new(session)),
+            expired: Arc::default(),
+        }
     }
 
     pub fn session(&self) -> Option<Session> {
         self.session.read().unwrap().clone()
     }
 
-    fn current(&self) -> anyhow::Result<Session> {
-        self.session().context("not logged in")
+    /// Whether the session ended since last asked (a request got a 401).
+    pub fn take_expired(&self) -> bool {
+        self.expired.swap(false, Relaxed)
     }
 
-    pub async fn login(&self, server: &str, username: &str, password: &str) -> anyhow::Result<Session> {
+    pub async fn login(&self, server: &str, username: &str, password: &str) -> Result<Session, ApiError> {
         let server = server.trim().trim_end_matches('/').to_string();
-        let response = self
+        let request = self
             .client
             .post(format!("{server}/api/auth/login"))
-            .json(&serde_json::json!({ "username": username, "password": password }))
-            .send()
-            .await
-            .with_context(|| format!("can't reach {server}"))?;
-        let response = check(response).await.context("login failed")?;
+            .json(&serde_json::json!({ "username": username, "password": password }));
         #[derive(Deserialize)]
         struct Login {
             token: String,
         }
-        let login: Login = response.json().await?;
+        let login: Login = read_json(self.go(request, &server).await?).await?;
         let session = Session { server, token: login.token, username: username.to_string() };
-        if let Some(dir) = self.session_file.parent() {
-            std::fs::create_dir_all(dir)?;
+        let saved = self
+            .session_file
+            .parent()
+            .map(std::fs::create_dir_all)
+            .transpose()
+            .and_then(|_| std::fs::write(&*self.session_file, serde_json::to_vec(&session).unwrap_or_default()));
+        if let Err(err) = saved {
+            // Logged in all the same; only the next start asks again.
+            eprintln!("couldn't keep the session: {err}");
         }
-        std::fs::write(&*self.session_file, serde_json::to_vec(&session)?)?;
         *self.session.write().unwrap() = Some(session.clone());
+        self.expired.store(false, Relaxed);
         Ok(session)
     }
 
@@ -99,89 +140,121 @@ impl Api {
         let _ = std::fs::remove_file(&*self.session_file);
     }
 
-    /// A request to the server with the session's token.
-    fn request(&self, method: reqwest::Method, path: &str) -> anyhow::Result<reqwest::RequestBuilder> {
-        let session = self.current()?;
-        Ok(self.client.request(method, format!("{}{path}", session.server)).bearer_auth(&session.token))
+    /// A request to the server with the session's token, and the server's address.
+    fn request(&self, method: reqwest::Method, path: &str) -> Result<(reqwest::RequestBuilder, String), ApiError> {
+        let session = self.session().ok_or_else(|| ApiError {
+            status: None,
+            code: "unauthorized".into(),
+            message: "You're not logged in.".into(),
+        })?;
+        let request = self.client.request(method, format!("{}{path}", session.server)).bearer_auth(&session.token);
+        Ok((request, session.server))
+    }
+
+    /// Sends a request: its response if it succeeded, else why not, in words.
+    async fn go(&self, request: reqwest::RequestBuilder, server: &str) -> Result<reqwest::Response, ApiError> {
+        let response = request.send().await.map_err(|err| unreachable(&err, server))?;
+        let status = response.status();
+        if status.is_success() || status == reqwest::StatusCode::NOT_MODIFIED {
+            return Ok(response);
+        }
+        let body: Option<ErrorBody> = response.json().await.ok();
+        let (code, message) = match body {
+            Some(ErrorBody { code, message, error }) => (code, message.or(error)),
+            None => (None, None),
+        };
+        let code = code.unwrap_or_else(|| status.as_str().to_string());
+        if status == reqwest::StatusCode::UNAUTHORIZED && code != "wrong_login" {
+            self.expired.store(true, Relaxed);
+        }
+        let message = message.unwrap_or_else(|| format!("The server answered {status}."));
+        Err(ApiError { status: Some(status.as_u16()), code, message })
     }
 
     /// A request with an optional JSON body, answered with JSON.
-    pub async fn send_json<T: DeserializeOwned>(&self, method: reqwest::Method, path: &str, body: Option<serde_json::Value>) -> anyhow::Result<T> {
-        let mut request = self.request(method, path)?;
+    pub async fn send_json<T: DeserializeOwned>(&self, method: reqwest::Method, path: &str, body: Option<serde_json::Value>) -> Result<T, ApiError> {
+        let (mut request, server) = self.request(method, path)?;
         if let Some(body) = body {
             request = request.json(&body);
         }
-        let response = request.send().await?;
-        Ok(check(response).await?.json().await?)
+        read_json(self.go(request, &server).await?).await
     }
 
     /// A request with an optional JSON body, for endpoints that answer without one.
-    pub async fn send(&self, method: reqwest::Method, path: &str, body: Option<serde_json::Value>) -> anyhow::Result<()> {
-        let mut request = self.request(method, path)?;
+    pub async fn send(&self, method: reqwest::Method, path: &str, body: Option<serde_json::Value>) -> Result<(), ApiError> {
+        let (mut request, server) = self.request(method, path)?;
         if let Some(body) = body {
             request = request.json(&body);
         }
-        check(request.send().await?).await?;
+        self.go(request, &server).await?;
         Ok(())
     }
 
     /// Stars or unstars a track, album or artist (`kind`: "tracks", "albums", "artists").
-    pub async fn star(&self, kind: &str, id: Uuid, starred: bool) -> anyhow::Result<Annotation> {
+    pub async fn star(&self, kind: &str, id: Uuid, starred: bool) -> Result<Annotation, ApiError> {
         let method = if starred { reqwest::Method::POST } else { reqwest::Method::DELETE };
         self.send_json(method, &format!("/api/{kind}/{id}/star"), None).await
     }
 
     /// Rates it, 0 (not rated) to 10 (five stars).
-    pub async fn rate(&self, kind: &str, id: Uuid, rating: i16) -> anyhow::Result<Annotation> {
+    pub async fn rate(&self, kind: &str, id: Uuid, rating: i16) -> Result<Annotation, ApiError> {
         self.send_json(reqwest::Method::PUT, &format!("/api/{kind}/{id}/rating"), Some(serde_json::json!({ "rating": rating }))).await
     }
 
     /// Reports a listen (after half the track or 4 minutes).
-    pub async fn played(&self, track: Uuid) -> anyhow::Result<Annotation> {
+    pub async fn played(&self, track: Uuid) -> Result<Annotation, ApiError> {
         self.send_json(reqwest::Method::POST, &format!("/api/tracks/{track}/played"), None).await
     }
 
     /// The whole library (`GET /api/catalog`). With the ETag of the copy we have, an
     /// unchanged library costs the server no body to send.
-    pub async fn catalog(&self, etag: Option<&str>) -> anyhow::Result<CatalogResponse> {
-        let mut request = self.request(reqwest::Method::GET, "/api/catalog")?;
+    pub async fn catalog(&self, etag: Option<&str>) -> Result<CatalogResponse, ApiError> {
+        let (mut request, server) = self.request(reqwest::Method::GET, "/api/catalog")?;
         if let Some(etag) = etag {
             request = request.header(reqwest::header::IF_NONE_MATCH, etag);
         }
-        let response = request.send().await?;
+        let response = self.go(request, &server).await?;
         if response.status() == reqwest::StatusCode::NOT_MODIFIED {
             return Ok(CatalogResponse::Unchanged);
         }
-        let response = check(response).await?;
-        let etag = response
-            .headers()
-            .get(reqwest::header::ETAG)
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_string);
-        Ok(CatalogResponse::Changed { body: response.bytes().await?.to_vec(), etag })
+        let etag = response.headers().get(reqwest::header::ETAG).and_then(|v| v.to_str().ok()).map(str::to_string);
+        let body = response.bytes().await.map_err(|err| unreachable(&err, &server))?;
+        Ok(CatalogResponse::Changed { body: body.to_vec(), etag })
     }
 
     /// A cover image's bytes, by its content (`hash`: its SHA-256 or the start of it).
-    pub async fn image(&self, hash: &str) -> anyhow::Result<Vec<u8>> {
-        let response = self.request(reqwest::Method::GET, &format!("/api/images/{hash}"))?.send().await?;
-        Ok(check(response).await?.bytes().await?.to_vec())
+    pub async fn image(&self, hash: &str) -> Result<Vec<u8>, ApiError> {
+        let (request, server) = self.request(reqwest::Method::GET, &format!("/api/images/{hash}"))?;
+        let response = self.go(request, &server).await?;
+        Ok(response.bytes().await.map_err(|err| unreachable(&err, &server))?.to_vec())
     }
 
     /// A file's bytes from `from` on (a Range request), as a response to read in chunks.
-    pub async fn file_from(&self, file_id: Uuid, from: u64) -> anyhow::Result<reqwest::Response> {
-        let request = self
-            .request(reqwest::Method::GET, &format!("/api/files/{file_id}/stream"))?
-            .header(reqwest::header::RANGE, format!("bytes={from}-"));
-        check(request.send().await?).await
+    pub async fn file_from(&self, file_id: Uuid, from: u64) -> Result<reqwest::Response, ApiError> {
+        let (request, server) = self.request(reqwest::Method::GET, &format!("/api/files/{file_id}/stream"))?;
+        self.go(request.header(reqwest::header::RANGE, format!("bytes={from}-")), &server).await
     }
 }
 
-/// Turns an error status into an error with the server's message.
-async fn check(response: reqwest::Response) -> anyhow::Result<reqwest::Response> {
-    let status = response.status();
-    if status.is_success() {
-        return Ok(response);
-    }
-    let message = response.json::<ErrorBody>().await.map(|b| b.error).unwrap_or_default();
-    anyhow::bail!("{status}: {message}")
+/// A successful answer's JSON; an answer this app can't read says so.
+async fn read_json<T: DeserializeOwned>(response: reqwest::Response) -> Result<T, ApiError> {
+    response.json().await.map_err(|err| ApiError {
+        status: None,
+        code: "unexpected".into(),
+        message: format!("The server's answer isn't what this app expected. Is the app up to date? ({err})"),
+    })
+}
+
+/// A request that didn't get an answer, in words.
+pub fn unreachable(err: &reqwest::Error, server: &str) -> ApiError {
+    let message = if err.is_connect() {
+        format!("Can't reach the server at {server}. Is it running, and is the address right?")
+    } else if err.is_timeout() {
+        format!("The server at {server} didn't answer in time.")
+    } else if err.is_body() || err.is_decode() {
+        "The connection to the server dropped. Try again.".to_string()
+    } else {
+        format!("Couldn't talk to the server at {server} ({err}).")
+    };
+    ApiError { status: None, code: "unreachable".into(), message }
 }

@@ -23,6 +23,11 @@ impl Default for Login {
 }
 
 impl Login {
+    /// Says why the login screen is back (the session ended).
+    pub fn ended(&mut self, why: &str) {
+        self.error = why.to_string();
+    }
+
     /// Takes in the login's outcome (every frame: it may arrive after the login screen is
     /// gone).
     pub fn poll(&mut self, shell: &mut Shell) {
