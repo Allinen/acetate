@@ -105,17 +105,19 @@ pub fn draw_icon(painter: &egui::Painter, icon: Icon, c: Pos2, s: f32, color: Co
     }
 }
 
-/// The logo: a small acetate disc with an amber label.
-pub fn logo(ui: &mut egui::Ui, size: f32) {
+/// The logo (the simple one: a note on amber), rounded like an app icon.
+pub fn logo(ui: &mut egui::Ui, logo: &egui::TextureHandle, size: f32) {
     let (rect, _) = ui.allocate_exact_size(Vec2::splat(size), Sense::hover());
-    let c = rect.center();
-    let painter = ui.painter();
-    painter.circle_filled(c, size * 0.5, Color32::from_rgb(0x1b, 0x1c, 0x22));
-    for r in [0.42, 0.34, 0.27] {
-        painter.circle_stroke(c, size * r, Stroke::new(1.0, Color32::from_rgb(0x2c, 0x2e, 0x37)));
-    }
-    painter.circle_filled(c, size * 0.18, P.accent);
-    painter.circle_filled(c, size * 0.04, P.bg);
+    egui::Image::from_texture(logo).corner_radius((size * 0.22) as u8).paint_at(ui, rect);
+}
+
+/// The logo as a texture, made once at start: the brand file, scaled down (it's drawn
+/// small; a big texture would only blur).
+pub fn logo_texture(ctx: &egui::Context) -> egui::TextureHandle {
+    let bytes = include_bytes!("../../../../assets/brand/acetate-simple.png");
+    let image = image::load_from_memory(bytes).expect("the logo").thumbnail(128, 128).to_rgba8();
+    let image = egui::ColorImage::from_rgba_unmultiplied([image.width() as usize, image.height() as usize], image.as_raw());
+    ctx.load_texture("logo", image, egui::TextureOptions::LINEAR)
 }
 
 /// While a cover loads: a disc on a color made from the album's id (so each looks

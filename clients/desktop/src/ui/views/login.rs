@@ -47,7 +47,7 @@ impl Login {
         let ui = &mut child;
         ui.vertical(|ui| {
             ui.horizontal(|ui| {
-                widgets::logo(ui, 26.0);
+                widgets::logo(ui, &shell.logo, 30.0);
                 ui.label(RichText::new("acetate").font(font(24.0, bold())));
             });
             ui.add_space(18.0);

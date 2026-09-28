@@ -10,7 +10,7 @@ use crate::ui::{widgets, Action, Page, Shell};
 pub fn show(ui: &mut egui::Ui, shell: &mut Shell, page: Page, username: &str) {
     let ctx = ui.ctx().clone();
     ui.horizontal(|ui| {
-        widgets::logo(ui, 22.0);
+        widgets::logo(ui, &shell.logo, 24.0);
         ui.label(RichText::new("acetate").font(font(20.0, bold())));
     });
     ui.add_space(26.0);

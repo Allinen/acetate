@@ -58,13 +58,15 @@ pub enum Action {
     Forward,
     /// Play these tracks (positions in the catalog), starting with `start`.
     Play { tracks: Vec<u32>, start: usize },
-    /// Add these tracks to the queue: at the end, or (`next`) to play next.
+    /// Queue these tracks by hand: at the end of the queue, or (`next`) at its start.
     Enqueue { tracks: Vec<u32>, next: bool },
-    /// Play the queue from this item.
-    PlayQueueAt(usize),
-    RemoveFromQueue(usize),
-    /// Move a queue item from one place to another.
-    MoveInQueue(usize, usize),
+    /// Play this track of the queue or the list now.
+    PlayPlace(crate::playback::queue::Place),
+    /// Take it out of the queue or the list.
+    RemovePlace(crate::playback::queue::Place),
+    /// Move a queued track to another place in the queue.
+    MoveQueued(usize, usize),
+    ClearQueued,
     TogglePause,
     Next,
     Previous,
@@ -94,6 +96,8 @@ pub enum Action {
 pub struct Shell {
     /// For waking the UI from background work.
     pub ctx: egui::Context,
+    /// The logo, as a texture.
+    pub logo: egui::TextureHandle,
     pub runtime: Runtime,
     pub api: Api,
     pub controller: Arc<Controller>,
@@ -211,11 +215,11 @@ impl Shell {
         }
         let Some(catalog) = self.catalog.value.clone() else { return };
         self.resumed = true;
-        if !player.items.is_empty() {
+        if player.current.is_some() {
             return;
         }
-        let Some((saved, position)) = resume.load() else { return };
-        let current = saved.tracks.get(saved.index).copied();
+        let Some((list, saved, position)) = resume.load() else { return };
+        let current = saved.current_queued.or_else(|| list.tracks.get(saved.index).copied());
         let at = position
             .filter(|p| Some(p.track) == current)
             .map(|p| std::time::Duration::from_millis(p.position_ms))
@@ -223,9 +227,15 @@ impl Shell {
         let controller = self.controller.clone();
         // Built in the background: it can be the whole library.
         self.runtime.spawn(async move {
-            let items: Vec<QueueItem> = saved.tracks.iter().filter_map(|id| catalog.track_index(*id)).map(|i| queue_item(&catalog, i)).collect();
-            let index = current.and_then(|id| items.iter().position(|i| i.track_id == id)).unwrap_or(0);
-            controller.restore(items, index, at, saved.repeat, saved.shuffle).await
+            let items = |ids: &[Uuid]| -> Vec<QueueItem> {
+                ids.iter().filter_map(|id| catalog.track_index(*id)).map(|i| queue_item(&catalog, i)).collect()
+            };
+            let list_track = list.tracks.get(saved.index).copied();
+            let list = items(&list.tracks);
+            let index = list_track.and_then(|id| list.iter().position(|i| i.track_id == id)).unwrap_or(0);
+            let current_queued = saved.current_queued.and_then(|id| catalog.track_index(id)).map(|i| queue_item(&catalog, i));
+            let queued = items(&saved.queued);
+            controller.restore(list, index, queued, current_queued, at, saved.repeat, saved.shuffle).await
         });
     }
 
@@ -412,6 +422,7 @@ impl App {
         let artist_details = crate::details::Details::new(k, a, r, c);
         let mut shell = Shell {
             ctx: cc.egui_ctx.clone(),
+            logo: widgets::logo_texture(&cc.egui_ctx),
             runtime,
             api,
             controller,
@@ -494,20 +505,24 @@ impl App {
                         controller.enqueue(items, next).await
                     });
                     let what = if count == 1 { "1 track".to_string() } else { format!("{count} tracks") };
-                    let text = if next { format!("Playing {what} next") } else { format!("Added {what} to the queue") };
+                    let text = if next { format!("Queued {what} first") } else { format!("Queued {what}") };
                     self.shell.playlists.notice = Some((text, Instant::now()));
                 }
-                Action::PlayQueueAt(index) => {
+                Action::PlayPlace(place) => {
                     let c = self.shell.controller.clone();
-                    self.shell.runtime.spawn(async move { c.play_at(index).await });
+                    self.shell.runtime.spawn(async move { c.play_place(place).await });
                 }
-                Action::RemoveFromQueue(index) => {
+                Action::RemovePlace(place) => {
                     let c = self.shell.controller.clone();
-                    self.shell.runtime.spawn(async move { c.remove(index).await });
+                    self.shell.runtime.spawn(async move { c.remove(place).await });
                 }
-                Action::MoveInQueue(from, to) => {
+                Action::ClearQueued => {
                     let c = self.shell.controller.clone();
-                    self.shell.runtime.spawn(async move { c.move_item(from, to).await });
+                    self.shell.runtime.spawn(async move { c.clear_queued().await });
+                }
+                Action::MoveQueued(from, to) => {
+                    let c = self.shell.controller.clone();
+                    self.shell.runtime.spawn(async move { c.move_queued(from, to).await });
                 }
                 Action::TogglePause => self.shell.controller.toggle_pause(),
                 Action::Next => {
@@ -688,7 +703,7 @@ impl eframe::App for App {
         let player = self.shell.controller.view.lock().unwrap().clone();
         self.shell.resume_queue(&player);
         // The next track's cover, loaded ahead, so it can fade in the moment it plays.
-        if let Some(next) = player.items.get(player.index + 1).and_then(|i| i.cover) {
+        if let Some(next) = player.next().and_then(|i| i.cover) {
             self.shell.covers.get(&ctx, next);
         }
 

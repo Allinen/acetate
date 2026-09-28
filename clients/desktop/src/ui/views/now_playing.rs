@@ -59,7 +59,7 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell, player: &PlayerView, spectrum:
     let marks_rect = Rect::from_min_size(Pos2::new(left, middle + 44.0), Vec2::new(width, 30.0));
     let mut marks_ui = ui.new_child(egui::UiBuilder::new().max_rect(marks_rect).layout(egui::Layout::left_to_right(egui::Align::Center)));
     super::album::marks(&mut marks_ui, shell, Kind::Track, item.track_id);
-    let next = if player.repeat { Some(&item) } else { player.items.get(player.index + 1) };
+    let next = player.next();
     if let Some(next) = next {
         let text = format!("Next  ·  {} — {}", next.title, next.artist);
         widgets::text_in(ui.painter(), Rect::from_min_size(Pos2::new(left, middle + 88.0), Vec2::new(width, 18.0)), &text, font(13.0, medium()), P.faint);

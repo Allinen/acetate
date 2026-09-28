@@ -100,6 +100,33 @@ pub async fn cover(
     serve_blob(state.store.path_for(&cover.blob_sha256).await, &mime, request).await
 }
 
+/// `GET /api/images/{hash}`: a cover image by its content: its SHA-256, or the start of
+/// it (16+ hex digits, as the catalog's `cover_key`). Visible if a cover the user can see
+/// uses it. The same image under many covers is one URL, and it never changes: clients
+/// may keep it forever.
+pub async fn image(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(hash): Path<String>,
+    request: Request,
+) -> Result<Response, AppError> {
+    let mut tx = state.db(&user).await?;
+    let image = crate::db::covers::image_by_hash(&mut tx, &hash).await?;
+    drop(tx);
+    let Some(image) = image else {
+        return Err(AppError::NotFound);
+    };
+    let mime = image.mime.and_then(|m| m.parse().ok()).unwrap_or(mime::APPLICATION_OCTET_STREAM);
+    let mut response = serve_blob(state.store.path_for(&image.blob_sha256).await, &mime, request).await?;
+    // `private`: one user's view (shared caches mustn't keep it); `immutable`: the same
+    // hash is always the same bytes.
+    response.headers_mut().insert(
+        axum::http::header::CACHE_CONTROL,
+        axum::http::HeaderValue::from_static("private, max-age=31536000, immutable"),
+    );
+    Ok(response)
+}
+
 /// Serves a file from disk using tower-http's `ServeFile`, which handles `Range`,
 /// `If-Modified-Since` etc. for us.
 pub(super) async fn serve_blob(

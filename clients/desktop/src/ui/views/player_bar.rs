@@ -125,6 +125,9 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell, player: &PlayerView) {
         let rect = Rect::from_min_max(Pos2::new(right_rect.right() - galley_width, right_rect.top()), right_rect.max);
         widgets::text_in(ui.painter(), rect, &text, font(12.5, medium()), color);
     } else if current.is_some() {
-        ui.painter().text(right_rect.right_center(), Align2::RIGHT_CENTER, format!("{} of {}", player.index + 1, player.items.len()), font(12.0, medium()), P.faint);
+        // Where playback is: in the hand-made queue, or at a place in the list.
+        let place = if player.current_queued { "from the queue".to_string() } else { format!("{} of {}", player.list_index + 1, player.list.len()) };
+        let queued = if player.queued.is_empty() { String::new() } else { format!("  ·  {} queued", player.queued.len()) };
+        ui.painter().text(right_rect.right_center(), Align2::RIGHT_CENTER, format!("{place}{queued}"), font(12.0, medium()), P.faint);
     }
 }

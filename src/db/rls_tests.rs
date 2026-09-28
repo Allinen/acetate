@@ -495,3 +495,32 @@ async fn shares_open_only_their_target(_: PgPoolOptions, connect: PgConnectOptio
     assert_eq!(all, 0);
     Ok(())
 }
+
+#[sqlx::test]
+async fn cover_images_by_hash_follow_what_you_can_see(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
+    let lib = setup(connect).await?;
+    // The same image on V (visible to all) and H (hidden from carol); another only on H.
+    let shared = "a".repeat(64);
+    let hidden = "b".repeat(64);
+    for (track, sha) in [(lib.v, &shared), (lib.h, &shared), (lib.h, &hidden)] {
+        sqlx::query("INSERT INTO covers (track_id, blob_sha256, source) VALUES ($1, $2, 'upload')")
+            .bind(track)
+            .bind(sha)
+            .execute(&lib.owner)
+            .await?;
+    }
+    let found = |user: Uuid, hash: String| {
+        let lib = &lib;
+        async move {
+            let mut tx = db::begin(&lib.app, Some(user)).await?;
+            anyhow::Ok(db::covers::image_by_hash(&mut tx, &hash).await?.map(|i| i.blob_sha256))
+        }
+    };
+    assert_eq!(found(lib.carol, shared.clone()).await?, Some(shared.clone()), "used by V too");
+    assert_eq!(found(lib.carol, shared[..16].to_string()).await?, Some(shared.clone()), "by its start");
+    assert_eq!(found(lib.carol, hidden.clone()).await?, None, "only on H");
+    assert_eq!(found(lib.bob, hidden.clone()).await?, Some(hidden), "bob sees H");
+    assert_eq!(found(lib.carol, "a".repeat(15)).await?, None, "too short to say");
+    assert_eq!(found(lib.carol, "%".repeat(16)).await?, None, "not hex");
+    Ok(())
+}

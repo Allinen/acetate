@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Acetate
+Comment=Your music library
+Exec=acetate-desktop
+Icon=acetate
+StartupWMClass=acetate
+Categories=AudioVideo;Audio;Player;
+Terminal=false

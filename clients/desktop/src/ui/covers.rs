@@ -15,7 +15,6 @@ use std::sync::{Arc, Mutex};
 
 use eframe::egui::{self, ColorImage, TextureHandle, TextureOptions};
 use tokio::runtime::Handle;
-use uuid::Uuid;
 
 use crate::api::Api;
 use crate::catalog::model::{Cover, CoverKey};
@@ -72,7 +71,7 @@ impl Covers {
     /// The cover's texture and how far it has faded in (0 to 1), starting a load if it
     /// isn't there yet. None while loading (or if it failed).
     pub fn get(&mut self, ctx: &egui::Context, cover: Cover) -> Option<(TextureHandle, f32)> {
-        let (id, key) = (cover.id, cover.key);
+        let key = cover.key;
         match self.states.get(&key) {
             Some(State::Ready { texture, arrived }) => {
                 let age = (ctx.input(|i| i.time) - arrived) as f32;
@@ -89,7 +88,7 @@ impl Covers {
                     self.states.insert(key, State::Loading);
                     let (done, api, dir, ctx) = (self.done.clone(), self.api.clone(), self.dir.clone(), ctx.clone());
                     self.runtime.spawn(async move {
-                        let image = load(&api, &dir, id, key).await;
+                        let image = load(&api, &dir, key).await;
                         done.lock().unwrap().push((key, image));
                         ctx.request_repaint();
                     });
@@ -105,7 +104,7 @@ pub fn path(dir: &std::path::Path, key: CoverKey) -> std::path::PathBuf {
     dir.join(format!("{:016x}.jpg", key.0))
 }
 
-async fn load(api: &Api, dir: &std::path::Path, id: Uuid, key: CoverKey) -> Option<ColorImage> {
+async fn load(api: &Api, dir: &std::path::Path, key: CoverKey) -> Option<ColorImage> {
     let path = path(dir, key);
     let cached = {
         let path = path.clone();
@@ -113,7 +112,7 @@ async fn load(api: &Api, dir: &std::path::Path, id: Uuid, key: CoverKey) -> Opti
     };
     let (bytes, from_disk) = match cached {
         Some(bytes) => (bytes, true),
-        None => (api.cover(id).await.ok()?, false),
+        None => (api.image(&format!("{:016x}", key.0)).await.ok()?, false),
     };
     let dir = dir.to_path_buf();
     // Decoding and scaling are CPU work: off the async threads.

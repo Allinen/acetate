@@ -161,9 +161,9 @@ impl Api {
         Ok(CatalogResponse::Changed { body: response.bytes().await?.to_vec(), etag })
     }
 
-    /// A cover's image bytes.
-    pub async fn cover(&self, cover_id: Uuid) -> anyhow::Result<Vec<u8>> {
-        let response = self.request(reqwest::Method::GET, &format!("/api/covers/{cover_id}"))?.send().await?;
+    /// A cover image's bytes, by its content (`hash`: its SHA-256 or the start of it).
+    pub async fn image(&self, hash: &str) -> anyhow::Result<Vec<u8>> {
+        let response = self.request(reqwest::Method::GET, &format!("/api/images/{hash}"))?.send().await?;
         Ok(check(response).await?.bytes().await?.to_vec())
     }
 

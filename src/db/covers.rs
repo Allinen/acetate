@@ -203,3 +203,36 @@ pub async fn apply_to_album_tracks(
     }
     Ok((added, skipped))
 }
+
+/// An image as covers use it: its full hash and type.
+#[derive(Debug)]
+pub struct Image {
+    pub blob_sha256: String,
+    pub mime: Option<String>,
+}
+
+/// The cover image whose hash is (or starts with) `hash` (16 to 64 lowercase hex
+/// digits), if a cover the user can see uses it: an album cover counts when one of the
+/// album's tracks is visible, as for `GET /api/covers/{id}`.
+pub async fn image_by_hash(conn: &mut PgConnection, hash: &str) -> sqlx::Result<Option<Image>> {
+    let valid = (16..=64).contains(&hash.len()) && hash.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+    if !valid {
+        return Ok(None);
+    }
+    sqlx::query_as!(
+        Image,
+        r#"
+        SELECT c.blob_sha256, c.mime
+        FROM covers c
+        WHERE c.blob_sha256 LIKE $1 || '%'
+          AND (EXISTS (SELECT 1 FROM tracks t WHERE t.id = c.track_id)
+               OR EXISTS (SELECT 1 FROM album_tracks at JOIN tracks t ON t.id = at.track_id
+                          WHERE at.album_id = c.album_id))
+        LIMIT 1
+        "#,
+        hash
+    )
+    .fetch_optional(conn)
+    .await
+}
+
