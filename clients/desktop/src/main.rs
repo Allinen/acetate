@@ -21,10 +21,13 @@ mod resume;
 mod ui;
 
 fn main() -> eframe::Result {
+    // The simple logo (the full one is for the README, used sparingly).
+    let icon = eframe::icon_data::from_png_bytes(include_bytes!("../../../assets/brand/acetate-simple.png")).expect("the app icon");
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title("Acetate")
             .with_app_id("acetate")
+            .with_icon(icon)
             .with_inner_size([1280.0, 820.0])
             .with_min_inner_size([900.0, 560.0]),
         ..Default::default()
