@@ -37,7 +37,7 @@ impl Tracks {
         super::heading(ui, "Tracks", self.table.shown());
         ui.add_space(10.0);
         let rows = TrackRows { tracks: None, added: None };
-        let options = Options { key: "tracks", columns: LIBRARY_COLUMNS, added: None, filter_hint: Some("Filter by title, artist or album"), album: None };
+        let options = Options { key: "tracks", columns: LIBRARY_COLUMNS, added: None, filter_hint: Some("Filter: words, or artist:… album:… year:… genre:… status:… flag:…"), album: None };
         self.table.show(ui, shell, catalog, &rows, shell.generation, player, &options);
     }
 }

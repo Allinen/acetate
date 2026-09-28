@@ -91,7 +91,7 @@ impl CreditsEditor {
                     if ui.add_enabled(i + 1 < count, egui::Button::new("↓").small()).on_hover_text("Later").clicked() {
                         action = Some(RowAction::Swap(i, i + 1));
                     }
-                    if ui.small_button("✕").on_hover_text("Remove").clicked() {
+                    if ui.small_button("×").on_hover_text("Remove").clicked() {
                         action = Some(RowAction::Remove(i));
                     }
                 });

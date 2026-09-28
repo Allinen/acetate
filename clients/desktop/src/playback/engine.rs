@@ -22,6 +22,7 @@ use std::time::Duration;
 use rodio::source::SeekError;
 use rodio::{ChannelCount, Decoder, DeviceSinkBuilder, Player, Sample, SampleRate, Source};
 
+use super::opus::OpusSource;
 use super::stream::RemoteFile;
 
 /// What the audio thread can be told to do.
@@ -383,16 +384,19 @@ impl Source for Chain {
 }
 
 /// Decodes a file as it downloads (reads wait for bytes still on their way). Gapless:
-/// encoder padding (MP3, AAC) is left out.
-fn decode(file: RemoteFile) -> Result<Decoder<RemoteFile>, String> {
+/// encoder padding (MP3, AAC) is left out. What rodio can't decode may be Opus, which is
+/// decoded on its own (see `opus`).
+fn decode(file: RemoteFile) -> Result<Track, String> {
     let length = file.len();
-    Decoder::builder()
-        .with_data(file)
-        .with_byte_len(length)
-        .with_seekable(true)
-        .with_gapless(true)
-        .build()
-        .map_err(|err| format!("Couldn't play this file: it doesn't decode ({err})."))
+    let again = file.clone();
+    let decoded = Decoder::builder().with_data(file).with_byte_len(length).with_seekable(true).with_gapless(true).build();
+    match decoded {
+        Ok(decoder) => Ok(Box::new(decoder)),
+        Err(err) => match OpusSource::new(Box::new(again)) {
+            Ok(opus) => Ok(Box::new(opus)),
+            Err(_) => Err(format!("Couldn't play this file: it doesn't decode ({err}).")),
+        },
+    }
 }
 
 /// Passes a source through unchanged, copying what's played (mono) into the `Scope`.

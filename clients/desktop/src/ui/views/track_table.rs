@@ -13,12 +13,12 @@
 //! rate, `p` adds to a playlist, `/` filters. A playlist's page adds its own keys, using
 //! `Shown::selected`.
 //!
-//! Marking many (for changing them all at once, in edit mode): the box in front of each
-//! row (a click), `x`, or Ctrl+click marks or unmarks one; Shift+click or Shift+↑/↓ a
-//! range, which takes the state of the row it starts from (so ranges unmark too); Ctrl+A
-//! marks everything shown; Esc clears. Marks are kept by track, so sorting and filtering
-//! don't lose them. In edit mode, with any marked, the change for all of them opens above
-//! the table (see `edit::bulk`).
+//! Marking many, in edit mode (listen mode has none of it): the box in front of each row
+//! (a click), `x`, or Ctrl+click marks or unmarks one; Shift+click or Shift+↑/↓ a range,
+//! which takes the state of the row it starts from (so ranges unmark too); Ctrl+A marks
+//! everything shown; Esc clears. Marks are kept by track, so sorting and filtering don't
+//! lose them (nor leaving edit mode: they're there again when it's back). Ctrl+E (or the
+//! button) opens the change for all of them, in a popup (see `edit::bulk`).
 
 use std::collections::HashSet;
 use std::time::Duration;
@@ -177,8 +177,12 @@ pub struct TrackTable {
     /// Where a range starts (a row shown): Shift+click and Shift+↑/↓ give the range
     /// this row's state.
     anchor: Option<usize>,
-    /// Changing the marked tracks (edit mode).
+    /// Changing the marked tracks (edit mode), and whether its popup is open.
     bulk: crate::ui::edit::bulk::BulkEditor,
+    bulk_open: bool,
+    /// The popup is for this one track (the selected one, nothing marked: a quick fix,
+    /// in listen mode too).
+    quick: Option<Uuid>,
 }
 
 /// In the rows' own order.
@@ -202,6 +206,8 @@ impl TrackTable {
             marked: HashSet::new(),
             anchor: None,
             bulk: Default::default(),
+            bulk_open: false,
+            quick: None,
         }
     }
 
@@ -293,14 +299,61 @@ impl TrackTable {
             self.remake(catalog, rows, version, options);
         }
 
-        // ---- Marking ----
+        // A bulk change just finished (the popup open or not): the lists catch up.
+        if self.bulk.take_finished() {
+            shell.act(Action::RefreshLibrary);
+        }
+
+        // ---- Marking (edit mode only) ----
+        let marking = shell.edit_mode;
+        if !marking && self.quick.is_none() {
+            self.bulk_open = false;
+        }
+        // The change for all of them, in a popup (drawn first: it takes Esc and Ctrl+Enter
+        // before the table sees them).
+        if self.bulk_open {
+            shell.modal_open = true;
+            let (marked, title) = match self.quick {
+                Some(id) => {
+                    let title = catalog.track_index(id).map(|i| catalog.tracks[i as usize].title.clone()).unwrap_or_default();
+                    (vec![id], format!("Change “{title}”"))
+                }
+                None => {
+                    let marked = self.marked(catalog, rows);
+                    let title = format!("Change {} tracks", thousands(marked.len()));
+                    (marked, title)
+                }
+            };
+            let album = options.album.map(|a| a.0);
+            if let Some(catalog) = shell.catalog.value.clone() {
+                let mut done = false;
+                let closed = crate::ui::modal::show(&ctx, "bulk-edit", &title, Vec2::new(1180.0, 760.0), |ui| {
+                    done = self.bulk.show(ui, shell, &catalog, &marked, album);
+                });
+                if closed || done {
+                    self.bulk_open = false;
+                    self.quick = None;
+                }
+            }
+        }
         let typing = ctx.egui_wants_keyboard_input();
-        if !typing && !shell.palette_open {
-            let (toggle, all, clear) = ctx.input_mut(|i| {
+        // Ctrl+E with nothing marked (or outside edit mode): the popup for the selected
+        // track alone, a quick fix.
+        if !self.bulk_open && !typing && !shell.palette_open && (!marking || self.marked.is_empty()) && shell.account.can("edit_metadata") {
+            let id = self.id_at(catalog, rows, self.selected);
+            if id.is_some() && ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::E)) {
+                self.quick = id;
+                self.bulk_open = true;
+                self.bulk.opened();
+            }
+        }
+        if marking && !self.bulk_open && !typing && !shell.palette_open {
+            let (toggle, all, clear, open) = ctx.input_mut(|i| {
                 (
                     i.key_pressed(egui::Key::X) && i.modifiers.is_none(),
                     i.consume_key(egui::Modifiers::COMMAND, egui::Key::A),
                     !self.marked.is_empty() && i.consume_key(egui::Modifiers::NONE, egui::Key::Escape),
+                    !self.marked.is_empty() && i.consume_key(egui::Modifiers::COMMAND, egui::Key::E),
                 )
             });
             if toggle {
@@ -317,37 +370,35 @@ impl TrackTable {
                 self.marked.clear();
                 self.anchor = None;
             }
+            if open {
+                self.bulk_open = true;
+                self.bulk.opened();
+            }
         }
-        if !self.marked.is_empty() {
+        if marking && !self.marked.is_empty() {
             // Esc clears the marks (above), not leaving the page.
             shell.form_dirty = true;
             ui.horizontal(|ui| {
                 ui.label(RichText::new(format!("{} marked", thousands(self.marked.len()))).font(font(13.0, semibold())).color(P.accent));
-                ui.label(RichText::new("the box or x (un)marks · Shift+↑/↓ or Shift+click a range · Ctrl+A all shown · Esc clear").color(P.faint).small());
-                if !shell.edit_mode {
-                    ui.label(RichText::new("· change them all in edit mode (e)").color(P.faint).small());
+                if ui.button(format!("Change {} tracks…  (Ctrl+E)", thousands(self.marked.len()))).clicked() {
+                    self.bulk_open = true;
+                    self.bulk.opened();
                 }
+                ui.label(RichText::new("the box or x (un)marks · Shift+↑/↓ or Shift+click a range · Ctrl+A all shown · Esc clear").color(P.faint).small());
             });
             ui.add_space(4.0);
-        }
-        // Changing them (edit mode).
-        if shell.edit_mode && !self.marked.is_empty() {
-            let marked = self.marked(catalog, rows);
-            if let Some(catalog) = shell.catalog.value.clone() {
-                let album = options.album.map(|a| a.0);
-                super::album::details_panel(ui, "bulk-edit", |ui| self.bulk.show(ui, shell, &catalog, &marked, album));
-                ui.add_space(8.0);
-            }
         }
 
         // ---- Keys for the row under the cursor ----
         let visible = ((ui.available_height() / ROW) as usize).max(1);
         let before = self.selected;
-        let moved = widgets::move_selection(&ctx, &mut self.selected, self.order.len(), 1, visible);
+        // (The popup takes the keys while it's open.)
+        let len = if self.bulk_open { 0 } else { self.order.len() };
+        let moved = widgets::move_selection(&ctx, &mut self.selected, len, 1, visible);
         if moved.moved {
             self.scroll_to = Some(self.selected);
-            // Shift+↑/↓: the rows passed over take the starting row's state.
-            if ctx.input(|i| i.modifiers.shift) {
+            // Shift+↑/↓ (edit mode): the rows passed over take the starting row's state.
+            if marking && ctx.input(|i| i.modifiers.shift) {
                 self.range_to(catalog, rows, before, self.selected);
             }
         }
@@ -378,7 +429,10 @@ impl TrackTable {
         let playing = playing_track(player);
         // On an album: numbers as disc-track when any track is on another disc.
         let numbers = options.album.map(|(album, _)| AlbumNumbers::new(catalog, rows, album));
-        let mut builder = TableBuilder::new(ui).sense(Sense::click()).animate_scrolling(false).column(Width::exact(26.0));
+        let mut builder = TableBuilder::new(ui).sense(Sense::click()).animate_scrolling(false);
+        if marking {
+            builder = builder.column(Width::exact(26.0));
+        }
         for c in &columns {
             builder = builder.column(c.width());
         }
@@ -392,7 +446,9 @@ impl TrackTable {
         let (mut clicked, mut double, mut boxed) = (None, None, None);
         builder
             .header(26.0, |mut header| {
-                header.col(|_| {});
+                if marking {
+                    header.col(|_| {});
+                }
                 for c in &columns {
                     let (_, response) = header.col(|ui| {
                         let name = c.name(options);
@@ -441,7 +497,7 @@ impl TrackTable {
                                 let at = ui.max_rect().left_center() + Vec2::new(2.0, 4.0);
                                 painter.text(at, egui::Align2::LEFT_CENTER, format!("Disc {disc}"), font(12.5, semibold()), P.muted);
                             });
-                            for _ in &columns {
+                            for _ in columns.iter().skip(if marking { 0 } else { 1 }) {
                                 row.col(|_| {});
                             }
                             return;
@@ -452,8 +508,9 @@ impl TrackTable {
                     row.set_selected(n == self.selected);
                     let marked = self.marked.contains(&t.id);
                     let color = if playing == Some(t.id) { P.accent } else { P.text };
-                    // The mark's box: a click (un)marks the row.
-                    row.col(|ui| {
+                    // The mark's box (edit mode): a click (un)marks the row.
+                    if marking {
+                        row.col(|ui| {
                         let (rect, response) = ui.allocate_exact_size(Vec2::splat(18.0), Sense::click());
                         let rect = rect.translate(Vec2::new(2.0, 0.0));
                         if marked {
@@ -466,7 +523,8 @@ impl TrackTable {
                         if response.on_hover_text("Mark (x)").clicked() {
                             boxed = Some(n);
                         }
-                    });
+                        });
+                    }
                     for c in &columns {
                         row.col(|ui| match c {
                             Column::Position => {
@@ -558,7 +616,9 @@ impl TrackTable {
             self.toggle(catalog, rows, n);
             self.selected = n;
         } else if let Some(n) = clicked {
-            if modifiers.command {
+            if !marking {
+                // Listen mode: a click only moves the cursor.
+            } else if modifiers.command {
                 // Ctrl+click: this one marked or not.
                 self.toggle(catalog, rows, n);
             } else if modifiers.shift {

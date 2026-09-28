@@ -26,6 +26,17 @@ pub const GROUPS: &[(&str, &[Binding])] = &[
         ],
     ),
     (
+        "Searching and filtering (everywhere)",
+        &[
+            ("words", "anywhere in title, artists, album"),
+            ("artist:…  album:…  title:…", "only there (artist:lil quill, no quotes)"),
+            ("year:2019  genre:…  status:demo", "released, genre, status"),
+            ("format:flac  flag:cover  kind:ep", "file format, a flag's kind, album kind"),
+            ("disc:2  track:5", "disc and track number"),
+            ("keys shorten", "art: al: st: … (any start)"),
+        ],
+    ),
+    (
         "Playback",
         &[
             ("Space", "play / pause"),
@@ -54,13 +65,17 @@ pub const GROUPS: &[(&str, &[Binding])] = &[
         ],
     ),
     (
-        "Marking many (any track list)",
+        "Marking many (any track list, edit mode)",
         &[
             ("x, Ctrl+click  or  the box", "mark or unmark one"),
             ("Shift+↑/↓  or  Shift+click", "a range, as the row it starts from (marked or not)"),
             ("Ctrl+A", "mark everything shown"),
             ("Esc", "clear the marks"),
-            ("Ctrl+Enter", "in edit mode: preview the change, then apply it"),
+            ("Ctrl+E", "change the marked tracks (a popup)"),
+            ("status:demo date:2020 disc:2 …", "in the popup: set it at once (several too), Enter"),
+            ("a word, then Enter", "in the popup: find what to change (spaces don't matter)"),
+            ("/", "in the popup: back to “What to change”"),
+            ("Ctrl+Enter", "in the popup: preview the change, then apply it"),
         ],
     ),
     (
@@ -151,7 +166,12 @@ pub fn overlay(ctx: &egui::Context, open: &mut bool) {
         *open = false;
         return;
     }
-    let width = (screen.width() - 120.0).clamp(560.0, 1040.0);
+    // Three columns on a wide window, else two; groups spread so the columns come out
+    // about even; and it scrolls if it still doesn't fit.
+    let width = (screen.width() - 80.0).clamp(560.0, 1500.0);
+    let count = if width >= 1200.0 { 3 } else { 2 };
+    let columns = spread(count);
+    let max_height = (screen.height() - 80.0).max(200.0);
     egui::Area::new(egui::Id::new("keys"))
         .order(egui::Order::Tooltip)
         .pivot(Align2::CENTER_CENTER)
@@ -165,6 +185,7 @@ pub fn overlay(ctx: &egui::Context, open: &mut bool) {
                 .inner_margin(egui::Margin::same(24))
                 .show(ui, |ui| {
                     ui.set_width(width);
+                    ui.set_max_height(max_height);
                     ui.horizontal(|ui| {
                         ui.label(RichText::new("Keys").font(font(24.0, bold())));
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -172,22 +193,61 @@ pub fn overlay(ctx: &egui::Context, open: &mut bool) {
                         });
                     });
                     ui.add_space(12.0);
-                    // Two columns of groups.
-                    ui.columns(2, |columns| {
-                        for (n, (title, bindings)) in GROUPS.iter().enumerate() {
-                            let ui = &mut columns[if n < 2 { 0 } else { 1 }];
-                            ui.label(RichText::new(*title).font(font(15.0, semibold())).color(P.accent));
-                            ui.add_space(4.0);
-                            egui::Grid::new(("keys", n)).num_columns(2).spacing([18.0, 5.0]).show(ui, |ui| {
-                                for (keys, what) in *bindings {
-                                    ui.label(RichText::new(*keys).font(font(13.0, semibold())).color(P.text));
-                                    ui.label(RichText::new(*what).font(font(13.0, medium())).color(P.muted));
-                                    ui.end_row();
+                    egui::ScrollArea::vertical().id_salt("keys-scroll").auto_shrink([false, true]).show(ui, |ui| {
+                        ui.columns(count, |uis| {
+                            for (column, groups) in columns.iter().enumerate() {
+                                let ui = &mut uis[column];
+                                for &n in groups {
+                                    let (title, bindings) = GROUPS[n];
+                                    ui.label(RichText::new(title).font(font(15.0, semibold())).color(P.accent));
+                                    ui.add_space(4.0);
+                                    egui::Grid::new(("keys", n)).num_columns(2).spacing([18.0, 5.0]).show(ui, |ui| {
+                                        for (keys, what) in bindings {
+                                            ui.label(RichText::new(*keys).font(font(13.0, semibold())).color(P.text));
+                                            ui.add(egui::Label::new(RichText::new(*what).font(font(13.0, medium())).color(P.muted)).wrap());
+                                            ui.end_row();
+                                        }
+                                    });
+                                    ui.add_space(14.0);
                                 }
-                            });
-                            ui.add_space(14.0);
-                        }
+                            }
+                        });
                     });
                 });
         });
+}
+
+/// The groups (their places in `GROUPS`) for each of `count` columns, in order, each
+/// column taking the next groups until it has about its share of the rows.
+fn spread(count: usize) -> Vec<Vec<usize>> {
+    // A group's height in rows: its bindings, plus its title and the space after it.
+    let rows = |n: usize| GROUPS[n].1.len() + 2;
+    let total: usize = (0..GROUPS.len()).map(rows).sum();
+    let share = total.div_ceil(count);
+    let mut columns = vec![Vec::new(); count];
+    let (mut column, mut filled) = (0, 0);
+    for n in 0..GROUPS.len() {
+        if filled >= share && column + 1 < count {
+            column += 1;
+            filled = 0;
+        }
+        columns[column].push(n);
+        filled += rows(n);
+    }
+    columns
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_group_once_in_order_about_even() {
+        for count in [2, 3] {
+            let columns = spread(count);
+            let flat: Vec<usize> = columns.iter().flatten().copied().collect();
+            assert_eq!(flat, (0..GROUPS.len()).collect::<Vec<_>>());
+            assert!(columns.iter().all(|c| !c.is_empty()), "{columns:?}");
+        }
+    }
 }

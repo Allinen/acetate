@@ -58,17 +58,19 @@ impl Store {
     pub fn load(&self) -> Option<Arc<Catalog>> {
         let body = std::fs::read(&self.body).ok()?;
         // An old format after an update: the server's copy replaces it.
-        let mut catalog = Catalog::build(model::parse(&body).ok()?);
+        let mut raw = model::parse(&body).ok()?;
+        // Every delta merged into the rows first, the index built once: building it takes
+        // a moment at 185k tracks, and there can be hundreds of deltas.
         if let Ok(deltas) = std::fs::read(&self.deltas) {
             for line in deltas.split(|b| *b == b'\n').filter(|l| !l.is_empty()) {
                 match model::parse(line) {
-                    Ok(delta) => catalog = catalog.apply(delta),
+                    Ok(delta) => raw = super::index::merge_raw(raw, delta),
                     // A half-written last line (a crash while saving): the rest is fine.
                     Err(_) => break,
                 }
             }
         }
-        Some(Arc::new(catalog))
+        Some(Arc::new(Catalog::build(raw)))
     }
 
     /// Asks the server what changed since `current` (all of it without one); a new copy
@@ -142,5 +144,33 @@ pub async fn refresh(store: &Store, api: &Api, current: Option<Arc<Catalog>>, re
         Ok(Some(catalog)) => report(Update::Loaded { catalog, from_server: true }),
         Ok(None) => report(Update::Unchanged),
         Err(err) => report(Update::Failed(format!("{err:#}"))),
+    }
+}
+
+/// Reads a kept copy the way `Store::load` does and says where it stops (ignored by
+/// default): `ACETATE_TEST_STORE=<…/catalog-KEY>` (without `.json`). Read-only.
+#[cfg(test)]
+mod kept_copy {
+    use super::*;
+
+    #[test]
+    #[ignore]
+    fn a_kept_copy_loads() {
+        let Ok(prefix) = std::env::var("ACETATE_TEST_STORE") else { return };
+        let body = std::fs::read(format!("{prefix}.json")).unwrap();
+        let t = std::time::Instant::now();
+        let raw = model::parse(&body).unwrap_or_else(|e| panic!("the copy doesn't read: {e:#}"));
+        println!("copy: {} tracks, version {:?}, parsed in {:?}", raw.tracks.rows.len(), raw.version, t.elapsed());
+        let mut raw = raw;
+        let deltas = std::fs::read(format!("{prefix}.deltas")).unwrap_or_default();
+        let lines: Vec<&[u8]> = deltas.split(|b| *b == b'\n').filter(|l| !l.is_empty()).collect();
+        for (n, line) in lines.iter().enumerate() {
+            match model::parse(line) {
+                Ok(delta) => raw = crate::catalog::index::merge_raw(raw, delta),
+                Err(err) => panic!("delta {n} doesn't read: {err:#}"),
+            }
+        }
+        let catalog = Catalog::build(raw);
+        println!("with {} deltas: {} tracks, version {:?}, in {:?} in all", lines.len(), catalog.tracks.len(), catalog.version, t.elapsed());
     }
 }

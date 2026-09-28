@@ -158,7 +158,7 @@ impl Review {
             ui.add(
                 egui::TextEdit::singleline(&mut self.filter)
                     .id(egui::Id::new(super::FILTER_ID))
-                    .hint_text("/  filter: title, artist, file, folder")
+                    .hint_text("/  filter: words, or artist:… album:… year:… status:… flag:…")
                     .desired_width(260.0),
             );
             egui::ComboBox::from_id_salt("review-group").selected_text(format!("group by {}", self.group.name())).show_ui(ui, |ui| {
@@ -257,17 +257,15 @@ impl Review {
             .collect();
         flagged.sort_by_key(|f| std::cmp::Reverse(f.0));
 
-        let words: Vec<String> = self.filter.to_lowercase().split_whitespace().map(str::to_string).collect();
+        // Words (in the title, artists, album or the file's path) and `key:value` parts.
+        let query = crate::catalog::query::Query::parse(&self.filter);
         self.counts.clear();
         let mut entries = Vec::new();
         for (_, i, kinds) in flagged {
             let track = &catalog.tracks[i as usize];
             let path = file_of.get(&track.id).copied().unwrap_or("");
-            if !words.is_empty() {
-                let text = format!("{} {} {}", track.title, track.artist_display, path).to_lowercase();
-                if !words.iter().all(|w| text.contains(w.as_str())) {
-                    continue;
-                }
+            if !query.matches_track(catalog, i, path) {
+                continue;
             }
             for kind in &kinds {
                 *self.counts.entry(kind.clone()).or_default() += 1;

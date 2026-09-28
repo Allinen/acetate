@@ -137,3 +137,24 @@ pub fn apply(ctx: &egui::Context) {
         .into();
     });
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every symbol the app draws as text is in its fonts (else it's drawn as a box).
+    #[test]
+    fn the_symbols_used_exist_in_the_fonts() {
+        let ctx = egui::Context::default();
+        apply(&ctx);
+        // A frame, so the fonts are loaded.
+        let mut output = ctx.run_ui(Default::default(), |_| {});
+        output.textures_delta.clear();
+        // (Not "✕" (U+2715): it isn't there. "×" is.)
+        let missing: Vec<char> = "→↓↑←▶−×✓✗♪●⏸…·“”’"
+            .chars()
+            .filter(|c| !ctx.fonts_mut(|f| f.has_glyph(&font(14.0, medium()), *c)))
+            .collect();
+        assert!(missing.is_empty(), "not in the fonts: {missing:?}");
+    }
+}

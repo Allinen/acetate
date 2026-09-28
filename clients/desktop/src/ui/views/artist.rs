@@ -168,7 +168,7 @@ impl ArtistPage {
         ui.add_space(8.0);
         // Newest release first (the artist's own order).
         let rows = TrackRows { tracks: Some(tracks), added: None };
-        let options = Options { key: "artist", columns: super::tracks::LIBRARY_COLUMNS, added: None, filter_hint: Some("Filter this artist's tracks"), album: None };
+        let options = Options { key: "artist", columns: super::tracks::LIBRARY_COLUMNS, added: None, filter_hint: Some("Filter: words, or album:… year:… status:…"), album: None };
         self.list.show(ui, shell, catalog, &rows, shell.generation, player, &options);
     }
 }

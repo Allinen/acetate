@@ -663,7 +663,7 @@ impl TrackForm {
                         number.request_focus();
                     }
                 });
-                if ui.small_button("✕").on_hover_text("Take it off this album").clicked() {
+                if ui.small_button("×").on_hover_text("Take it off this album").clicked() {
                     action = Some(RowAction::Remove(i));
                 }
                 ui.end_row();
@@ -760,7 +760,7 @@ impl TrackForm {
                     if ui.button("Other track…").on_hover_text("Choose another track").clicked() {
                         action = Some(RowAction::Pick(Target::Relation(Some(i))));
                     }
-                    if ui.small_button("✕").on_hover_text("Remove").clicked() {
+                    if ui.small_button("×").on_hover_text("Remove").clicked() {
                         action = Some(RowAction::Remove(i));
                     }
                     ui.end_row();

@@ -163,53 +163,24 @@ impl Catalog {
     /// new ones added, removed ones dropped; then indexed again (a fraction of a second
     /// at 185k tracks: call it off the UI thread).
     pub fn apply(&self, delta: model::Raw) -> Catalog {
-        fn merge<T: Clone>(rows: &[T], changed: Vec<T>, removed: &[Uuid], id: impl Fn(&T) -> Uuid) -> Vec<T> {
-            let mut changed: HashMap<Uuid, T> = changed.into_iter().map(|r| (id(&r), r)).collect();
-            let mut out: Vec<T> = rows
-                .iter()
-                .filter(|r| !removed.contains(&id(r)))
-                .map(|r| changed.remove(&id(r)).unwrap_or_else(|| r.clone()))
-                .collect();
-            // New ones (their order doesn't matter: lists are sorted when shown).
-            out.extend(changed.into_values());
-            out
-        }
-        let removed = &delta.removed;
-        let tracks = merge(&self.tracks, delta.tracks.rows, &removed.tracks, |t| t.id);
-        let albums = merge(&self.albums, delta.albums.rows, &removed.albums, |a| a.id);
-        let artists = merge(&self.artists, delta.artists.rows, &removed.artists, |a| a.id);
-        let mut annotations = self.annotations.clone();
-        for id in &removed.annotations {
-            annotations.remove(id);
-        }
-        for a in delta.annotations.rows {
-            annotations.insert(a.id, a);
-        }
-        // A changed track's flags replace its old ones (none left: an empty list).
-        let mut issues = self.issues.clone();
-        for id in &removed.tracks {
-            issues.remove(id);
-        }
-        for model::Issues(track, flags) in delta.issues.rows {
-            if flags.is_empty() {
-                issues.remove(&track);
-            } else {
-                issues.insert(track, flags);
-            }
-        }
+        Catalog::build(merge_raw(self.to_raw(), delta))
+    }
+
+    /// The rows it was built from (for merging a delta into).
+    fn to_raw(&self) -> model::Raw {
         let part = |rows| model::Part { columns: Vec::new(), rows };
-        Catalog::build(model::Raw {
-            format: delta.format,
-            version: delta.version.or_else(|| self.version.clone()),
+        model::Raw {
+            format: model::FORMAT,
+            version: self.version.clone(),
             delta: false,
             removed: model::Removed::default(),
-            tracks: part(tracks),
-            albums: model::Part { columns: Vec::new(), rows: albums },
-            artists: model::Part { columns: Vec::new(), rows: artists },
-            annotations: model::Part { columns: Vec::new(), rows: annotations.into_values().collect() },
-            issues: model::Part { columns: Vec::new(), rows: issues.into_iter().map(|(t, f)| model::Issues(t, f)).collect() },
-            playlists: delta.playlists,
-        })
+            tracks: part(self.tracks.clone()),
+            albums: model::Part { columns: Vec::new(), rows: self.albums.clone() },
+            artists: model::Part { columns: Vec::new(), rows: self.artists.clone() },
+            annotations: model::Part { columns: Vec::new(), rows: self.annotations.values().cloned().collect() },
+            issues: model::Part { columns: Vec::new(), rows: self.issues.iter().map(|(t, f)| model::Issues(*t, f.clone())).collect() },
+            playlists: self.playlists.clone(),
+        }
     }
 
     /// A track's position in `tracks`.
@@ -244,6 +215,11 @@ impl Catalog {
     }
 
     /// The lowercase text of every track, album and artist, for searching.
+    /// A track's text to find it by: title, artists and album, lowercase.
+    pub fn track_text(&self, i: u32) -> &str {
+        &self.track_text[i as usize]
+    }
+
     pub fn texts(&self) -> (&[String], &[String], &[String]) {
         (&self.track_text, &self.album_text, &self.artist_text)
     }
@@ -260,14 +236,10 @@ impl Catalog {
     /// Some tracks (a playlist's, say; the same track may be there twice), filtered and
     /// sorted: the positions in `rows` to show, in order.
     pub fn order_tracks(&self, rows: &TrackRows, filter: &str, sort: TrackSort, descending: bool) -> Vec<usize> {
-        let words: Vec<String> = filter.to_lowercase().split_whitespace().map(str::to_string).collect();
+        // Words and `key:value` parts alike (see `query`).
+        let query = super::query::Query::parse(filter);
         let track = |row: usize| rows.track(row);
-        let mut list: Vec<usize> = (0..rows.len(self))
-            .filter(|&row| {
-                let text = &self.track_text[track(row) as usize];
-                words.iter().all(|w| text.contains(w.as_str()))
-            })
-            .collect();
+        let mut list: Vec<usize> = (0..rows.len(self)).filter(|&row| query.matches_track(self, track(row), "")).collect();
         let t = &self.tracks;
         let plays = |i: u32| self.annotations.get(&t[i as usize].id).map(|a| a.play_count).unwrap_or(0);
         match sort {
@@ -296,7 +268,25 @@ impl Catalog {
     }
 
     pub fn album_list(&self, filter: &str, sort: AlbumSort) -> Vec<u32> {
-        let mut list = matching(&self.album_text, filter);
+        use super::query::{Key, Query};
+        let query = Query::parse(filter);
+        let mut list: Vec<u32> = matching(&self.album_text, &query.words.join(" "))
+            .into_iter()
+            .filter(|&i| {
+                let a = &self.albums[i as usize];
+                query.fields.iter().filter(|(_, v)| !v.is_empty()).all(|(key, value)| {
+                    let value = value.to_lowercase();
+                    match key {
+                        Key::Artist => a.artist_display.to_lowercase().contains(&value),
+                        Key::Title | Key::Album => a.title.to_lowercase().contains(&value),
+                        Key::Year => a.release_date.as_deref().is_some_and(|d| d.starts_with(&value)) || a.year.is_some_and(|y| y.to_string() == value),
+                        Key::Kind => a.kind.starts_with(&value),
+                        // Keys about tracks don't apply to albums.
+                        _ => true,
+                    }
+                })
+            })
+            .collect();
         let a = &self.albums;
         match sort {
             AlbumSort::Added => list.sort_by(|x, y| a[*y as usize].id.cmp(&a[*x as usize].id)),
@@ -313,7 +303,15 @@ impl Catalog {
     }
 
     pub fn artist_list(&self, filter: &str, sort: ArtistSort) -> Vec<u32> {
-        let mut list = matching(&self.artist_text, filter);
+        // `artist:x` (or `name:x`) is a name; other keys don't apply to artists.
+        let query = super::query::Query::parse(filter);
+        let mut words = query.words.clone();
+        for (key, value) in &query.fields {
+            if matches!(key, super::query::Key::Artist | super::query::Key::Title) {
+                words.extend(value.to_lowercase().split_whitespace().map(str::to_string));
+            }
+        }
+        let mut list = matching(&self.artist_text, &words.join(" "));
         match sort {
             ArtistSort::Name => list.sort_by(|x, y| by_key(&self.artist_name_key, *x, *y)),
             ArtistSort::Tracks => list.sort_by(|x, y| {
@@ -397,6 +395,60 @@ fn sort_key(text: &str) -> String {
 
 fn by_key(keys: &[String], a: u32, b: u32) -> Ordering {
     keys[a as usize].cmp(&keys[b as usize]).then(a.cmp(&b))
+}
+
+/// A whole catalog's rows with a delta merged in (rows replaced by id, new ones added,
+/// removed ones dropped), without building the index: several deltas are merged first
+/// and the index built once (building it takes a moment at 185k tracks).
+pub fn merge_raw(base: model::Raw, delta: model::Raw) -> model::Raw {
+    fn merge<T>(rows: Vec<T>, changed: Vec<T>, removed: &[Uuid], id: impl Fn(&T) -> Uuid) -> Vec<T> {
+        let removed: std::collections::HashSet<Uuid> = removed.iter().copied().collect();
+        let mut changed: HashMap<Uuid, T> = changed.into_iter().map(|r| (id(&r), r)).collect();
+        let mut out: Vec<T> = rows
+            .into_iter()
+            .filter(|r| !removed.contains(&id(r)))
+            .map(|r| changed.remove(&id(&r)).unwrap_or(r))
+            .collect();
+        // New ones (their order doesn't matter: lists are sorted when shown).
+        out.extend(changed.into_values());
+        out
+    }
+    let removed = &delta.removed;
+    let tracks = merge(base.tracks.rows, delta.tracks.rows, &removed.tracks, |t| t.id);
+    let albums = merge(base.albums.rows, delta.albums.rows, &removed.albums, |a| a.id);
+    let artists = merge(base.artists.rows, delta.artists.rows, &removed.artists, |a| a.id);
+    let mut annotations: HashMap<Uuid, model::Annotation> = base.annotations.rows.into_iter().map(|a| (a.id, a)).collect();
+    for id in &removed.annotations {
+        annotations.remove(id);
+    }
+    for a in delta.annotations.rows {
+        annotations.insert(a.id, a);
+    }
+    // A changed track's flags replace its old ones (none left: an empty list).
+    let mut issues: HashMap<Uuid, Vec<(Uuid, String)>> = base.issues.rows.into_iter().map(|i| (i.0, i.1)).collect();
+    for id in &removed.tracks {
+        issues.remove(id);
+    }
+    for model::Issues(track, flags) in delta.issues.rows {
+        if flags.is_empty() {
+            issues.remove(&track);
+        } else {
+            issues.insert(track, flags);
+        }
+    }
+    let part = |rows| model::Part { columns: Vec::new(), rows };
+    model::Raw {
+        format: delta.format,
+        version: delta.version.or(base.version),
+        delta: false,
+        removed: model::Removed::default(),
+        tracks: part(tracks),
+        albums: model::Part { columns: Vec::new(), rows: albums },
+        artists: model::Part { columns: Vec::new(), rows: artists },
+        annotations: model::Part { columns: Vec::new(), rows: annotations.into_values().collect() },
+        issues: model::Part { columns: Vec::new(), rows: issues.into_iter().map(|(t, f)| model::Issues(t, f)).collect() },
+        playlists: delta.playlists,
+    }
 }
 
 /// Newest release first (no date last), then newest added.

@@ -2,6 +2,7 @@
 //! gapless playback. Runs on the async side; the audio itself is `engine`'s thread.
 
 pub mod engine;
+pub mod opus;
 pub mod media_keys;
 pub mod queue;
 pub mod scrobble;

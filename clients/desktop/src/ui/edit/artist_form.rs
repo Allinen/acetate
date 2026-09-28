@@ -5,7 +5,7 @@
 //! refused; "Load theirs, keep mine").
 //!
 //! Other names keep their ids: renaming one renames it on every credit that uses it.
-//! Removing one only hides it, and one still credited can't be: ✕ asks the server where
+//! Removing one only hides it, and one still credited can't be: × asks the server where
 //! it's used (`GET …/aliases/{id}/uses`) and, if anywhere, lists those (as links) instead
 //! of removing it.
 
@@ -89,7 +89,7 @@ pub struct ArtistForm {
     reason: String,
     state: SaveState,
     answer: Arc<Mutex<Option<Outcome>>>,
-    /// Aliases asked about (✕): None while asking; Some(uses) once known (kept: used).
+    /// Aliases asked about (×): None while asking; Some(uses) once known (kept: used).
     uses: HashMap<Uuid, Option<Result<Uses, String>>>,
     uses_answer: Arc<Mutex<Vec<(Uuid, Result<Uses, String>)>>>,
     confirm_discard: bool,
@@ -243,7 +243,7 @@ impl ArtistForm {
         shell.act(Action::RefreshLibrary);
     }
 
-    /// ✕ on an existing alias: where is it credited?
+    /// × on an existing alias: where is it credited?
     fn ask_uses(&mut self, shell: &Shell, alias: Uuid) {
         self.uses.insert(alias, None);
         let (api, answer, ctx, artist) = (shell.api.clone(), self.uses_answer.clone(), shell.ctx.clone(), self.artist);
@@ -291,7 +291,7 @@ impl ArtistForm {
                 let asking = row.id.is_some_and(|id| matches!(self.uses.get(&id), Some(None)));
                 if asking {
                     ui.label(RichText::new("checking where it's used…").color(P.faint));
-                } else if ui.small_button("✕").on_hover_text("Remove (only if nothing's credited as it)").clicked() {
+                } else if ui.small_button("×").on_hover_text("Remove (only if nothing's credited as it)").clicked() {
                     match row.id {
                         Some(id) => ask = Some(id),
                         None => remove_new = Some(i),

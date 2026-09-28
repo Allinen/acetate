@@ -40,7 +40,7 @@ impl Albums {
         super::heading(ui, "Albums", self.list.len());
         ui.add_space(10.0);
         ui.horizontal(|ui| {
-            if super::filter(ui, &mut self.filter, "Filter albums and artists") {
+            if super::filter(ui, &mut self.filter, "Filter: words, or artist:… year:… kind:ep…") {
                 remake = true;
                 self.selected = 0;
                 self.scroll_to = Some(0.0);

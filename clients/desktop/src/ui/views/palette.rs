@@ -192,7 +192,7 @@ impl Palette {
                     egui::TextEdit::singleline(&mut self.query)
                         .id(egui::Id::new(INPUT_ID))
                         .hint_text(match &self.mode {
-                            Mode::Search => "Search artists, albums, tracks, playlists… or > for commands".to_string(),
+                            Mode::Search => "Search anything (or artist:… album:… year:… status:…), > for commands".to_string(),
                             Mode::AddTo(tracks) if tracks.len() == 1 => "Add the track to which playlist? (or type a new name)".to_string(),
                             Mode::AddTo(tracks) => format!("Add the {} tracks to which playlist? (or type a new name)", tracks.len()),
                             Mode::Name(None) => "The new playlist's name".to_string(),
@@ -282,7 +282,8 @@ impl Palette {
         let (number, answer, ctx) = (self.asked, self.answer.clone(), shell.ctx.clone());
         let limit = if matches!(self.mode, Mode::Pick(..)) { 12 } else { 8 };
         shell.runtime.spawn_blocking(move || {
-            let hits = Search::default().run(&catalog, &query, limit);
+            let parsed = crate::catalog::query::Query::parse(&query);
+            let hits = if parsed.fields.is_empty() { Search::default().run(&catalog, &query, limit) } else { keyed(&catalog, &parsed, &query, limit) };
             *answer.lock().unwrap() = Some((number, hits));
             ctx.request_repaint();
         });
@@ -489,6 +490,31 @@ fn search_result(shell: &mut Shell, catalog: Option<&Catalog>, entry: Entry, shi
         }
         _ => {}
     }
+}
+
+/// Hits for a query with `key:value` parts: `artist:` searches artists by that name,
+/// `album:` albums by title (both fuzzy, as without keys); albums also by the keys that
+/// apply to albums (artist, year, kind); and the tracks matching all of it, newest first.
+fn keyed(catalog: &Catalog, query: &crate::catalog::query::Query, text: &str, limit: usize) -> Hits {
+    use crate::catalog::index::{TrackRows, TrackSort};
+    use crate::catalog::query::Key;
+    use crate::catalog::search::Part;
+    let mut search = Search::default();
+    let artists = match query.get(Key::Artist).filter(|v| !v.is_empty()) {
+        Some(name) => search.run_part(catalog, name, Part::Artists, limit),
+        None => Vec::new(),
+    };
+    let albums = match query.get(Key::Album).filter(|v| !v.is_empty()) {
+        Some(title) => search.run_part(catalog, title, Part::Albums, limit),
+        // Only with a key albums have (a key only tracks have would list every album).
+        None if query.fields.iter().any(|(k, _)| matches!(k, Key::Artist | Key::Year | Key::Kind | Key::Title)) => {
+            catalog.album_list(text, crate::catalog::index::AlbumSort::Added).into_iter().take(limit).map(|i| (i, 0)).collect()
+        }
+        None => Vec::new(),
+    };
+    let rows = TrackRows { tracks: None, added: None };
+    let tracks = catalog.order_tracks(&rows, text, TrackSort::Added, false).into_iter().take(limit).map(|i| (i as u32, 0)).collect();
+    Hits { artists, albums, tracks }
 }
 
 /// Three lines: a list.

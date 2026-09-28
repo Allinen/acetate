@@ -197,6 +197,16 @@ impl Seek for RemoteFile {
     }
 }
 
+/// For reading with symphonia directly (Opus files, see `opus`).
+impl symphonia::core::io::MediaSource for RemoteFile {
+    fn is_seekable(&self) -> bool {
+        true
+    }
+    fn byte_len(&self) -> Option<u64> {
+        Some(self.len())
+    }
+}
+
 /// The download: from where it's wanted to the end, then the parts skipped, until the
 /// whole file is here. `first` is the response `open` already has (from byte 0).
 async fn download(api: Api, file_id: Uuid, shared: Arc<Shared>, first: reqwest::Response) {

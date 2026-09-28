@@ -22,11 +22,11 @@ use super::credits::{self, CreditRow, CreditsEditor};
 use super::inline_search::{Choice, InlineSearch};
 use super::{capitalized, combo};
 use crate::api::{Api, ApiError};
-use crate::catalog::search::Part;
+use crate::catalog::search::{Part, Search};
 use crate::catalog::Catalog;
 use crate::details::TrackDetail;
 use crate::ui::theme::{font, semibold, PALETTE as P};
-use crate::ui::{Action, Shell};
+use crate::ui::Shell;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ArtistMode {
@@ -193,6 +193,42 @@ struct Job {
     details: Vec<Option<TrackDetail>>,
     done: usize,
     error: Option<String>,
+    /// Applying finished and the library hasn't been asked to catch up yet.
+    finished_unseen: bool,
+}
+
+/// A part of the change (for "Don't change: …").
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum ChangePart {
+    Artists,
+    Album,
+    Status,
+    Date,
+    Genres,
+    Disc,
+    Renumber,
+}
+
+/// What an entry of "What to change" does.
+#[derive(Debug, Clone, PartialEq)]
+enum Pick {
+    Artists(ArtistMode),
+    Album(AlbumMode),
+    Status(String),
+    /// Its field (false), or none (true).
+    Date(bool),
+    Genres(bool),
+    Disc,
+    Renumber,
+    Untick(ChangePart),
+    // Typed with their values (`key:value`):
+    DateValue(String),
+    GenresValue(String),
+    DiscValue(i16),
+    RenumberFrom(i16),
+    /// An artist to credit (as featured, or as primary if there's none yet).
+    Credit { id: Uuid, name: String, featured: bool },
+    SetAlbum { id: Uuid, title: String },
 }
 
 /// What the new artists and album are called (for the preview, before they exist): their
@@ -224,6 +260,11 @@ pub struct BulkEditor {
     /// The album the list is of (an album's page), for its numbers.
     context_album: Option<Uuid>,
     reason: String,
+    /// "What to change": typed to find a part of the change, Enter takes it.
+    picker: String,
+    picker_selected: usize,
+    /// A number field to put the cursor in when it's drawn next ("disc", "renumber").
+    focus_next: Option<&'static str>,
     /// The marked tracks the preview was made for (a different marking: made again).
     tracks: Vec<Uuid>,
     job: Arc<Mutex<Job>>,
@@ -254,6 +295,9 @@ impl Default for BulkEditor {
             renumber_from: 1,
             context_album: None,
             reason: String::new(),
+            picker: String::new(),
+            picker_selected: 0,
+            focus_next: Some("picker"),
             tracks: Vec::new(),
             job: Arc::default(),
         }
@@ -455,14 +499,19 @@ impl BulkEditor {
             for task in tasks {
                 let _ = task.await;
             }
-            job.lock().unwrap().phase = Phase::Finished;
+            {
+                let mut job = job.lock().unwrap();
+                job.phase = Phase::Finished;
+                job.finished_unseen = true;
+            }
             ctx.request_repaint();
         });
     }
 
-    /// The panel. `marked`: the marked tracks, in the order shown; `album`: the album the
-    /// list is of, if it is.
-    pub fn show(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: &Arc<Catalog>, marked: &[Uuid], album: Option<Uuid>) {
+    /// What's in the popup: the change on the left, the preview (and progress) on the
+    /// right. `marked`: the marked tracks, in the order shown; `album`: the album the list
+    /// is of, if it is. Returns true when it's done and asks to close.
+    pub fn show(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: &Arc<Catalog>, marked: &[Uuid], album: Option<Uuid>) -> bool {
         self.context_album = album;
         let (phase, done, total, error) = {
             let job = self.job.lock().unwrap();
@@ -475,188 +524,506 @@ impl BulkEditor {
         let ctx = ui.ctx().clone();
         let ctrl_enter = !shell.palette_open && ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Enter));
 
-        ui.label(RichText::new(format!("Change {} tracks", marked.len())).font(font(15.0, semibold())));
-        ui.label(RichText::new("Tick what to change; the rest stays as each track has it.").color(P.faint).small());
-        let vocab = shell.account.vocab.clone().unwrap_or_default();
-        let editing = matches!(phase, Phase::Editing | Phase::Preview | Phase::Finished);
+        let mut closed = false;
+        // `/` (outside a field): back to "What to change".
+        let slash = !ctx.egui_wants_keyboard_input() && ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Text(t) if t == "/")));
+        if slash {
+            ctx.input_mut(|i| i.events.retain(|e| !matches!(e, egui::Event::Text(t) if t == "/")));
+            self.focus_next = Some("picker");
+        }
         let before = (self.change_key(), self.reason.clone());
-        ui.add_enabled_ui(editing, |ui| {
-            // ---- Artists ----
-            ui.horizontal(|ui| {
-                ui.checkbox(&mut self.artists_on, "Artists");
-                if self.artists_on {
-                    ui.selectable_value(&mut self.artist_mode, ArtistMode::Set, "set to these (replacing theirs)");
-                    ui.selectable_value(&mut self.artist_mode, ArtistMode::Add, "add these");
+        let (height, full) = (ui.available_height(), ui.available_width());
+        let left_width = (full * 0.45).floor();
+        ui.horizontal_top(|ui| {
+            // ---- The change ----
+            ui.allocate_ui_with_layout(egui::Vec2::new(left_width, height), egui::Layout::top_down(egui::Align::Min), |ui| {
+                ui.set_min_height(height);
+                ui.label(RichText::new("Tick what to change; the rest stays as each track has it.").color(P.faint).small());
+                ui.add_space(6.0);
+                if matches!(phase, Phase::Editing | Phase::Preview | Phase::Finished) {
+                    self.picker(ui, shell);
+                    ui.add_space(8.0);
                 }
-            });
-            if self.artists_on {
-                let field = egui::Id::new("bulk-artist");
-                // (Choosing another artist for a row: remove it and add the other.)
-                let _ = self.credits_editor.show(ui, shell, Some(catalog), "bulk", field, &mut self.credits, &vocab.credit_roles);
-            }
-            // ---- Album ----
-            ui.horizontal(|ui| {
-                ui.checkbox(&mut self.album_on, "Album");
-                if self.album_on {
-                    ui.selectable_value(&mut self.album_mode, AlbumMode::Only, "on it only (replacing their albums)");
-                    ui.selectable_value(&mut self.album_mode, AlbumMode::Also, "on it as well");
-                }
-            });
-            if self.album_on {
-                match self.album.clone() {
-                    Some((id, title)) => {
+                egui::ScrollArea::vertical().id_salt("bulk-form").auto_shrink([false, false]).show(ui, |ui| {
+                    let vocab = shell.account.vocab.clone().unwrap_or_default();
+                    let editing = matches!(phase, Phase::Editing | Phase::Preview | Phase::Finished);
+                    ui.add_enabled_ui(editing, |ui| {
+                        // ---- Artists ----
                         ui.horizontal(|ui| {
-                            let new = if id.is_none() { " (new)" } else { "" };
-                            ui.label(RichText::new(format!("“{title}”{new}")).strong());
-                            if id.is_none() {
-                                combo(ui, "bulk-album-kind", &mut self.new_kind, &vocab.album_kinds, |k| format!("new {k}"));
-                            }
-                            if ui.small_button("Another album").clicked() {
-                                self.album = None;
+                            ui.checkbox(&mut self.artists_on, "Artists");
+                            if self.artists_on {
+                                ui.selectable_value(&mut self.artist_mode, ArtistMode::Set, "set to these (replacing theirs)");
+                                ui.selectable_value(&mut self.artist_mode, ArtistMode::Add, "add these");
                             }
                         });
-                    }
-                    None => {
-                        let typed = self.album_search.query.trim().to_string();
-                        let extras = if typed.is_empty() { vec![] } else { vec![format!("New album “{typed}”")] };
-                        match self.album_search.show(ui, shell, Some(catalog), egui::Id::new("bulk-album"), "The album: type its title", &extras) {
-                            Some((Choice::Hit(i), _)) => {
-                                if let Some(a) = catalog.albums.get(i as usize) {
-                                    self.album = Some((Some(a.id), a.title.clone()));
+                        if self.artists_on {
+                            let field = egui::Id::new("bulk-artist");
+                            // (Choosing another artist for a row: remove it and add the other.)
+                            let _ = self.credits_editor.show(ui, shell, Some(catalog), "bulk", field, &mut self.credits, &vocab.credit_roles);
+                        }
+                        // ---- Album ----
+                        ui.horizontal(|ui| {
+                            ui.checkbox(&mut self.album_on, "Album");
+                            if self.album_on {
+                                ui.selectable_value(&mut self.album_mode, AlbumMode::Only, "on it only (replacing their albums)");
+                                ui.selectable_value(&mut self.album_mode, AlbumMode::Also, "on it as well");
+                            }
+                        });
+                        if self.album_on {
+                            match self.album.clone() {
+                                Some((id, title)) => {
+                                    ui.horizontal(|ui| {
+                                        let new = if id.is_none() { " (new)" } else { "" };
+                                        ui.label(RichText::new(format!("“{title}”{new}")).strong());
+                                        if id.is_none() {
+                                            combo(ui, "bulk-album-kind", &mut self.new_kind, &vocab.album_kinds, |k| format!("new {k}"));
+                                        }
+                                        if ui.small_button("Another album").clicked() {
+                                            self.album = None;
+                                        }
+                                    });
+                                }
+                                None => {
+                                    let typed = self.album_search.query.trim().to_string();
+                                    let extras = if typed.is_empty() { vec![] } else { vec![format!("New album “{typed}”")] };
+                                    match self.album_search.show(ui, shell, Some(catalog), egui::Id::new("bulk-album"), "The album: type its title", &extras) {
+                                        Some((Choice::Hit(i), _)) => {
+                                            if let Some(a) = catalog.albums.get(i as usize) {
+                                                self.album = Some((Some(a.id), a.title.clone()));
+                                            }
+                                        }
+                                        Some((Choice::Extra(_), _)) => self.album = Some((None, typed)),
+                                        None => {}
+                                    }
                                 }
                             }
-                            Some((Choice::Extra(_), _)) => self.album = Some((None, typed)),
-                            None => {}
+                            ui.checkbox(&mut self.number, "Number them in the order shown (disc 1, tracks 1, 2, 3…)");
                         }
-                    }
-                }
-                ui.checkbox(&mut self.number, "Number them in the order shown (disc 1, tracks 1, 2, 3…)");
-            }
-            // ---- Status, date, genres ----
-            ui.horizontal(|ui| {
-                ui.checkbox(&mut self.status_on, "Status");
-                if self.status_on {
-                    combo(ui, "bulk-status", &mut self.status, &vocab.statuses, capitalized);
-                }
-            });
-            ui.horizontal(|ui| {
-                ui.checkbox(&mut self.date_on, "Release date");
-                if self.date_on {
-                    ui.add(egui::TextEdit::singleline(&mut self.date).hint_text("as written; empty: none").desired_width(200.0));
-                }
-            });
-            ui.horizontal(|ui| {
-                ui.checkbox(&mut self.genres_on, "Genres");
-                if self.genres_on {
-                    ui.add(egui::TextEdit::singleline(&mut self.genres).hint_text("comma-separated; empty: none").desired_width(300.0));
-                }
-            });
-            // ---- Numbers on an album ----
-            match self.numbering_album() {
-                Some(album) => {
-                    let title = catalog.album(album).map(|a| a.title.clone()).unwrap_or_else(|| "the album".into());
-                    ui.horizontal(|ui| {
-                        ui.checkbox(&mut self.disc_on, format!("Disc on “{title}”"));
-                        if self.disc_on {
-                            ui.add(egui::DragValue::new(&mut self.disc).range(1..=99));
-                        }
-                    });
-                    ui.horizontal(|ui| {
-                        ui.checkbox(&mut self.renumber_on, format!("Track numbers on “{title}”, in the order shown, from"));
-                        if self.renumber_on {
-                            ui.add(egui::DragValue::new(&mut self.renumber_from).range(1..=999));
-                        }
-                    });
-                }
-                None => {
-                    ui.label(RichText::new("Disc and track numbers: on an album's page, or with an existing album chosen above.").color(P.faint).small());
-                }
-            }
-            ui.add(egui::TextEdit::singleline(&mut self.reason).hint_text("Why (optional: kept with each change)").desired_width(420.0));
-        });
-        // Any change to the change: the preview is out of date.
-        if (self.change_key(), self.reason.clone()) != before && matches!(phase, Phase::Preview | Phase::Finished) {
-            self.job.lock().unwrap().phase = Phase::Editing;
-        }
-
-        // ---- Preview, applying ----
-        let phase = self.job.lock().unwrap().phase;
-        ui.add_space(6.0);
-        match phase {
-            Phase::Editing => {
-                let can = self.anything();
-                if (ui.add_enabled(can, egui::Button::new("Preview  (Ctrl+Enter)")).clicked() || (ctrl_enter && can)) && !marked.is_empty() {
-                    self.preview(shell, catalog, marked.to_vec());
-                }
-                if !can {
-                    ui.label(RichText::new("Tick something to change.").color(P.faint).small());
-                }
-            }
-            Phase::Loading => {
-                ui.add(egui::ProgressBar::new(done as f32 / total.max(1) as f32).text(format!("Loading the tracks… {done} of {total}")));
-            }
-            Phase::Preview | Phase::Applying | Phase::Finished => {
-                let (items, done_now) = {
-                    let job = self.job.lock().unwrap();
-                    (job.items.clone(), job.done)
-                };
-                let changing = items.iter().filter(|i| i.state != ItemState::Unchanged).count();
-                let unchanged = items.len() - changing;
-                match phase {
-                    Phase::Preview => {
+                        // ---- Status, date, genres ----
                         ui.horizontal(|ui| {
-                            let text = format!("Apply to {changing} tracks  (Ctrl+Enter)");
-                            if (ui.add_enabled(changing > 0, egui::Button::new(text)).clicked() || (ctrl_enter && changing > 0)) && error.is_none() {
-                                self.apply(shell);
-                            }
-                            if ui.button("Back to the change").clicked() {
-                                self.job.lock().unwrap().phase = Phase::Editing;
-                            }
-                            if unchanged > 0 {
-                                ui.label(RichText::new(format!("{unchanged} unchanged")).color(P.faint));
+                            ui.checkbox(&mut self.status_on, "Status");
+                            if self.status_on {
+                                combo(ui, "bulk-status", &mut self.status, &vocab.statuses, capitalized);
                             }
                         });
-                    }
-                    Phase::Applying => {
-                        ui.add(egui::ProgressBar::new(done_now as f32 / changing.max(1) as f32).text(format!("Changing… {done_now} of {changing}")));
-                    }
-                    _ => {
-                        let failed = items.iter().filter(|i| matches!(i.state, ItemState::Failed(_))).count();
-                        let text = if failed == 0 { format!("Done: {changing} tracks changed.") } else { format!("Done: {} changed, {failed} not (below).", changing - failed) };
-                        ui.label(RichText::new(text).color(if failed == 0 { P.accent } else { P.danger }));
-                        if ui.button("Close").clicked() {
-                            *self = BulkEditor::default();
-                            shell.act(Action::RefreshLibrary);
-                            return;
+                        ui.horizontal(|ui| {
+                            ui.checkbox(&mut self.date_on, "Release date");
+                            if self.date_on {
+                                ui.add(egui::TextEdit::singleline(&mut self.date).id(egui::Id::new("bulk-date")).hint_text("as written; empty: none").desired_width(200.0));
+                            }
+                        });
+                        ui.horizontal(|ui| {
+                            ui.checkbox(&mut self.genres_on, "Genres");
+                            if self.genres_on {
+                                ui.add(egui::TextEdit::singleline(&mut self.genres).id(egui::Id::new("bulk-genres")).hint_text("comma-separated; empty: none").desired_width(300.0));
+                            }
+                        });
+                        // ---- Numbers on an album ----
+                        match self.numbering_album() {
+                            Some(album) => {
+                                let title = catalog.album(album).map(|a| a.title.clone()).unwrap_or_else(|| "the album".into());
+                                ui.horizontal(|ui| {
+                                    ui.checkbox(&mut self.disc_on, format!("Disc on “{title}”"));
+                                    if self.disc_on {
+                                        let field = ui.add(egui::DragValue::new(&mut self.disc).range(1..=99));
+                                        if self.focus_next == Some("disc") {
+                                            self.focus_next = None;
+                                            field.request_focus();
+                                        }
+                                    }
+                                });
+                                ui.horizontal(|ui| {
+                                    ui.checkbox(&mut self.renumber_on, format!("Track numbers on “{title}”, in the order shown, from"));
+                                    if self.renumber_on {
+                                        let field = ui.add(egui::DragValue::new(&mut self.renumber_from).range(1..=999));
+                                        if self.focus_next == Some("renumber") {
+                                            self.focus_next = None;
+                                            field.request_focus();
+                                        }
+                                    }
+                                });
+                            }
+                            None => {
+                                ui.label(RichText::new("Disc and track numbers: on an album's page, or with an existing album chosen above.").color(P.faint).small());
+                            }
                         }
-                    }
-                }
-                if let Some(err) = &error {
-                    ui.label(RichText::new(err).color(P.danger));
-                }
-                egui::ScrollArea::vertical().id_salt("bulk-preview").max_height(320.0).show(ui, |ui| {
-                    for item in &items {
-                        let (mark, color) = match &item.state {
-                            ItemState::Unchanged => ("unchanged", P.faint),
-                            ItemState::Pending => ("", P.text),
-                            ItemState::Done => ("✓", P.accent),
-                            ItemState::Failed(_) => ("✗", P.danger),
-                        };
-                        ui.label(RichText::new(format!("{mark} {}", item.title)).font(font(13.5, semibold())).color(color));
-                        for line in &item.lines {
-                            ui.label(RichText::new(format!("    {line}")).color(P.muted));
-                        }
-                        if let ItemState::Failed(err) = &item.state {
-                            ui.label(RichText::new(format!("    {err}")).color(P.danger));
-                        }
-                    }
+                        ui.add(egui::TextEdit::singleline(&mut self.reason).hint_text("Why (optional: kept with each change)").desired_width(420.0));
+                    });
                 });
-                if phase == Phase::Finished {
-                    // The library catches up once, at the end.
-                    ui.ctx().request_repaint();
+            });
+                // Any change to the change: the preview is out of date.
+                if (self.change_key(), self.reason.clone()) != before && matches!(phase, Phase::Preview | Phase::Finished) {
+                    self.job.lock().unwrap().phase = Phase::Editing;
                 }
+
+            ui.add_space(16.0);
+            // ---- The preview, and applying it ----
+            ui.allocate_ui_with_layout(egui::Vec2::new(full - left_width - 16.0, height), egui::Layout::top_down(egui::Align::Min), |ui| {
+                ui.set_min_height(height);
+                    // ---- Preview, applying ----
+                    let phase = self.job.lock().unwrap().phase;
+                    ui.add_space(6.0);
+                    match phase {
+                        Phase::Editing => {
+                            let can = self.anything();
+                            if (ui.add_enabled(can, egui::Button::new("Preview  (Ctrl+Enter)")).clicked() || (ctrl_enter && can)) && !marked.is_empty() {
+                                self.preview(shell, catalog, marked.to_vec());
+                            }
+                            if !can {
+                                ui.label(RichText::new("Tick something to change.").color(P.faint).small());
+                            }
+                        }
+                        Phase::Loading => {
+                            ui.add(egui::ProgressBar::new(done as f32 / total.max(1) as f32).text(format!("Loading the tracks… {done} of {total}")));
+                        }
+                        Phase::Preview | Phase::Applying | Phase::Finished => {
+                            let (items, done_now) = {
+                                let job = self.job.lock().unwrap();
+                                (job.items.clone(), job.done)
+                            };
+                            let changing = items.iter().filter(|i| i.state != ItemState::Unchanged).count();
+                            let unchanged = items.len() - changing;
+                            match phase {
+                                Phase::Preview => {
+                                    ui.horizontal(|ui| {
+                                        let text = format!("Apply to {changing} tracks  (Ctrl+Enter)");
+                                        if (ui.add_enabled(changing > 0, egui::Button::new(text)).clicked() || (ctrl_enter && changing > 0)) && error.is_none() {
+                                            self.apply(shell);
+                                        }
+                                        if ui.button("Back to the change").clicked() {
+                                            self.job.lock().unwrap().phase = Phase::Editing;
+                                        }
+                                        if unchanged > 0 {
+                                            ui.label(RichText::new(format!("{unchanged} unchanged")).color(P.faint));
+                                        }
+                                    });
+                                }
+                                Phase::Applying => {
+                                    ui.add(egui::ProgressBar::new(done_now as f32 / changing.max(1) as f32).text(format!("Changing… {done_now} of {changing}")));
+                                }
+                                _ => {
+                                    let failed = items.iter().filter(|i| matches!(i.state, ItemState::Failed(_))).count();
+                                    let text = if failed == 0 { format!("Done: {changing} tracks changed.") } else { format!("Done: {} changed, {failed} not (below).", changing - failed) };
+                                    ui.label(RichText::new(text).color(if failed == 0 { P.accent } else { P.danger }));
+                                    if ui.button("Close").clicked() {
+                                        *self = BulkEditor::default();
+                                        closed = true;
+                                        return;
+                                    }
+                                }
+                            }
+                            if let Some(err) = &error {
+                                ui.label(RichText::new(err).color(P.danger));
+                            }
+                            egui::ScrollArea::vertical().id_salt("bulk-preview").auto_shrink([false, false]).show(ui, |ui| {
+                                for item in &items {
+                                    let (mark, color) = match &item.state {
+                                        ItemState::Unchanged => ("unchanged", P.faint),
+                                        ItemState::Pending => ("", P.text),
+                                        ItemState::Done => ("✓", P.accent),
+                                        ItemState::Failed(_) => ("✗", P.danger),
+                                    };
+                                    ui.label(RichText::new(format!("{mark} {}", item.title)).font(font(13.5, semibold())).color(color));
+                                    for line in &item.lines {
+                                        ui.label(RichText::new(format!("    {line}")).color(P.muted));
+                                    }
+                                    if let ItemState::Failed(err) = &item.state {
+                                        ui.label(RichText::new(format!("    {err}")).color(P.danger));
+                                    }
+                                }
+                            });
+                            if phase == Phase::Finished {
+                                // The library catches up once, at the end.
+                                ui.ctx().request_repaint();
+                            }
+                        }
+                    }
+            });
+        });
+        closed
+    }
+
+    /// The popup opened: the cursor goes to "What to change".
+    pub fn opened(&mut self) {
+        self.focus_next = Some("picker");
+    }
+
+    /// Everything "What to change" offers: (what it says, what it does), the ticked parts'
+    /// "Don't change" first.
+    fn picks(&self, shell: &Shell) -> Vec<(String, Pick)> {
+        let vocab = shell.account.vocab.clone().unwrap_or_default();
+        let mut picks: Vec<(String, Pick)> = Vec::new();
+        for (on, name, part) in [
+            (self.artists_on, "artists", ChangePart::Artists),
+            (self.album_on, "album", ChangePart::Album),
+            (self.status_on, "status", ChangePart::Status),
+            (self.date_on, "release date", ChangePart::Date),
+            (self.genres_on, "genres", ChangePart::Genres),
+            (self.disc_on, "disc", ChangePart::Disc),
+            (self.renumber_on, "track numbers", ChangePart::Renumber),
+        ] {
+            if on {
+                picks.push((format!("Don't change: {name}"), Pick::Untick(part)));
             }
         }
+        picks.push(("Artists: set to… (replacing theirs)".into(), Pick::Artists(ArtistMode::Set)));
+        picks.push(("Artists: add…".into(), Pick::Artists(ArtistMode::Add)));
+        picks.push(("Album: on it only… (replacing their albums)".into(), Pick::Album(AlbumMode::Only)));
+        picks.push(("Album: on it as well…".into(), Pick::Album(AlbumMode::Also)));
+        for status in &vocab.statuses {
+            picks.push((format!("Status: {status}"), Pick::Status(status.clone())));
+        }
+        picks.push(("Release date…".into(), Pick::Date(false)));
+        picks.push(("Release date: none".into(), Pick::Date(true)));
+        picks.push(("Genres…".into(), Pick::Genres(false)));
+        picks.push(("Genres: none".into(), Pick::Genres(true)));
+        if self.numbering_album().is_some() {
+            picks.push(("Disc number…".into(), Pick::Disc));
+            picks.push(("Track numbers, in the order shown, from…".into(), Pick::Renumber));
+        }
+        picks
+    }
+
+    /// Takes a pick: ticks its part, and puts the cursor where its value goes.
+    fn take(&mut self, ctx: &egui::Context, pick: Pick) {
+        let focus = |id: &str| ctx.memory_mut(|m| m.request_focus(egui::Id::new(id)));
+        match pick {
+            Pick::Artists(mode) => {
+                self.artists_on = true;
+                self.artist_mode = mode;
+                focus("bulk-artist");
+            }
+            Pick::Album(mode) => {
+                self.album_on = true;
+                self.album_mode = mode;
+                if self.album.is_none() {
+                    focus("bulk-album");
+                }
+            }
+            Pick::Status(status) => {
+                self.status_on = true;
+                self.status = status;
+            }
+            Pick::Date(none) => {
+                self.date_on = true;
+                if none {
+                    self.date.clear();
+                } else {
+                    focus("bulk-date");
+                }
+            }
+            Pick::Genres(none) => {
+                self.genres_on = true;
+                if none {
+                    self.genres.clear();
+                } else {
+                    focus("bulk-genres");
+                }
+            }
+            Pick::Disc => {
+                self.disc_on = true;
+                self.focus_next = Some("disc");
+            }
+            Pick::Renumber => {
+                self.renumber_on = true;
+                self.focus_next = Some("renumber");
+            }
+            Pick::DateValue(date) => {
+                self.date_on = true;
+                self.date = date;
+            }
+            Pick::GenresValue(genres) => {
+                self.genres_on = true;
+                self.genres = genres;
+            }
+            Pick::DiscValue(disc) => {
+                self.disc_on = true;
+                self.disc = disc;
+            }
+            Pick::RenumberFrom(from) => {
+                self.renumber_on = true;
+                self.renumber_from = from;
+            }
+            Pick::Credit { id, name, featured } => {
+                self.artists_on = true;
+                credits::add_artist(&mut self.credits, Some(id), name, featured);
+            }
+            Pick::SetAlbum { id, title } => {
+                self.album_on = true;
+                self.album = Some((Some(id), title));
+            }
+            Pick::Untick(part) => match part {
+                ChangePart::Artists => self.artists_on = false,
+                ChangePart::Album => self.album_on = false,
+                ChangePart::Status => self.status_on = false,
+                ChangePart::Date => self.date_on = false,
+                ChangePart::Genres => self.genres_on = false,
+                ChangePart::Disc => self.disc_on = false,
+                ChangePart::Renumber => self.renumber_on = false,
+            },
+        }
+    }
+
+    /// What typed `key:value` parts would do: each with its pick, or why it can't (None).
+    fn keyed_picks(&self, shell: &Shell, query: &crate::catalog::query::Query) -> Vec<(String, Option<Pick>)> {
+        use crate::catalog::query::{loosely_in, Key};
+        let vocab = shell.account.vocab.clone().unwrap_or_default();
+        let catalog = shell.catalog.value.clone();
+        let best = |part: Part, text: &str| -> Option<u32> {
+            let catalog = catalog.as_deref()?;
+            Search::default().run_part(catalog, text, part, 1).first().map(|h| h.0)
+        };
+        let none = |v: &str| v.is_empty() || v.eq_ignore_ascii_case("none");
+        let mut picks = Vec::new();
+        for (key, value) in &query.fields {
+            let value = value.trim();
+            let pick = match key {
+                Key::Status => {
+                    let found = vocab
+                        .statuses
+                        .iter()
+                        .find(|s| s.eq_ignore_ascii_case(value))
+                        .or_else(|| vocab.statuses.iter().find(|s| s.to_lowercase().starts_with(&value.to_lowercase())))
+                        .or_else(|| vocab.statuses.iter().find(|s| loosely_in(value, s)));
+                    match found {
+                        Some(status) => (format!("status → {status}"), Some(Pick::Status(status.clone()))),
+                        None => (format!("no status like “{value}”"), None),
+                    }
+                }
+                Key::Year if none(value) => ("release date → none".into(), Some(Pick::Date(true))),
+                Key::Year => (format!("release date → {value}"), Some(Pick::DateValue(value.to_string()))),
+                Key::Genre if none(value) => ("genres → none".into(), Some(Pick::Genres(true))),
+                Key::Genre => (format!("genres → {value}"), Some(Pick::GenresValue(value.to_string()))),
+                Key::Disc | Key::Number if self.numbering_album().is_none() => {
+                    ("disc and track numbers: on an album's page, or with an album chosen".into(), None)
+                }
+                Key::Disc => match value.parse::<i16>() {
+                    Ok(disc) if disc > 0 => (format!("disc → {disc}"), Some(Pick::DiscValue(disc))),
+                    _ => (format!("disc: “{value}” isn't a number"), None),
+                },
+                Key::Number => match value.parse::<i16>() {
+                    Ok(from) if from > 0 => (format!("track numbers from {from}, in the order shown"), Some(Pick::RenumberFrom(from))),
+                    _ => (format!("track numbers: “{value}” isn't a number"), None),
+                },
+                Key::Artist | Key::Featured if value.is_empty() => ("artists (type a name after the colon)".into(), None),
+                Key::Artist | Key::Featured => {
+                    let featured = *key == Key::Featured;
+                    match best(Part::Artists, value).and_then(|i| catalog.as_deref().map(|c| &c.artists[i as usize])) {
+                        Some(a) => {
+                            let role = if featured { " (featured)" } else { "" };
+                            (format!("credit “{}”{role}", a.name), Some(Pick::Credit { id: a.id, name: a.name.clone(), featured }))
+                        }
+                        None => (format!("no artist like “{value}”"), None),
+                    }
+                }
+                Key::Album if value.is_empty() => ("album (type a title after the colon)".into(), None),
+                Key::Album => match best(Part::Albums, value).and_then(|i| catalog.as_deref().map(|c| &c.albums[i as usize])) {
+                    Some(a) => (format!("album → “{}” ({})", a.title, a.artist_display), Some(Pick::SetAlbum { id: a.id, title: a.title.clone() })),
+                    None => (format!("no album like “{value}”"), None),
+                },
+                other => (format!("{}: not something to change here", other.name()), None),
+            };
+            picks.push(pick);
+        }
+        picks
+    }
+
+    /// "What to change": typed `key:value` parts (Enter does all of them), or a word or two
+    /// to find a part (letters in order, spaces and punctuation don't matter).
+    fn picker(&mut self, ui: &mut egui::Ui, shell: &Shell) {
+        use crate::catalog::query::{loosely_in, Query};
+        let id = egui::Id::new("bulk-picker");
+        let ctx = ui.ctx().clone();
+        // Asked for until it holds: the click that opened the popup ends outside the
+        // field, and a field clicked outside of lets go of the cursor, that same frame.
+        if self.focus_next == Some("picker") {
+            if ctx.memory(|m| m.has_focus(id)) && !ctx.input(|i| i.pointer.any_released()) {
+                self.focus_next = None;
+            } else {
+                ctx.memory_mut(|m| m.request_focus(id));
+            }
+        }
+        let focused = ctx.memory(|m| m.has_focus(id));
+        let (up, down, enter) = if focused {
+            ctx.input_mut(|i| {
+                (
+                    i.consume_key(Modifiers::NONE, Key::ArrowUp),
+                    i.consume_key(Modifiers::NONE, Key::ArrowDown) || i.consume_key(Modifiers::NONE, Key::Tab),
+                    i.consume_key(Modifiers::NONE, Key::Enter),
+                )
+            })
+        } else {
+            (false, false, false)
+        };
+        let response = ui.add(
+            egui::TextEdit::singleline(&mut self.picker)
+                .id(id)
+                .hint_text("What to change: status:demo  date:2020  genres:rap  disc:2  artist:…  album:…  (or a word, then Enter)")
+                .desired_width(f32::INFINITY),
+        );
+        if response.changed() {
+            self.picker_selected = 0;
+        }
+        let typed = self.picker.trim().to_string();
+        if typed.is_empty() {
+            ui.label(RichText::new("key:value sets it at once (several too); a word finds what to change · / comes back here · Ctrl+Enter previews, then applies").color(P.faint).small());
+            return;
+        }
+        let query = Query::parse(&typed);
+        let mut chosen: Vec<Pick> = Vec::new();
+        if !query.fields.is_empty() {
+            // `key:value`: all of it, on Enter.
+            let picks = self.keyed_picks(shell, &query);
+            egui::Frame::NONE.fill(P.bg).corner_radius(8).inner_margin(egui::Margin::same(6)).show(ui, |ui| {
+                ui.label(RichText::new("Enter:").color(P.faint).small());
+                for (label, pick) in &picks {
+                    let color = if pick.is_some() { P.accent } else { P.danger };
+                    ui.label(RichText::new(label).color(color));
+                }
+            });
+            if enter {
+                chosen = picks.into_iter().filter_map(|(_, p)| p).collect();
+            }
+        } else {
+            let found: Vec<(String, Pick)> = self.picks(shell).into_iter().filter(|(label, _)| loosely_in(&typed, label)).collect();
+            if found.is_empty() {
+                ui.label(RichText::new("Nothing like that to change").color(P.faint).small());
+                return;
+            }
+            if down {
+                self.picker_selected = (self.picker_selected + 1).min(found.len() - 1);
+            }
+            if up {
+                self.picker_selected = self.picker_selected.saturating_sub(1);
+            }
+            self.picker_selected = self.picker_selected.min(found.len() - 1);
+            if enter {
+                chosen.push(found[self.picker_selected].1.clone());
+            }
+            egui::Frame::NONE.fill(P.bg).corner_radius(8).inner_margin(egui::Margin::same(4)).show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 0.0;
+                for (n, (label, pick)) in found.iter().enumerate() {
+                    if ui.selectable_label(n == self.picker_selected, label).clicked() {
+                        chosen = vec![pick.clone()];
+                    }
+                }
+            });
+        }
+        if !chosen.is_empty() {
+            self.picker.clear();
+            self.picker_selected = 0;
+            // (A pick with a field of its own takes the cursor; the others keep it here.)
+            ctx.memory_mut(|m| m.request_focus(id));
+            for pick in chosen {
+                self.take(&ctx, pick);
+            }
+        }
+    }
+
+    /// Whether applying just finished (once): the list's owner then refreshes the library,
+    /// whether the popup is open or not.
+    pub fn take_finished(&self) -> bool {
+        std::mem::take(&mut self.job.lock().unwrap().finished_unseen)
     }
 
     /// Everything the change depends on, to notice it changing.
@@ -748,6 +1115,39 @@ mod tests {
         // Not on it: nothing.
         let elsewhere = Change { numbering: Some(Numbering { album: a(7), disc: Some(2), renumber: None }), ..Default::default() };
         assert_eq!(apply(&elsewhere, &meta, &facts, 0).1, facts);
+    }
+
+    #[test]
+    fn a_pick_ticks_its_part() {
+        let ctx = egui::Context::default();
+        let mut editor = BulkEditor::default();
+        editor.take(&ctx, Pick::Status("demo".into()));
+        assert!(editor.status_on && editor.status == "demo");
+        editor.genres = "rap".into();
+        editor.take(&ctx, Pick::Genres(true));
+        assert!(editor.genres_on && editor.genres.is_empty(), "genres: none");
+        editor.take(&ctx, Pick::Disc);
+        assert!(editor.disc_on && editor.focus_next == Some("disc"));
+        editor.take(&ctx, Pick::Untick(ChangePart::Status));
+        assert!(!editor.status_on);
+        let (change, _) = editor.change();
+        assert_eq!((change.status, change.genres), (None, Some(vec![])));
+    }
+
+    #[test]
+    fn typed_values_set_at_once() {
+        let ctx = egui::Context::default();
+        let mut editor = BulkEditor::default();
+        editor.take(&ctx, Pick::DateValue("2020".into()));
+        editor.take(&ctx, Pick::GenresValue("rap, trap".into()));
+        editor.take(&ctx, Pick::Credit { id: a(3), name: "Qlvarn".into(), featured: false });
+        editor.take(&ctx, Pick::Credit { id: a(4), name: "Bo".into(), featured: true });
+        let (change, _) = editor.change();
+        assert_eq!(change.date.as_deref(), Some("2020"));
+        assert_eq!(change.genres, Some(vec!["rap".to_string(), "trap".to_string()]));
+        let (_, credits) = change.artists.unwrap();
+        let roles: Vec<&str> = credits.iter().map(|c| c["role"].as_str().unwrap()).collect();
+        assert_eq!(roles, ["primary", "featured"]);
     }
 
     #[test]

@@ -58,7 +58,7 @@ impl PlaylistPage {
             shell.act(Action::Play { tracks: self.table.tracks(&rows), start: 0 });
         }
         ui.add_space(16.0);
-        let options = Options { key: "liked", columns: PLAYLIST_COLUMNS, added: Some("Starred"), filter_hint: Some("Filter liked songs"), album: None };
+        let options = Options { key: "liked", columns: PLAYLIST_COLUMNS, added: Some("Starred"), filter_hint: Some("Filter liked songs: words, or artist:… year:…"), album: None };
         self.table.show(ui, shell, catalog, &rows, version(shell.generation, &tracks), player, &options);
     }
 
@@ -130,7 +130,7 @@ impl PlaylistPage {
             ui.add_space(12.0);
         }
 
-        let options = Options { key: "playlist", columns: PLAYLIST_COLUMNS, added: Some("Added"), filter_hint: Some("Filter this playlist"), album: None };
+        let options = Options { key: "playlist", columns: PLAYLIST_COLUMNS, added: Some("Added"), filter_hint: Some("Filter this playlist: words, or artist:… year:…"), album: None };
         let shown = self.table.show(ui, shell, catalog, &rows, version(shell.generation, &entries), player, &options);
 
         // Keys for your own playlist (outside text fields).

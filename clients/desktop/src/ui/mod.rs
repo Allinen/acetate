@@ -13,6 +13,7 @@
 pub mod covers;
 pub mod edit;
 pub mod keymap;
+pub mod modal;
 pub mod theme;
 pub mod widgets;
 mod views;
@@ -140,6 +141,8 @@ pub struct Shell {
     /// The page uses Space itself (a merge view: Space plays the left file), so it
     /// doesn't pause. Set by the page each frame.
     pub page_takes_space: bool,
+    /// A popup is open (see `modal`): the app's keys wait. Set by the page each frame.
+    pub modal_open: bool,
     /// The palette is open (it takes Esc, before the page's form could).
     pub palette_open: bool,
     pub runtime: Runtime,
@@ -169,6 +172,9 @@ pub struct Shell {
     store: Option<Arc<Store>>,
     /// When the catalog being loaded was asked for.
     refresh_asked: Option<Instant>,
+    /// A refresh was asked for while one was running (after an edit): it runs again right
+    /// after, so the edit isn't missed until the next one.
+    refresh_again: bool,
     /// The server's answers to mark changes: (id, the mark it has, or an error with the
     /// mark to go back to).
     mark_answers: Arc<Mutex<Vec<(Uuid, Result<Mark, (String, Mark)>)>>>,
@@ -383,6 +389,7 @@ impl Shell {
     fn refresh_library(&mut self, ctx: &egui::Context) {
         let Some(store) = self.store.clone() else { return };
         if self.catalog.refreshing {
+            self.refresh_again = true;
             return;
         }
         self.catalog.refreshing = true;
@@ -398,8 +405,18 @@ impl Shell {
         });
     }
 
-    /// Takes in what the library loading reported.
+    /// Takes in what the library loading reported (and starts the refresh asked for
+    /// meanwhile, if one was).
     fn take_updates(&mut self) {
+        self.take_reports();
+        if self.refresh_again && !self.catalog.refreshing {
+            self.refresh_again = false;
+            let ctx = self.ctx.clone();
+            self.refresh_library(&ctx);
+        }
+    }
+
+    fn take_reports(&mut self) {
         while let Ok(update) = self.updates.1.try_recv() {
             match update {
                 Update::Loaded { catalog, from_server } => {
@@ -508,6 +525,7 @@ impl App {
             artist_forms: Default::default(),
             form_dirty: false,
             page_takes_space: false,
+            modal_open: false,
             palette_open: false,
             runtime,
             api,
@@ -529,6 +547,7 @@ impl App {
             updates: mpsc::channel(),
             store: None,
             refresh_asked: None,
+            refresh_again: false,
             mark_answers: Arc::default(),
         };
         if shell.api.session().is_some() {
@@ -744,8 +763,8 @@ impl App {
 
     /// Keys that work everywhere (outside text fields).
     fn keys(&mut self, ctx: &egui::Context) {
-        // The key overlay takes its own keys (Esc closes it, not "back").
-        if self.keys_open {
+        // The key overlay takes its own keys (Esc closes it, not "back"); so does a popup.
+        if self.keys_open || self.shell.modal_open {
             return;
         }
         let m = ctx.input(|i| i.modifiers);
@@ -926,6 +945,7 @@ impl eframe::App for App {
                 // Set again by a form with changes, if one is shown.
                 self.shell.form_dirty = false;
                 self.shell.page_takes_space = false;
+                self.shell.modal_open = false;
                 self.shell.palette_open = self.pages.palette.is_open();
                 self.pages.show(ui, &mut self.shell, self.page, &player, &mut self.spectrum, dt);
             });
