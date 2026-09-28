@@ -23,6 +23,7 @@ use crate::catalog::Catalog;
 use crate::playback::PlayerView;
 use crate::review::Flag;
 use crate::ui::edit::track_form::TrackForm;
+use super::merge::{MergeView, Outcome};
 use crate::ui::theme::{bold, font, medium, semibold, PALETTE as P};
 use crate::ui::{playing_track, widgets, Action, Shell};
 
@@ -110,6 +111,11 @@ pub struct Review {
     done: usize,
     notice: Option<String>,
     asked_flags: bool,
+    /// Two tracks side by side, to merge (in place of the form).
+    merge: Option<MergeView>,
+    /// Pairs judged "not the same" here: (the flagged track, the other). A duplicate flag
+    /// is settled once every track it names has been judged.
+    not_same: std::collections::HashSet<(Uuid, Uuid)>,
 }
 
 impl Review {
@@ -330,6 +336,7 @@ impl Review {
         self.scroll_to_selected = true;
         self.focus_first = true;
         self.notice = None;
+        self.merge = None;
     }
 
     /// Moves by `by` in the list (and loads the one after, so moving on doesn't wait).
@@ -373,23 +380,61 @@ impl Review {
         }
     }
 
+    /// Opens the merge view with the first duplicate of the selected track not judged
+    /// yet: the other track on the left (kept), this one on the right.
+    fn open_merge(&mut self, shell: &Shell) {
+        let Some(id) = self.selected else { return };
+        let other = shell
+            .flags
+            .list
+            .iter()
+            .filter(|f| f.track_id == id && f.kind == "possible_duplicate")
+            .flat_map(duplicate_ids)
+            .find(|other| !self.not_same.contains(&(id, *other)));
+        match other {
+            Some(other) => self.merge = Some(MergeView::new(other, id)),
+            None => self.notice = Some("No possible duplicate to compare here.".into()),
+        }
+    }
+
+    /// `track` and `other` aren't the same song: a duplicate flag on `track` is settled
+    /// once every track it names has been judged so.
+    fn judged_not_same(&mut self, shell: &mut Shell, track: Uuid, other: Uuid) {
+        self.not_same.insert((track, other));
+        let settled: Vec<Uuid> = shell
+            .flags
+            .list
+            .iter()
+            .filter(|f| f.track_id == track && f.kind == "possible_duplicate")
+            .filter(|f| duplicate_ids(f).iter().all(|o| self.not_same.contains(&(track, *o))))
+            .map(|f| f.id)
+            .collect();
+        if settled.is_empty() {
+            self.notice = Some("Noted: not the same. It names other tracks too; judge those as well.".into());
+        } else {
+            shell.flags.resolve(&shell.api, shell.runtime.handle(), &settled, "not a duplicate");
+            self.done += 1;
+            self.notice = Some("Marked: not the same.".into());
+        }
+    }
+
     fn keys(&mut self, ctx: &egui::Context, shell: &mut Shell, catalog: &Catalog, player: &PlayerView) {
         if shell.palette_open {
             return;
         }
-        let (save, next, previous) = ctx.input_mut(|i| {
-            (
-                i.consume_key(Modifiers::COMMAND, Key::Enter),
-                i.consume_key(Modifiers::COMMAND, Key::ArrowDown),
-                i.consume_key(Modifiers::COMMAND, Key::ArrowUp),
-            )
-        });
+        let (next, previous) = ctx.input_mut(|i| (i.consume_key(Modifiers::COMMAND, Key::ArrowDown), i.consume_key(Modifiers::COMMAND, Key::ArrowUp)));
         if next {
             self.step(shell, catalog, 1);
         }
         if previous {
             self.step(shell, catalog, -1);
         }
+        // The merge view, while open, has its own keys (Esc closes it, not the page).
+        if self.merge.is_some() {
+            shell.form_dirty = true;
+            return;
+        }
+        let save = ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Enter));
         if save && let Some(id) = self.selected {
             // (Taken out of the shell to save it: saving needs the shell too.)
             match shell.track_forms.remove(&id) {
@@ -420,6 +465,8 @@ impl Review {
             self.step(shell, catalog, 1);
         } else if key(Key::D) {
             self.mark_done(shell, catalog, "done", false);
+        } else if key(Key::M) {
+            self.open_merge(shell);
         } else if key(Key::Space)
             && let Some(id) = self.selected
         {
@@ -551,6 +598,39 @@ impl Review {
                 }
                 ui.label(RichText::new(line).color(P.muted));
                 related(ui, shell, f);
+                if f.kind == "possible_duplicate" {
+                    for other in duplicate_ids(f) {
+                        let judged = self.not_same.contains(&(id, other));
+                        let text = if judged { "judged not the same" } else { "Compare and merge…  (m)" };
+                        if ui.add_enabled(!judged, egui::Button::new(text).small()).clicked() {
+                            self.merge = Some(MergeView::new(other, id));
+                        }
+                    }
+                }
+            }
+
+            // Two tracks side by side instead of the form.
+            if let Some(view) = self.merge.as_mut() {
+                ui.add_space(10.0);
+                match view.show(ui, shell, catalog) {
+                    Some(Outcome::Merged { kept, gone }) => {
+                        self.merge = None;
+                        self.done += 1;
+                        self.notice = Some("Merged. Undo is on the kept track's page.".into());
+                        shell.track_details.refresh(kept);
+                        shell.track_forms.remove(&gone);
+                        shell.flags.refresh(&shell.api, shell.runtime.handle(), &shell.ctx);
+                        shell.act(Action::RefreshLibrary);
+                    }
+                    Some(Outcome::NotSame) => {
+                        let pair = (view.left, view.right);
+                        self.merge = None;
+                        self.judged_not_same(shell, id, if pair.0 == id { pair.1 } else { pair.0 });
+                    }
+                    Some(Outcome::Closed) => self.merge = None,
+                    None => shell.form_dirty = true,
+                }
+                return;
             }
 
             let Some(d) = detail else {
@@ -655,6 +735,12 @@ fn tag_field(name: &str) -> Option<&'static str> {
         "date" | "year" | "tdrc" | "tyer" | "originaldate" => Some("release date"),
         _ => None,
     }
+}
+
+/// The tracks a duplicate flag names.
+fn duplicate_ids(flag: &Flag) -> Vec<Uuid> {
+    let tracks = flag.related_tracks.as_array().cloned().unwrap_or_default();
+    tracks.iter().filter_map(|t| t.get("id")?.as_str()?.parse().ok()).collect()
 }
 
 /// A flag's other tracks or artists, as links.

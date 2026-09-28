@@ -1,0 +1,400 @@
+//! Merging two tracks that are the same song (a "possible duplicate" flag, from the
+//! Review page): side by side, left is kept and right is merged into it. One pick per
+//! row (title, artists, date, genres, comment, status, file, covers) says whose it is;
+//! rows where both are the same say so. The file row shows format and quality, with a
+//! play button per side, so the wrong file isn't kept by accident. Albums, relations,
+//! sources, lyrics and the right track's versions are combined without asking; the
+//! view lists them. Nothing happens until Ctrl+Enter (`POST /api/tracks/{left}/merge`,
+//! with both tracks' revisions as the base: a change meanwhile is refused, not undone).
+//! Undoing is on the kept track's page.
+//!
+//! Keys: ↑/↓ (or j/k) a row, ←/→ (or h/l) its side, s swaps the sides, Space plays the
+//! left file and Shift+Space the right, Ctrl+Enter merges, n says they're not the same,
+//! Esc closes it.
+
+use std::sync::{Arc, Mutex};
+
+use eframe::egui::{self, Key, Modifiers, RichText, Sense, Vec2};
+use uuid::Uuid;
+
+use crate::api::ApiError;
+use crate::catalog::Catalog;
+use crate::details::TrackDetail;
+use crate::ui::theme::{bold, font, semibold, PALETTE as P};
+use crate::ui::{widgets, Action, Shell};
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Side {
+    Left,
+    Right,
+}
+
+impl Side {
+    fn name(self) -> &'static str {
+        match self {
+            Side::Left => "left",
+            Side::Right => "right",
+        }
+    }
+}
+
+/// The rows, as the server names their picks.
+const FIELDS: [(&str, &str); 8] = [
+    ("title", "Title"),
+    ("credits", "Artists"),
+    ("release_date", "Released"),
+    ("genres", "Genres"),
+    ("comment", "Comment"),
+    ("status", "Status"),
+    ("file", "File"),
+    ("covers", "Main cover"),
+];
+const FILE: usize = 6;
+const COVERS: usize = 7;
+
+/// What happened, for the page that shows the view.
+pub enum Outcome {
+    /// Merged: `kept` is the track that stays.
+    Merged { kept: Uuid, gone: Uuid },
+    /// "Not the same": the pair's flag can be settled.
+    NotSame,
+    Closed,
+}
+
+pub struct MergeView {
+    pub left: Uuid,
+    pub right: Uuid,
+    picks: [Side; 8],
+    row: usize,
+    reason: String,
+    merging: bool,
+    error: Option<String>,
+    answer: Arc<Mutex<Option<Result<(), ApiError>>>>,
+    /// The file pick was set from the files' quality (once both details are there).
+    file_suggested: bool,
+}
+
+impl MergeView {
+    /// `left` is kept, `right` merged into it.
+    pub fn new(left: Uuid, right: Uuid) -> MergeView {
+        MergeView {
+            left,
+            right,
+            picks: [Side::Left; 8],
+            row: 0,
+            reason: String::new(),
+            merging: false,
+            error: None,
+            answer: Arc::default(),
+            file_suggested: false,
+        }
+    }
+
+    fn swap(&mut self) {
+        std::mem::swap(&mut self.left, &mut self.right);
+        for pick in &mut self.picks {
+            *pick = if *pick == Side::Left { Side::Right } else { Side::Left };
+        }
+    }
+
+    /// The view; returns what happened when it's over.
+    pub fn show(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: &Catalog) -> Option<Outcome> {
+        if let Some(result) = self.answer.lock().unwrap().take() {
+            self.merging = false;
+            match result {
+                Ok(()) => return Some(Outcome::Merged { kept: self.left, gone: self.right }),
+                Err(err) => self.error = Some(err.message),
+            }
+        }
+        let left = shell.track_details.get(self.left).value.clone();
+        let right = shell.track_details.get(self.right).value.clone();
+        let (Some(l), Some(r)) = (left, right) else {
+            ui.label(RichText::new("Loading both tracks…").color(P.faint));
+            return None;
+        };
+        let lt = catalog.track_index(self.left).map(|i| &catalog.tracks[i as usize]);
+        let rt = catalog.track_index(self.right).map(|i| &catalog.tracks[i as usize]);
+        if !self.file_suggested {
+            self.file_suggested = true;
+            if quality(&r) > quality(&l) {
+                self.picks[FILE] = Side::Right;
+            }
+        }
+
+        // ---- Keys ----
+        if !shell.palette_open {
+            let ctx = ui.ctx().clone();
+            let merge = ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Enter));
+            if merge {
+                self.merge(shell, &l, &r);
+            }
+            if !ctx.egui_wants_keyboard_input() {
+                let key = |k: Key| ctx.input(|i| i.key_pressed(k) && i.modifiers.is_none());
+                let shift_space = ctx.input(|i| i.key_pressed(Key::Space) && i.modifiers.shift);
+                let mut acted = true;
+                if key(Key::ArrowDown) || key(Key::J) {
+                    self.row = (self.row + 1).min(FIELDS.len() - 1);
+                } else if key(Key::ArrowUp) || key(Key::K) {
+                    self.row = self.row.saturating_sub(1);
+                } else if key(Key::ArrowLeft) || key(Key::H) {
+                    self.picks[self.row] = Side::Left;
+                } else if key(Key::ArrowRight) || key(Key::L) {
+                    self.picks[self.row] = Side::Right;
+                } else if key(Key::S) {
+                    self.swap();
+                } else if key(Key::N) {
+                    return Some(Outcome::NotSame);
+                } else if key(Key::Escape) {
+                    return Some(Outcome::Closed);
+                } else if shift_space {
+                    play(shell, catalog, self.right);
+                } else if key(Key::Space) {
+                    play(shell, catalog, self.left);
+                } else {
+                    acted = false;
+                }
+                if acted {
+                    ctx.input_mut(|i| i.events.retain(|e| !matches!(e, egui::Event::Text(_))));
+                }
+            }
+        }
+
+        // ---- The two sides ----
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Merge").font(font(20.0, bold())));
+            ui.label(RichText::new("left is kept; right is merged into it").color(P.muted));
+            if ui.small_button("Swap sides  (s)").clicked() {
+                self.swap();
+            }
+        });
+        if lt.map(|t| t.is_restricted) != rt.map(|t| t.is_restricted) {
+            ui.label(RichText::new("Who may see them differs: the kept track keeps its own access.").color(P.danger));
+        }
+        ui.add_space(6.0);
+        let values = |d: &TrackDetail, field: &str| -> String { value(d, catalog, field) };
+        let width = ((ui.available_width() - 140.0) / 2.0).max(160.0);
+        egui::Grid::new(("merge-grid", self.left, self.right)).num_columns(3).spacing([12.0, 6.0]).show(ui, |ui| {
+            ui.label("");
+            ui.label(RichText::new("Left · kept").font(font(13.0, semibold())).color(P.accent));
+            ui.label(RichText::new("Right · merged into it").font(font(13.0, semibold())).color(P.muted));
+            ui.end_row();
+            for (n, (field, name)) in FIELDS.iter().enumerate() {
+                let (lv, rv) = (values(&l, field), values(&r, field));
+                let same = lv == rv;
+                let current = n == self.row;
+                let label = if same { format!("{name}  (same)") } else { name.to_string() };
+                ui.label(RichText::new(label).color(if current { P.text } else { P.faint }));
+                for (side, text, detail) in [(Side::Left, &lv, &l), (Side::Right, &rv, &r)] {
+                    let chosen = self.picks[n] == side;
+                    let frame = egui::Frame::NONE
+                        .fill(if chosen && !same { P.accent_soft } else { P.surface })
+                        .stroke(egui::Stroke::new(1.0, if current && chosen { P.accent } else { P.line }))
+                        .corner_radius(8)
+                        .inner_margin(egui::Margin::same(8));
+                    let response = frame
+                        .show(ui, |ui| {
+                            ui.set_width(width);
+                            if n == COVERS {
+                                let cover = detail.covers.first().and_then(|c| c.cover());
+                                let (rect, _) = ui.allocate_exact_size(Vec2::splat(56.0), Sense::hover());
+                                shell.cover(ui, cover, detail.id, rect, 4, 0.0);
+                            }
+                            ui.add(egui::Label::new(RichText::new(if text.is_empty() { "—" } else { text }).color(P.text)).wrap());
+                            if n == FILE {
+                                let id = detail.id;
+                                if ui.small_button(if side == Side::Left { "▶ Play  (Space)" } else { "▶ Play  (Shift+Space)" }).clicked() {
+                                    play(shell, catalog, id);
+                                }
+                            }
+                        })
+                        .response
+                        .interact(Sense::click());
+                    if response.clicked() {
+                        self.picks[n] = side;
+                        self.row = n;
+                    }
+                }
+                ui.end_row();
+            }
+        });
+
+        // ---- What's combined without asking ----
+        ui.add_space(8.0);
+        let both = |f: fn(&TrackDetail) -> usize| f(&l) + f(&r);
+        let combined = [
+            (both(|d| d.albums.len()), "album places"),
+            (both(|d| d.relations.len()), "relations"),
+            (both(|d| d.sources.len()), "sources"),
+            (both(|d| d.lyrics.len()), "lyrics"),
+            (r.variants.len(), "versions of the right track (they become versions of the kept one)"),
+            (both(|d| d.covers.len()), "covers (all kept; the pick says whose come first)"),
+        ];
+        let listed: Vec<String> = combined.iter().filter(|(n, _)| *n > 0).map(|(n, what)| format!("{n} {what}")).collect();
+        if !listed.is_empty() {
+            ui.label(RichText::new(format!("Combined: {}.", listed.join(", "))).color(P.muted));
+        }
+        ui.label(RichText::new("The right file stays as a previous file of the kept track. Undo is on the kept track's page.").color(P.faint).small());
+
+        ui.add_space(8.0);
+        ui.add(egui::TextEdit::singleline(&mut self.reason).hint_text("Why (optional)").desired_width(420.0));
+        let mut outcome = None;
+        ui.horizontal(|ui| {
+            let can = shell.account.can("replace_file");
+            if ui.add_enabled(can && !self.merging, egui::Button::new("Merge  (Ctrl+Enter)")).clicked() {
+                self.merge(shell, &l, &r);
+            }
+            if ui.button("Not the same  (n)").clicked() {
+                outcome = Some(Outcome::NotSame);
+            }
+            if ui.button("Close  (Esc)").clicked() {
+                outcome = Some(Outcome::Closed);
+            }
+            if !can {
+                ui.label(RichText::new("Merging changes which file a track plays: it needs the replace_file permission.").color(P.muted));
+            } else if self.merging {
+                ui.label(RichText::new("Merging…").color(P.muted));
+            }
+        });
+        if let Some(err) = &self.error {
+            ui.label(RichText::new(err).color(P.danger));
+        }
+        ui.label(RichText::new("↑/↓ row · ←/→ side · s swap · Space / Shift+Space play left / right · n not the same · Esc close").color(P.faint).small());
+        outcome
+    }
+
+    /// The request: the picks, and both tracks' latest revisions as the base.
+    fn body(&self, l: &TrackDetail, r: &TrackDetail) -> serde_json::Value {
+        let base = |d: &TrackDetail| d.primary_variant_id.and_then(|id| d.variants.iter().find(|v| v.id == id)).map(|v| v.revision_id);
+        let mut pick = serde_json::Map::new();
+        for (n, (field, _)) in FIELDS.iter().enumerate() {
+            pick.insert(field.to_string(), serde_json::json!(self.picks[n].name()));
+        }
+        serde_json::json!({
+            "from": self.right,
+            "base": { "into_revision_id": base(l), "from_revision_id": base(r) },
+            "pick": pick,
+            "reason": self.reason.trim(),
+        })
+    }
+
+    fn merge(&mut self, shell: &Shell, l: &TrackDetail, r: &TrackDetail) {
+        if self.merging || !shell.account.can("replace_file") {
+            return;
+        }
+        let body = self.body(l, r);
+        self.merging = true;
+        self.error = None;
+        let (api, answer, ctx, into) = (shell.api.clone(), self.answer.clone(), shell.ctx.clone(), self.left);
+        shell.runtime.spawn(async move {
+            let result = api.send_json::<serde_json::Value>(reqwest::Method::POST, &format!("/api/tracks/{into}/merge"), Some(body)).await.map(|_| ());
+            *answer.lock().unwrap() = Some(result);
+            ctx.request_repaint();
+        });
+    }
+}
+
+fn play(shell: &mut Shell, catalog: &Catalog, track: Uuid) {
+    if let Some(index) = catalog.track_index(track) {
+        shell.act(Action::Play { tracks: vec![index], start: 0 });
+    }
+}
+
+/// A field as the row shows it (the same text on both sides means the same).
+fn value(d: &TrackDetail, catalog: &Catalog, field: &str) -> String {
+    let track = catalog.track_index(d.id).map(|i| &catalog.tracks[i as usize]);
+    let variant = d.primary_variant_id.and_then(|id| d.variants.iter().find(|v| v.id == id)).map(|v| &v.data);
+    let data = |key: &str| variant.and_then(|v| v.get(key)).and_then(|v| v.as_str()).unwrap_or("").to_string();
+    match field {
+        "title" => d.title.clone(),
+        "credits" => {
+            let credits: Vec<String> = d
+                .credits
+                .iter()
+                .map(|c| {
+                    let name = c.alias.clone().unwrap_or_else(|| c.artist_name.clone());
+                    if c.role == "primary" { name } else { format!("{name} ({})", c.role) }
+                })
+                .collect();
+            credits.join(", ")
+        }
+        "release_date" => d.release_date.clone().unwrap_or_default(),
+        "genres" => track.map(|t| t.genres.join(", ")).unwrap_or_default(),
+        "comment" => data("comment"),
+        "status" => d.status.clone(),
+        "file" => {
+            let f = &d.file;
+            let mut parts = vec![f.codec.clone().unwrap_or_else(|| "?".into())];
+            if let Some(b) = f.bitrate {
+                parts.push(format!("{} kbps", b / 1000));
+            }
+            if let Some(s) = f.sample_rate {
+                parts.push(format!("{:.1} kHz", s as f32 / 1000.0));
+            }
+            if let Some(b) = f.bit_depth {
+                parts.push(format!("{b}-bit"));
+            }
+            parts.push(widgets::length(track.and_then(|t| t.duration_ms)));
+            parts.push(format!("{:.1} MB", f.size_bytes as f64 / 1_000_000.0));
+            format!("{}\n{}", parts.join(" · "), f.original_filename.clone().unwrap_or_else(|| f.uploaded_filename.clone()))
+        }
+        "covers" => match d.covers.len() {
+            0 => "no cover of its own".into(),
+            1 => "1 cover".into(),
+            n => format!("{n} covers"),
+        },
+        _ => String::new(),
+    }
+}
+
+/// How good a file is, to suggest which to keep (shown, and changeable): lossless first,
+/// then sample rate and bit depth, then bitrate, then size.
+fn quality(d: &TrackDetail) -> (bool, i32, i16, i32, i64) {
+    let f = &d.file;
+    let lossless = matches!(f.codec.as_deref().map(str::to_lowercase).as_deref(), Some("flac" | "alac" | "wav" | "pcm" | "aiff" | "ape" | "wavpack"))
+        || f.codec.as_deref().is_some_and(|c| c.to_lowercase().starts_with("pcm"));
+    (lossless, f.sample_rate.unwrap_or(0), f.bit_depth.unwrap_or(0), f.bitrate.unwrap_or(0), f.size_bytes)
+}
+
+/// Against a running server (ignored by default): `ACETATE_TEST_SERVER`,
+/// `ACETATE_TEST_TOKEN`, and a flagged pair: `ACETATE_TEST_DUPLICATE` (the flagged track)
+/// and `ACETATE_TEST_ORIGINAL` (the one it duplicates). Merges them: a throwaway database.
+#[cfg(test)]
+mod against_a_server {
+    use super::*;
+    use crate::api::Api;
+
+    #[test]
+    #[ignore]
+    fn merging_a_flagged_pair() {
+        let vars = ["ACETATE_TEST_SERVER", "ACETATE_TEST_TOKEN", "ACETATE_TEST_DUPLICATE", "ACETATE_TEST_ORIGINAL"].map(std::env::var);
+        let [Ok(server), Ok(token), Ok(duplicate), Ok(original)] = vars else { return };
+        let dir = std::env::temp_dir().join(format!("acetate-merge-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("session.json"), serde_json::json!({"server": server, "token": token, "username": "test"}).to_string()).unwrap();
+        let api = Api::new(dir);
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let detail = |id: String| {
+                let api = &api;
+                async move { api.send_json::<TrackDetail>(reqwest::Method::GET, &format!("/api/tracks/{id}"), None).await.unwrap() }
+            };
+            let (l, r) = (detail(original.clone()).await, detail(duplicate.clone()).await);
+            let mut view = MergeView::new(l.id, r.id);
+            // The suggestion: the better file (the original FLAC over its MP3 copy) is kept.
+            assert!(quality(&l) > quality(&r));
+            view.file_suggested = true;
+            view.reason = "merge test".into();
+            let merged: serde_json::Value =
+                api.send_json(reqwest::Method::POST, &format!("/api/tracks/{}/merge", l.id), Some(view.body(&l, &r))).await.unwrap();
+            assert_eq!(merged["track_id"].as_str().unwrap(), l.id.to_string());
+
+            // The duplicate now answers as the kept track, with the FLAC as its file.
+            let after = detail(duplicate.clone()).await;
+            assert_eq!(after.id, l.id);
+            assert_eq!(after.file.codec.as_deref(), Some("flac"));
+            // And its flag is settled.
+            let open: Vec<crate::review::Flag> = api.send_json(reqwest::Method::GET, "/api/review", None).await.unwrap();
+            assert!(!open.iter().any(|f| f.track_id == r.id), "{open:?}");
+        });
+    }
+}

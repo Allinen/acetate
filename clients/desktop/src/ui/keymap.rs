@@ -77,8 +77,21 @@ pub const GROUPS: &[(&str, &[Binding])] = &[
             ("Space", "play the track (or pause it)"),
             ("u", "skip it"),
             ("d", "mark it done as it is"),
+            ("m", "compare with its possible duplicate, to merge"),
             ("Enter in Artists", "credit the match (Shift+Enter: as featured)"),
             ("Ctrl+V", "paste an image as the cover"),
+        ],
+    ),
+    (
+        "Merging (m on Review)",
+        &[
+            ("↑ ↓  or  j k", "a row"),
+            ("← →  or  h l", "take the left or the right one"),
+            ("s", "swap sides (left is kept)"),
+            ("Space / Shift+Space", "play the left / right file"),
+            ("Ctrl+Enter", "merge"),
+            ("n", "not the same"),
+            ("Esc", "close"),
         ],
     ),
     (

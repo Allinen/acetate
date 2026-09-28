@@ -11,6 +11,7 @@ pub mod now_playing;
 pub mod palette;
 pub mod player_bar;
 pub mod playlist;
+pub mod merge;
 pub mod queue;
 pub mod review;
 pub mod settings;
