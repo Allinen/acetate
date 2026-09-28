@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                SELECT al.alias = a.name AS \"same!\"\n                FROM artist_aliases al JOIN artists a ON a.id = al.artist_id\n                WHERE al.id = $1 AND al.artist_id = $2 AND NOT al.listed\n                ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "same!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "adf19028692b114446676218e125d2e9877d573879443fbb7c739dcf3e1b0401"
+}

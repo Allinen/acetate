@@ -6,13 +6,20 @@
 //! New artists and albums chosen there are made when the form is saved, not before: a
 //! discarded form leaves nothing behind.
 
+pub mod album_form;
+pub mod artist_form;
+pub mod bulk;
+pub mod credits;
 pub mod inline_search;
 pub mod track_form;
 
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+use eframe::egui::{self, RichText};
 use uuid::Uuid;
+
+use crate::ui::theme::{font, medium};
 
 
 /// What a picker picks.
@@ -59,4 +66,24 @@ pub enum SaveState {
     /// Someone else saved in between: the server's message.
     Stale(String),
     Failed(String),
+}
+
+/// A drop-down of `options` (shown by `name`) for `value`. A value not among them (an
+/// older list) is kept, and shown as it is.
+pub fn combo(ui: &mut egui::Ui, id: impl std::hash::Hash + std::fmt::Debug, value: &mut String, options: &[String], name: impl Fn(&str) -> String) {
+    egui::ComboBox::from_id_salt(id).selected_text(RichText::new(name(value)).font(font(13.0, medium()))).show_ui(ui, |ui| {
+        for option in options {
+            if ui.selectable_label(value == option, name(option)).clicked() {
+                *value = option.clone();
+            }
+        }
+    });
+}
+
+pub fn capitalized(text: &str) -> String {
+    let mut chars = text.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
+    }
 }

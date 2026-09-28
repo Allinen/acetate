@@ -1276,18 +1276,20 @@ function albumMergeRow(m) {
     preview);
 }
 
-// #/review: things ingest flagged for a person to look at. "Fix later" flags (a quick
-// import's) are shown on their own, so they don't bury the rest.
-let reviewFilter = "exclude=fix_later";
+// #/review: things flagged for a person to look at. "Fix later" flags (a quick import's)
+// and what tracks are missing (flags the server raises itself: "no cover"...) are shown
+// on their own, so they don't bury the rest.
+let reviewFilter = "exclude=fix_later&automatic=false";
 async function showReview() {
   selectedId = null;
   markSelected();
   setDetail(h("p", { class: "muted" }, "Loading…"));
-  let flags, problems;
+  let flags, problems, vocab;
   try {
-    [flags, problems] = await Promise.all([
+    [flags, problems, vocab] = await Promise.all([
       can("edit_metadata") ? api(`/api/review?${reviewFilter}`) : [],
       can("upload") ? api("/api/ingest-problems") : [],
+      getVocab(),
     ]);
   } catch (err) {
     setDetail(errorBox(err));
@@ -1298,14 +1300,15 @@ async function showReview() {
     can("upload") ? [h("h3", {}, `Files that didn't import (${problems.length})`), problemList(problems)] : null,
     can("edit_metadata") ? h("div", { class: "row" }, h("h3", {}, "Flags"),
       h("select", { onchange: (e) => { reviewFilter = e.target.value; showReview(); } },
-        [["exclude=fix_later", "to check"], ["kind=fix_later", "fix later"], ["", "all"]].map(([value, label]) =>
+        [["exclude=fix_later&automatic=false", "to check"], ["kind=fix_later", "fix later"], ["automatic=true", "missing something"], ["", "all"]].map(([value, label]) =>
           h("option", { value, selected: value === reviewFilter }, label)))) : null,
     !can("edit_metadata") ? null : flags.length ? flags.map((f) => {
       const resolution = h("input", { placeholder: "what you did (optional)" });
       const status = h("span", {});
+      const kind = (vocab.review_kinds ?? []).find((k) => k.kind === f.kind);
       return h("div", { class: "box stack" },
         h("div", { class: "row" },
-          h("span", { class: "tag" }, { possible_duplicate: "possible duplicate", ambiguous_artist: "ambiguous artist", merged_artist: "artist merged", fix_later: "fix later" }[f.kind] ?? f.kind),
+          h("span", { class: "tag" }, kind?.name ?? f.kind),
           h("a", { href: `#/track/${f.track_id}` }, f.track_title),
           h("span", { class: "muted" }, f.track_artist, " · ", fmtTime(f.created_at))),
         f.kind === "possible_duplicate"
@@ -1316,13 +1319,18 @@ async function showReview() {
                   : null, " "]))
           : f.kind === "fix_later"
           ? h("div", {}, "Imported to fix later: ", h("em", {}, f.related.note ?? ""))
+          : kind?.automatic
+          ? h("div", {}, `${kind.name}. Settled by itself once it's fixed; resolving it says it's fine as it is (asked again only if it's fixed and goes missing later).`)
           : f.kind === "merged_artist"
           ? h("div", {}, `Was credited to "${f.related.from_name}", which was merged into `,
               h("a", { href: `#/artist/${f.related.into}` }, f.related_artists.find((x) => x.id === f.related.into)?.name ?? "another artist"),
               ". Check the credits are still right (e.g. a featured artist that was part of the old name).")
-          : h("div", {}, `"${f.related.name}" matches several artists; the oldest was credited: `,
+          : f.kind === "ambiguous_artist"
+          ? h("div", {}, `"${f.related.name}" matches several artists; the oldest was credited: `,
               f.related_artists.map((x) => [h("a", { href: `#/artist/${x.id}` }, x.name,
-                x.disambiguation ? ` (${x.disambiguation})` : "", x.id === f.related.chosen ? " ✓" : ""), " "])),
+                x.disambiguation ? ` (${x.disambiguation})` : "", x.id === f.related.chosen ? " ✓" : ""), " "]))
+          // A kind this page doesn't know yet (a newer server): its name.
+          : h("div", {}, kind?.name ?? f.kind),
         h("div", { class: "row" }, resolution,
           h("button", {
             type: "button", class: "small",

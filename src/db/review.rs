@@ -153,7 +153,9 @@ pub struct Flag {
     /// As stored (see the migration), minus the `tracks` / `artists` id lists: those are
     /// expanded below instead, which leaves out the ones the user can't see.
     pub related: serde_json::Value,
-    /// For possible duplicates: the similar tracks, `[{id, title, artist_display}]`.
+    /// For possible duplicates: the similar tracks, `[{id, title, artist_display}]`. One
+    /// merged since shows as the track it was merged into (not twice, and not if that's
+    /// the flagged track itself).
     pub related_tracks: serde_json::Value,
     /// For ambiguous artists: the candidates; for merges: both artists.
     /// `[{id, name, disambiguation}]`.
@@ -167,26 +169,36 @@ pub struct Flag {
     pub imported_from: Option<String>,
 }
 
-/// Open (or resolved) flags, newest first, a page at a time (`before` = last id seen).
-/// `kind`: only that kind; `exclude`: all but that kind.
-pub async fn list(
-    conn: &mut PgConnection,
-    resolved: bool,
-    before: Option<Uuid>,
-    limit: i64,
-    kind: Option<&str>,
-    exclude: Option<&str>,
-) -> sqlx::Result<Vec<Flag>> {
+/// Which flags `list` gives.
+#[derive(Debug, Default)]
+pub struct Filter<'a> {
+    /// Resolved flags instead of open ones.
+    pub resolved: bool,
+    /// Only this kind.
+    pub kind: Option<&'a str>,
+    /// All but this kind.
+    pub exclude: Option<&'a str>,
+    /// Only automatic kinds (true: what tracks are missing), or none of them (false).
+    pub automatic: Option<bool>,
+    /// Only this track's.
+    pub track: Option<Uuid>,
+}
+
+/// Flags, newest first, a page at a time (`before` = last id seen).
+pub async fn list(conn: &mut PgConnection, filter: &Filter<'_>, before: Option<Uuid>, limit: i64) -> sqlx::Result<Vec<Flag>> {
     sqlx::query_as!(
         Flag,
         r#"
         SELECT f.id, f.kind, f.track_id, t.title AS track_title, t.artist_display AS track_artist,
                f.related - 'tracks' - 'artists' AS "related!",
+               -- A named track merged since is the one it went into (each once; not the
+               -- flagged track itself: that pair is settled).
                COALESCE((
                    SELECT jsonb_agg(jsonb_build_object(
-                       'id', rt.id, 'title', rt.title, 'artist_display', rt.artist_display))
+                       'id', rt.id, 'title', rt.title, 'artist_display', rt.artist_display) ORDER BY rt.id)
                    FROM tracks rt
-                   WHERE rt.id IN (SELECT (jsonb_array_elements_text(f.related -> 'tracks'))::uuid)
+                   WHERE rt.id IN (SELECT final_track((jsonb_array_elements_text(f.related -> 'tracks'))::uuid))
+                     AND rt.id <> f.track_id
                ), '[]') AS "related_tracks!",
                COALESCE((
                    SELECT jsonb_agg(jsonb_build_object(
@@ -197,6 +209,7 @@ pub async fn list(
                f.created_at, f.resolved_at, u.username AS "resolved_by?", f.resolution,
                fi.imported_from
         FROM review_flags f
+        JOIN review_kinds k ON k.kind = f.kind
         JOIN tracks t ON t.id = f.track_id
         LEFT JOIN files fi ON fi.id = t.file_id
         LEFT JOIN users u ON u.id = f.resolved_by
@@ -204,14 +217,18 @@ pub async fn list(
           AND f.id < COALESCE($2, 'ffffffff-ffff-ffff-ffff-ffffffffffff'::uuid)
           AND ($4::text IS NULL OR f.kind = $4)
           AND ($5::text IS NULL OR f.kind <> $5)
+          AND ($6::bool IS NULL OR k.automatic = $6)
+          AND ($7::uuid IS NULL OR f.track_id = $7)
         ORDER BY f.id DESC
         LIMIT $3
         "#,
-        resolved,
+        filter.resolved,
         before,
         limit,
-        kind,
-        exclude
+        filter.kind,
+        filter.exclude,
+        filter.automatic,
+        filter.track,
     )
     .fetch_all(conn)
     .await
@@ -276,4 +293,58 @@ pub async fn settle_duplicate_pair(
         changed.extend(ids);
     }
     Ok(changed)
+}
+
+/// A kind of flag, as `GET /api/vocab` lists them.
+#[derive(Debug, Serialize)]
+pub struct Kind {
+    pub kind: String,
+    /// For people ("No cover").
+    pub name: String,
+    /// Raised and settled by the server itself, from what the track has (see migration
+    /// 0030): "no title", "no cover"… The others are raised by ingest and merges.
+    pub automatic: bool,
+    /// For automatic kinds: whether the server checks for it.
+    pub checked: bool,
+}
+
+/// Every kind of flag, in the order to show them.
+pub async fn kinds(conn: &mut PgConnection) -> sqlx::Result<Vec<Kind>> {
+    sqlx::query_as!(Kind, "SELECT kind, name, automatic, checked FROM review_kinds ORDER BY position").fetch_all(conn).await
+}
+
+/// Turns an automatic check on or off (the owner only: `acetate review-checks`), then
+/// checks every track again. Off: its open flags are settled as "not checked anymore"
+/// first (not "fixed"). On: every track missing it is flagged, even ones someone had
+/// marked fine before (turning a check on means "look at all of them again").
+/// Returns how many flags are open of that kind afterwards.
+pub async fn set_checked(conn: &mut PgConnection, kind: &str, checked: bool) -> anyhow::Result<i64> {
+    let automatic = sqlx::query_scalar!("SELECT automatic FROM review_kinds WHERE kind = $1", kind)
+        .fetch_optional(&mut *conn)
+        .await?;
+    match automatic {
+        None => anyhow::bail!("there's no kind of flag named {kind:?}"),
+        Some(false) => anyhow::bail!("{kind:?} isn't an automatic check (ingest and merges raise it)"),
+        Some(true) => {}
+    }
+    sqlx::query!("UPDATE review_kinds SET checked = $2 WHERE kind = $1", kind, checked)
+        .execute(&mut *conn)
+        .await?;
+    if !checked {
+        sqlx::query!(
+            r#"
+            UPDATE review_flags SET resolved_at = now(), resolved_by = current_app_user(),
+                   resolution = 'not checked anymore'
+            WHERE kind = $1 AND resolved_at IS NULL
+            "#,
+            kind
+        )
+        .execute(&mut *conn)
+        .await?;
+    }
+    sqlx::query_scalar!(r#"SELECT count(check_track(id)) AS "checked!" FROM tracks"#).fetch_one(&mut *conn).await?;
+    let open = sqlx::query_scalar!(r#"SELECT count(*) AS "n!" FROM review_flags WHERE kind = $1 AND resolved_at IS NULL"#, kind)
+        .fetch_one(&mut *conn)
+        .await?;
+    Ok(open)
 }

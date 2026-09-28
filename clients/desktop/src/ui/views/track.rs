@@ -23,6 +23,19 @@ use crate::ui::{playing_track, widgets, Action, Page, Shell};
 
 #[derive(Default)]
 pub struct TrackPage {
+    /// The history section's state (restoring asks first).
+    history: super::history::History,
+    /// This track and another side by side, to merge (edit mode).
+    merge: Option<super::merge::MergeView>,
+    /// "Merge with another track…" asked the palette for the other one.
+    picking_merge: bool,
+    /// "Undo…" was clicked on this merge: asking to be sure.
+    undo_asked: Option<Uuid>,
+    /// An undo on its way: the merge.
+    undoing: Option<Uuid>,
+    /// The server's answer to an undo: the track that came back, or why not.
+    undo_answer: std::sync::Arc<std::sync::Mutex<Option<Result<Uuid, String>>>>,
+    undo_result: Option<Result<Uuid, String>>,
     /// Which lyrics entry is shown (a track may have several: languages, official).
     lyrics: usize,
     /// The synced line last scrolled to (so it scrolls when the line changes, not always).
@@ -31,6 +44,17 @@ pub struct TrackPage {
 
 impl TrackPage {
     pub fn show(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: &Arc<Catalog>, id: Uuid, player: &PlayerView) {
+        // Ctrl+M: merge with another track (again: close it). In a text field too.
+        if !shell.palette_open && ui.ctx().input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::M)) {
+            if !shell.edit_mode {
+                shell.playlists.notice = Some(("Merging is in edit mode: e, then Ctrl+M.".into(), std::time::Instant::now()));
+            } else if self.merge.is_some() {
+                self.merge = None;
+            } else {
+                self.picking_merge = true;
+                shell.act(Action::Pick { kind: crate::ui::edit::PickKind::Track, except: Some(id) });
+            }
+        }
         let cached = shell.track_details.get(id);
         let (detail, refreshing, error) = (cached.value.clone(), cached.refreshing, cached.error.clone());
         // A merged track answers with the one it went into: go there instead.
@@ -128,62 +152,230 @@ impl TrackPage {
             }
 
             // ---- Sections ----
+            if shell.edit_mode && self.merge_with(ui, shell, catalog, &d, player) {
+                return;
+            }
             if shell.edit_mode {
-                section(ui, "Edit", true, |ui| edit(ui, shell, catalog, &d));
-            }
-            if !d.lyrics.is_empty() {
-                section(ui, "Lyrics", true, |ui| self.lyrics(ui, shell, &d, is_playing, player));
-            }
-            section(ui, "Credits", true, |ui| credits(ui, shell, &d));
-            if !d.relations.is_empty() {
-                section(ui, "Related tracks", true, |ui| relations(ui, shell, &d));
-            }
-            section(ui, "File", true, |ui| file(ui, shell, &d));
-            if d.variants.len() > 1 {
-                section(ui, &format!("Versions ({})", d.variants.len()), false, |ui| {
-                    for v in &d.variants {
-                        let primary = if Some(v.id) == d.primary_variant_id { "  · shown" } else { "" };
-                        let title = v.data.get("title").and_then(|t| t.as_str()).unwrap_or("");
-                        ui.label(RichText::new(format!("{}{primary}", v.label)).font(font(13.5, semibold())));
-                        if !title.is_empty() {
-                            ui.label(RichText::new(title).color(P.muted));
-                        }
-                        ui.add_space(4.0);
-                    }
-                });
-            }
-            if !d.sources.is_empty() {
-                section(ui, &format!("Sources ({})", d.sources.len()), false, |ui| sources(ui, &d.sources));
-            }
-            if !d.merges.is_empty() {
-                section(ui, "Merged into this track", false, |ui| {
-                    for m in &d.merges {
-                        let by = m.merged_by.as_deref().map(|b| format!(" by {b}")).unwrap_or_default();
-                        let undone = if m.undone_at.is_some() { " · undone" } else { "" };
-                        ui.label(format!("{} · {}{by}{undone}", m.from_title, day(&m.merged_at)));
-                    }
-                });
-            }
-            if d.covers.len() > 1 {
-                section(ui, &format!("Covers ({})", d.covers.len()), false, |ui| {
-                    ui.horizontal_wrapped(|ui| {
-                        for c in &d.covers {
-                            let (rect, response) = ui.allocate_exact_size(Vec2::splat(140.0), Sense::hover());
-                            shell.cover(ui, c.cover(), c.id, rect, 8, 0.2);
-                            let size = match (c.width, c.height) {
-                                (Some(w), Some(h)) => format!("{w}×{h} · {}", c.source),
-                                _ => c.source.clone(),
-                            };
-                            response.on_hover_text(size);
-                        }
+                // Two columns on a wide window: editing on the left, what's for looking at
+                // (lyrics, the file, sources, history…) on the right.
+                let full = ui.available_width();
+                if full >= 980.0 {
+                    let gap = 28.0;
+                    let left_width = ((full - gap) * 0.55).floor();
+                    let right_width = full - gap - left_width;
+                    ui.horizontal_top(|ui| {
+                        ui.allocate_ui_with_layout(Vec2::new(left_width, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+                            ui.set_width(left_width);
+                            section(ui, "Edit", true, |ui| edit(ui, shell, catalog, &d));
+                        });
+                        ui.add_space(gap);
+                        ui.allocate_ui_with_layout(Vec2::new(right_width, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+                            ui.set_width(right_width);
+                            self.view_sections(ui, shell, catalog, &d, is_playing, player);
+                        });
                     });
-                });
-            }
-            if d.file.embedded_tags.as_object().is_some_and(|t| !t.is_empty()) {
-                section(ui, "Tags in the file", false, |ui| json_grid(ui, "embedded-tags", &d.file.embedded_tags));
+                } else {
+                    section(ui, "Edit", true, |ui| edit(ui, shell, catalog, &d));
+                    self.view_sections(ui, shell, catalog, &d, is_playing, player);
+                }
+            } else {
+                self.view_sections(ui, shell, catalog, &d, is_playing, player);
             }
             ui.add_space(24.0);
         });
+    }
+
+    /// The sections that are for looking at: lyrics, credits, relations, the file,
+    /// versions, sources, merges, covers, the file's tags, history.
+    fn view_sections(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: &Arc<Catalog>, d: &Arc<TrackDetail>, is_playing: bool, player: &PlayerView) {
+        let d: &TrackDetail = d;
+        if !d.lyrics.is_empty() {
+            section(ui, "Lyrics", true, |ui| self.lyrics(ui, shell, d, is_playing, player));
+        }
+        section(ui, "Credits", true, |ui| credits(ui, shell, d));
+        if !d.relations.is_empty() {
+            section(ui, "Related tracks", true, |ui| relations(ui, shell, d));
+        }
+        section(ui, "File", true, |ui| file(ui, shell, d));
+        if d.variants.len() > 1 {
+            section(ui, &format!("Versions ({})", d.variants.len()), false, |ui| {
+                for v in &d.variants {
+                    let primary = if Some(v.id) == d.primary_variant_id { "  · shown" } else { "" };
+                    let title = v.data.get("title").and_then(|t| t.as_str()).unwrap_or("");
+                    ui.label(RichText::new(format!("{}{primary}", v.label)).font(font(13.5, semibold())));
+                    if !title.is_empty() {
+                        ui.label(RichText::new(title).color(P.muted));
+                    }
+                    ui.add_space(4.0);
+                }
+            });
+        }
+        if !d.sources.is_empty() {
+            section(ui, &format!("Sources ({})", d.sources.len()), false, |ui| sources(ui, &d.sources));
+        }
+        if !d.merges.is_empty() {
+            let open = self.undo_asked.is_some() || self.undo_result.is_some();
+            section(ui, "Merged into this track", open, |ui| self.merges(ui, shell, d));
+        }
+        if d.covers.len() > 1 {
+            section(ui, &format!("Covers ({})", d.covers.len()), false, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    for c in &d.covers {
+                        let (rect, response) = ui.allocate_exact_size(Vec2::splat(140.0), Sense::hover());
+                        shell.cover(ui, c.cover(), c.id, rect, 8, 0.2);
+                        let size = match (c.width, c.height) {
+                            (Some(w), Some(h)) => format!("{w}×{h} · {}", c.source),
+                            _ => c.source.clone(),
+                        };
+                        response.on_hover_text(size);
+                    }
+                });
+            });
+        }
+        if d.file.embedded_tags.as_object().is_some_and(|t| !t.is_empty()) {
+            section(ui, "Tags in the file", false, |ui| json_grid(ui, "embedded-tags", &d.file.embedded_tags));
+        }
+        if let Some(revisions) = d.revisions.as_ref().filter(|r| !r.is_empty()) {
+            let open = shell.edit_mode;
+            section(ui, &format!("History ({})", revisions.len()), open, |ui| self.history.show(ui, shell, catalog, d));
+        }
+    }
+
+    /// "Merge with another track…" (edit mode): the other one is picked in the palette,
+    /// then both are shown side by side, this one on the left (kept; `s` swaps). True
+    /// while the merge view is shown (in place of the rest of the page).
+    fn merge_with(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: &Arc<Catalog>, d: &TrackDetail, player: &PlayerView) -> bool {
+        use super::merge::{MergeView, Outcome};
+        if self.picking_merge
+            && let Some(picked) = shell.picker.take()
+        {
+            self.picking_merge = false;
+            match picked.id {
+                Some(other) if picked.kind == crate::ui::edit::PickKind::Track && other != d.id => self.merge = Some(MergeView::new(d.id, other)),
+                _ => {}
+            }
+        }
+        let Some(view) = self.merge.as_mut() else {
+            if ui.button("Merge with another track…  (Ctrl+M)").on_hover_text("The same song twice: choose the other one, then compare them side by side").clicked() {
+                self.picking_merge = true;
+                shell.act(Action::Pick { kind: crate::ui::edit::PickKind::Track, except: Some(d.id) });
+            }
+            ui.add_space(6.0);
+            return false;
+        };
+        let pair = (view.left, view.right);
+        shell.form_dirty = true;
+        shell.page_takes_space = true;
+        match view.show(ui, shell, catalog, player) {
+            Some(Outcome::Merged { kept, gone }) => {
+                self.merge = None;
+                shell.track_details.refresh(kept);
+                shell.track_forms.remove(&gone);
+                shell.flags.refresh(&shell.api, shell.runtime.handle(), &shell.ctx);
+                shell.act(Action::RefreshLibrary);
+                if kept != d.id {
+                    shell.act(Action::Go(Page::Track(kept)));
+                }
+            }
+            Some(Outcome::Shared) => {
+                self.merge = None;
+                shell.track_details.refresh(pair.0);
+                shell.track_details.refresh(pair.1);
+                shell.flags.refresh(&shell.api, shell.runtime.handle(), &shell.ctx);
+                shell.act(Action::RefreshLibrary);
+            }
+            Some(Outcome::NotSame | Outcome::Closed) => self.merge = None,
+            None => {}
+        }
+        true
+    }
+
+    /// The merges into this track, newest first, each with Undo when it can be (the
+    /// newest first: a later merge may depend on an earlier one). Undo asks first, and
+    /// says what it does.
+    fn merges(&mut self, ui: &mut egui::Ui, shell: &mut Shell, d: &TrackDetail) {
+        if let Some(answer) = self.undo_answer.lock().unwrap().take() {
+            self.undoing = None;
+            if answer.is_ok() {
+                shell.track_details.refresh(d.id);
+                shell.flags.refresh(&shell.api, shell.runtime.handle(), &shell.ctx);
+                shell.act(Action::RefreshLibrary);
+            }
+            self.undo_result = Some(answer);
+        }
+        let can = shell.account.can("replace_file");
+        let newest_open = d.merges.iter().find(|m| m.undone_at.is_none()).map(|m| m.id);
+        for m in &d.merges {
+            let by = m.merged_by.as_deref().map(|b| format!(" by {b}")).unwrap_or_default();
+            ui.horizontal_wrapped(|ui| {
+                ui.label(format!("{} · {}{by}", m.from_title, day(&m.merged_at)));
+                if m.undone_at.is_some() {
+                    ui.label(RichText::new("· undone").color(P.faint));
+                    if widgets::link(ui, "its page", font(13.0, medium()), P.muted) {
+                        shell.act(Action::Go(Page::Track(m.from_track_id)));
+                    }
+                } else if !m.undo_blockers.is_empty() {
+                    ui.label(RichText::new(format!("· can't be undone: {}", m.undo_blockers.join("; "))).color(P.faint));
+                } else if Some(m.id) != newest_open {
+                    ui.label(RichText::new("· undo the newer merges first").color(P.faint));
+                } else if self.undoing == Some(m.id) {
+                    ui.label(RichText::new("· undoing…").color(P.muted));
+                } else if can && self.undo_asked != Some(m.id) && ui.small_button("Undo…").clicked() {
+                    self.undo_asked = Some(m.id);
+                    self.undo_result = None;
+                }
+            });
+            if self.undo_asked == Some(m.id) {
+                ui.label(
+                    RichText::new(format!(
+                        "Undoing gives “{}” back as its own track, as it was before the merge (its file, metadata, covers and the rest), and takes back what the merge changed on this one.",
+                        m.from_title
+                    ))
+                    .color(P.text),
+                );
+                ui.horizontal(|ui| {
+                    if ui.button("Undo the merge").clicked() {
+                        self.undo_asked = None;
+                        self.undoing = Some(m.id);
+                        let (api, answer, ctx, merge) = (shell.api.clone(), self.undo_answer.clone(), shell.ctx.clone(), m.id);
+                        shell.runtime.spawn(async move {
+                            #[derive(serde::Deserialize)]
+                            struct Undone {
+                                restored_track_id: Uuid,
+                            }
+                            let result = api
+                                .send_json::<Undone>(reqwest::Method::POST, &format!("/api/track-merges/{merge}/undo"), Some(serde_json::json!({ "reason": "" })))
+                                .await
+                                .map(|u| u.restored_track_id)
+                                .map_err(|err| err.message);
+                            *answer.lock().unwrap() = Some(result);
+                            ctx.request_repaint();
+                        });
+                    }
+                    if ui.button("Cancel").clicked() {
+                        self.undo_asked = None;
+                    }
+                });
+            }
+        }
+        if !can {
+            ui.label(RichText::new("Undoing a merge changes which file a track plays: it needs the replace_file permission.").color(P.faint).small());
+        }
+        match &self.undo_result {
+            Some(Ok(restored)) => {
+                let restored = *restored;
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Undone: the merged track is back.").color(P.accent));
+                    if widgets::link(ui, "Go to it", font(13.0, medium()), P.text) {
+                        shell.act(Action::Go(Page::Track(restored)));
+                    }
+                });
+            }
+            Some(Err(err)) => {
+                ui.label(RichText::new(format!("Couldn't undo it: {err}")).color(P.danger));
+            }
+            None => {}
+        }
     }
 
     /// The lyrics: synced ones as lines, the current one lit (and kept in view) while

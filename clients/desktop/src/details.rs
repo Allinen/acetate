@@ -49,6 +49,26 @@ pub struct TrackDetail {
     pub merges: Vec<Merge>,
     #[serde(default)]
     pub covers: Vec<Cover>,
+    /// Every revision, newest first (only for users who may see history).
+    pub revisions: Option<Vec<Revision>>,
+}
+
+/// A revision of a track: of a version's metadata ("internal", with `variant_id`) or of
+/// its facts ("external": status, albums, relations).
+#[derive(Debug, Clone, Deserialize)]
+pub struct Revision {
+    pub id: Uuid,
+    pub kind: String,
+    pub variant_id: Option<Uuid>,
+    pub created_at: String,
+    pub author: Option<String>,
+    /// "import", "edit", "merge", "restore"…
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub reason: String,
+    #[serde(default)]
+    pub data: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -160,7 +180,13 @@ pub struct Lyrics {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Merge {
+    pub id: Uuid,
+    /// The track merged away (it's back, as itself, once the merge is undone).
+    pub from_track_id: Uuid,
     pub from_title: String,
+    /// Why it can't be undone (empty: it can).
+    #[serde(default)]
+    pub undo_blockers: Vec<String>,
     pub merged_at: String,
     pub merged_by: Option<String>,
     pub undone_at: Option<String>,
@@ -177,6 +203,12 @@ pub struct Cover {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct AlbumDetail {
+    pub id: Uuid,
+    pub title: String,
+    pub kind: String,
+    pub release_date: Option<String>,
+    /// The latest album revision: the base for editing it.
+    pub revision_id: Option<Uuid>,
     #[serde(default)]
     pub credits: Vec<Credit>,
     #[serde(default)]
@@ -189,15 +221,26 @@ pub struct AlbumDetail {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct AlbumMerge {
-    #[serde(default)]
-    pub from_title: String,
-    #[serde(default)]
+    pub id: Uuid,
+    /// The album merged away (back as itself once the merge is undone).
+    pub from_album_id: Uuid,
+    /// None if it isn't visible to the user.
+    pub from_title: Option<String>,
     pub merged_at: String,
+    pub merged_by: Option<String>,
+    #[serde(default)]
+    pub reason: String,
     pub undone_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ArtistDetail {
+    pub id: Uuid,
+    pub name: String,
+    #[serde(default)]
+    pub disambiguation: String,
+    /// The latest artist revision: the base for editing it.
+    pub revision_id: Option<Uuid>,
     /// Other names it's credited under (the listed ones), for "credited as".
     #[serde(default)]
     pub aliases: Vec<AliasInfo>,

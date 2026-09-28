@@ -484,6 +484,8 @@ pub struct Vocabularies {
     pub album_kinds: Vec<String>,
     pub relation_kinds: Vec<RelationKind>,
     pub permissions: Vec<PermissionInfo>,
+    /// The kinds of review flag, in the order to show them.
+    pub review_kinds: Vec<super::review::Kind>,
 }
 
 #[derive(Debug, Serialize)]
@@ -516,6 +518,7 @@ pub async fn vocabularies(conn: &mut PgConnection) -> sqlx::Result<Vocabularies>
         )
         .fetch_all(&mut *conn)
         .await?,
+        review_kinds: super::review::kinds(&mut *conn).await?,
     })
 }
 

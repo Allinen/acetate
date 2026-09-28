@@ -226,7 +226,7 @@ async fn restricted_track_is_hidden_everywhere(_: PgPoolOptions, connect: PgConn
     let v = db::tracks::get_track(&mut tx, lib.v, true).await?.unwrap();
     assert!(v.relations.is_empty(), "the relation with H");
     assert_mentions_none("V's details and history", &v, &hidden);
-    let flags = db::review::list(&mut tx, false, None, 100, None, None).await?;
+    let flags = db::review::list(&mut tx, &db::review::Filter::default(), None, 100).await?;
     assert_mentions_none("review flags", &flags, &hidden);
     drop(tx);
 

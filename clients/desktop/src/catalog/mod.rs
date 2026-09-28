@@ -8,7 +8,6 @@
 pub mod index;
 pub mod marks;
 pub mod model;
-pub mod problems;
 pub mod search;
 pub mod store;
 

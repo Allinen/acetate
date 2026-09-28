@@ -28,7 +28,9 @@ use super::stream::RemoteFile;
 pub enum Command {
     /// Stop whatever plays and play this file (it may still be downloading), from `at`;
     /// `paused`: ready, but paused (a queue restored after a restart).
-    Replace { file: RemoteFile, paused: bool, at: Duration },
+    /// `fade`: the old one fades out and the new one in, quickly (comparing two files:
+    /// the switch is heard as a switch, not a click or a stutter).
+    Replace { file: RemoteFile, paused: bool, at: Duration, fade: bool },
     /// What to play when the current track ends (None: nothing, stop there). Replaces
     /// whatever was there before.
     SetNext(Option<RemoteFile>),
@@ -71,6 +73,11 @@ pub const SCOPE_LEN: usize = 4096;
 
 type Track = Box<dyn Source + Send>;
 
+/// A fading switch (see `Command::Replace`): out, then in.
+const FADE_OUT: Duration = Duration::from_millis(80);
+const FADE_IN: Duration = Duration::from_millis(150);
+const FADE_STEPS: u32 = 16;
+
 /// Shared between the audio thread's commands and the `Chain` the player plays.
 #[derive(Default)]
 struct Control {
@@ -106,12 +113,24 @@ pub fn start(
         let mut volume = 1.0;
         let mut control: Option<Arc<Control>> = None;
         let mut switches_before = 0; // switches of chains that ended
+        // A fade in going on: since when (the volume goes from 0 to `volume`).
+        let mut fading_in: Option<std::time::Instant> = None;
         let open_track = |file: RemoteFile| -> Result<Track, String> { Ok(Box::new(Tap::new(decode(file)?, tap_scope.clone()))) };
         loop {
-            match receiver.recv_timeout(Duration::from_millis(30)) {
+            // Short waits while fading in (the volume moves in small steps), else 30 ms.
+            let wait = if fading_in.is_some() { Duration::from_millis(5) } else { Duration::from_millis(30) };
+            match receiver.recv_timeout(wait) {
                 Ok(command) => match command {
-                    Command::Replace { file, paused, at } => {
+                    Command::Replace { file, paused, at, fade } => {
+                        if fade && !player.is_paused() && !player.empty() {
+                            for step in (0..FADE_STEPS).rev() {
+                                player.set_volume(volume * step as f32 / FADE_STEPS as f32);
+                                std::thread::sleep(FADE_OUT / FADE_STEPS);
+                            }
+                        }
                         player.clear();
+                        player.set_volume(volume);
+                        fading_in = None;
                         if let Some(old) = control.take() {
                             switches_before += old.switches.load(Relaxed);
                         }
@@ -124,6 +143,10 @@ pub fn start(
                                 }
                                 if paused {
                                     player.pause();
+                                }
+                                if fade && !paused {
+                                    player.set_volume(0.0);
+                                    fading_in = Some(std::time::Instant::now());
                                 }
                                 player.append(chain);
                                 if !paused {
@@ -192,6 +215,13 @@ pub fn start(
                 },
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
                 Err(mpsc::RecvTimeoutError::Disconnected) => return,
+            }
+            if let Some(since) = fading_in {
+                let done = (since.elapsed().as_secs_f32() / FADE_IN.as_secs_f32()).min(1.0);
+                player.set_volume(volume * done);
+                if done >= 1.0 {
+                    fading_in = None;
+                }
             }
             let (playing, position, switches) = match &control {
                 Some(c) => (!c.ended.load(Relaxed), c.position(), switches_before + c.switches.load(Relaxed)),

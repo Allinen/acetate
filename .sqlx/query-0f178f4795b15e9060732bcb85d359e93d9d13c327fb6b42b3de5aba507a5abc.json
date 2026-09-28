@@ -1,0 +1,62 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT kind, name, automatic, checked FROM review_kinds ORDER BY position",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "kind",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "review_kinds",
+            "name": "kind"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "review_kinds",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "automatic",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "review_kinds",
+            "name": "automatic"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "checked",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "review_kinds",
+            "name": "checked"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "0f178f4795b15e9060732bcb85d359e93d9d13c327fb6b42b3de5aba507a5abc"
+}

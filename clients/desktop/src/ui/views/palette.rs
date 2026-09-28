@@ -67,8 +67,9 @@ pub enum Mode {
     /// A name for a new playlist (None) or for this one.
     Name(Option<Uuid>),
     /// Choosing an artist, album or track for an edit form (or making a new artist or
-    /// album by that name).
-    Pick(PickKind),
+    /// album by that name). Not the one given (what asks: a track isn't merged with
+    /// itself).
+    Pick(PickKind, Option<Uuid>),
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -196,9 +197,9 @@ impl Palette {
                             Mode::AddTo(tracks) => format!("Add the {} tracks to which playlist? (or type a new name)", tracks.len()),
                             Mode::Name(None) => "The new playlist's name".to_string(),
                             Mode::Name(Some(_)) => "The playlist's new name".to_string(),
-                            Mode::Pick(PickKind::Artist) => "Which artist? (or type a new one's name)".to_string(),
-                            Mode::Pick(PickKind::Album) => "Which album? (or type a new one's title)".to_string(),
-                            Mode::Pick(PickKind::Track) => "Which track?".to_string(),
+                            Mode::Pick(PickKind::Artist, _) => "Which artist? (or type a new one's name)".to_string(),
+                            Mode::Pick(PickKind::Album, _) => "Which album? (or type a new one's title)".to_string(),
+                            Mode::Pick(PickKind::Track, _) => "Which track?".to_string(),
                         })
                         .font(font(16.0, medium()))
                         .frame(egui::Frame::NONE)
@@ -209,7 +210,7 @@ impl Palette {
                     input.request_focus();
                 }
                 let generation = Some(shell.generation);
-                if matches!(self.mode, Mode::Search | Mode::Pick(_)) && (input.changed() || self.made_for != generation) {
+                if matches!(self.mode, Mode::Search | Mode::Pick(..)) && (input.changed() || self.made_for != generation) {
                     self.made_for = generation;
                     self.ask(shell, catalog.clone());
                 }
@@ -279,7 +280,7 @@ impl Palette {
         }
         let Some(catalog) = catalog else { return };
         let (number, answer, ctx) = (self.asked, self.answer.clone(), shell.ctx.clone());
-        let limit = if matches!(self.mode, Mode::Pick(_)) { 12 } else { 8 };
+        let limit = if matches!(self.mode, Mode::Pick(..)) { 12 } else { 8 };
         shell.runtime.spawn_blocking(move || {
             let hits = Search::default().run(&catalog, &query, limit);
             *answer.lock().unwrap() = Some((number, hits));
@@ -329,17 +330,19 @@ impl Palette {
                     entries.push(Entry::Create);
                 }
             }
-            Mode::Pick(kind) => {
-                if catalog.is_some() {
+            Mode::Pick(kind, except) => {
+                if let Some(c) = catalog {
+                    let not = |id: Uuid| Some(id) != *except;
                     match kind {
-                        PickKind::Artist => entries.extend(self.hits.artists.iter().map(|h| Entry::Artist(h.0))),
-                        PickKind::Album => entries.extend(self.hits.albums.iter().map(|h| Entry::Album(h.0))),
-                        PickKind::Track => entries.extend(self.hits.tracks.iter().map(|h| Entry::Track(h.0))),
+                        PickKind::Artist => entries.extend(self.hits.artists.iter().filter(|h| not(c.artists[h.0 as usize].id)).map(|h| Entry::Artist(h.0))),
+                        PickKind::Album => entries.extend(self.hits.albums.iter().filter(|h| not(c.albums[h.0 as usize].id)).map(|h| Entry::Album(h.0))),
+                        PickKind::Track => entries.extend(self.hits.tracks.iter().filter(|h| not(c.tracks[h.0 as usize].id)).map(|h| Entry::Track(h.0))),
                     }
                 }
                 // A new one, even when one by that name exists: two artists can share a
-                // name (the list shows the existing ones first).
-                if !query.is_empty() && *kind != PickKind::Track {
+                // name (the list shows the existing ones first). Not when picking the
+                // other one of a pair (what to merge into).
+                if !query.is_empty() && *kind != PickKind::Track && except.is_none() {
                     entries.push(Entry::Create);
                 }
             }
@@ -368,8 +371,8 @@ impl Palette {
                 let name = self.query.trim();
                 let title = match &self.mode {
                     Mode::Name(Some(_)) => format!("Rename to “{name}”"),
-                    Mode::Pick(PickKind::Artist) => format!("New artist “{name}”"),
-                    Mode::Pick(_) => format!("New album “{name}”"),
+                    Mode::Pick(PickKind::Artist, _) => format!("New artist “{name}”"),
+                    Mode::Pick(..) => format!("New album “{name}”"),
                     _ => format!("New playlist “{name}”"),
                 };
                 (title, None, "Enter".into())
@@ -426,8 +429,8 @@ fn run(shell: &mut Shell, catalog: Option<&Catalog>, mode: &Mode, query: &str, e
         (Mode::Name(Some(id)), Entry::Create) => shell.playlists.update(*id, Some(query.to_string()), None),
         (Mode::Search, _) => search_result(shell, catalog, entry, shift),
         // Made when the form is saved.
-        (Mode::Pick(kind), Entry::Create) => shell.picker.pick(*kind, None, query.to_string()),
-        (Mode::Pick(kind), entry) => {
+        (Mode::Pick(kind, _), Entry::Create) => shell.picker.pick(*kind, None, query.to_string()),
+        (Mode::Pick(kind, _), entry) => {
             let Some(c) = catalog else { return };
             let (id, name) = match entry {
                 Entry::Artist(i) => (c.artists[i as usize].id, c.artists[i as usize].name.clone()),

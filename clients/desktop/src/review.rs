@@ -1,8 +1,13 @@
 //! Review flags (`GET /api/review`): tracks someone should look at. Ingest leaves them
-//! (fix later, possible duplicates, ambiguous artist names), and so do merges. All open
-//! flags are fetched (500 at a time), kept on disk and shown from there at once; the
-//! server's list replaces them when it arrives. Resolving one takes it out right away,
-//! and puts it back if the server refuses.
+//! (fix later, possible duplicates, ambiguous artist names), merges do, and the server
+//! raises its own for what a track is missing ("automatic": no cover…).
+//!
+//! Which tracks have which open flags comes with the catalog (`Catalog::issues`). This
+//! keeps the details of the others (notes, related tracks and artists, where the file
+//! came from): all open ones but the automatic kinds, fetched 500 at a time, kept on disk
+//! and shown from there at once; the server's list replaces them when it arrives.
+//! Resolving flags takes them out right away (`done`), and puts them back if the server
+//! refuses.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -40,17 +45,6 @@ impl Flag {
     pub fn note(&self) -> &str {
         self.related.get("note").and_then(|n| n.as_str()).unwrap_or("")
     }
-
-    /// As the page says it.
-    pub fn kind_name(&self) -> &str {
-        match self.kind.as_str() {
-            "fix_later" => "Fix later",
-            "possible_duplicate" => "Possible duplicate",
-            "ambiguous_artist" => "Ambiguous artist",
-            "merged_artist" => "Artist merged",
-            other => other,
-        }
-    }
 }
 
 const PAGE: usize = 500;
@@ -65,11 +59,12 @@ pub struct Flags {
     path: Option<PathBuf>,
     asked: u64,
     arrived: Arc<Mutex<Option<(u64, Result<Vec<Flag>, String>)>>>,
-    /// Flags resolved here since the list was last asked for: a list that was being read
-    /// meanwhile may still have them.
-    resolved: std::collections::HashSet<Uuid>,
-    /// Resolves the server refused: (the flag, the error), to put back.
-    refused: Arc<Mutex<Vec<(Flag, String)>>>,
+    /// Flags resolved here (this session): left out of what's shown until the server's
+    /// lists (this one, and the catalog's) no longer have them.
+    pub done: std::collections::HashSet<Uuid>,
+    /// Resolves the server refused: (the flag, its details if this list had them, the
+    /// error), to put back.
+    refused: Arc<Mutex<Vec<(Uuid, Option<Flag>, String)>>>,
 }
 
 impl Flags {
@@ -85,14 +80,13 @@ impl Flags {
     pub fn refresh(&mut self, api: &Api, runtime: &tokio::runtime::Handle, ctx: &eframe::egui::Context) {
         self.asked += 1;
         self.loading = true;
-        self.resolved.clear();
         let (api, arrived, ctx, number) = (api.clone(), self.arrived.clone(), ctx.clone(), self.asked);
         runtime.spawn(async move {
             let result = async {
                 let mut all: Vec<Flag> = Vec::new();
                 loop {
                     let before = all.last().map(|f| format!("&before={}", f.id)).unwrap_or_default();
-                    let page: Vec<Flag> = api.send_json(reqwest::Method::GET, &format!("/api/review?limit={PAGE}{before}"), None).await?;
+                    let page: Vec<Flag> = api.send_json(reqwest::Method::GET, &format!("/api/review?automatic=false&limit={PAGE}{before}"), None).await?;
                     let done = page.len() < PAGE;
                     all.extend(page);
                     if done {
@@ -116,7 +110,7 @@ impl Flags {
             self.loading = false;
             match result {
                 Ok(mut list) => {
-                    list.retain(|f| !self.resolved.contains(&f.id));
+                    list.retain(|f| !self.done.contains(&f.id));
                     self.list = Arc::new(list);
                     self.version += 1;
                     self.error = None;
@@ -125,11 +119,14 @@ impl Flags {
                 Err(err) => self.error = Some(err),
             }
         }
-        for (flag, err) in std::mem::take(&mut *self.refused.lock().unwrap()) {
-            let mut list = (*self.list).clone();
-            list.push(flag);
-            list.sort_by_key(|f| std::cmp::Reverse(f.id));
-            self.list = Arc::new(list);
+        for (flag, kept, err) in std::mem::take(&mut *self.refused.lock().unwrap()) {
+            self.done.remove(&flag);
+            if let Some(kept) = kept {
+                let mut list = (*self.list).clone();
+                list.push(kept);
+                list.sort_by_key(|f| std::cmp::Reverse(f.id));
+                self.list = Arc::new(list);
+            }
             self.version += 1;
             errors.push(format!("Couldn't mark it done. {err}"));
         }
@@ -147,23 +144,25 @@ impl Flags {
 
     /// Marks these flags done (`resolution`: what was done), taking them out at once.
     pub fn resolve(&mut self, api: &Api, runtime: &tokio::runtime::Handle, ids: &[Uuid], resolution: &str) {
-        let (gone, kept): (Vec<Flag>, Vec<Flag>) = self.list.iter().cloned().partition(|f| ids.contains(&f.id));
-        if gone.is_empty() {
+        let ids: Vec<Uuid> = ids.iter().filter(|id| !self.done.contains(id)).copied().collect();
+        if ids.is_empty() {
             return;
         }
+        let (gone, kept): (Vec<Flag>, Vec<Flag>) = self.list.iter().cloned().partition(|f| ids.contains(&f.id));
         self.list = Arc::new(kept);
         self.version += 1;
         self.keep();
-        self.resolved.extend(ids);
-        for flag in gone {
+        self.done.extend(&ids);
+        for id in ids {
+            let details = gone.iter().find(|f| f.id == id).cloned();
             let (api, refused, resolution) = (api.clone(), self.refused.clone(), resolution.to_string());
             runtime.spawn(async move {
-                let path = format!("/api/review/{}/resolve", flag.id);
+                let path = format!("/api/review/{id}/resolve");
                 let result = api.send(reqwest::Method::POST, &path, Some(serde_json::json!({ "resolution": resolution }))).await;
                 match result {
-                    // Already resolved (by someone else): gone either way.
+                    // Already resolved (by someone else, or by the server: fixed): gone either way.
                     Err(err) if err.status == Some(404) => {}
-                    Err(err) => refused.lock().unwrap().push((flag, err.message)),
+                    Err(err) => refused.lock().unwrap().push((id, details, err.message)),
                     Ok(()) => {}
                 }
             });

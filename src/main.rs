@@ -98,6 +98,19 @@ enum Command {
         #[arg(long)]
         dry_run: bool,
     },
+    /// The checks the server runs on every track (no title, no artists, no album, no cover,
+    /// no release date): each raises a review flag when a track starts missing that, and
+    /// settles it when it's there again. Lists them (with how many flags are open), or
+    /// turns one on or off. Off settles its open flags as "not checked anymore"; on looks at
+    /// every track again (even ones marked fine before).
+    ReviewChecks {
+        /// Turn this check on (e.g. `missing_date`).
+        #[arg(long)]
+        on: Option<String>,
+        /// Turn this check off.
+        #[arg(long)]
+        off: Option<String>,
+    },
     /// List albums that look like the same album twice: about the same number of tracks
     /// and total length, a similar title and an album artist in common (e.g. split by
     /// ingest because the album artists or the date differ). Read-only unless --merge.
@@ -402,6 +415,23 @@ async fn main() -> anyhow::Result<()> {
             }
             _ => anyhow::bail!("give either a folder to check, or --blobs"),
         },
+        Command::ReviewChecks { on, off } => {
+            let mut tx = db::begin(&pool, None).await?;
+            for (kind, checked) in on.iter().map(|k| (k, true)).chain(off.iter().map(|k| (k, false))) {
+                let open = db::review::set_checked(&mut tx, kind, checked).await?;
+                println!("{kind}: {}, {open} open flags", if checked { "on" } else { "off" });
+            }
+            for kind in db::review::kinds(&mut tx).await?.into_iter().filter(|k| k.automatic) {
+                let open: i64 = sqlx::query_scalar("SELECT count(*) FROM review_flags WHERE kind = $1 AND resolved_at IS NULL")
+                    .bind(&kind.kind)
+                    .fetch_one(&mut *tx)
+                    .await?;
+                let state = if kind.checked { "on " } else { "off" };
+                println!("{state}  {:<16} {:<16} {open} open", kind.kind, kind.name);
+            }
+            tx.commit().await?;
+            Ok(())
+        }
         Command::MergeDuplicates { max_length_difference_ms, ignore_case, dry_run } => {
             let options = merge_duplicates_command::Options { max_length_difference_ms, ignore_case, dry_run };
             merge_duplicates_command::run(&pool, options).await

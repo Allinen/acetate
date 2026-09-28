@@ -19,11 +19,26 @@ pub struct ArtistPage {
     list: TrackList,
     /// The details panel is open.
     details: bool,
+    /// This artist and another side by side, to merge (edit mode), in place of the rest.
+    merge: Option<super::artist_merge::ArtistMergeView>,
+    /// "Merge into another artist…" asked the palette for the other one.
+    picking_merge: bool,
 }
 
 impl ArtistPage {
     pub fn show(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: &Arc<Catalog>, id: Uuid, player: &PlayerView) {
         let ctx = ui.ctx().clone();
+        // Ctrl+M: merge into another artist (again: close it). In a text field too.
+        if !shell.palette_open && ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::M)) {
+            if !shell.edit_mode {
+                shell.playlists.notice = Some(("Merging is in edit mode: e, then Ctrl+M.".into(), std::time::Instant::now()));
+            } else if self.merge.is_some() {
+                self.merge = None;
+            } else {
+                self.picking_merge = true;
+                shell.act(Action::Pick { kind: crate::ui::edit::PickKind::Artist, except: Some(id) });
+            }
+        }
         let Some(artist) = catalog.artist(id) else {
             ui.label(RichText::new("This artist isn't in the library (anymore).").color(P.muted));
             return;
@@ -54,8 +69,47 @@ impl ArtistPage {
             if widgets::chip(ui, "Details", self.details) {
                 self.details = !self.details;
             }
+            if shell.edit_mode && self.merge.is_none() {
+                ui.add_space(8.0);
+                let tip = "The same artist twice: choose the other one, then see both before merging";
+                if ui.button("Merge into another artist…  (Ctrl+M)").on_hover_text(tip).clicked() {
+                    self.picking_merge = true;
+                    shell.act(Action::Pick { kind: crate::ui::edit::PickKind::Artist, except: Some(id) });
+                }
+            }
         });
         ui.add_space(22.0);
+
+        // The other artist, picked in the palette (not a new one, not this one).
+        if self.picking_merge
+            && let Some(picked) = shell.picker.take()
+        {
+            self.picking_merge = false;
+            if let (crate::ui::edit::PickKind::Artist, Some(other)) = (picked.kind, picked.id)
+                && other != id
+            {
+                self.merge = Some(super::artist_merge::ArtistMergeView::new(id, other));
+            }
+        }
+        if let Some(view) = self.merge.as_mut() {
+            use super::artist_merge::Outcome;
+            shell.form_dirty = true;
+            match view.show(ui, shell, catalog) {
+                Some(Outcome::Merged { kept, gone }) => {
+                    self.merge = None;
+                    shell.artist_details.refresh(kept);
+                    shell.artist_details.refresh(gone);
+                    shell.flags.refresh(&shell.api, shell.runtime.handle(), &shell.ctx);
+                    shell.act(Action::RefreshLibrary);
+                    if kept != id {
+                        shell.act(Action::Go(Page::Artist(kept)));
+                    }
+                }
+                Some(Outcome::Closed) => self.merge = None,
+                None => {}
+            }
+            return;
+        }
         if self.details {
             super::album::details_panel(ui, "artist-details", |ui| {
                 let cached = shell.artist_details.get(id);
@@ -70,6 +124,12 @@ impl ArtistPage {
                     super::track::sources(ui, &d.sources);
                 }
             });
+            ui.add_space(12.0);
+        }
+
+        // Edit mode: the artist's name, disambiguation and other names.
+        if shell.edit_mode {
+            edit_panel(ui, shell, id);
             ui.add_space(12.0);
         }
 
@@ -106,4 +166,24 @@ impl ArtistPage {
         ui.add_space(8.0);
         self.list.show(ui, shell, catalog, tracks, player, Rows::Mixed);
     }
+}
+
+/// The artist's form (edit mode). Kept in the shell per artist, so changes not saved yet
+/// are still there after looking elsewhere.
+fn edit_panel(ui: &mut egui::Ui, shell: &mut Shell, id: Uuid) {
+    use crate::ui::edit::artist_form::ArtistForm;
+    let cached = shell.artist_details.get(id);
+    let Some(d) = cached.value.clone() else {
+        ui.label(RichText::new(if cached.refreshing { "Loading the artist to edit…" } else { "Couldn't load the artist to edit" }).color(P.muted));
+        return;
+    };
+    super::album::details_panel(ui, "artist-edit", |ui| {
+        // Taken out of the shell while it's shown (showing it needs the shell too).
+        let Some(mut form) = shell.artist_forms.remove(&id).or_else(|| ArtistForm::from_detail(&d)) else {
+            ui.label(RichText::new("This artist has no revision to build on, so it can't be edited here.").color(P.muted));
+            return;
+        };
+        form.show(ui, shell, &d);
+        shell.artist_forms.insert(id, form);
+    });
 }

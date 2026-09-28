@@ -63,6 +63,8 @@ pub enum Action {
     Forward,
     /// Play these tracks (positions in the catalog), starting with `start`.
     Play { tracks: Vec<u32>, start: usize },
+    /// Play this one track from this point (comparing two files).
+    PlayFrom { track: u32, at: std::time::Duration },
     /// Queue these tracks by hand: at the end of the queue, or (`next`) at its start.
     Enqueue { tracks: Vec<u32>, next: bool },
     /// Play this track of the queue or the list now.
@@ -105,7 +107,7 @@ pub enum Action {
     ShowKeys,
     /// Choose an artist, album or track for the form that asked (the palette; the
     /// choice arrives through `Shell::picker`).
-    Pick(edit::PickKind),
+    Pick { kind: edit::PickKind, except: Option<Uuid> },
     LoggedIn,
     LogOut,
 }
@@ -128,9 +130,16 @@ pub struct Shell {
     pub picker: edit::Picker,
     /// Track forms, per track: changes not saved yet are kept while you look elsewhere.
     pub track_forms: std::collections::HashMap<Uuid, edit::track_form::TrackForm>,
+    /// Album forms, per album, likewise.
+    pub album_forms: std::collections::HashMap<Uuid, edit::album_form::AlbumForm>,
+    /// Artist forms, per artist, likewise.
+    pub artist_forms: std::collections::HashMap<Uuid, edit::artist_form::ArtistForm>,
     /// The form shown has changes not saved (set by the form each frame): Esc doesn't
     /// leave the page then, it asks to discard them.
     pub form_dirty: bool,
+    /// The page uses Space itself (a merge view: Space plays the left file), so it
+    /// doesn't pause. Set by the page each frame.
+    pub page_takes_space: bool,
     /// The palette is open (it takes Esc, before the page's form could).
     pub palette_open: bool,
     pub runtime: Runtime,
@@ -361,6 +370,8 @@ impl Shell {
         self.account.fetch(&self.api, self.runtime.handle(), ctx);
         self.edit_mode = false;
         self.track_forms.clear();
+        self.album_forms.clear();
+        self.artist_forms.clear();
         self.flags.reset(Some(self.data_dir.join(format!("review-{}.json", store::key(&session)))));
         let (sender, api, ctx) = (self.updates.0.clone(), self.api.clone(), ctx.clone());
         self.runtime.spawn(store::load_and_refresh(store, api, move |update| {
@@ -493,7 +504,10 @@ impl App {
             picker: edit::Picker::default(),
             flags: Default::default(),
             track_forms: Default::default(),
+            album_forms: Default::default(),
+            artist_forms: Default::default(),
             form_dirty: false,
+            page_takes_space: false,
             palette_open: false,
             runtime,
             api,
@@ -580,6 +594,11 @@ impl App {
                     }
                 }
                 Action::Play { tracks, start } => self.play(tracks, start),
+                Action::PlayFrom { track, at } => {
+                    let Some(catalog) = self.shell.catalog.value.clone() else { continue };
+                    let controller = self.shell.controller.clone();
+                    self.shell.runtime.spawn(async move { controller.play_from(vec![queue_item(&catalog, track)], 0, at).await });
+                }
                 Action::Enqueue { tracks, next } => {
                     let Some(catalog) = self.shell.catalog.value.clone() else { continue };
                     let (controller, count) = (self.shell.controller.clone(), tracks.len());
@@ -658,7 +677,7 @@ impl App {
                 Action::RenamePlaylist(id) => self.pages.palette.open(ctx, views::palette::Mode::Name(Some(id))),
                 Action::RefreshLibrary => self.shell.refresh_library(ctx),
                 Action::ShowKeys => self.keys_open = true,
-                Action::Pick(kind) => self.pages.palette.open(ctx, views::palette::Mode::Pick(kind)),
+                Action::Pick { kind, except } => self.pages.palette.open(ctx, views::palette::Mode::Pick(kind, except)),
                 Action::ToggleEditMode => {
                     if self.shell.account.can("edit_metadata") {
                         self.shell.edit_mode = !self.shell.edit_mode;
@@ -685,6 +704,8 @@ impl App {
                     self.shell.album_details.reset(None);
                     self.shell.artist_details.reset(None);
                     self.shell.track_forms.clear();
+                    self.shell.album_forms.clear();
+                    self.shell.artist_forms.clear();
                     self.shell.flags.reset(None);
                     self.shell.store = None;
                     self.shell.generation += 1;
@@ -800,7 +821,7 @@ impl App {
         }
         if (key(Key::Escape) || key(Key::Backspace)) && !self.shell.form_dirty {
             self.shell.act(Action::Back);
-        } else if key(Key::Space) && self.page != Page::Review {
+        } else if key(Key::Space) && self.page != Page::Review && !self.shell.page_takes_space {
             // (On the Review page, Space plays the track being fixed: the page does it.)
             self.shell.act(Action::TogglePause);
         } else if key(Key::Num9) {
@@ -904,6 +925,7 @@ impl eframe::App for App {
                 ui.add_space((1.0 - t) * 16.0);
                 // Set again by a form with changes, if one is shown.
                 self.shell.form_dirty = false;
+                self.shell.page_takes_space = false;
                 self.shell.palette_open = self.pages.palette.is_open();
                 self.pages.show(ui, &mut self.shell, self.page, &player, &mut self.spectrum, dt);
             });

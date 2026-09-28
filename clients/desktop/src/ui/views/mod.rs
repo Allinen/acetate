@@ -3,9 +3,12 @@
 //! finds it as it was left.
 
 pub mod album;
+pub mod album_merge;
 pub mod albums;
 pub mod artist;
+pub mod artist_merge;
 pub mod artists;
+pub mod history;
 pub mod login;
 pub mod now_playing;
 pub mod palette;

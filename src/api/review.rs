@@ -22,9 +22,15 @@ pub struct ListParams {
     kind: Option<String>,
     /// All but flags of this kind (e.g. `fix_later`, so they don't bury the rest).
     exclude: Option<String>,
+    /// Only the kinds the server raises itself (`true`: "no cover"…), or none of them
+    /// (`false`). See `GET /api/vocab`'s `review_kinds`.
+    automatic: Option<bool>,
+    /// Only this track's flags.
+    track: Option<Uuid>,
 }
 
-/// `GET /api/review?resolved=false&before=...&kind=...&exclude=...`: flags, newest first.
+/// `GET /api/review?resolved=false&before=...&kind=...&exclude=...&automatic=...&track=...`:
+/// flags, newest first.
 pub async fn list(
     State(state): State<AppState>,
     user: CurrentUser,
@@ -32,9 +38,14 @@ pub async fn list(
 ) -> Result<Json<Vec<Flag>>, AppError> {
     let limit = params.limit.unwrap_or(100).clamp(1, 500);
     let mut tx = state.db(&user).await?;
-    let flags =
-        db::review::list(&mut tx, params.resolved, params.before, limit, params.kind.as_deref(), params.exclude.as_deref())
-            .await?;
+    let filter = db::review::Filter {
+        resolved: params.resolved,
+        kind: params.kind.as_deref(),
+        exclude: params.exclude.as_deref(),
+        automatic: params.automatic,
+        track: params.track,
+    };
+    let flags = db::review::list(&mut tx, &filter, params.before, limit).await?;
     Ok(Json(flags))
 }
 

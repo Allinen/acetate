@@ -8,9 +8,14 @@
 //! Every catalog has a `version`. With `?since=<version>`, only what changed since that
 //! copy comes back (a delta, `"delta": true`): the changed tracks, albums and artists as
 //! rows (those the user can see), the user's changed annotations, all playlists, and
-//! `removed` (merged ones: they only redirect now; annotations that say nothing anymore). Nothing changed: 304. When a delta
-//! can't be given (who may see what changed, or the copy is older than the change log
-//! keeps), the whole catalog comes back instead (`"delta": false`).
+//! `removed` (merged ones: they only redirect now; annotations that say nothing anymore).
+//! Nothing changed: 304. When a delta can't be given (who may see what changed, or the
+//! copy is older than the change log keeps), the whole catalog comes back instead
+//! (`"delta": false`).
+//!
+//! Both have `issues`: each track's open review flags (see `db::library::ISSUE_COLUMNS`),
+//! so a client can list what needs a look without asking for every flag. (A part of its
+//! own rather than a track column: clients that don't know it just skip it.)
 
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
@@ -21,7 +26,7 @@ use sha2::{Digest, Sha256};
 use super::{AppError, AppState};
 use crate::auth::CurrentUser;
 use crate::db;
-use crate::db::library::{ALBUM_COLUMNS, ANNOTATION_COLUMNS, ARTIST_COLUMNS, TRACK_COLUMNS};
+use crate::db::library::{ALBUM_COLUMNS, ANNOTATION_COLUMNS, ARTIST_COLUMNS, ISSUE_COLUMNS, TRACK_COLUMNS};
 
 /// Bumped when the format changes in a way old clients can't read.
 const FORMAT: u32 = 1;
@@ -53,6 +58,7 @@ pub async fn catalog(
             let albums = db::library::albums_json(&mut tx, Some(&changes.albums)).await?;
             let artists = db::library::artists_json(&mut tx, Some(&changes.artists)).await?;
             let annotations = db::library::annotations_json(&mut tx, Some(&changes.annotations)).await?;
+            let issues = db::library::issues_json(&mut tx, Some(&changes.tracks)).await?;
             let (gone_tracks, gone_albums, gone_artists) =
                 db::library::merged(&mut tx, &changes.tracks, &changes.albums, &changes.artists).await?;
             let playlists = serde_json::to_string(&db::playlists::list(&mut tx, false).await?)?;
@@ -66,11 +72,12 @@ pub async fn catalog(
                 "tracks": gone_tracks, "albums": gone_albums, "artists": gone_artists, "annotations": cleared,
             });
             let body = format!(
-                r#"{{"format":{FORMAT},"delta":true,"version":"{version}","tracks":{},"albums":{},"artists":{},"annotations":{},"playlists":{playlists},"removed":{removed}}}"#,
+                r#"{{"format":{FORMAT},"delta":true,"version":"{version}","tracks":{},"albums":{},"artists":{},"annotations":{},"issues":{},"playlists":{playlists},"removed":{removed}}}"#,
                 part(TRACK_COLUMNS, &tracks)?,
                 part(ALBUM_COLUMNS, &albums)?,
                 part(ARTIST_COLUMNS, &artists)?,
                 part(ANNOTATION_COLUMNS, &annotations)?,
+                part(ISSUE_COLUMNS, &issues)?,
             );
             return Ok(([(header::CONTENT_TYPE, HeaderValue::from_static("application/json")), no_cache()], body).into_response());
         }
@@ -80,17 +87,19 @@ pub async fn catalog(
     let albums = db::library::albums_json(&mut tx, None).await?;
     let artists = db::library::artists_json(&mut tx, None).await?;
     let annotations = db::library::annotations_json(&mut tx, None).await?;
+    let issues = db::library::issues_json(&mut tx, None).await?;
     let playlists = serde_json::to_string(&db::playlists::list(&mut tx, false).await?)?;
     drop(tx);
 
     // The parts are JSON already (built by Postgres), so they're put together as text
     // instead of being parsed and serialized again.
     let body = format!(
-        r#"{{"format":{FORMAT},"delta":false,"version":"{version}","tracks":{},"albums":{},"artists":{},"annotations":{},"playlists":{playlists}}}"#,
+        r#"{{"format":{FORMAT},"delta":false,"version":"{version}","tracks":{},"albums":{},"artists":{},"annotations":{},"issues":{},"playlists":{playlists}}}"#,
         part(TRACK_COLUMNS, &tracks)?,
         part(ALBUM_COLUMNS, &albums)?,
         part(ARTIST_COLUMNS, &artists)?,
         part(ANNOTATION_COLUMNS, &annotations)?,
+        part(ISSUE_COLUMNS, &issues)?,
     );
 
     // The ETag leaves out the version (it moves with any change anywhere, even ones this

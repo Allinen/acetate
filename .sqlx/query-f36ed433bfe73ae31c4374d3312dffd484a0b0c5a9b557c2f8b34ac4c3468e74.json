@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE review_flags SET resolved_at = now(), resolved_by = current_app_user(),\n                   resolution = 'not checked anymore'\n            WHERE kind = $1 AND resolved_at IS NULL\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f36ed433bfe73ae31c4374d3312dffd484a0b0c5a9b557c2f8b34ac4c3468e74"
+}

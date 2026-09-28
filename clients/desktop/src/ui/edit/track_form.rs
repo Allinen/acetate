@@ -20,15 +20,15 @@ use eframe::egui::{self, Key, Modifiers, RichText};
 use serde::Deserialize;
 use uuid::Uuid;
 
+use super::credits::{self, CreditsEditor};
 use super::inline_search::{Choice, InlineSearch};
-use super::{PickKind, Picked, SaveState};
+use super::{capitalized, combo, PickKind, Picked, SaveState};
 use crate::api::{Api, ApiError};
 use crate::catalog::model::Cover;
-use crate::catalog::problems::{self, Problem};
 use crate::catalog::search::Part;
 use crate::catalog::Catalog;
 use crate::details::TrackDetail;
-use crate::ui::theme::{bold, font, medium, PALETTE as P};
+use crate::ui::theme::{bold, font, PALETTE as P};
 use crate::ui::{Action, Shell};
 
 /// The fields other pages can put the cursor in (the Review page: the first one that
@@ -49,16 +49,7 @@ pub struct Meta {
     pub credits: Vec<CreditRow>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct CreditRow {
-    /// None: a new artist named `name`, made when the form is saved.
-    pub artist_id: Option<Uuid>,
-    /// The artist's name, and the alias's (for showing).
-    pub name: String,
-    pub role: String,
-    pub alias_id: Option<Uuid>,
-    pub alias: Option<String>,
-}
+pub use super::credits::CreditRow;
 
 /// The track's facts, as the form edits them.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -152,7 +143,7 @@ pub struct TrackForm {
     /// "Load theirs" was asked, and waits for the details to arrive.
     rebase_asked: bool,
     notice: Option<String>,
-    artist_search: InlineSearch,
+    credits_editor: CreditsEditor,
     album_search: InlineSearch,
     /// Put the cursor in this album row's track number (a new album was just added).
     focus_number: Option<usize>,
@@ -248,7 +239,7 @@ impl TrackForm {
             confirm_discard: false,
             rebase_asked: false,
             notice: None,
-            artist_search: InlineSearch::new(Part::Artists),
+            credits_editor: CreditsEditor::default(),
             album_search: InlineSearch::new(Part::Albums),
             focus_number: None,
         })
@@ -267,36 +258,10 @@ impl TrackForm {
         std::mem::take(&mut self.saved)
     }
 
-    /// What would still be wrong with the track as the form has it (for the Review page:
-    /// done when nothing is). `has_cover`: it has one already.
-    pub fn problems(&self, has_cover: bool, file_name: Option<&str>) -> Vec<Problem> {
-        let mut found = Vec::new();
-        let title = self.meta.title.trim();
-        let artist = self.meta.credits.iter().find(|c| c.role == "primary").map(|c| c.name.as_str()).unwrap_or("");
-        if title.is_empty() {
-            found.push(Problem::NoTitle);
-        } else if problems::looks_like_file_name(title, artist, file_name) {
-            found.push(Problem::FileNameTitle);
-        }
-        if self.meta.credits.is_empty() {
-            found.push(Problem::NoArtists);
-        }
-        if self.facts.albums.is_empty() {
-            found.push(Problem::NoAlbum);
-        }
-        if !has_cover && self.cover.is_none() {
-            found.push(Problem::NoCover);
-        }
-        if self.meta.release_date.trim().is_empty() {
-            found.push(Problem::NoDate);
-        }
-        found
-    }
-
     /// Puts `text` (a tag from the file) in the artist field, searching for it, with the
     /// cursor there: Enter credits the match.
     pub fn suggest_artist(&mut self, text: &str, shell: &Shell) {
-        self.artist_search.set_query(text, shell);
+        self.credits_editor.search.set_query(text, shell);
         shell.ctx.memory_mut(|m| m.request_focus(egui::Id::new(ARTIST_ID)));
     }
 
@@ -306,14 +271,30 @@ impl TrackForm {
         shell.ctx.memory_mut(|m| m.request_focus(egui::Id::new(ALBUM_ID)));
     }
 
-    /// The field to fix `problem` in, if it has one.
-    pub fn field_for(problem: Problem) -> Option<&'static str> {
-        match problem {
-            Problem::NoTitle | Problem::FileNameTitle => Some(TITLE_ID),
-            Problem::NoArtists => Some(ARTIST_ID),
-            Problem::NoAlbum => Some(ALBUM_ID),
-            Problem::NoDate => Some(DATE_ID),
-            Problem::NoCover => None,
+    /// Credits `to` where `from` is credited now (same role; the "credited as" is
+    /// cleared: an alias is one artist's). False if `from` isn't credited.
+    pub fn replace_artist(&mut self, from: Uuid, to: Uuid, name: String) -> bool {
+        let mut replaced = false;
+        for row in self.meta.credits.iter_mut().filter(|r| r.artist_id == Some(from)) {
+            *row = CreditRow { artist_id: Some(to), name: name.clone(), alias_id: None, alias: None, ..row.clone() };
+            replaced = true;
+        }
+        replaced
+    }
+
+    /// Whether this artist is credited (as the form has it).
+    pub fn credits_artist(&self, id: Uuid) -> bool {
+        self.meta.credits.iter().any(|r| r.artist_id == Some(id))
+    }
+
+    /// The field that fixes a missing-something flag (its kind), if there's one.
+    pub fn field_for(kind: &str) -> Option<&'static str> {
+        match kind {
+            "missing_title" | "credits_in_title" => Some(TITLE_ID),
+            "missing_artists" => Some(ARTIST_ID),
+            "missing_album" => Some(ALBUM_ID),
+            "missing_date" => Some(DATE_ID),
+            _ => None,
         }
     }
 
@@ -348,9 +329,9 @@ impl TrackForm {
     fn replace_keeping_input(&mut self, fresh: TrackForm) {
         let reason = std::mem::take(&mut self.reason);
         let cover = self.cover.take();
-        let artist_search = std::mem::replace(&mut self.artist_search, InlineSearch::new(Part::Artists));
+        let credits_editor = std::mem::take(&mut self.credits_editor);
         let album_search = std::mem::replace(&mut self.album_search, InlineSearch::new(Part::Albums));
-        *self = TrackForm { reason, cover, artist_search, album_search, ..fresh };
+        *self = TrackForm { reason, cover, credits_editor, album_search, ..fresh };
     }
 
     /// Follows the details: a form without changes shows the newest; one with changes
@@ -448,9 +429,7 @@ impl TrackForm {
         // The new artists and albums have ids now (even if a later step failed): the
         // form's rows get them, so saving again doesn't make them twice.
         if let Some((sent_meta, sent_facts)) = &outcome.sent {
-            for row in self.meta.credits.iter_mut().filter(|r| r.artist_id.is_none()) {
-                row.artist_id = sent_meta.credits.iter().find(|s| s.name == row.name).and_then(|s| s.artist_id);
-            }
+            credits::take_ids(&mut self.meta.credits, &sent_meta.credits);
             for row in self.facts.albums.iter_mut().filter(|r| r.album_id.is_none()) {
                 if let Some(made) = sent_facts.albums.iter().find(|s| s.title == row.title && s.new_kind == row.new_kind) {
                     row.album_id = made.album_id;
@@ -520,15 +499,9 @@ impl TrackForm {
         }
     }
 
-    /// Credits an artist (None: a new one): as primary if there's no primary yet, else
-    /// as featured (`featured`: always featured).
+    /// Credits an artist (None: a new one), see `credits::add_artist`.
     fn add_artist(&mut self, id: Option<Uuid>, name: String, featured: bool) {
-        if id.is_some() && self.meta.credits.iter().any(|c| c.artist_id == id) {
-            return;
-        }
-        let has_primary = self.meta.credits.iter().any(|c| c.role == "primary");
-        let role = if featured || has_primary { "featured" } else { "primary" };
-        self.meta.credits.push(CreditRow { artist_id: id, name, role: role.into(), alias_id: None, alias: None });
+        credits::add_artist(&mut self.meta.credits, id, name, featured);
     }
 
     /// Puts the track on an album (None: a new one of `new_kind`). A single gets disc 1,
@@ -547,7 +520,9 @@ impl TrackForm {
 
     fn ask(&mut self, shell: &mut Shell, target: Target) {
         self.awaiting = Some(target);
-        shell.act(Action::Pick(target.kind()));
+        // A track isn't related to itself.
+        let except = matches!(target, Target::Relation(_)).then_some(self.track);
+        shell.act(Action::Pick { kind: target.kind(), except });
     }
 
     /// Takes a cover from the clipboard (Ctrl+V with an image in it) or a file dropped on
@@ -648,68 +623,11 @@ impl TrackForm {
 
         ui.add_space(10.0);
         heading(ui, "Artists");
+        let field = egui::Id::new(ARTIST_ID);
+        if let Some(i) = self.credits_editor.show(ui, shell, catalog, "track-form", field, &mut self.meta.credits, &vocab.credit_roles) {
+            self.ask(shell, Target::Credit(Some(i)));
+        }
         let mut action = None;
-        egui::Grid::new("track-form-credits").num_columns(4).spacing([10.0, 6.0]).show(ui, |ui| {
-            let count = self.meta.credits.len();
-            for (i, row) in self.meta.credits.iter_mut().enumerate() {
-                let name = if row.artist_id.is_none() { format!("{}  (new)", row.name) } else { row.name.clone() };
-                if ui.button(name).on_hover_text("Choose another artist").clicked() {
-                    action = Some(RowAction::Pick(Target::Credit(Some(i))));
-                }
-                combo(ui, ("credit-role", i), &mut row.role, &vocab.credit_roles, capitalized);
-                // Credited as: the artist's name, or one of its aliases.
-                let aliases = match row.artist_id {
-                    Some(id) => shell.artist_details.get(id).value.as_ref().map(|a| a.aliases.clone()).unwrap_or_default(),
-                    None => Vec::new(),
-                };
-                let shown = row.alias.clone().map(|a| format!("as {a}")).unwrap_or_else(|| "as its name".into());
-                egui::ComboBox::from_id_salt(("credit-alias", i)).selected_text(shown).show_ui(ui, |ui| {
-                    if ui.selectable_label(row.alias_id.is_none(), format!("as {}", row.name)).clicked() {
-                        row.alias_id = None;
-                        row.alias = None;
-                    }
-                    for alias in &aliases {
-                        if ui.selectable_label(row.alias_id == Some(alias.id), format!("as {}", alias.name)).clicked() {
-                            row.alias_id = Some(alias.id);
-                            row.alias = Some(alias.name.clone());
-                        }
-                    }
-                });
-                ui.horizontal(|ui| {
-                    if ui.add_enabled(i > 0, egui::Button::new("↑").small()).on_hover_text("Earlier").clicked() {
-                        action = Some(RowAction::Swap(i, i - 1));
-                    }
-                    if ui.add_enabled(i + 1 < count, egui::Button::new("↓").small()).on_hover_text("Later").clicked() {
-                        action = Some(RowAction::Swap(i, i + 1));
-                    }
-                    if ui.small_button("✕").on_hover_text("Remove").clicked() {
-                        action = Some(RowAction::Remove(i));
-                    }
-                });
-                ui.end_row();
-            }
-        });
-        let typed = self.artist_search.query.trim().to_string();
-        let extras = if typed.is_empty() { vec![] } else { vec![format!("New artist “{typed}”")] };
-        let hint = "Add an artist: type a name (Enter adds it, Shift+Enter as featured)";
-        match self.artist_search.show(ui, shell, catalog, egui::Id::new(ARTIST_ID), hint, &extras) {
-            Some((Choice::Hit(i), shift)) => {
-                if let Some(a) = catalog.and_then(|c| c.artists.get(i as usize)) {
-                    self.add_artist(Some(a.id), a.name.clone(), shift);
-                }
-            }
-            Some((Choice::Extra(_), shift)) => self.add_artist(None, typed, shift),
-            None => {}
-        }
-        match action.take() {
-            Some(RowAction::Pick(target)) => self.ask(shell, target),
-            Some(RowAction::Swap(a, b)) => self.meta.credits.swap(a, b),
-            Some(RowAction::Remove(i)) => {
-                self.meta.credits.remove(i);
-            }
-            None => {}
-        }
-        ui.label(RichText::new("The artist text is made from these.").color(P.faint).small());
 
         // ---- The track's facts ----
         ui.add_space(14.0);
@@ -940,26 +858,11 @@ async fn save(
 ) -> Outcome {
     let mut outcome = Outcome::default();
     let result: Result<(), ApiError> = async {
-        // New artists (one per name, even if it's credited twice). After each, what's
-        // made so far is kept in the outcome: on an error later, the form still learns
-        // the new ids and won't make them again.
-        let mut made: Vec<(String, Uuid)> = Vec::new();
-        for i in 0..meta.credits.len() {
-            if meta.credits[i].artist_id.is_some() {
-                continue;
-            }
-            let name = meta.credits[i].name.clone();
-            let id = match made.iter().find(|(n, _)| *n == name) {
-                Some((_, id)) => *id,
-                None => {
-                    let created: Created = api.send_json(reqwest::Method::POST, "/api/artists", Some(serde_json::json!({ "name": name }))).await?;
-                    made.push((name, created.id));
-                    created.id
-                }
-            };
-            meta.credits[i].artist_id = Some(id);
-            outcome.sent = Some((meta.clone(), facts.clone()));
-        }
+        // New artists. What's made so far is kept in the outcome: on an error later, the
+        // form still learns the new ids and won't make them again.
+        let made = credits::make_new_artists(api, &mut meta.credits).await;
+        outcome.sent = Some((meta.clone(), facts.clone()));
+        made?;
         // New albums, credited to the track's primary artists; a single gets its date.
         let primary: Vec<serde_json::Value> = meta
             .credits
@@ -1010,8 +913,7 @@ async fn save(
 fn meta_body(m: &Meta, base: Uuid, reason: &str) -> serde_json::Value {
     let text = |s: &str| Some(s.trim().to_string()).filter(|s| !s.is_empty());
     let genres: Vec<String> = m.genres.split(',').map(str::trim).filter(|g| !g.is_empty()).map(str::to_string).collect();
-    let credits: Vec<serde_json::Value> =
-        m.credits.iter().map(|c| serde_json::json!({ "artist_id": c.artist_id, "role": c.role, "alias_id": c.alias_id })).collect();
+    let credits = credits::to_json(&m.credits);
     serde_json::json!({
         "base_revision_id": base,
         "reason": reason.trim(),
@@ -1061,7 +963,6 @@ fn facts_body(facts: &Facts, base: Uuid, reason: &str) -> Result<serde_json::Val
 
 enum RowAction {
     Pick(Target),
-    Swap(usize, usize),
     Remove(usize),
 }
 
@@ -1070,30 +971,10 @@ fn heading(ui: &mut egui::Ui, text: &str) {
     ui.add_space(2.0);
 }
 
-/// A drop-down of `options` (shown by `name`) for `value`. A value not among them (an
-/// older list) is kept, and shown as it is.
-fn combo(ui: &mut egui::Ui, id: impl std::hash::Hash + std::fmt::Debug, value: &mut String, options: &[String], name: impl Fn(&str) -> String) {
-    egui::ComboBox::from_id_salt(id).selected_text(RichText::new(name(value)).font(font(13.0, medium()))).show_ui(ui, |ui| {
-        for option in options {
-            if ui.selectable_label(value == option, name(option)).clicked() {
-                *value = option.clone();
-            }
-        }
-    });
-}
-
 /// "%A is a remix of %B" → "This track is a remix of `other`"; "%B is a remix of %A" →
 /// "`other` is a remix of this track".
 fn relation_sentence(template: &str, other: &str) -> String {
     capitalized(&template.replace("%A", "this track").replace("%B", other))
-}
-
-fn capitalized(text: &str) -> String {
-    let mut chars = text.chars();
-    match chars.next() {
-        Some(first) => first.to_uppercase().chain(chars).collect(),
-        None => String::new(),
-    }
 }
 
 #[cfg(test)]
@@ -1184,10 +1065,13 @@ mod tests {
         form.add_album(Some(Uuid::from_u128(8)), "LP".into(), None);
         assert_eq!(form.focus_number, Some(1));
 
-        // Nothing wrong but the cover and the date.
-        let found = form.problems(false, None);
-        assert_eq!(found, [Problem::NoCover, Problem::NoDate]);
-        assert_eq!(form.problems(true, None), [Problem::NoDate]);
+        // The ambiguous artist fixed: the other one credited, same role, alias cleared.
+        form.meta.credits[0].alias_id = Some(Uuid::from_u128(70));
+        assert!(form.replace_artist(Uuid::from_u128(7), Uuid::from_u128(9), "A (the other)".into()));
+        assert_eq!(form.meta.credits[0].artist_id, Some(Uuid::from_u128(9)));
+        assert_eq!((form.meta.credits[0].role.as_str(), form.meta.credits[0].alias_id), ("primary", None));
+        assert!(!form.replace_artist(Uuid::from_u128(7), Uuid::from_u128(9), "x".into()));
+
     }
 }
 

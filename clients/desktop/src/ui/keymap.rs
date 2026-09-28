@@ -54,6 +54,16 @@ pub const GROUPS: &[(&str, &[Binding])] = &[
         ],
     ),
     (
+        "Marking many (track tables)",
+        &[
+            ("x  or  Ctrl+click", "mark one"),
+            ("Shift+↑/↓  or  Shift+click", "mark a range"),
+            ("Ctrl+A", "mark everything shown"),
+            ("Esc", "clear the marks"),
+            ("Ctrl+Enter", "in edit mode: preview the change, then apply it"),
+        ],
+    ),
+    (
         "Your playlists and the queue",
         &[
             ("Delete", "take the track out"),
@@ -76,21 +86,31 @@ pub const GROUPS: &[(&str, &[Binding])] = &[
             ("j / k  or  ↓ ↑", "next / previous track"),
             ("Space", "play the track (or pause it)"),
             ("u", "skip it"),
-            ("d", "mark it done as it is"),
-            ("m", "compare with its possible duplicate, to merge"),
+            ("d", "mark its flags done (the chip's kind, or all)"),
+            ("Ctrl+M", "compare with its possible duplicate, to merge (again: close)"),
+            ("a", "ambiguous artist: credit the next candidate"),
             ("Enter in Artists", "credit the match (Shift+Enter: as featured)"),
             ("Ctrl+V", "paste an image as the cover"),
         ],
     ),
     (
-        "Merging (m on Review)",
+        "Merging (Ctrl+M on Review)",
         &[
             ("↑ ↓  or  j k", "a row"),
             ("← →  or  h l", "take the left or the right one"),
             ("s", "swap sides (left is kept)"),
-            ("Space / Shift+Space", "play the left / right file"),
+            ("Space / Shift+Space", "play the left / right file: from the middle, the other from the same moment"),
             ("Ctrl+Enter", "merge"),
             ("n", "not the same"),
+            ("Esc", "close"),
+        ],
+    ),
+    (
+        "Merging (track, album or artist page, edit mode)",
+        &[
+            ("Ctrl+M", "choose the other one to merge with (again: close)"),
+            ("s", "swap which one stays"),
+            ("Ctrl+Enter", "merge"),
             ("Esc", "close"),
         ],
     ),

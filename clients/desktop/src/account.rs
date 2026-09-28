@@ -29,6 +29,28 @@ pub struct Vocab {
     #[allow(dead_code)]
     pub album_kinds: Vec<String>,
     pub relation_kinds: Vec<RelationKind>,
+    /// The kinds of review flag, in the order to show them.
+    pub review_kinds: Vec<ReviewKind>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ReviewKind {
+    pub kind: String,
+    /// For people ("No cover").
+    pub name: String,
+    /// Raised and settled by the server itself, from what the track has ("no cover").
+    pub automatic: bool,
+}
+
+impl Vocab {
+    /// A kind of flag as people read it (a kind not in the list: as the server names it).
+    pub fn review_kind_name<'a>(&'a self, kind: &'a str) -> &'a str {
+        self.review_kinds.iter().find(|k| k.kind == kind).map_or(kind, |k| k.name.as_str())
+    }
+
+    pub fn is_automatic(&self, kind: &str) -> bool {
+        self.review_kinds.iter().any(|k| k.kind == kind && k.automatic)
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]

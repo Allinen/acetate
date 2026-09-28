@@ -18,10 +18,27 @@ pub struct AlbumPage {
     list: TrackList,
     /// The details panel is open.
     details: bool,
+    /// This album and another side by side, to merge (edit mode), in place of the list.
+    merge: Option<super::album_merge::AlbumMergeView>,
+    /// "Merge into another album…" asked the palette for the other one.
+    picking_merge: bool,
+    /// Undoing merges into this album (in the details).
+    undo: super::album_merge::UndoPanel,
 }
 
 impl AlbumPage {
     pub fn show(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: &Arc<Catalog>, id: Uuid, player: &PlayerView) {
+        // Ctrl+M: merge into another album (again: close it). In a text field too.
+        if !shell.palette_open && ui.ctx().input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::M)) {
+            if !shell.edit_mode {
+                shell.playlists.notice = Some(("Merging is in edit mode: e, then Ctrl+M.".into(), std::time::Instant::now()));
+            } else if self.merge.is_some() {
+                self.merge = None;
+            } else {
+                self.picking_merge = true;
+                shell.act(Action::Pick { kind: crate::ui::edit::PickKind::Album, except: Some(id) });
+            }
+        }
         let Some(album) = catalog.album(id) else {
             ui.label(RichText::new("This album isn't in the library (anymore).").color(P.muted));
             return;
@@ -62,7 +79,45 @@ impl AlbumPage {
         if widgets::chip(&mut marks_ui, "Details", self.details) {
             self.details = !self.details;
         }
+        if shell.edit_mode && self.merge.is_none() {
+            marks_ui.add_space(8.0);
+            let tip = "The same album twice: choose the other one, then see both before merging";
+            if marks_ui.button("Merge into another album…  (Ctrl+M)").on_hover_text(tip).clicked() {
+                self.picking_merge = true;
+                shell.act(Action::Pick { kind: crate::ui::edit::PickKind::Album, except: Some(id) });
+            }
+        }
         ui.add_space(22.0);
+
+        // The other album, picked in the palette (not a new one, not this one).
+        if self.picking_merge
+            && let Some(picked) = shell.picker.take()
+        {
+            self.picking_merge = false;
+            if let (crate::ui::edit::PickKind::Album, Some(other)) = (picked.kind, picked.id)
+                && other != id
+            {
+                self.merge = Some(super::album_merge::AlbumMergeView::new(id, other));
+            }
+        }
+        if let Some(view) = self.merge.as_mut() {
+            use super::album_merge::Outcome;
+            shell.form_dirty = true;
+            match view.show(ui, shell, catalog) {
+                Some(Outcome::Merged { kept, gone }) => {
+                    self.merge = None;
+                    shell.album_details.refresh(kept);
+                    shell.album_details.refresh(gone);
+                    shell.act(Action::RefreshLibrary);
+                    if kept != id {
+                        shell.act(Action::Go(crate::ui::Page::Album(kept)));
+                    }
+                }
+                Some(Outcome::Closed) => self.merge = None,
+                None => {}
+            }
+            return;
+        }
         if self.details {
             details_panel(ui, "album-details", |ui| {
                 let cached = shell.album_details.get(id);
@@ -104,12 +159,16 @@ impl AlbumPage {
                 }
                 if !d.merges.is_empty() {
                     ui.label(RichText::new("Merged into this album").font(font(14.0, semibold())));
-                    for m in &d.merges {
-                        let undone = if m.undone_at.is_some() { " · undone" } else { "" };
-                        ui.label(format!("{} · {}{undone}", m.from_title, m.merged_at.get(..10).unwrap_or(&m.merged_at)));
-                    }
+                    let can = shell.account.can("edit_metadata");
+                    self.undo.show(ui, shell, id, &d.merges, can);
                 }
             });
+            ui.add_space(12.0);
+        }
+
+        // Edit mode: the album's own data (title, kind, date, artists).
+        if shell.edit_mode {
+            edit_panel(ui, shell, catalog, id);
             ui.add_space(12.0);
         }
 
@@ -119,6 +178,26 @@ impl AlbumPage {
         }
         self.list.show(ui, shell, catalog, tracks, player, Rows::Album { id, artist: &album.artist_display });
     }
+}
+
+/// The album's form (edit mode). Kept in the shell per album, so changes not saved yet
+/// are still there after looking elsewhere.
+fn edit_panel(ui: &mut egui::Ui, shell: &mut Shell, catalog: &Arc<Catalog>, id: Uuid) {
+    use crate::ui::edit::album_form::AlbumForm;
+    let cached = shell.album_details.get(id);
+    let Some(d) = cached.value.clone() else {
+        ui.label(RichText::new(if cached.refreshing { "Loading the album to edit…" } else { "Couldn't load the album to edit" }).color(P.muted));
+        return;
+    };
+    details_panel(ui, "album-edit", |ui| {
+        // Taken out of the shell while it's shown (showing it needs the shell too).
+        let Some(mut form) = shell.album_forms.remove(&id).or_else(|| AlbumForm::from_detail(&d)) else {
+            ui.label(RichText::new("This album has no revision to build on, so it can't be edited here.").color(P.muted));
+            return;
+        };
+        form.show(ui, shell, Some(catalog), &d);
+        shell.album_forms.insert(id, form);
+    });
 }
 
 /// How a track list shows its rows.

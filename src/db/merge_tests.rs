@@ -150,7 +150,7 @@ async fn merging_combines_and_picks(_: PgPoolOptions, connect: PgConnectOptions)
     assert_eq!(with_d, 0);
     let share_track: Uuid = sqlx::query_scalar("SELECT track_id FROM shares").fetch_one(&lib.owner).await?;
     assert_eq!(share_track, lib.v);
-    let open_flags: i64 = sqlx::query_scalar("SELECT count(*) FROM review_flags WHERE resolved_at IS NULL")
+    let open_flags: i64 = sqlx::query_scalar("SELECT count(*) FROM review_flags WHERE resolved_at IS NULL AND kind NOT LIKE 'missing\\_%'")
         .fetch_one(&lib.owner)
         .await?;
     assert_eq!(open_flags, 0);
@@ -261,7 +261,7 @@ async fn undo_gives_both_tracks_back(_: PgPoolOptions, connect: PgConnectOptions
     assert_eq!(snapshot(&lib, lib.v).await?, v_before);
     assert_eq!(snapshot(&lib, dupe.d).await?, d_before);
     assert_eq!(snapshot(&lib, lib.o).await?, o_before, "the third track's relation came back");
-    let open_flags: i64 = sqlx::query_scalar("SELECT count(*) FROM review_flags WHERE resolved_at IS NULL")
+    let open_flags: i64 = sqlx::query_scalar("SELECT count(*) FROM review_flags WHERE resolved_at IS NULL AND kind NOT LIKE 'missing\\_%'")
         .fetch_one(&lib.owner)
         .await?;
     assert_eq!(open_flags, 0, "\"V looks like D\" stays settled after the undo");
@@ -609,7 +609,7 @@ async fn merge_duplicates_merges_same_title_and_length(_: PgPoolOptions, connect
     assert_eq!(file_of(&lib, lib.v).await?, dupe.d_file);
 
     // Nothing left to do.
-    let open: i64 = sqlx::query_scalar("SELECT count(*) FROM review_flags WHERE resolved_at IS NULL")
+    let open: i64 = sqlx::query_scalar("SELECT count(*) FROM review_flags WHERE resolved_at IS NULL AND kind NOT LIKE 'missing\\_%'")
         .fetch_one(&lib.owner)
         .await?;
     assert_eq!(open, 0);

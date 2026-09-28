@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE review_kinds SET checked = $2 WHERE kind = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Bool"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "dbfc443f985d1416a8e6992bcf0bd831118cc2d35c3155c1c50cd98e08b9c496"
+}

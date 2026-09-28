@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT count(check_track(id)) AS \"checked!\" FROM tracks",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "checked!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "5977fe50a3e39236d91dd4b00f2c433962185abddb40c87b0d1978ed47982586"
+}

@@ -1,5 +1,5 @@
 //! What the app remembers about how you like it (`settings.json` in its data folder):
-//! the volume, the sound output, what the Review page counts as a problem. Everything else it keeps (the library, covers, the
+//! the volume and the sound output. Everything else it keeps (the library, covers, the
 //! queue) is a copy of what the server has, not a setting.
 
 use std::path::{Path, PathBuf};
@@ -14,16 +14,11 @@ pub struct Settings {
     pub muted: bool,
     /// The sound output's name; None: the system's default.
     pub output: Option<String>,
-    /// What counts as needing a fix on the Review page.
-    pub review_checks: Vec<crate::catalog::problems::Problem>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        use crate::catalog::problems::Problem;
-        // Everything but the release date (many real releases don't have a known one).
-        let review_checks = Problem::ALL.into_iter().filter(|p| *p != Problem::NoDate).collect();
-        Settings { volume: 0.8, muted: false, output: None, review_checks }
+        Settings { volume: 0.8, muted: false, output: None }
     }
 }
 
@@ -62,6 +57,7 @@ mod tests {
         assert_eq!(volume_amplitude(0.8, true), 0.0);
         assert_eq!(volume_amplitude(3.0, false), 1.0, "clamped");
     }
+
 
     #[test]
     fn an_older_file_without_some_settings_reads() {

@@ -139,6 +139,8 @@ pub struct Controller {
     volume: Mutex<(f32, bool)>,
     /// Plays reported to the server, with its answers, for the UI to take.
     pub played: Mutex<Vec<(Uuid, Result<Annotation, String>)>>,
+    /// Files downloaded ahead (see `prepare`).
+    kept: Mutex<Vec<(Uuid, stream::RemoteFile)>>,
     ctx: egui::Context,
 }
 
@@ -166,6 +168,7 @@ impl Controller {
             shuffle: Default::default(),
             volume: Mutex::new((1.0, false)),
             played: Mutex::default(),
+            kept: Mutex::default(),
             ctx,
         })
     }
@@ -176,15 +179,43 @@ impl Controller {
 
     /// Starts downloading a file; it can be played as soon as this returns.
     async fn fetch(&self, file_id: Uuid) -> anyhow::Result<stream::RemoteFile> {
+        // Kept (see `prepare`): another reader of the same download.
+        let kept = self.kept.lock().unwrap().iter().find(|(id, _)| *id == file_id).map(|(_, f)| f.clone());
+        if let Some(file) = kept {
+            return Ok(file);
+        }
         stream::RemoteFile::open(&self.api, file_id).await
     }
 
     /// Plays from a list (an album, a playlist, a table), starting with `start`. Shuffled:
     /// `start` first, then the others in a random order. The hand-made queue stays.
     pub async fn play(self: &Arc<Self>, items: Vec<QueueItem>, start: usize) {
+        self.play_from(items, start, Duration::ZERO).await;
+    }
+
+    /// Like `play`, starting `at` this point of the first track, with a quick fade from
+    /// what plays (comparing two files: the other one goes on from where this one was).
+    pub async fn play_from(self: &Arc<Self>, items: Vec<QueueItem>, start: usize, at: Duration) {
         let item = self.state.lock().await.queue.play_list(items, start, self.shuffle.load(Relaxed));
         if let Some(item) = item {
-            self.start(item, false, Duration::ZERO).await;
+            self.start_fading(item, false, at, true).await;
+        }
+    }
+
+    /// Downloads these files ahead and keeps them (until the next call), so playing them
+    /// starts at once, anywhere in them: comparing two files, switching back and forth.
+    /// `prepare(vec![])` lets them go.
+    pub async fn prepare(&self, files: Vec<Uuid>) {
+        let missing: Vec<Uuid> = {
+            let mut kept = self.kept.lock().unwrap();
+            kept.retain(|(id, _)| files.contains(id));
+            files.iter().filter(|id| !kept.iter().any(|(k, _)| k == *id)).copied().collect()
+        };
+        for id in missing {
+            match self.fetch(id).await {
+                Ok(file) => self.kept.lock().unwrap().push((id, file)),
+                Err(err) => self.report(format!("{err:#}")),
+            }
         }
     }
 
@@ -198,6 +229,11 @@ impl Controller {
 
     /// Starts playing `item` (paused and at `at`: a queue restored after a restart).
     async fn start(self: &Arc<Self>, item: QueueItem, paused: bool, at: Duration) {
+        self.start_fading(item, paused, at, false).await;
+    }
+
+    /// `start`, with `fade`: a quick fade from what plays to it (comparing two files).
+    async fn start_fading(self: &Arc<Self>, item: QueueItem, paused: bool, at: Duration, fade: bool) {
         let generation = {
             let mut state = self.state.lock().await;
             state.generation += 1;
@@ -210,7 +246,7 @@ impl Controller {
         match self.fetch(item.file_id).await {
             Ok(file) => {
                 if self.state.lock().await.generation == generation {
-                    self.send(Command::Replace { file, paused, at });
+                    self.send(Command::Replace { file, paused, at, fade });
                 }
             }
             Err(err) => self.report(format!("{err:#}")),

@@ -33,8 +33,36 @@ pub const ALBUM_COLUMNS: &[&str] = &[
 
 pub const ARTIST_COLUMNS: &[&str] = &["id", "name", "disambiguation", "aliases", "track_count", "album_count"];
 
+/// Each track's open review flags: `[[flag id, kind], ...]` (kinds in `review_kinds`
+/// order). The whole catalog has a row per track with any; a delta has one per changed
+/// track, `[]` when it has none anymore.
+pub const ISSUE_COLUMNS: &[&str] = &["track_id", "flags"];
+
 /// The current user's annotations. `kind`: "track", "album" or "artist".
 pub const ANNOTATION_COLUMNS: &[&str] = &["kind", "id", "play_count", "last_played_at", "rating", "starred_at"];
+
+/// The open flags of the tracks (all with any, or these ones), see `ISSUE_COLUMNS`.
+pub async fn issues_json(conn: &mut PgConnection, ids: Option<&[Uuid]>) -> sqlx::Result<String> {
+    sqlx::query_scalar!(
+        r#"
+        WITH open AS (
+            SELECT f.track_id, json_agg(json_build_array(f.id, f.kind) ORDER BY k.position, f.id) AS flags
+            FROM review_flags f
+            JOIN review_kinds k ON k.kind = f.kind
+            WHERE f.resolved_at IS NULL AND ($1::uuid[] IS NULL OR f.track_id = ANY($1))
+            GROUP BY f.track_id
+        )
+        SELECT COALESCE(json_agg(json_build_array(t.id, COALESCE(o.flags, '[]'::json)) ORDER BY t.id), '[]'::json)::text AS "rows!"
+        FROM tracks t
+        LEFT JOIN open o ON o.track_id = t.id
+        WHERE t.merged_into IS NULL
+          AND (($1::uuid[] IS NULL AND o.track_id IS NOT NULL) OR t.id = ANY($1))
+        "#,
+        ids as Option<&[Uuid]>
+    )
+    .fetch_one(conn)
+    .await
+}
 
 pub async fn tracks_json(conn: &mut PgConnection, ids: Option<&[Uuid]>) -> sqlx::Result<String> {
     sqlx::query_scalar!(

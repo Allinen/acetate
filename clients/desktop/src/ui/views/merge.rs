@@ -9,8 +9,9 @@
 //! Undoing is on the kept track's page.
 //!
 //! Keys: ↑/↓ (or j/k) a row, ←/→ (or h/l) its side, s swaps the sides, Space plays the
-//! left file and Shift+Space the right, Ctrl+Enter merges, n says they're not the same,
-//! Esc closes it.
+//! left file and Shift+Space the right (from the middle; switching goes on from the same
+//! moment, to hear the difference), Ctrl+Enter merges, n says they're not the same, Esc
+//! closes it.
 
 use std::sync::{Arc, Mutex};
 
@@ -21,7 +22,9 @@ use crate::api::ApiError;
 use crate::catalog::Catalog;
 use crate::details::TrackDetail;
 use crate::ui::theme::{bold, font, semibold, PALETTE as P};
-use crate::ui::{widgets, Action, Shell};
+use crate::playback::PlayerView;
+use crate::ui::{playing_track, widgets, Action, Shell};
+use std::time::Duration;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Side {
@@ -58,6 +61,9 @@ pub enum Outcome {
     Merged { kept: Uuid, gone: Uuid },
     /// "Not the same": the pair's flag can be settled.
     NotSame,
+    /// Both stay, playing the same file (the server settles their flags about each
+    /// other).
+    Shared,
     Closed,
 }
 
@@ -70,8 +76,22 @@ pub struct MergeView {
     merging: bool,
     error: Option<String>,
     answer: Arc<Mutex<Option<Result<(), ApiError>>>>,
+    /// A "share a file instead" on its way, and its answer.
+    sharing: bool,
+    share_answer: Arc<Mutex<Option<Result<(), ApiError>>>>,
     /// The file pick was set from the files' quality (once both details are there).
     file_suggested: bool,
+    /// Both files are being downloaded ahead (for switching between them at once); let
+    /// go when the view goes.
+    kept_by: Option<(Arc<crate::playback::Controller>, tokio::runtime::Handle)>,
+}
+
+impl Drop for MergeView {
+    fn drop(&mut self) {
+        if let Some((controller, runtime)) = self.kept_by.take() {
+            runtime.spawn(async move { controller.prepare(Vec::new()).await });
+        }
+    }
 }
 
 impl MergeView {
@@ -86,7 +106,10 @@ impl MergeView {
             merging: false,
             error: None,
             answer: Arc::default(),
+            sharing: false,
+            share_answer: Arc::default(),
             file_suggested: false,
+            kept_by: None,
         }
     }
 
@@ -98,11 +121,18 @@ impl MergeView {
     }
 
     /// The view; returns what happened when it's over.
-    pub fn show(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: &Catalog) -> Option<Outcome> {
+    pub fn show(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: &Catalog, player: &PlayerView) -> Option<Outcome> {
         if let Some(result) = self.answer.lock().unwrap().take() {
             self.merging = false;
             match result {
                 Ok(()) => return Some(Outcome::Merged { kept: self.left, gone: self.right }),
+                Err(err) => self.error = Some(err.message),
+            }
+        }
+        if let Some(result) = self.share_answer.lock().unwrap().take() {
+            self.sharing = false;
+            match result {
+                Ok(()) => return Some(Outcome::Shared),
                 Err(err) => self.error = Some(err.message),
             }
         }
@@ -114,6 +144,12 @@ impl MergeView {
         };
         let lt = catalog.track_index(self.left).map(|i| &catalog.tracks[i as usize]);
         let rt = catalog.track_index(self.right).map(|i| &catalog.tracks[i as usize]);
+        if self.kept_by.is_none() {
+            let files: Vec<Uuid> = [lt, rt].iter().flatten().map(|t| t.file_id).collect();
+            let controller = shell.controller.clone();
+            shell.runtime.spawn(async move { controller.prepare(files).await });
+            self.kept_by = Some((shell.controller.clone(), shell.runtime.handle().clone()));
+        }
         if !self.file_suggested {
             self.file_suggested = true;
             if quality(&r) > quality(&l) {
@@ -147,9 +183,9 @@ impl MergeView {
                 } else if key(Key::Escape) {
                     return Some(Outcome::Closed);
                 } else if shift_space {
-                    play(shell, catalog, self.right);
+                    play(shell, catalog, player, self.right, self.left);
                 } else if key(Key::Space) {
-                    play(shell, catalog, self.left);
+                    play(shell, catalog, player, self.left, self.right);
                 } else {
                     acted = false;
                 }
@@ -201,9 +237,9 @@ impl MergeView {
                             }
                             ui.add(egui::Label::new(RichText::new(if text.is_empty() { "—" } else { text }).color(P.text)).wrap());
                             if n == FILE {
-                                let id = detail.id;
+                                let (id, other) = if side == Side::Left { (self.left, self.right) } else { (self.right, self.left) };
                                 if ui.small_button(if side == Side::Left { "▶ Play  (Space)" } else { "▶ Play  (Shift+Space)" }).clicked() {
-                                    play(shell, catalog, id);
+                                    play(shell, catalog, player, id, other);
                                 }
                             }
                         })
@@ -255,6 +291,23 @@ impl MergeView {
                 ui.label(RichText::new("Merging…").color(P.muted));
             }
         });
+        // Both stay (different versions, the same audio): one gives up its file and
+        // plays the other's. Its own file stays as a previous file of it.
+        if can_share(shell) {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new("Or keep both, sharing one file:").color(P.muted));
+                let busy = self.sharing || self.merging;
+                if ui.add_enabled(!busy, egui::Button::new("Both play the left file").small()).clicked() {
+                    self.share(shell, self.right, self.left);
+                }
+                if ui.add_enabled(!busy, egui::Button::new("Both play the right file").small()).clicked() {
+                    self.share(shell, self.left, self.right);
+                }
+                if self.sharing {
+                    ui.label(RichText::new("…").color(P.muted));
+                }
+            });
+        }
         if let Some(err) = &self.error {
             ui.label(RichText::new(err).color(P.danger));
         }
@@ -277,6 +330,19 @@ impl MergeView {
         })
     }
 
+    /// `track` plays `other`'s file from now on (its own becomes a previous file).
+    fn share(&mut self, shell: &Shell, track: Uuid, other: Uuid) {
+        self.sharing = true;
+        self.error = None;
+        let (api, answer, ctx) = (shell.api.clone(), self.share_answer.clone(), shell.ctx.clone());
+        let body = serde_json::json!({ "file_of": other, "reason": self.reason.trim() });
+        shell.runtime.spawn(async move {
+            let result = api.send_json::<serde_json::Value>(reqwest::Method::POST, &format!("/api/tracks/{track}/use-file"), Some(body)).await.map(|_| ());
+            *answer.lock().unwrap() = Some(result);
+            ctx.request_repaint();
+        });
+    }
+
     fn merge(&mut self, shell: &Shell, l: &TrackDetail, r: &TrackDetail) {
         if self.merging || !shell.account.can("replace_file") {
             return;
@@ -293,10 +359,25 @@ impl MergeView {
     }
 }
 
-fn play(shell: &mut Shell, catalog: &Catalog, track: Uuid) {
-    if let Some(index) = catalog.track_index(track) {
-        shell.act(Action::Play { tracks: vec![index], start: 0 });
+fn can_share(shell: &Shell) -> bool {
+    shell.account.can("replace_file")
+}
+
+/// Plays one side, for comparing: from where the other side is when that one's playing
+/// (switching sides hears the same moment of both), else from the middle (where the
+/// song is, rather than an intro). Playing again the side that plays pauses it.
+fn play(shell: &mut Shell, catalog: &Catalog, player: &PlayerView, track: Uuid, other: Uuid) {
+    let Some(index) = catalog.track_index(track) else { return };
+    let playing = playing_track(player);
+    if playing == Some(track) {
+        shell.act(Action::TogglePause);
+        return;
     }
+    let length = catalog.tracks[index as usize].duration_ms.map(|ms| Duration::from_millis(ms.max(0) as u64));
+    let at = if playing == Some(other) { player.position_now() } else { length.map(|l| l / 2).unwrap_or_default() };
+    // Not past the end (the other one may be longer).
+    let at = length.map_or(at, |l| at.min(l.saturating_sub(Duration::from_secs(1))));
+    shell.act(Action::PlayFrom { track: index, at });
 }
 
 /// A field as the row shows it (the same text on both sides means the same).
@@ -395,6 +476,33 @@ mod against_a_server {
             // And its flag is settled.
             let open: Vec<crate::review::Flag> = api.send_json(reqwest::Method::GET, "/api/review", None).await.unwrap();
             assert!(!open.iter().any(|f| f.track_id == r.id), "{open:?}");
+        });
+    }
+
+    /// Undoes the newest merge into `ACETATE_TEST_ORIGINAL`, as the track page's button
+    /// does, and checks the merged track is back as itself.
+    #[test]
+    #[ignore]
+    fn undoing_a_merge() {
+        let vars = ["ACETATE_TEST_SERVER", "ACETATE_TEST_TOKEN", "ACETATE_TEST_ORIGINAL"].map(std::env::var);
+        let [Ok(server), Ok(token), Ok(original)] = vars else { return };
+        let dir = std::env::temp_dir().join(format!("acetate-undo-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("session.json"), serde_json::json!({"server": server, "token": token, "username": "test"}).to_string()).unwrap();
+        let api = Api::new(dir);
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let kept: TrackDetail = api.send_json(reqwest::Method::GET, &format!("/api/tracks/{original}"), None).await.unwrap();
+            let merge = kept.merges.iter().find(|m| m.undone_at.is_none() && m.undo_blockers.is_empty()).expect("a merge to undo");
+            let undone: serde_json::Value = api
+                .send_json(reqwest::Method::POST, &format!("/api/track-merges/{}/undo", merge.id), Some(serde_json::json!({ "reason": "" })))
+                .await
+                .unwrap();
+            assert_eq!(undone["restored_track_id"].as_str().unwrap(), merge.from_track_id.to_string());
+            let back: TrackDetail = api.send_json(reqwest::Method::GET, &format!("/api/tracks/{}", merge.from_track_id), None).await.unwrap();
+            assert_eq!(back.id, merge.from_track_id, "it answers as itself again");
+            let kept: TrackDetail = api.send_json(reqwest::Method::GET, &format!("/api/tracks/{original}"), None).await.unwrap();
+            assert!(kept.merges.iter().any(|m| m.id == merge.id && m.undone_at.is_some()));
         });
     }
 }

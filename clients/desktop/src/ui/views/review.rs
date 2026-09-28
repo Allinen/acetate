@@ -1,46 +1,40 @@
 //! The Review page (6): the workbench for fixing the library, hands on the keyboard.
 //!
-//! Left, the tracks to go through: flagged "fix later" (by default), any open flag, or
-//! every track with a problem. Each says what's wrong ("no artists · no album"),
-//! worked out from the library kept here (see `catalog::problems`), so filtering and
-//! counting are instant even for the whole library. Filter by problem or text, group by
-//! folder, note, artist or problem.
+//! Left, the tracks that need a look: every track with an open review flag, each saying
+//! why. The flags are the server's, all kinds alike: those ingest and merges raise (fix
+//! later, possible duplicate, ambiguous artist, artist merged) and those the server
+//! raises itself for what a track is missing (no title, artists, album, cover, release
+//! date), with their names from `/api/vocab`. Which tracks have which comes with the
+//! library kept on this computer (`Catalog::issues`), so filtering and counting are
+//! instant even for the whole library. One row of chips filters by kind (with counts);
+//! text filters too. Group by folder, note, artist or kind.
 //!
 //! Right, the selected track's form, with the cursor already in the first field that
 //! needs fixing, and the file's name, folder and tags to fix from.
 //!
-//! Keys: Ctrl+Enter saves, and when nothing's left to fix, marks the flag done and goes
-//! to the next track. Ctrl+↓/↑ next/previous (anywhere); outside text fields also j/k
-//! or ↓/↑, Space plays the track (or pauses it), u skips, d marks it done as it is.
+//! Keys: Ctrl+Enter saves; then, if the server says nothing's missing anymore, "fix
+//! later" is marked done and the next track comes. Ctrl+↓/↑ next/previous (anywhere);
+//! outside text fields also j/k or ↓/↑, Space plays the track (or pauses it), u skips, d
+//! marks its flags done (of the chip's kind, if one's chosen). Ctrl+M compares a possible
+//! duplicate side by side (to merge), and closes it again.
 
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use eframe::egui::{self, Key, Modifiers, RichText, Sense, Vec2};
 use uuid::Uuid;
 
-use crate::catalog::problems::{self, Problem};
+use super::merge::{MergeView, Outcome};
+use crate::account::Vocab;
 use crate::catalog::Catalog;
 use crate::playback::PlayerView;
 use crate::review::Flag;
 use crate::ui::edit::track_form::TrackForm;
-use super::merge::{MergeView, Outcome};
 use crate::ui::theme::{bold, font, medium, semibold, PALETTE as P};
 use crate::ui::{playing_track, widgets, Action, Shell};
 
 const ROW: f32 = 46.0;
 const LIST_WIDTH: f32 = 380.0;
-
-/// Which tracks the list has.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
-enum Source {
-    /// Flagged "fix later" at import.
-    #[default]
-    FixLater,
-    /// Any open flag (duplicates, ambiguous artists…).
-    Flags,
-    /// Every track with a problem, flagged or not.
-    Everything,
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 enum Group {
@@ -48,32 +42,30 @@ enum Group {
     Folder,
     Note,
     Artist,
-    Problem,
+    Kind,
     None,
 }
 
 impl Group {
-    const ALL: [Group; 5] = [Group::Folder, Group::Note, Group::Artist, Group::Problem, Group::None];
+    const ALL: [Group; 5] = [Group::Folder, Group::Note, Group::Artist, Group::Kind, Group::None];
 
     fn name(self) -> &'static str {
         match self {
             Group::Folder => "folder",
             Group::Note => "import note",
             Group::Artist => "artist",
-            Group::Problem => "problem",
+            Group::Kind => "kind of flag",
             Group::None => "nothing",
         }
     }
 }
 
-/// A track in the list: its place in the catalog, its flags' kinds as the list says
-/// them (not "fix later": that's what the list is), what's wrong with it (counted checks
-/// only), and the group it's in. (Copied, not positions in the flag list: that list
-/// changes the moment a flag is marked done, before the rows are made again.)
+/// A track in the list: its place in the catalog, the kinds of its open flags (in the
+/// server's order), and the group it's in. (Copied, not positions in a flag list: those
+/// change the moment a flag is marked done, before the rows are made again.)
 struct Entry {
     track: u32,
     kinds: Vec<String>,
-    problems: Vec<Problem>,
     group: String,
 }
 
@@ -84,19 +76,18 @@ enum Row {
 
 #[derive(Default)]
 pub struct Review {
-    source: Source,
     group: Group,
-    only: Option<Problem>,
+    /// Only tracks with a flag of this kind (a chip); None: every track with any.
+    only: Option<String>,
+    /// `only` starts as "fix later" (the first time the page is shown).
+    started: bool,
     filter: String,
     entries: Vec<Entry>,
     rows: Vec<Row>,
-    /// How many tracks have each problem (before `only` narrows the list).
-    counts: HashMap<Problem, usize>,
+    /// How many tracks have each kind (before `only` narrows the list).
+    counts: HashMap<String, usize>,
     /// What the list was built from: (catalog generation, flags version, filters).
     built_for: Option<(u64, u64, String)>,
-    /// Every track's problems as bits (see `bits`), per catalog generation and flags
-    /// version: worked out once, not per keystroke.
-    bits: Option<(u64, u64, Vec<u8>)>,
     selected: Option<Uuid>,
     /// Where the selected track was in the list (to go on from there once it's left it).
     selected_at: usize,
@@ -104,9 +95,11 @@ pub struct Review {
     scroll_to_selected: bool,
     /// Put the cursor in the first field to fix, once the form is there.
     focus_first: bool,
-    /// A Ctrl+Enter save is running for this track: when it's done and nothing's left to
-    /// fix, the flag is marked done and the next track comes.
+    /// A Ctrl+Enter save is running for this track: when it's done, the server is asked
+    /// what it's still missing.
     advance_after_save: Option<Uuid>,
+    /// The server's answer: a track's open automatic flags after a save.
+    still_missing: Arc<Mutex<Option<(Uuid, Result<Vec<Flag>, String>)>>>,
     /// Tracks fixed or marked done here, this session.
     done: usize,
     notice: Option<String>,
@@ -116,6 +109,17 @@ pub struct Review {
     /// Pairs judged "not the same" here: (the flagged track, the other). A duplicate flag
     /// is settled once every track it names has been judged.
     not_same: std::collections::HashSet<(Uuid, Uuid)>,
+    /// Tracks merged away here: gone from the list and from other flags' suggestions at
+    /// once (the server's lists catch up a moment later).
+    merged_away: std::collections::HashSet<Uuid>,
+    /// An ambiguous artist's candidate chosen (a click or `a`): (the flag, the artist,
+    /// its name), put in the form once it's there.
+    ambiguous_pick: Option<(Uuid, Uuid, String)>,
+    /// `a` was pressed: the next candidate of the first ambiguous artist.
+    cycle_ambiguous: bool,
+    /// Ambiguous-artist flags settled by the form's next save: flag → (track, what was
+    /// done).
+    settle_on_save: HashMap<Uuid, (Uuid, String)>,
 }
 
 impl Review {
@@ -124,10 +128,14 @@ impl Review {
         self.focus_first = true;
     }
 
-    pub fn show(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: &std::sync::Arc<Catalog>, player: &PlayerView) {
+    pub fn show(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: &Arc<Catalog>, player: &PlayerView) {
         if !shell.account.can("edit_metadata") {
             ui.label(RichText::new("Review is for fixing the library: it needs the edit_metadata permission.").color(P.muted));
             return;
+        }
+        if !self.started {
+            self.started = true;
+            self.only = Some("fix_later".into());
         }
         for err in shell.flags.poll() {
             shell.controller.report(err);
@@ -136,36 +144,17 @@ impl Review {
             self.asked_flags = true;
             shell.flags.refresh(&shell.api, shell.runtime.handle(), &shell.ctx);
         }
+        self.after_save(shell, catalog);
         self.build(shell, catalog);
         self.keys(ui.ctx(), shell, catalog, player);
         // A key may have marked a flag done: the rows follow at once.
         self.build(shell, catalog);
+        let vocab = shell.account.vocab.clone().unwrap_or_default();
 
-        // ---- Top: title, what's listed, filters ----
+        // ---- Top: title, filters ----
         ui.horizontal(|ui| {
             ui.label(RichText::new("Review").font(font(28.0, bold())));
             ui.add_space(12.0);
-            let fix_later = shell.flags.list.iter().filter(|f| f.kind == "fix_later").count();
-            let all = shell.flags.list.len();
-            for (source, name) in [
-                (Source::FixLater, format!("Fix later ({})", crate::ui::thousands(fix_later))),
-                (Source::Flags, format!("All flags ({})", crate::ui::thousands(all))),
-                (Source::Everything, "Every track with a problem".to_string()),
-            ] {
-                if widgets::chip(ui, &name, self.source == source) {
-                    self.source = source;
-                    self.selected = None;
-                    self.focus_first = true;
-                }
-            }
-            if shell.flags.loading {
-                ui.label(RichText::new("checking for new flags…").color(P.faint).small());
-            } else if let Some(err) = &shell.flags.error {
-                ui.label(RichText::new(format!("couldn't check for new flags: {err}")).color(P.danger).small());
-            }
-        });
-        ui.add_space(6.0);
-        ui.horizontal_wrapped(|ui| {
             ui.add(
                 egui::TextEdit::singleline(&mut self.filter)
                     .id(egui::Id::new(super::FILTER_ID))
@@ -177,34 +166,33 @@ impl Review {
                     ui.selectable_value(&mut self.group, group, group.name());
                 }
             });
-            ui.add_space(6.0);
-            // A chip per counted problem: only tracks with it.
-            for problem in shell.settings.review_checks.clone() {
-                let count = self.counts.get(&problem).copied().unwrap_or(0);
-                let text = format!("{} {}", problem.label(), crate::ui::thousands(count));
-                if widgets::chip(ui, &text, self.only == Some(problem)) {
-                    self.only = if self.only == Some(problem) { None } else { Some(problem) };
+            if shell.flags.loading {
+                ui.label(RichText::new("checking for new flags…").color(P.faint).small());
+            } else if let Some(err) = &shell.flags.error {
+                ui.label(RichText::new(format!("couldn't check for new flags: {err}")).color(P.danger).small());
+            }
+        });
+        ui.add_space(6.0);
+        // A chip per kind of flag (the server's order), with how many tracks have one.
+        ui.horizontal_wrapped(|ui| {
+            let mut kinds: Vec<String> = vocab.review_kinds.iter().map(|k| k.kind.clone()).collect();
+            let mut unknown: Vec<String> = self.counts.keys().filter(|k| !kinds.contains(k)).cloned().collect();
+            unknown.sort();
+            kinds.extend(unknown);
+            if widgets::chip(ui, "Everything", self.only.is_none()) {
+                self.only = None;
+            }
+            for kind in kinds {
+                let count = self.counts.get(&kind).copied().unwrap_or(0);
+                // Kinds nobody has aren't worth a chip (unless chosen).
+                if count == 0 && self.only.as_ref() != Some(&kind) {
+                    continue;
+                }
+                let text = format!("{} {}", vocab.review_kind_name(&kind), crate::ui::thousands(count));
+                if widgets::chip(ui, &text, self.only.as_ref() == Some(&kind)) {
+                    self.only = if self.only.as_ref() == Some(&kind) { None } else { Some(kind) };
                 }
             }
-            ui.menu_button("Checks…", |ui| {
-                ui.label(RichText::new("What counts as needing a fix:").color(P.muted));
-                let mut changed = false;
-                for problem in Problem::ALL {
-                    let mut on = shell.settings.review_checks.contains(&problem);
-                    if ui.checkbox(&mut on, problem.label()).changed() {
-                        changed = true;
-                        shell.settings.review_checks.retain(|p| *p != problem);
-                        if on {
-                            shell.settings.review_checks.push(problem);
-                            shell.settings.review_checks.sort_by_key(|p| Problem::ALL.iter().position(|q| q == p));
-                        }
-                    }
-                }
-                if changed {
-                    shell.settings.save(&shell.data_dir);
-                    self.bits = None;
-                }
-            });
         });
         ui.add_space(4.0);
         let left = self.entries.len();
@@ -220,61 +208,60 @@ impl Review {
         let list_rect = egui::Rect::from_min_size(rest.min, Vec2::new(LIST_WIDTH, rest.height()));
         let editor_rect = egui::Rect::from_min_max(egui::pos2(list_rect.right() + 24.0, rest.top()), rest.max);
         let mut list_ui = ui.new_child(egui::UiBuilder::new().max_rect(list_rect));
-        self.list(&mut list_ui, shell, catalog, player);
+        self.list(&mut list_ui, shell, catalog, player, &vocab);
         let mut editor_ui = ui.new_child(egui::UiBuilder::new().max_rect(editor_rect));
-        self.editor(&mut editor_ui, shell, catalog, player);
+        self.editor(&mut editor_ui, shell, catalog, player, &vocab);
         ui.allocate_rect(rest, Sense::hover());
     }
 
     /// Rebuilds the list when the library, the flags or the filters changed.
     fn build(&mut self, shell: &Shell, catalog: &Catalog) {
         let flags = shell.flags.list.clone();
-        let checks = shell.settings.review_checks.clone();
-        let key = format!("{:?}|{:?}|{:?}|{}|{:?}", self.source, self.group, self.only, self.filter, checks);
+        let vocab = shell.account.vocab.clone().unwrap_or_default();
+        let key = format!("{:?}|{:?}|{}", self.group, self.only, self.filter);
         let built_for = (shell.generation, shell.flags.version, key);
         if self.built_for.as_ref() == Some(&built_for) {
             return;
         }
-        let file_of: HashMap<Uuid, &str> = flags.iter().filter_map(|f| Some((f.track_id, f.imported_from.as_deref()?))).collect();
-        if self.bits.as_ref().is_none_or(|b| (b.0, b.1) != (shell.generation, shell.flags.version)) {
-            let bits = catalog
-                .tracks
-                .iter()
-                .map(|t| bits(&problems::of(t, file_of.get(&t.id).map(|p| problems::file_name(p)))))
-                .collect();
-            self.bits = Some((shell.generation, shell.flags.version, bits));
-        }
-        let all_bits = &self.bits.as_ref().unwrap().2;
-        let counted = bits(&checks);
-
-        // The tracks, in flag order (newest first) or the library's.
-        let mut flags_of: HashMap<Uuid, Vec<usize>> = HashMap::new();
-        let mut order: Vec<Uuid> = Vec::new();
-        for (i, f) in flags.iter().enumerate() {
-            let listed = match self.source {
-                Source::FixLater => f.kind == "fix_later",
-                Source::Flags | Source::Everything => true,
-            };
-            if listed {
-                let entry = flags_of.entry(f.track_id).or_default();
-                if entry.is_empty() {
-                    order.push(f.track_id);
-                }
-                entry.push(i);
+        // Where each flagged track's file came from, and its import note (from the flags'
+        // details: automatic flags don't have them).
+        let mut file_of: HashMap<Uuid, &str> = HashMap::new();
+        let mut note_of: HashMap<Uuid, &str> = HashMap::new();
+        for f in flags.iter() {
+            if let Some(path) = f.imported_from.as_deref() {
+                file_of.entry(f.track_id).or_insert(path);
+            }
+            if !f.note().is_empty() {
+                note_of.entry(f.track_id).or_insert(f.note());
             }
         }
-        let candidates: Vec<u32> = match self.source {
-            Source::FixLater | Source::Flags => order.iter().filter_map(|id| catalog.track_index(*id)).collect(),
-            Source::Everything => (0..catalog.tracks.len() as u32).filter(|&i| all_bits[i as usize] & counted != 0).collect(),
-        };
+        // Every track with an open flag (not marked done here), newest flag first.
+        let done = &shell.flags.done;
+        let mut flagged: Vec<(Uuid, u32, Vec<String>)> = catalog
+            .issues
+            .iter()
+            .filter_map(|(track, open)| {
+                let open: Vec<&(Uuid, String)> = open.iter().filter(|(id, _)| !done.contains(id)).collect();
+                let newest = open.iter().map(|(id, _)| *id).max()?;
+                let mut kinds: Vec<String> = Vec::new();
+                for (_, kind) in open {
+                    if !kinds.contains(kind) {
+                        kinds.push(kind.clone());
+                    }
+                }
+                if self.merged_away.contains(track) {
+                    return None;
+                }
+                Some((newest, catalog.track_index(*track)?, kinds))
+            })
+            .collect();
+        flagged.sort_by_key(|f| std::cmp::Reverse(f.0));
 
         let words: Vec<String> = self.filter.to_lowercase().split_whitespace().map(str::to_string).collect();
         self.counts.clear();
         let mut entries = Vec::new();
-        for i in candidates {
+        for (_, i, kinds) in flagged {
             let track = &catalog.tracks[i as usize];
-            let found: Vec<Problem> = unbits(all_bits[i as usize] & counted);
-            let track_flags = flags_of.get(&track.id).cloned().unwrap_or_default();
             let path = file_of.get(&track.id).copied().unwrap_or("");
             if !words.is_empty() {
                 let text = format!("{} {} {}", track.title, track.artist_display, path).to_lowercase();
@@ -282,23 +269,22 @@ impl Review {
                     continue;
                 }
             }
-            for p in &found {
-                *self.counts.entry(*p).or_default() += 1;
+            for kind in &kinds {
+                *self.counts.entry(kind.clone()).or_default() += 1;
             }
-            if self.only.is_some_and(|only| !found.contains(&only)) {
+            if self.only.as_ref().is_some_and(|only| !kinds.contains(only)) {
                 continue;
             }
             let group = match self.group {
                 Group::Folder if path.is_empty() => "(folder not known)".to_string(),
-                Group::Folder => problems::folder(path).to_string(),
-                Group::Note => track_flags.iter().map(|&f| flags[f].note()).find(|n| !n.is_empty()).unwrap_or("(no note)").to_string(),
+                Group::Folder => folder(path).to_string(),
+                Group::Note => note_of.get(&track.id).copied().unwrap_or("(no note)").to_string(),
                 Group::Artist if track.artist_display.is_empty() => "(no artist)".to_string(),
                 Group::Artist => track.artist_display.clone(),
-                Group::Problem => found.first().map(|p| p.label().to_string()).unwrap_or_else(|| "Nothing found".into()),
+                Group::Kind => kinds.first().map(|k| vocab.review_kind_name(k).to_string()).unwrap_or_default(),
                 Group::None => String::new(),
             };
-            let kinds = track_flags.iter().map(|&f| flags[f].kind_name()).filter(|k| *k != "Fix later").map(str::to_string).collect();
-            entries.push(Entry { track: i, kinds, problems: found, group });
+            entries.push(Entry { track: i, kinds, group });
         }
         // Groups by name (unknown ones last), the order within kept.
         if self.group != Group::None {
@@ -353,60 +339,162 @@ impl Review {
         }
     }
 
-    /// Marks the selected track's flags done (`kinds`: only these kinds; None: all of
-    /// those listed), counts it, and goes on to the next.
-    fn mark_done(&mut self, shell: &mut Shell, catalog: &Catalog, resolution: &str, only_fix_later: bool) {
-        let Some(id) = self.selected else { return };
-        let ids: Vec<Uuid> = shell
-            .flags
-            .list
-            .iter()
-            .filter(|f| f.track_id == id && (!only_fix_later || f.kind == "fix_later"))
-            .filter(|f| self.source != Source::FixLater || f.kind == "fix_later")
-            .map(|f| f.id)
+    /// Marks `track`'s open flags done: only "fix later" (`only_fix_later`: a save that
+    /// fixed it), else those of the chosen chip's kind, or all of them. If it's the one
+    /// selected, on to the next: the list is made again, and if the track is still in it
+    /// (it has other flags), the next one is chosen.
+    fn mark_done(&mut self, shell: &mut Shell, catalog: &Catalog, track: Uuid, resolution: &str, only_fix_later: bool) {
+        let kind: Option<String> = if only_fix_later { Some("fix_later".into()) } else { self.only.clone() };
+        let ids: Vec<Uuid> = catalog
+            .issues
+            .get(&track)
+            .into_iter()
+            .flatten()
+            .filter(|(_, k)| kind.as_ref().is_none_or(|only| k == only))
+            .map(|(id, _)| *id)
             .collect();
-        if !ids.is_empty() {
-            shell.flags.resolve(&shell.api, shell.runtime.handle(), &ids, resolution);
-            self.done += 1;
-        }
-        // On from here: the list is rebuilt without it, and the one in its place is next.
-        if let Some(at) = self.position(catalog, id) {
+        if let Some(at) = self.position(catalog, track) {
             self.selected_at = at;
         }
-        // Without a flag to take it off the list (or listed by its problems, which the
-        // library shows fixed a moment later): on to the next now.
-        if ids.is_empty() || self.source == Source::Everything {
+        if !ids.is_empty() {
+            shell.flags.resolve(&shell.api, shell.runtime.handle(), &ids, resolution);
+            // The library catches up (its flags), for this and every other client.
+            shell.act(Action::RefreshLibrary);
+            self.done += 1;
+            self.build(shell, catalog);
+        }
+        if self.selected == Some(track) && self.position(catalog, track).is_some() {
             self.step(shell, catalog, 1);
         }
     }
 
+    /// After a Ctrl+Enter save: asks the server what the track still misses (its open
+    /// automatic flags, checked when the save committed); nothing: "fix later" is marked
+    /// done and the next track comes; else it says what's left.
+    fn ask_still_missing(&mut self, shell: &Shell, track: Uuid) {
+        let (api, answer, ctx) = (shell.api.clone(), self.still_missing.clone(), shell.ctx.clone());
+        shell.runtime.spawn(async move {
+            let path = format!("/api/review?automatic=true&track={track}");
+            let result = api.send_json::<Vec<Flag>>(reqwest::Method::GET, &path, None).await.map_err(|err| err.message);
+            *answer.lock().unwrap() = Some((track, result));
+            ctx.request_repaint();
+        });
+    }
+
+    fn after_save(&mut self, shell: &mut Shell, catalog: &Catalog) {
+        let Some((track, answer)) = self.still_missing.lock().unwrap().take() else { return };
+        let vocab = shell.account.vocab.clone().unwrap_or_default();
+        match answer {
+            Ok(open) if open.is_empty() => {
+                // Counted even when it had no "fix later" (only something missing).
+                let fix_later = catalog.issues.get(&track).is_some_and(|f| f.iter().any(|(_, k)| k == "fix_later"));
+                if !fix_later {
+                    self.done += 1;
+                }
+                self.mark_done(shell, catalog, track, "fixed", true);
+            }
+            Ok(open) => {
+                let names: Vec<&str> = open.iter().map(|f| vocab.review_kind_name(&f.kind)).collect();
+                self.notice = Some(format!("Saved. Still: {}.", names.join(", ")));
+                self.focus_first = true;
+            }
+            Err(err) => self.notice = Some(format!("Saved, but couldn't ask what's still missing: {err}")),
+        }
+    }
+
+    /// An ambiguous artist: the name from the tags matched several artists; the one
+    /// credited is marked. Choosing another credits it instead (in the form, saved with
+    /// it); choosing the credited one says it was right.
+    fn ambiguous(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: &Catalog, track: Uuid, flag: &Flag) {
+        let name = flag.related.get("name").and_then(|n| n.as_str()).unwrap_or("?");
+        ui.label(RichText::new(format!("“{name}” in the tags is which of these?  (a: the next one, then Ctrl+Enter)")).color(P.text));
+        // Which are credited now (as the form has it, or the library before it's opened),
+        // worked out before drawing: drawing needs the shell too.
+        let credited: Vec<Uuid> = candidates(flag)
+            .into_iter()
+            .map(|c| c.0)
+            .filter(|&artist| match shell.track_forms.get(&track) {
+                Some(form) => form.credits_artist(artist),
+                None => catalog.track_index(track).is_some_and(|i| catalog.tracks[i as usize].credits.iter().any(|c| c.0 == artist)),
+            })
+            .collect();
+        let pending = self.settle_on_save.contains_key(&flag.id);
+        let mut chosen = None;
+        ui.horizontal_wrapped(|ui| {
+            for (id, artist) in candidates(flag) {
+                let size = catalog.artist(id).map(|a| format!(" · {} tracks", a.track_count)).unwrap_or_default();
+                let dis = flag
+                    .related_artists
+                    .as_array()
+                    .and_then(|a| a.iter().find(|x| x.get("id").and_then(|v| v.as_str()) == Some(id.to_string().as_str())))
+                    .and_then(|x| x.get("disambiguation")?.as_str())
+                    .filter(|d| !d.is_empty())
+                    .map(|d| format!(" ({d})"))
+                    .unwrap_or_default();
+                let on = credited.contains(&id);
+                if widgets::chip(ui, &format!("{artist}{dis}{size}"), on) {
+                    chosen = Some((id, artist.clone(), on));
+                }
+                if widgets::link(ui, "page", font(11.5, medium()), P.faint) {
+                    chosen = None;
+                    shell.act(Action::Go(crate::ui::Page::Artist(id)));
+                }
+            }
+        });
+        match chosen {
+            // The one credited is right: nothing to change.
+            Some((_, _, true)) if !pending => {
+                shell.flags.resolve(&shell.api, shell.runtime.handle(), &[flag.id], "the credited artist was right");
+                self.done += 1;
+            }
+            Some((id, artist, _)) => self.ambiguous_pick = Some((flag.id, id, artist)),
+            None => {}
+        }
+        if pending {
+            ui.label(RichText::new("Changed in the form: saving settles this.").color(P.muted).small());
+        } else {
+            ui.label(RichText::new("Clicking the credited one says it was right.").color(P.faint).small());
+        }
+    }
+
+    /// The tracks a duplicate flag names that are still there to compare: not merged
+    /// away here, not the flagged track itself, and in the library.
+    fn duplicates(&self, flag: &Flag, catalog: &Catalog) -> Vec<Uuid> {
+        duplicate_ids(flag)
+            .into_iter()
+            .filter(|id| *id != flag.track_id && !self.merged_away.contains(id) && catalog.track_index(*id).is_some())
+            .collect()
+    }
+
     /// Opens the merge view with the first duplicate of the selected track not judged
-    /// yet: the other track on the left (kept), this one on the right.
-    fn open_merge(&mut self, shell: &Shell) {
+    /// yet: this one on the left (kept), the other on the right (merged into it; `s`
+    /// swaps). Kept, so a track with several duplicates stays in the list and the next
+    /// one can be merged into it too.
+    fn open_merge(&mut self, shell: &Shell, catalog: &Catalog) {
         let Some(id) = self.selected else { return };
         let other = shell
             .flags
             .list
             .iter()
             .filter(|f| f.track_id == id && f.kind == "possible_duplicate")
-            .flat_map(duplicate_ids)
+            .flat_map(|f| self.duplicates(f, catalog))
             .find(|other| !self.not_same.contains(&(id, *other)));
         match other {
-            Some(other) => self.merge = Some(MergeView::new(other, id)),
+            Some(other) => self.merge = Some(MergeView::new(id, other)),
             None => self.notice = Some("No possible duplicate to compare here.".into()),
         }
     }
 
     /// `track` and `other` aren't the same song: a duplicate flag on `track` is settled
     /// once every track it names has been judged so.
-    fn judged_not_same(&mut self, shell: &mut Shell, track: Uuid, other: Uuid) {
+    fn judged_not_same(&mut self, shell: &mut Shell, catalog: &Catalog, track: Uuid, other: Uuid) {
         self.not_same.insert((track, other));
         let settled: Vec<Uuid> = shell
             .flags
             .list
             .iter()
             .filter(|f| f.track_id == track && f.kind == "possible_duplicate")
-            .filter(|f| duplicate_ids(f).iter().all(|o| self.not_same.contains(&(track, *o))))
+            .filter(|f| self.duplicates(f, catalog).iter().all(|o| self.not_same.contains(&(track, *o))))
             .map(|f| f.id)
             .collect();
         if settled.is_empty() {
@@ -422,7 +510,21 @@ impl Review {
         if shell.palette_open {
             return;
         }
-        let (next, previous) = ctx.input_mut(|i| (i.consume_key(Modifiers::COMMAND, Key::ArrowDown), i.consume_key(Modifiers::COMMAND, Key::ArrowUp)));
+        let (next, previous, merge) = ctx.input_mut(|i| {
+            (
+                i.consume_key(Modifiers::COMMAND, Key::ArrowDown),
+                i.consume_key(Modifiers::COMMAND, Key::ArrowUp),
+                // Ctrl+M: works in a text field too (and plain m is mute).
+                i.consume_key(Modifiers::COMMAND, Key::M),
+            )
+        });
+        if merge {
+            if self.merge.is_some() {
+                self.merge = None;
+            } else {
+                self.open_merge(shell, catalog);
+            }
+        }
         if next {
             self.step(shell, catalog, 1);
         }
@@ -448,7 +550,7 @@ impl Review {
                     if let Some(form) = form {
                         shell.track_forms.insert(id, form);
                     }
-                    self.mark_done(shell, catalog, "checked: fine as it is", true);
+                    self.mark_done(shell, catalog, id, "checked: fine as it is", true);
                 }
             }
         }
@@ -463,10 +565,12 @@ impl Review {
             self.step(shell, catalog, -1);
         } else if key(Key::U) {
             self.step(shell, catalog, 1);
-        } else if key(Key::D) {
-            self.mark_done(shell, catalog, "done", false);
-        } else if key(Key::M) {
-            self.open_merge(shell);
+        } else if key(Key::D)
+            && let Some(id) = self.selected
+        {
+            self.mark_done(shell, catalog, id, "done", false);
+        } else if key(Key::A) {
+            self.cycle_ambiguous = true;
         } else if key(Key::Space)
             && let Some(id) = self.selected
         {
@@ -485,12 +589,15 @@ impl Review {
         }
     }
 
-    fn list(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: &Catalog, player: &PlayerView) {
+    fn list(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: &Catalog, player: &PlayerView, vocab: &Vocab) {
         if self.rows.is_empty() {
-            let text = match (self.source, shell.flags.list.is_empty() && shell.flags.loading) {
-                (_, true) => "Loading the flags…",
-                (Source::FixLater, _) => "Nothing flagged “fix later” (or nothing matches the filters).",
-                _ => "Nothing to fix here (or nothing matches the filters).",
+            let text = if shell.flags.list.is_empty() && shell.flags.loading {
+                "Loading the flags…".to_string()
+            } else {
+                match &self.only {
+                    Some(kind) => format!("Nothing with “{}” (or nothing matches the filter).", vocab.review_kind_name(kind)),
+                    None => "Nothing needs a look (or nothing matches the filter).".to_string(),
+                }
             };
             ui.label(RichText::new(text).color(P.muted));
             return;
@@ -532,11 +639,11 @@ impl Review {
                         if !t.artist_display.is_empty() {
                             sub.push(t.artist_display.clone());
                         }
-                        if !e.problems.is_empty() {
-                            sub.push(e.problems.iter().map(|p| p.label().to_lowercase()).collect::<Vec<_>>().join(", "));
-                        }
-                        if !e.kinds.is_empty() {
-                            sub.push(e.kinds.join(", "));
+                        // Its flags, but not the chip's own kind (every row has that).
+                        let issues: Vec<String> =
+                            e.kinds.iter().filter(|k| Some(*k) != self.only.as_ref()).map(|k| vocab.review_kind_name(k).to_lowercase()).collect();
+                        if !issues.is_empty() {
+                            sub.push(issues.join(", "));
                         }
                         widgets::text_in(painter, egui::Rect::from_min_size(rect.min + Vec2::new(10.0, 25.0), Vec2::new(rect.width() - 20.0, 16.0)), &sub.join("  ·  "), font(12.0, medium()), P.muted);
                         if response.clicked() {
@@ -552,13 +659,12 @@ impl Review {
         }
     }
 
-    fn editor(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: &std::sync::Arc<Catalog>, player: &PlayerView) {
+    fn editor(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: &Arc<Catalog>, player: &PlayerView, vocab: &Vocab) {
         let Some(id) = self.selected else { return };
         let Some(index) = catalog.track_index(id) else { return };
         let track = &catalog.tracks[index as usize];
         let flags: Vec<Flag> = shell.flags.list.iter().filter(|f| f.track_id == id).cloned().collect();
         let path = flags.iter().find_map(|f| f.imported_from.clone());
-        let file_name = path.as_deref().map(problems::file_name);
         let cached = shell.track_details.get(id);
         let (detail, error) = (cached.value.clone(), cached.error.clone());
 
@@ -585,11 +691,11 @@ impl Review {
             });
             ui.add_space(6.0);
             if let Some(path) = &path {
-                ui.label(RichText::new(format!("File: {}", problems::file_name(path))).color(P.text));
-                ui.label(RichText::new(format!("in {}", problems::folder(path))).color(P.faint).small());
+                ui.label(RichText::new(format!("File: {}", file_name(path))).color(P.text));
+                ui.label(RichText::new(format!("in {}", folder(path))).color(P.faint).small());
             }
             for f in &flags {
-                let mut line = f.kind_name().to_string();
+                let mut line = vocab.review_kind_name(&f.kind).to_string();
                 if !f.note().is_empty() {
                     line = format!("{line}: {}", f.note());
                 }
@@ -598,12 +704,19 @@ impl Review {
                 }
                 ui.label(RichText::new(line).color(P.muted));
                 related(ui, shell, f);
+                if f.kind == "ambiguous_artist" {
+                    self.ambiguous(ui, shell, catalog, id, f);
+                }
                 if f.kind == "possible_duplicate" {
-                    for other in duplicate_ids(f) {
+                    let others = self.duplicates(f, catalog);
+                    if others.is_empty() {
+                        ui.label(RichText::new("Nothing left to compare (merged already): d marks it done.").color(P.faint).small());
+                    }
+                    for other in others {
                         let judged = self.not_same.contains(&(id, other));
-                        let text = if judged { "judged not the same" } else { "Compare and merge…  (m)" };
+                        let text = if judged { "judged not the same" } else { "Compare and merge…  (Ctrl+M)" };
                         if ui.add_enabled(!judged, egui::Button::new(text).small()).clicked() {
-                            self.merge = Some(MergeView::new(other, id));
+                            self.merge = Some(MergeView::new(id, other));
                         }
                     }
                 }
@@ -612,11 +725,17 @@ impl Review {
             // Two tracks side by side instead of the form.
             if let Some(view) = self.merge.as_mut() {
                 ui.add_space(10.0);
-                match view.show(ui, shell, catalog) {
+                let view_pair = (view.left, view.right);
+                match view.show(ui, shell, catalog, player) {
                     Some(Outcome::Merged { kept, gone }) => {
                         self.merge = None;
+                        self.merged_away.insert(gone);
                         self.done += 1;
-                        self.notice = Some("Merged. Undo is on the kept track's page.".into());
+                        self.notice = Some(if kept == id {
+                            "Merged into this track. Undo is on its page.".into()
+                        } else {
+                            "Merged. Undo is on the kept track's page.".into()
+                        });
                         shell.track_details.refresh(kept);
                         shell.track_forms.remove(&gone);
                         shell.flags.refresh(&shell.api, shell.runtime.handle(), &shell.ctx);
@@ -625,7 +744,16 @@ impl Review {
                     Some(Outcome::NotSame) => {
                         let pair = (view.left, view.right);
                         self.merge = None;
-                        self.judged_not_same(shell, id, if pair.0 == id { pair.1 } else { pair.0 });
+                        self.judged_not_same(shell, catalog, id, if pair.0 == id { pair.1 } else { pair.0 });
+                    }
+                    Some(Outcome::Shared) => {
+                        self.merge = None;
+                        self.done += 1;
+                        self.notice = Some("Both kept, sharing one file. The other file stays as a previous file.".into());
+                        shell.track_details.refresh(view_pair.0);
+                        shell.track_details.refresh(view_pair.1);
+                        shell.flags.refresh(&shell.api, shell.runtime.handle(), &shell.ctx);
+                        shell.act(Action::RefreshLibrary);
                     }
                     Some(Outcome::Closed) => self.merge = None,
                     None => shell.form_dirty = true,
@@ -643,16 +771,44 @@ impl Review {
                 return;
             };
 
-            // What's still wrong, as the form has it now.
-            let checks = shell.settings.review_checks.clone();
-            let has_cover = track.cover_id.is_some();
-            let left: Vec<Problem> = form.problems(has_cover, file_name).into_iter().filter(|p| checks.contains(p)).collect();
+            // An ambiguous artist's other candidate, credited instead (saved with the form).
+            if self.cycle_ambiguous {
+                self.cycle_ambiguous = false;
+                let next = flags.iter().filter(|f| f.kind == "ambiguous_artist").find_map(|f| {
+                    let candidates = candidates(f);
+                    let at = candidates.iter().position(|c| form.credits_artist(c.0))?;
+                    let (to, name) = candidates[(at + 1) % candidates.len()].clone();
+                    Some((f.id, to, name))
+                });
+                self.ambiguous_pick = next;
+            }
+            if let Some((flag, to, name)) = self.ambiguous_pick.take() {
+                let current = flags.iter().find(|f| f.id == flag).map(candidates).unwrap_or_default().into_iter().find(|c| form.credits_artist(c.0));
+                match current {
+                    Some((from, _)) if from == to => {}
+                    Some((from, _)) => {
+                        form.replace_artist(from, to, name.clone());
+                        self.settle_on_save.insert(flag, (id, format!("credited {name} ({to}) instead")));
+                    }
+                    None => self.notice = Some("None of the candidates is credited now (removed?): add the right one in Artists.".into()),
+                }
+            }
+
+            // What it's missing, as the server says (its open automatic flags).
+            let missing: Vec<String> = catalog
+                .issues
+                .get(&id)
+                .into_iter()
+                .flatten()
+                .filter(|(flag, kind)| vocab.is_automatic(kind) && !shell.flags.done.contains(flag))
+                .map(|(_, kind)| kind.clone())
+                .collect();
             ui.add_space(6.0);
-            if left.is_empty() {
+            if missing.is_empty() {
                 ui.label(RichText::new("Nothing missing. Ctrl+Enter saves and goes on (or d: done as it is).").color(P.accent));
             } else {
-                let names: Vec<&str> = left.iter().map(|p| p.name()).collect();
-                ui.label(RichText::new(format!("Missing: {}", names.join(", "))).font(font(15.0, semibold())).color(P.danger));
+                let names: Vec<&str> = missing.iter().map(|k| vocab.review_kind_name(k)).collect();
+                ui.label(RichText::new(names.join(" · ")).font(font(15.0, semibold())).color(P.danger));
             }
             if let Some(notice) = &self.notice {
                 ui.label(RichText::new(notice).color(P.muted));
@@ -663,30 +819,26 @@ impl Review {
             // The cursor in the first field to fix (once, when the track is shown).
             if self.focus_first {
                 self.focus_first = false;
-                if let Some(field) = left.iter().find_map(|p| TrackForm::field_for(*p)) {
+                if let Some(field) = missing.iter().find_map(|k| TrackForm::field_for(k)) {
                     ui.ctx().memory_mut(|m| m.request_focus(egui::Id::new(field)));
                 }
             }
 
             form.show(ui, shell, Some(catalog), &d, track.cover());
 
-            // A Ctrl+Enter save finished: on to the next when nothing's left.
-            if form.take_saved() && self.advance_after_save == Some(id) {
-                self.advance_after_save = None;
-                let left: Vec<Problem> = form.problems(has_cover, file_name).into_iter().filter(|p| checks.contains(p)).collect();
-                if left.is_empty() {
-                    shell.track_forms.insert(id, form);
-                    self.mark_done(shell, catalog, "fixed", true);
-                    // Counted even when it had no flag (the "every track" list).
-                    if !flags.iter().any(|f| f.kind == "fix_later") {
-                        self.done += 1;
-                        self.step(shell, catalog, 1);
-                    }
-                    return;
+            // A save finished: ambiguous artists fixed in it are settled; and after
+            // Ctrl+Enter, on to the next when nothing's left.
+            let saved = form.take_saved();
+            if saved {
+                let settled: Vec<(Uuid, String)> = self.settle_on_save.iter().filter(|(_, (t, _))| *t == id).map(|(f, (_, r))| (*f, r.clone())).collect();
+                for (flag, resolution) in settled {
+                    self.settle_on_save.remove(&flag);
+                    shell.flags.resolve(&shell.api, shell.runtime.handle(), &[flag], &resolution);
                 }
-                let names: Vec<&str> = left.iter().map(|p| p.name()).collect();
-                self.notice = Some(format!("Saved. Still missing: {}.", names.join(", ")));
-                self.focus_first = true;
+            }
+            if saved && self.advance_after_save == Some(id) {
+                self.advance_after_save = None;
+                self.ask_still_missing(shell, id);
             }
 
             // The file's own tags, to fix from: a click puts one in its field.
@@ -737,6 +889,15 @@ fn tag_field(name: &str) -> Option<&'static str> {
     }
 }
 
+/// An ambiguous artist's candidates: (id, name), in the flag's order.
+fn candidates(flag: &Flag) -> Vec<(Uuid, String)> {
+    let artists = flag.related_artists.as_array().cloned().unwrap_or_default();
+    artists
+        .iter()
+        .filter_map(|a| Some((a.get("id")?.as_str()?.parse().ok()?, a.get("name")?.as_str()?.to_string())))
+        .collect()
+}
+
 /// The tracks a duplicate flag names.
 fn duplicate_ids(flag: &Flag) -> Vec<Uuid> {
     let tracks = flag.related_tracks.as_array().cloned().unwrap_or_default();
@@ -778,13 +939,14 @@ fn ctx_stop_text(ctx: &egui::Context) {
     ctx.memory_mut(|m| m.stop_text_input());
 }
 
-/// Problems as bits (1 << their place in `Problem::ALL`).
-fn bits(problems: &[Problem]) -> u8 {
-    problems.iter().fold(0, |b, p| b | 1 << Problem::ALL.iter().position(|q| q == p).unwrap_or(0))
+/// The file name in a path ("/music/a/Song.mp3" → "Song.mp3").
+fn file_name(path: &str) -> &str {
+    path.rsplit(['/', '\\']).next().unwrap_or(path)
 }
 
-fn unbits(bits: u8) -> Vec<Problem> {
-    Problem::ALL.iter().enumerate().filter(|(i, _)| bits & (1 << i) != 0).map(|(_, p)| *p).collect()
+/// The folder of a path ("/music/a/Song.mp3" → "/music/a").
+fn folder(path: &str) -> &str {
+    path.rfind(['/', '\\']).map_or("", |i| &path[..i])
 }
 
 #[cfg(test)]
@@ -792,10 +954,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn problems_as_bits_and_back() {
-        let some = [Problem::NoTitle, Problem::NoCover];
-        assert_eq!(unbits(bits(&some)), some);
-        assert_eq!(unbits(0), []);
-        assert_eq!(unbits(bits(&Problem::ALL)), Problem::ALL);
+    fn paths() {
+        assert_eq!(file_name("/music/a/Song.mp3"), "Song.mp3");
+        assert_eq!(folder("/music/a/Song.mp3"), "/music/a");
+        assert_eq!(folder("Song.mp3"), "");
     }
 }

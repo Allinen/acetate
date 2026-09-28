@@ -20,6 +20,9 @@ pub struct Catalog {
     pub artists: Vec<Artist>,
     pub playlists: Vec<Playlist>,
     pub annotations: HashMap<Uuid, Annotation>,
+    /// Each track's open review flags: (flag id, kind), in the order to show them. Only
+    /// tracks with any.
+    pub issues: HashMap<Uuid, Vec<(Uuid, String)>>,
 
     track_by_id: HashMap<Uuid, u32>,
     album_by_id: HashMap<Uuid, u32>,
@@ -139,6 +142,7 @@ impl Catalog {
             album_artist_key: albums.iter().map(|a| sort_key(&a.artist_display)).collect(),
             artist_name_key: artists.iter().map(|a| sort_key(&a.name)).collect(),
             annotations: raw.annotations.rows.into_iter().map(|a| (a.id, a)).collect(),
+            issues: raw.issues.rows.into_iter().filter(|i| !i.1.is_empty()).map(|i| (i.0, i.1)).collect(),
             playlists: raw.playlists,
             tracks,
             albums,
@@ -181,6 +185,18 @@ impl Catalog {
         for a in delta.annotations.rows {
             annotations.insert(a.id, a);
         }
+        // A changed track's flags replace its old ones (none left: an empty list).
+        let mut issues = self.issues.clone();
+        for id in &removed.tracks {
+            issues.remove(id);
+        }
+        for model::Issues(track, flags) in delta.issues.rows {
+            if flags.is_empty() {
+                issues.remove(&track);
+            } else {
+                issues.insert(track, flags);
+            }
+        }
         let part = |rows| model::Part { columns: Vec::new(), rows };
         Catalog::build(model::Raw {
             format: delta.format,
@@ -191,6 +207,7 @@ impl Catalog {
             albums: model::Part { columns: Vec::new(), rows: albums },
             artists: model::Part { columns: Vec::new(), rows: artists },
             annotations: model::Part { columns: Vec::new(), rows: annotations.into_values().collect() },
+            issues: model::Part { columns: Vec::new(), rows: issues.into_iter().map(|(t, f)| model::Issues(t, f)).collect() },
             playlists: delta.playlists,
         })
     }
@@ -420,6 +437,11 @@ mod tests {
                 ["00000000-0000-7000-8000-0000000000a2", "Bo", "", ["B.O."], 2, 1]
             ]},
             "annotations": {"columns": ["kind", "id", "play_count", "last_played_at", "rating", "starred_at"], "rows": []},
+            // Track 1 has no cover and "fix later"; track 2 no cover.
+            "issues": {"columns": ["track_id", "flags"], "rows": [
+                ["00000000-0000-7000-8000-000000000001", [["00000000-0000-7000-8000-0000000000e1", "fix_later"], ["00000000-0000-7000-8000-0000000000e2", "missing_cover"]]],
+                ["00000000-0000-7000-8000-000000000002", [["00000000-0000-7000-8000-0000000000e3", "missing_cover"]]]
+            ]},
             "playlists": []
         });
         Catalog::build(model::parse(body.to_string().as_bytes()).unwrap())
@@ -476,6 +498,13 @@ mod tests {
             "albums": {"columns": [], "rows": []},
             "artists": {"columns": [], "rows": []},
             "annotations": {"columns": [], "rows": []},
+            // Track 1's cover came (only "fix later" is left); track 2's flags are all
+            // settled; the new track 4 has none of its own cover.
+            "issues": {"columns": [], "rows": [
+                [t(1), [["00000000-0000-7000-8000-0000000000e1", "fix_later"]]],
+                [t(2), []],
+                [t(4), [["00000000-0000-7000-8000-0000000000e4", "missing_cover"]]]
+            ]},
             "playlists": [],
             "removed": {"tracks": [t(3)]}
         });
@@ -489,6 +518,14 @@ mod tests {
         // number, then title).
         let a = "00000000-0000-7000-8000-0000000000b1".parse().unwrap();
         assert_eq!(super::tests::titles(&c, c.album_tracks(a)), ["First", "Fourth", "Second (edited)"]);
+        // The flags follow: replaced, gone when none are left, added.
+        let kinds = |n: u8| -> Vec<String> {
+            let id: Uuid = t(n).parse().unwrap();
+            c.issues.get(&id).map(|f| f.iter().map(|(_, k)| k.clone()).collect()).unwrap_or_default()
+        };
+        assert_eq!(kinds(1), ["fix_later"]);
+        assert!(kinds(2).is_empty() && !c.issues.contains_key(&t(2).parse().unwrap()));
+        assert_eq!(kinds(4), ["missing_cover"]);
     }
 
     #[test]
@@ -526,9 +563,6 @@ mod bench {
             let list = c.track_list(filter, TrackSort::Added, false);
             println!("filter {filter:?}: {:?} ({})", t.elapsed(), list.len());
         }
-        let t = Instant::now();
-        let with_problems = c.tracks.iter().filter(|t| !super::super::problems::of(t, None).is_empty()).count();
-        println!("problems of every track: {:?} ({with_problems} with one)", t.elapsed());
         let mut search = super::super::search::Search::default();
         for query in ["a", "track 12", "artst 42 trck 9", "album 77"] {
             let t = Instant::now();
@@ -547,6 +581,7 @@ mod bench {
             albums: model::Part { columns: Vec::new(), rows: Vec::new() },
             artists: model::Part { columns: Vec::new(), rows: Vec::new() },
             annotations: model::Part { columns: Vec::new(), rows: Vec::new() },
+            issues: model::Part { columns: Vec::new(), rows: Vec::new() },
             playlists: Vec::new(),
         };
         let t = Instant::now();

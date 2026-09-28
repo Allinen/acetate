@@ -137,6 +137,14 @@ pub struct Annotation {
 
 const ANNOTATION_COLUMNS: &[&str] = &["kind", "id", "play_count", "last_played_at", "rating", "starred_at"];
 
+/// A track's open review flags: the track, and each flag's id and kind (a kind from
+/// `/api/vocab`'s `review_kinds`), in the order to show them. In a delta, a track with
+/// none left has an empty list.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Issues(pub Uuid, pub Vec<(Uuid, String)>);
+
+const ISSUE_COLUMNS: &[&str] = &["track_id", "flags"];
+
 // Every column is read (rows are arrays in column order); not all are shown yet.
 #[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
@@ -175,6 +183,8 @@ pub struct Raw {
     pub albums: Part<Album>,
     pub artists: Part<Artist>,
     pub annotations: Part<Annotation>,
+    /// Tracks' open review flags.
+    pub issues: Part<Issues>,
     pub playlists: Vec<Playlist>,
 }
 
@@ -218,6 +228,7 @@ pub fn parse(body: &[u8]) -> anyhow::Result<Raw> {
     check_columns("albums", &raw.albums.columns, ALBUM_COLUMNS)?;
     check_columns("artists", &raw.artists.columns, ARTIST_COLUMNS)?;
     check_columns("annotations", &raw.annotations.columns, ANNOTATION_COLUMNS)?;
+    check_columns("issues", &raw.issues.columns, ISSUE_COLUMNS)?;
     Ok(raw)
 }
 

@@ -45,6 +45,10 @@ mod album_merge_tests;
 mod playlist_tests;
 #[cfg(test)]
 mod library_tests;
+#[cfg(test)]
+mod review_tests;
+#[cfg(test)]
+mod artist_merge_tests;
 
 use std::time::Duration;
 
@@ -81,6 +85,7 @@ const TABLES_WITHOUT_RLS: &[&str] = &[
     "credit_roles",
     "album_kinds",
     "relation_kinds",
+    "review_kinds",
 ];
 
 /// Connects as the owner: for migrations and the CLI.

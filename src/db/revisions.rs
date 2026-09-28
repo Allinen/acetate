@@ -2379,7 +2379,9 @@ pub async fn merge_artist(
     let system = super::as_system(conn).await?;
 
     // 1. Move `from`'s aliases over. A listed alias whose exact name `into` already lists
-    //    stays behind and redirects to that one instead.
+    //    stays behind and redirects to that one instead. One spelled like `into`'s own name
+    //    moves over hidden: its credits become credits under `into`'s name (the same
+    //    text), see `resolve_credits`.
     let into_listed: HashMap<String, Uuid> = sqlx::query!(
         "SELECT id, alias FROM artist_aliases WHERE artist_id = $1 AND listed",
         into
@@ -2397,6 +2399,15 @@ pub async fn merge_artist(
     .await?;
     for alias in &from_aliases {
         match into_listed.get(&alias.alias) {
+            _ if alias.alias == into_row.name => {
+                sqlx::query!(
+                    "UPDATE artist_aliases SET artist_id = $2, listed = false WHERE id = $1",
+                    alias.id,
+                    into
+                )
+                .execute(&mut *conn)
+                .await?;
+            }
             Some(same) if alias.listed => {
                 sqlx::query!(
                     "UPDATE artist_aliases SET listed = false, merged_into = $2 WHERE id = $1",
@@ -2774,6 +2785,24 @@ async fn resolve_credits(conn: &mut PgConnection, credits: &[Credit]) -> anyhow:
             .flatten();
             if let Some(into) = merged {
                 credit.alias_id = Some(into);
+            }
+        }
+        // An alias spelled like the credited artist's own name (a merge brought it over,
+        // hidden): credited under the name itself.
+        if let Some(alias_id) = credit.alias_id {
+            let own_name = sqlx::query_scalar!(
+                r#"
+                SELECT al.alias = a.name AS "same!"
+                FROM artist_aliases al JOIN artists a ON a.id = al.artist_id
+                WHERE al.id = $1 AND al.artist_id = $2 AND NOT al.listed
+                "#,
+                alias_id,
+                credit.artist_id
+            )
+            .fetch_optional(&mut *conn)
+            .await?;
+            if own_name == Some(true) {
+                credit.alias_id = None;
             }
         }
         if !resolved.iter().any(|c| c.artist_id == credit.artist_id && c.role == credit.role) {

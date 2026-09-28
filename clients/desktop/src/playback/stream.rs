@@ -33,6 +33,8 @@ struct State {
     /// Bumped when the download should start again from `wanted`.
     restart: u64,
     error: Option<String>,
+    /// How many readers there are (see `Clone`); none left: the download stops.
+    readers: usize,
     /// Nobody reads it anymore: the download stops.
     dropped: bool,
 }
@@ -98,6 +100,7 @@ impl RemoteFile {
                 frontier: 0,
                 restart: 0,
                 error: None,
+                readers: 1,
                 dropped: false,
             }),
             changed: Condvar::new(),
@@ -111,10 +114,23 @@ impl RemoteFile {
     }
 }
 
+/// Another reader of the same download, from the start: what's downloaded is shared, so
+/// playing a file that's already (being) downloaded doesn't fetch it again.
+impl Clone for RemoteFile {
+    fn clone(&self) -> RemoteFile {
+        self.shared.state.lock().unwrap().readers += 1;
+        RemoteFile { shared: self.shared.clone(), position: 0 }
+    }
+}
+
 impl Drop for RemoteFile {
     fn drop(&mut self) {
-        self.shared.state.lock().unwrap().dropped = true;
-        self.shared.changed.notify_all();
+        let mut state = self.shared.state.lock().unwrap();
+        state.readers -= 1;
+        if state.readers == 0 {
+            state.dropped = true;
+            self.shared.changed.notify_all();
+        }
     }
 }
 
@@ -254,7 +270,7 @@ mod tests {
     use super::*;
 
     fn state(len: usize, have: &[Range<u64>]) -> State {
-        let mut s = State { data: vec![0; len], have: Vec::new(), wanted: 0, frontier: 0, restart: 0, error: None, dropped: false };
+        let mut s = State { data: vec![0; len], have: Vec::new(), wanted: 0, frontier: 0, restart: 0, error: None, readers: 1, dropped: false };
         for r in have {
             s.add(r.clone());
         }
@@ -313,6 +329,8 @@ mod against_a_server {
         .unwrap();
         assert_eq!(tail, whole[near_end as usize..]);
         remote.seek(SeekFrom::Start(0)).unwrap();
+        // A second reader of the same download (as a kept file is played again).
+        let mut second = remote.clone();
         let all = std::thread::spawn(move || {
             let mut all = Vec::new();
             remote.read_to_end(&mut all).unwrap();
@@ -322,6 +340,18 @@ mod against_a_server {
         .unwrap();
         assert_eq!(all.len(), whole.len());
         assert!(all == whole, "the same bytes");
+        // The first reader is gone; the second still reads, from the middle, at once
+        // (the bytes are here already).
+        let middle = whole.len() as u64 / 2;
+        second.seek(SeekFrom::Start(middle)).unwrap();
+        let rest = std::thread::spawn(move || {
+            let mut rest = Vec::new();
+            second.read_to_end(&mut rest).unwrap();
+            rest
+        })
+        .join()
+        .unwrap();
+        assert!(rest == whole[middle as usize..], "the second reader has the same bytes");
     }
 
     fn tempfile_dir() -> std::path::PathBuf {
