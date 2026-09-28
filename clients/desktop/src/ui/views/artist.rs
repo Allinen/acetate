@@ -7,7 +7,9 @@ use std::sync::Arc;
 use eframe::egui::{self, Pos2, Rect, RichText, Sense, Vec2};
 use uuid::Uuid;
 
-use super::album::{play_button, Rows, TrackList};
+use super::album::play_button;
+use super::track_table::{Options, TrackTable};
+use crate::catalog::index::TrackRows;
 use crate::catalog::marks::Kind;
 use crate::catalog::Catalog;
 use crate::playback::PlayerView;
@@ -16,7 +18,7 @@ use crate::ui::{thousands, widgets, Action, Page, Shell};
 
 #[derive(Default)]
 pub struct ArtistPage {
-    list: TrackList,
+    list: TrackTable,
     /// The details panel is open.
     details: bool,
     /// This artist and another side by side, to merge (edit mode), in place of the rest.
@@ -164,7 +166,10 @@ impl ArtistPage {
 
         ui.label(RichText::new("Tracks").font(font(18.0, bold())));
         ui.add_space(8.0);
-        self.list.show(ui, shell, catalog, tracks, player, Rows::Mixed);
+        // Newest release first (the artist's own order).
+        let rows = TrackRows { tracks: Some(tracks), added: None };
+        let options = Options { key: "artist", columns: super::tracks::LIBRARY_COLUMNS, added: None, filter_hint: Some("Filter this artist's tracks"), album: None };
+        self.list.show(ui, shell, catalog, &rows, shell.generation, player, &options);
     }
 }
 

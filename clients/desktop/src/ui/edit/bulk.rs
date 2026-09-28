@@ -55,6 +55,17 @@ pub struct Change {
     /// Empty: no date.
     pub date: Option<String>,
     pub genres: Option<Vec<String>>,
+    /// Their numbers on one album (the tracks on it; others aren't changed).
+    pub numbering: Option<Numbering>,
+}
+
+/// Numbers on one album: the disc to set, and the track numbers in the order given,
+/// from `renumber` (None: left as they are).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Numbering {
+    pub album: Uuid,
+    pub disc: Option<i16>,
+    pub renumber: Option<i16>,
 }
 
 /// A track's metadata (its shown version's data) and facts, with this change: the new
@@ -100,6 +111,18 @@ pub fn apply(change: &Change, meta: &Value, facts: &Value, position: usize) -> (
             (AlbumMode::Also, None) => albums.push(entry),
         }
         facts["albums"] = Value::Array(albums);
+    }
+    if let Some(numbering) = &change.numbering
+        && let Some(albums) = facts.get_mut("albums").and_then(|a| a.as_array_mut())
+    {
+        for entry in albums.iter_mut().filter(|a| a["album_id"] == json!(numbering.album)) {
+            if let Some(disc) = numbering.disc {
+                entry["disc_number"] = json!(disc);
+            }
+            if let Some(start) = numbering.renumber {
+                entry["track_number"] = json!(start as usize + position);
+            }
+        }
     }
     (normalized(&meta), normalized(&facts))
 }
@@ -194,6 +217,12 @@ pub struct BulkEditor {
     date: String,
     genres_on: bool,
     genres: String,
+    disc_on: bool,
+    disc: i16,
+    renumber_on: bool,
+    renumber_from: i16,
+    /// The album the list is of (an album's page), for its numbers.
+    context_album: Option<Uuid>,
     reason: String,
     /// The marked tracks the preview was made for (a different marking: made again).
     tracks: Vec<Uuid>,
@@ -219,6 +248,11 @@ impl Default for BulkEditor {
             date: String::new(),
             genres_on: false,
             genres: String::new(),
+            disc_on: false,
+            disc: 1,
+            renumber_on: false,
+            renumber_from: 1,
+            context_album: None,
             reason: String::new(),
             tracks: Vec::new(),
             job: Arc::default(),
@@ -228,7 +262,18 @@ impl Default for BulkEditor {
 
 impl BulkEditor {
     fn anything(&self) -> bool {
-        (self.artists_on && !self.credits.is_empty()) || (self.album_on && self.album.is_some()) || self.status_on || self.date_on || self.genres_on
+        (self.artists_on && !self.credits.is_empty())
+            || (self.album_on && self.album.is_some())
+            || self.status_on
+            || self.date_on
+            || self.genres_on
+            || (self.numbering_album().is_some() && (self.disc_on || self.renumber_on))
+    }
+
+    /// The album whose numbers change: the list's (an album's page), else the existing
+    /// album chosen above.
+    fn numbering_album(&self) -> Option<Uuid> {
+        self.context_album.or_else(|| self.album.as_ref().filter(|_| self.album_on).and_then(|a| a.0))
     }
 
     /// The change, with stand-in ids for what doesn't exist yet (new artists, a new
@@ -256,12 +301,18 @@ impl BulkEditor {
             _ => None,
         };
         let genres = self.genres_on.then(|| self.genres.split(',').map(str::trim).filter(|g| !g.is_empty()).map(str::to_string).collect());
+        let numbering = self.numbering_album().filter(|_| self.disc_on || self.renumber_on).map(|album| Numbering {
+            album,
+            disc: self.disc_on.then_some(self.disc),
+            renumber: self.renumber_on.then_some(self.renumber_from),
+        });
         let change = Change {
             artists,
             album,
             status: self.status_on.then(|| self.status.clone()),
             date: self.date_on.then(|| self.date.clone()),
             genres,
+            numbering,
         };
         (change, names)
     }
@@ -409,8 +460,10 @@ impl BulkEditor {
         });
     }
 
-    /// The panel. `marked`: the marked tracks, in the order shown.
-    pub fn show(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: &Arc<Catalog>, marked: &[Uuid]) {
+    /// The panel. `marked`: the marked tracks, in the order shown; `album`: the album the
+    /// list is of, if it is.
+    pub fn show(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: &Arc<Catalog>, marked: &[Uuid], album: Option<Uuid>) {
+        self.context_album = album;
         let (phase, done, total, error) = {
             let job = self.job.lock().unwrap();
             (job.phase, job.done, job.items.len().max(self.tracks.len()), job.error.clone())
@@ -498,6 +551,27 @@ impl BulkEditor {
                     ui.add(egui::TextEdit::singleline(&mut self.genres).hint_text("comma-separated; empty: none").desired_width(300.0));
                 }
             });
+            // ---- Numbers on an album ----
+            match self.numbering_album() {
+                Some(album) => {
+                    let title = catalog.album(album).map(|a| a.title.clone()).unwrap_or_else(|| "the album".into());
+                    ui.horizontal(|ui| {
+                        ui.checkbox(&mut self.disc_on, format!("Disc on “{title}”"));
+                        if self.disc_on {
+                            ui.add(egui::DragValue::new(&mut self.disc).range(1..=99));
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.checkbox(&mut self.renumber_on, format!("Track numbers on “{title}”, in the order shown, from"));
+                        if self.renumber_on {
+                            ui.add(egui::DragValue::new(&mut self.renumber_from).range(1..=999));
+                        }
+                    });
+                }
+                None => {
+                    ui.label(RichText::new("Disc and track numbers: on an album's page, or with an existing album chosen above.").color(P.faint).small());
+                }
+            }
             ui.add(egui::TextEdit::singleline(&mut self.reason).hint_text("Why (optional: kept with each change)").desired_width(420.0));
         });
         // Any change to the change: the preview is out of date.
@@ -588,9 +662,10 @@ impl BulkEditor {
     /// Everything the change depends on, to notice it changing.
     fn change_key(&self) -> String {
         format!(
-            "{}{:?}{:?}{}{:?}{:?}{}{}{}{}{}{}{}{}",
+            "{}{:?}{:?}{}{:?}{:?}{}{}{}{}{}{}{}{}{}{}{}{}{:?}",
             self.artists_on, self.artist_mode, self.credits, self.album_on, self.album_mode, self.album, self.new_kind, self.number, self.status_on,
-            self.status, self.date_on, self.date, self.genres_on, self.genres
+            self.status, self.date_on, self.date, self.genres_on, self.genres, self.disc_on, self.disc, self.renumber_on, self.renumber_from,
+            self.context_album
         )
     }
 }
@@ -660,6 +735,22 @@ mod tests {
     }
 
     #[test]
+    fn discs_and_numbers_on_one_album() {
+        let meta = json!({ "title": "T" });
+        let facts = json!({ "status": "released", "albums": [
+            { "album_id": a(8), "disc_number": 1, "track_number": 5 },
+            { "album_id": a(9), "track_number": 2 },
+        ]});
+        let change = Change { numbering: Some(Numbering { album: a(8), disc: Some(2), renumber: Some(1) }), ..Default::default() };
+        let (_, f) = apply(&change, &meta, &facts, 3);
+        assert_eq!(f["albums"][0], json!({ "album_id": a(8), "disc_number": 2, "track_number": 4 }));
+        assert_eq!(f["albums"][1], json!({ "album_id": a(9), "track_number": 2 }), "the other album is left");
+        // Not on it: nothing.
+        let elsewhere = Change { numbering: Some(Numbering { album: a(7), disc: Some(2), renumber: None }), ..Default::default() };
+        assert_eq!(apply(&elsewhere, &meta, &facts, 0).1, facts);
+    }
+
+    #[test]
     fn empty_is_none_and_unchanged_is_unchanged() {
         let meta = json!({ "title": "T", "release_date": "2020" });
         let facts = json!({ "status": "released" });
@@ -721,6 +812,16 @@ mod against_a_server {
             let (_, _, meta) = shown_variant(&d).unwrap();
             let facts = facts_of(&d);
             assert_eq!(apply(&change, &meta, &facts, 0), (meta, facts));
+            // Disc 2 on that album, numbered from 5.
+            let numbers = Change { numbering: Some(Numbering { album: album.id, disc: Some(2), renumber: Some(5) }), ..Default::default() };
+            for (n, id) in tracks.iter().enumerate() {
+                write_one(api, *id, &detail(*id).await, &numbers, n, "bulk test (numbers)").await.unwrap();
+            }
+            for (n, id) in tracks.iter().enumerate() {
+                let d = detail(*id).await;
+                let on = d.albums.iter().find(|a| a.album_id == album.id).unwrap();
+                assert_eq!((on.disc_number, on.track_number), (Some(2), Some(n as i16 + 5)));
+            }
             // Back to released.
             let back = Change { status: Some("released".into()), ..Default::default() };
             for id in &tracks {

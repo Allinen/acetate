@@ -54,10 +54,10 @@ pub const GROUPS: &[(&str, &[Binding])] = &[
         ],
     ),
     (
-        "Marking many (track tables)",
+        "Marking many (any track list)",
         &[
-            ("x  or  Ctrl+click", "mark one"),
-            ("Shift+↑/↓  or  Shift+click", "mark a range"),
+            ("x, Ctrl+click  or  the box", "mark or unmark one"),
+            ("Shift+↑/↓  or  Shift+click", "a range, as the row it starts from (marked or not)"),
             ("Ctrl+A", "mark everything shown"),
             ("Esc", "clear the marks"),
             ("Ctrl+Enter", "in edit mode: preview the change, then apply it"),

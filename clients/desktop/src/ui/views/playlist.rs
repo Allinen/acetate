@@ -14,7 +14,7 @@ use eframe::egui::{self, Key, Modifiers, RichText, Sense, Vec2};
 use uuid::Uuid;
 
 use super::album::play_button;
-use super::track_table::{count_and_length, Options, TrackTable};
+use super::track_table::{count_and_length, Options, TrackTable, Column};
 use crate::catalog::index::{TrackRows, TrackSort};
 use crate::catalog::Catalog;
 use crate::playback::PlayerView;
@@ -27,6 +27,20 @@ pub struct PlaylistPage {
     /// The trash button was clicked once: the next click moves it there.
     confirm_trash: bool,
 }
+
+/// A playlist's columns: its own order first (and which show to start with).
+const PLAYLIST_COLUMNS: &[(Column, bool)] = &[
+    (Column::Position, true),
+    (Column::Cover, true),
+    (Column::Title, true),
+    (Column::Artist, true),
+    (Column::Album, true),
+    (Column::Released, true),
+    (Column::Plays, true),
+    (Column::Format, true),
+    (Column::Length, true),
+    (Column::Added, true),
+];
 
 impl Default for PlaylistPage {
     fn default() -> Self {
@@ -44,7 +58,7 @@ impl PlaylistPage {
             shell.act(Action::Play { tracks: self.table.tracks(&rows), start: 0 });
         }
         ui.add_space(16.0);
-        let options = Options { numbered: true, added: Some("Starred"), filter_hint: "Filter liked songs" };
+        let options = Options { key: "liked", columns: PLAYLIST_COLUMNS, added: Some("Starred"), filter_hint: Some("Filter liked songs"), album: None };
         self.table.show(ui, shell, catalog, &rows, version(shell.generation, &tracks), player, &options);
     }
 
@@ -116,7 +130,7 @@ impl PlaylistPage {
             ui.add_space(12.0);
         }
 
-        let options = Options { numbered: true, added: Some("Added"), filter_hint: "Filter this playlist" };
+        let options = Options { key: "playlist", columns: PLAYLIST_COLUMNS, added: Some("Added"), filter_hint: Some("Filter this playlist"), album: None };
         let shown = self.table.show(ui, shell, catalog, &rows, version(shell.generation, &entries), player, &options);
 
         // Keys for your own playlist (outside text fields).

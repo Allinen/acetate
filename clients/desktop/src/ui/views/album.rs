@@ -8,14 +8,28 @@ use eframe::egui::{self, Align2, Pos2, Rect, RichText, Sense, Vec2};
 use uuid::Uuid;
 
 use crate::catalog::marks::Kind;
+use super::track_table::{Column, Options, TrackTable};
+use crate::catalog::index::TrackRows;
 use crate::catalog::Catalog;
 use crate::playback::PlayerView;
 use crate::ui::theme::{bold, font, medium, semibold, PALETTE as P};
-use crate::ui::{playing_track, widgets, Action, Shell};
+use crate::ui::{widgets, Action, Shell};
+
+/// An album's columns (and which show to start with).
+const ALBUM_COLUMNS: &[(Column, bool)] = &[
+    (Column::Number, true),
+    (Column::Cover, false),
+    (Column::Title, true),
+    (Column::Artist, true),
+    (Column::Released, false),
+    (Column::Plays, true),
+    (Column::Format, false),
+    (Column::Length, true),
+];
 
 #[derive(Default)]
 pub struct AlbumPage {
-    list: TrackList,
+    list: TrackTable,
     /// The details panel is open.
     details: bool,
     /// This album and another side by side, to merge (edit mode), in place of the list.
@@ -176,7 +190,9 @@ impl AlbumPage {
             ui.label(RichText::new("No tracks you can see").color(P.muted));
             return;
         }
-        self.list.show(ui, shell, catalog, tracks, player, Rows::Album { id, artist: &album.artist_display });
+        let rows = TrackRows { tracks: Some(tracks), added: None };
+        let options = Options { key: "album", columns: ALBUM_COLUMNS, added: None, filter_hint: None, album: Some((id, &album.artist_display)) };
+        self.list.show(ui, shell, catalog, &rows, shell.generation, player, &options);
     }
 }
 
@@ -200,139 +216,6 @@ fn edit_panel(ui: &mut egui::Ui, shell: &mut Shell, catalog: &Arc<Catalog>, id: 
     });
 }
 
-/// How a track list shows its rows.
-#[derive(Clone, Copy)]
-pub enum Rows<'a> {
-    /// On album `id`: the track number; the artist only where it differs from the album's.
-    Album { id: Uuid, artist: &'a str },
-    /// Anywhere else: a small cover, the artist and the album.
-    Mixed,
-}
-
-/// A list of tracks, virtual (only the rows on screen are drawn), with a keyboard
-/// selection. Enter or a double click plays the list from that track.
-#[derive(Default)]
-pub struct TrackList {
-    selected: usize,
-    scroll_to: Option<usize>,
-}
-
-impl TrackList {
-    pub fn show(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: &Catalog, tracks: &[u32], player: &PlayerView, rows: Rows) {
-        let ctx = ui.ctx().clone();
-        let row_height = 44.0;
-        let visible = ((ui.available_height() / row_height) as usize).max(1);
-        let moved = widgets::move_selection(&ctx, &mut self.selected, tracks.len(), 1, visible);
-        if moved.moved {
-            self.scroll_to = Some(self.selected);
-        }
-        if let Some(&i) = tracks.get(self.selected) {
-            let id = catalog.tracks[i as usize].id;
-            if moved.star {
-                shell.act(Action::ToggleStar(Kind::Track, id));
-            }
-            if moved.rate_by != 0 {
-                shell.act(Action::RateBy(Kind::Track, id, moved.rate_by));
-            }
-            if moved.add {
-                shell.act(Action::AddToPlaylist(vec![id]));
-            }
-            if let Some(next) = moved.queue {
-                shell.act(Action::Enqueue { tracks: vec![i], next });
-            }
-            if moved.info {
-                shell.act(Action::Go(crate::ui::Page::Track(id)));
-            }
-        }
-        if moved.enter {
-            shell.act(Action::Play { tracks: tracks.to_vec(), start: self.selected });
-        }
-        let playing = playing_track(player);
-        let mut scroll = egui::ScrollArea::vertical().auto_shrink([false, false]).id_salt("track-list");
-        if let Some(row) = self.scroll_to.take() {
-            // Just enough to bring the row into view (egui scrolls to the offset given).
-            let top = row as f32 * row_height;
-            let offset = ctx.data(|d| d.get_temp::<f32>(egui::Id::new("track-list-offset"))).unwrap_or(0.0);
-            let height = ui.available_height();
-            if top < offset {
-                scroll = scroll.vertical_scroll_offset(top);
-            } else if top + row_height > offset + height {
-                scroll = scroll.vertical_scroll_offset(top + row_height - height);
-            }
-        }
-        let output = scroll.show_rows(ui, row_height, tracks.len(), |ui, range| {
-            ui.spacing_mut().item_spacing.y = 0.0;
-            for n in range {
-                let track = &catalog.tracks[tracks[n] as usize];
-                let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), row_height), Sense::click());
-                let hover = ctx.animate_bool_with_time(response.id, response.hovered(), 0.1);
-                let fill = if n == self.selected { P.surface_hi } else { widgets::lerp(P.bg, P.surface, hover) };
-                let rect = rect.shrink2(Vec2::new(0.0, 1.0));
-                ui.painter().rect_filled(rect, 8, fill);
-                let is_playing = playing == Some(track.id);
-                let lead = rect.left_center() + Vec2::new(22.0, 0.0);
-                let mut text_left = rect.left() + 52.0;
-                match rows {
-                    Rows::Album { id, .. } => {
-                        if is_playing {
-                            widgets::equalizer(ui.painter(), lead, ui.input(|i| i.time) as f32, !player.paused);
-                            if !player.paused {
-                                ctx.request_repaint();
-                            }
-                        } else {
-                            let number = track
-                                .albums
-                                .iter()
-                                .find(|m| m.0 == id)
-                                .and_then(|m| m.2)
-                                .map(|n| n.to_string())
-                                .unwrap_or_else(|| "·".into());
-                            ui.painter().text(lead, Align2::CENTER_CENTER, number, font(13.0, medium()), P.faint);
-                        }
-                    }
-                    Rows::Mixed => {
-                        let cover = Rect::from_center_size(rect.left_center() + Vec2::new(24.0, 0.0), Vec2::splat(34.0));
-                        shell.cover(ui, track.cover(), track.id, cover, 5, 0.0);
-                        if is_playing {
-                            ui.painter().rect_filled(cover, 5, egui::Color32::from_black_alpha(150));
-                            widgets::equalizer(ui.painter(), cover.center(), ui.input(|i| i.time) as f32, !player.paused);
-                            if !player.paused {
-                                ctx.request_repaint();
-                            }
-                        }
-                        text_left = rect.left() + 54.0;
-                    }
-                }
-                let title_color = if is_playing { P.accent } else { P.text };
-                let second = match rows {
-                    Rows::Album { artist, .. } if track.artist_display != artist => Some(track.artist_display.clone()),
-                    Rows::Album { .. } => None,
-                    Rows::Mixed => Some(match catalog.main_album(track) {
-                        Some(album) if album.kind != "single" => format!("{}  ·  {}", track.artist_display, album.title),
-                        _ => track.artist_display.clone(),
-                    }),
-                };
-                let text_width = rect.right() - 90.0 - text_left;
-                let title_y = if second.is_some() { -8.0 } else { 0.0 };
-                widgets::text_in(ui.painter(), Rect::from_center_size(Pos2::new(text_left + text_width / 2.0, rect.center().y + title_y), Vec2::new(text_width, 18.0)), &track.title, font(14.0, medium()), title_color);
-                if let Some(second) = second {
-                    widgets::text_in(ui.painter(), Rect::from_center_size(Pos2::new(text_left + text_width / 2.0, rect.center().y + 9.0), Vec2::new(text_width, 16.0)), &second, font(12.0, medium()), P.muted);
-                }
-                if shell.mark(track.id).starred {
-                    widgets::draw_star(ui.painter(), rect.right_center() - Vec2::new(76.0, 0.0), 6.0, P.accent);
-                }
-                ui.painter().text(rect.right_center() - Vec2::new(18.0, 0.0), Align2::RIGHT_CENTER, widgets::length(track.duration_ms), font(13.0, medium()), P.muted);
-                if response.clicked() {
-                    self.selected = n;
-                }
-                if response.double_clicked() {
-                    shell.act(Action::Play { tracks: tracks.to_vec(), start: n });
-                }
-            }
-        });
-        ctx.data_mut(|d| d.insert_temp(egui::Id::new("track-list-offset"), output.state.offset.y));
-    }
-}
 
 /// A star button and a rating for a track, album or artist (the header's).
 pub fn marks(ui: &mut egui::Ui, shell: &mut Shell, kind: Kind, id: Uuid) {

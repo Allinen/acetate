@@ -14,11 +14,14 @@ pub struct Settings {
     pub muted: bool,
     /// The sound output's name; None: the system's default.
     pub output: Option<String>,
+    /// The columns shown in each kind of track list ("album", "playlist"…), when changed
+    /// from the list's own (right-click a column's name).
+    pub table_columns: std::collections::HashMap<String, Vec<String>>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { volume: 0.8, muted: false, output: None }
+        Settings { volume: 0.8, muted: false, output: None, table_columns: Default::default() }
     }
 }
 
