@@ -14,8 +14,8 @@ pub const GROUPS: &[(&str, &[Binding])] = &[
         "Anywhere",
         &[
             ("Ctrl+K", "command palette: find anything, run a command"),
-            ("Ctrl+1 … 5", "albums, artists, tracks, now playing, queue"),
-            ("1 … 5", "the same, outside a text field"),
+            ("Ctrl+1 … 6", "albums, artists, tracks, now playing, queue, review"),
+            ("1 … 6", "the same, outside a text field"),
             ("Ctrl+,", "settings"),
             ("?  or  F1", "these keys"),
             ("Alt+← / Alt+→", "back / forward"),
@@ -69,6 +69,19 @@ pub const GROUPS: &[(&str, &[Binding])] = &[
         ],
     ),
     (
+        "Review (6)",
+        &[
+            ("Ctrl+Enter", "save; nothing left to fix: mark it done, go to the next"),
+            ("Ctrl+↓ / Ctrl+↑", "next / previous track (in a field too)"),
+            ("j / k  or  ↓ ↑", "next / previous track"),
+            ("Space", "play the track (or pause it)"),
+            ("u", "skip it"),
+            ("d", "mark it done as it is"),
+            ("Enter in Artists", "credit the match (Shift+Enter: as featured)"),
+            ("Ctrl+V", "paste an image as the cover"),
+        ],
+    ),
+    (
         "Command palette",
         &[
             ("↑ ↓  or  Tab", "choose"),
@@ -88,9 +101,8 @@ pub fn overlay(ctx: &egui::Context, open: &mut bool) {
     let close = ctx.input_mut(|i| {
         i.consume_key(Modifiers::NONE, Key::Escape)
             || i.consume_key(Modifiers::NONE, Key::F1)
-            || i.consume_key(Modifiers::SHIFT, Key::Questionmark)
-            || i.consume_key(Modifiers::NONE, Key::Questionmark)
-            || i.consume_key(Modifiers::SHIFT, Key::Slash)
+            // "?" as typed (it's on different keys on different layouts).
+            || i.events.iter().any(|e| matches!(e, egui::Event::Text(t) if t == "?"))
     });
     if close {
         *open = false;

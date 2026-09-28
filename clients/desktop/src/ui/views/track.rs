@@ -34,11 +34,11 @@ impl TrackPage {
         let cached = shell.track_details.get(id);
         let (detail, refreshing, error) = (cached.value.clone(), cached.refreshing, cached.error.clone());
         // A merged track answers with the one it went into: go there instead.
-        if let Some(d) = &detail {
-            if d.id != id {
-                shell.act(Action::Back);
-                shell.act(Action::Go(Page::Track(d.id)));
-            }
+        if let Some(d) = &detail
+            && d.id != id
+        {
+            shell.act(Action::Back);
+            shell.act(Action::Go(Page::Track(d.id)));
         }
         let track = catalog.track_index(id).map(|i| &catalog.tracks[i as usize]);
         if track.is_none() && detail.is_none() {
@@ -266,13 +266,14 @@ fn section(ui: &mut egui::Ui, title: &str, open: bool, add: impl FnOnce(&mut egu
 /// The track's form (edit mode). Kept in the shell per track, so changes not saved yet
 /// are still there after looking elsewhere.
 fn edit(ui: &mut egui::Ui, shell: &mut Shell, catalog: &Arc<Catalog>, d: &TrackDetail) {
+    let cover = catalog.track_index(d.id).and_then(|i| catalog.tracks[i as usize].cover());
     // Taken out of the shell while it's shown (showing it needs the shell too: Rust
     // allows only one mutable borrow of it at a time), then put back.
     let Some(mut form) = shell.track_forms.remove(&d.id).or_else(|| TrackForm::from_detail(d, Some(catalog))) else {
         ui.label(RichText::new("This track has no version to edit.").color(P.muted));
         return;
     };
-    form.show(ui, shell, Some(catalog), d);
+    form.show(ui, shell, Some(catalog), d, cover);
     shell.track_forms.insert(d.id, form);
 }
 

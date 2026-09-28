@@ -189,6 +189,14 @@ impl Api {
         Ok(())
     }
 
+    /// Uploads a file (one multipart field named "file"), answered with JSON: covers.
+    pub async fn upload<T: DeserializeOwned>(&self, path: &str, bytes: Vec<u8>, file_name: &str) -> Result<T, ApiError> {
+        let (request, server) = self.request(reqwest::Method::POST, path)?;
+        let part = reqwest::multipart::Part::bytes(bytes).file_name(file_name.to_string());
+        let request = request.multipart(reqwest::multipart::Form::new().part("file", part));
+        read_json(self.go(request, &server).await?).await
+    }
+
     /// Stars or unstars a track, album or artist (`kind`: "tracks", "albums", "artists").
     pub async fn star(&self, kind: &str, id: Uuid, starred: bool) -> Result<Annotation, ApiError> {
         let method = if starred { reqwest::Method::POST } else { reqwest::Method::DELETE };

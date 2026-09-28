@@ -395,12 +395,12 @@ impl Playlists {
     fn change_locally(&mut self, id: Uuid, change: impl FnOnce(&mut Detail)) {
         // A fetch already on its way has the playlist as it was: its answer is dropped.
         self.ask(id);
-        if let Some(cached) = self.details.get_mut(&id) {
-            if let Some(value) = &cached.value {
-                let mut detail = (**value).clone();
-                change(&mut detail);
-                cached.value = Some(Arc::new(detail));
-            }
+        if let Some(cached) = self.details.get_mut(&id)
+            && let Some(value) = &cached.value
+        {
+            let mut detail = (**value).clone();
+            change(&mut detail);
+            cached.value = Some(Arc::new(detail));
         }
         self.logs.remove(&id);
     }

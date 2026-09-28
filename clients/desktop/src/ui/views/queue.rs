@@ -183,10 +183,10 @@ impl QueuePage {
                 if response.clicked() {
                     self.selected = Some(row);
                 }
-                if response.double_clicked() {
-                    if let Some(place) = place(row) {
-                        shell.act(Action::PlayPlace(place));
-                    }
+                if response.double_clicked()
+                    && let Some(place) = place(row)
+                {
+                    shell.act(Action::PlayPlace(place));
                 }
             }
         });

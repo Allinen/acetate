@@ -5,12 +5,13 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.104"
+arboard = { version = "3.6", features = ["wayland-data-control"] }
 dirs = "7.0.0"
 eframe = "0.36.2"
 egui_extras = "0.36.2"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
 nucleo-matcher = "0.3.1"
-reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "json", "query", "zstd", "gzip"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "json", "query", "zstd", "gzip", "multipart"] }
 rodio = { version = "0.22.2", default-features = false, features = ["playback", "symphonia-all", "symphonia-simd"] }
 rustfft = "6.4.1"
 serde = { version = "1.0.229", features = ["derive"] }

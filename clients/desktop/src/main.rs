@@ -12,6 +12,10 @@
 //! - `settings`: volume and sound output.
 //! - `ui`: the window, its pages and the pieces they're drawn with.
 
+// Answers from background work arrive in shared slots (`Arc<Mutex<Option<…>>>`), which
+// clippy counts as "very complex types"; drawing code takes many plain arguments.
+#![allow(clippy::type_complexity, clippy::too_many_arguments)]
+
 mod account;
 mod api;
 mod catalog;
@@ -20,6 +24,7 @@ mod lyrics;
 mod playback;
 mod playlists;
 mod resume;
+mod review;
 mod settings;
 mod ui;
 

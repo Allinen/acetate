@@ -70,7 +70,7 @@ impl Marks {
     /// Ids starred (or unstarred) in this session, newest first.
     pub fn changed_stars(&self) -> Vec<(Uuid, bool)> {
         let mut changed: Vec<_> = self.local.iter().map(|(id, (mark, at))| (*id, mark.starred, *at)).collect();
-        changed.sort_by(|a, b| b.2.cmp(&a.2));
+        changed.sort_by_key(|c| std::cmp::Reverse(c.2));
         changed.into_iter().map(|(id, starred, _)| (id, starred)).collect()
     }
 

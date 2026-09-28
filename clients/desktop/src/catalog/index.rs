@@ -526,6 +526,9 @@ mod bench {
             let list = c.track_list(filter, TrackSort::Added, false);
             println!("filter {filter:?}: {:?} ({})", t.elapsed(), list.len());
         }
+        let t = Instant::now();
+        let with_problems = c.tracks.iter().filter(|t| !super::super::problems::of(t, None).is_empty()).count();
+        println!("problems of every track: {:?} ({with_problems} with one)", t.elapsed());
         let mut search = super::super::search::Search::default();
         for query in ["a", "track 12", "artst 42 trck 9", "album 77"] {
             let t = Instant::now();

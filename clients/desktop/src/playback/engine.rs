@@ -40,6 +40,8 @@ pub enum Command {
     Seek(Duration),
     /// Loudness, as an amplitude factor (0: silent, 1: as the file is).
     Volume(f32),
+    /// Stop, and forget what was playing and what was next (logging out).
+    Stop,
     /// Play through this output device (by its name; None: the system's default). What
     /// played stops: the controller starts it again there.
     Output(Option<String>),
@@ -152,6 +154,12 @@ pub fn start(
                             }
                             (Some(c), track) => *c.next.lock().unwrap() = track,
                             (None, _) => {}
+                        }
+                    }
+                    Command::Stop => {
+                        player.clear();
+                        if let Some(old) = control.take() {
+                            switches_before += old.switches.load(Relaxed);
                         }
                     }
                     Command::Pause => player.pause(),
@@ -285,15 +293,15 @@ impl Iterator for Chain {
                 return Some(0.0);
             }
             let skip = self.skipping || self.control.skip.swap(false, Relaxed);
-            if !skip {
-                if let Some(sample) = self.current.next() {
-                    self.in_span += 1;
-                    self.played += 1;
-                    if self.played % 1024 == 0 {
-                        self.control.played.store(self.played, Relaxed);
-                    }
-                    return Some(sample);
+            if !skip
+                && let Some(sample) = self.current.next()
+            {
+                self.in_span += 1;
+                self.played += 1;
+                if self.played.is_multiple_of(1024) {
+                    self.control.played.store(self.played, Relaxed);
                 }
+                return Some(sample);
             }
             // The track ended (or is skipped): finish the frame, then the next one.
             let channels = self.current.channels().get() as usize;

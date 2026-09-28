@@ -214,10 +214,10 @@ impl TrackTable {
                         });
                     });
                     row.col(|ui| {
-                        if let Some(album) = catalog.main_album(t) {
-                            if widgets::link(ui, &album.title, font(13.0, medium()), P.muted) {
-                                shell.act(Action::Go(crate::ui::Page::Album(album.id)));
-                            }
+                        if let Some(album) = catalog.main_album(t)
+                            && widgets::link(ui, &album.title, font(13.0, medium()), P.muted)
+                        {
+                            shell.act(Action::Go(crate::ui::Page::Album(album.id)));
                         }
                     });
                     row.col(|ui| {

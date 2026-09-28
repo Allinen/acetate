@@ -336,6 +336,20 @@ impl Controller {
         }
     }
 
+    /// Stops playback and empties the list and the queue (logging out: the next user
+    /// starts with their own, brought back from their last session).
+    pub async fn stop(&self) {
+        let mut state = self.state.lock().await;
+        state.queue = queue::Queue::default();
+        state.generation += 1;
+        state.appended = None;
+        state.fetching = false;
+        state.next_asked += 1;
+        *self.pending_seek.lock().unwrap() = None;
+        self.send(Command::Stop);
+        self.ctx.request_repaint();
+    }
+
     pub async fn next(self: &Arc<Self>) {
         let item = {
             let mut state = self.state.lock().await;

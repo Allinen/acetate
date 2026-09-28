@@ -1,11 +1,17 @@
-//! Editing a track (the track page, in edit mode): the shown variant's metadata (title,
-//! release date, genres, comment, credits) and the track's facts (status, albums,
-//! relations). Two parts because the server keeps them apart: metadata is a variant's
+//! Editing a track (the track page in edit mode, and the Review page): the shown
+//! variant's metadata (title, release date, genres, comment, credits), the track's facts
+//! (status, albums, relations), and a new cover. Metadata and facts are saved apart
+//! because the server keeps them apart: metadata is a variant's
 //! (`PUT /api/tracks/{id}/variants/{vid}`), facts are the track's (`PUT …/facts`). A
 //! save sends only the parts that changed, each with the revision the form was filled
 //! from, so a change someone made in between is never silently undone: the server says
 //! `stale` instead, and "Load theirs, keep mine" takes their version and puts back only
 //! the fields you changed.
+//!
+//! Artists and albums are typed in place (matches from the library as you type). New
+//! ones (an artist not in the library, a new single or album) and a pasted cover are
+//! kept in the form and made when it's saved, in order: artists, albums (credited to the
+//! track's primary artists), the metadata, the facts, the cover.
 
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -14,12 +20,23 @@ use eframe::egui::{self, Key, Modifiers, RichText};
 use serde::Deserialize;
 use uuid::Uuid;
 
+use super::inline_search::{Choice, InlineSearch};
 use super::{PickKind, Picked, SaveState};
-use crate::api::ApiError;
+use crate::api::{Api, ApiError};
+use crate::catalog::model::Cover;
+use crate::catalog::problems::{self, Problem};
+use crate::catalog::search::Part;
 use crate::catalog::Catalog;
 use crate::details::TrackDetail;
 use crate::ui::theme::{bold, font, medium, PALETTE as P};
 use crate::ui::{Action, Shell};
+
+/// The fields other pages can put the cursor in (the Review page: the first one that
+/// needs fixing).
+pub const TITLE_ID: &str = "form-title";
+pub const DATE_ID: &str = "form-date";
+pub const ARTIST_ID: &str = "form-artist";
+pub const ALBUM_ID: &str = "form-album";
 
 /// The variant's metadata, as the form edits it (text as typed).
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -34,7 +51,8 @@ pub struct Meta {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct CreditRow {
-    pub artist_id: Uuid,
+    /// None: a new artist named `name`, made when the form is saved.
+    pub artist_id: Option<Uuid>,
     /// The artist's name, and the alias's (for showing).
     pub name: String,
     pub role: String,
@@ -52,8 +70,11 @@ pub struct Facts {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct AlbumRow {
-    pub album_id: Uuid,
+    /// None: a new album, made when the form is saved.
+    pub album_id: Option<Uuid>,
     pub title: String,
+    /// A new album's kind ("single", "album"…); None for existing ones.
+    pub new_kind: Option<String>,
     /// As typed: empty means none.
     pub disc: String,
     pub number: String,
@@ -64,6 +85,15 @@ pub struct RelationRow {
     pub kind: String,
     pub track_id: Uuid,
     pub title: String,
+}
+
+/// A cover to add, from the clipboard or a dropped file: uploaded when the form is saved.
+pub struct NewCover {
+    bytes: Arc<Vec<u8>>,
+    file_name: String,
+    preview: egui::TextureHandle,
+    /// On the track's first album (its tracks show it too), or on the track itself.
+    on_album: bool,
 }
 
 /// Which row a picker's answer goes to (None: a new row).
@@ -84,12 +114,15 @@ impl Target {
     }
 }
 
-/// How a save went, from the background: the new revisions of the parts written (a part
-/// written before another failed still counts), and the error, if any.
+/// How a save went, from the background: what was sent (with the new artists' and
+/// albums' ids filled in), which parts were written (a part written before another
+/// failed still counts), and the error, if any.
 #[derive(Default)]
 struct Outcome {
+    sent: Option<(Meta, Facts)>,
     meta: Option<Uuid>,
     facts: Option<Uuid>,
+    cover: bool,
     error: Option<ApiError>,
 }
 
@@ -107,17 +140,22 @@ pub struct TrackForm {
     /// As filled from the server: what "changed" is measured against.
     meta_was: Meta,
     facts_was: Facts,
+    pub cover: Option<NewCover>,
     reason: String,
     awaiting: Option<Target>,
     state: SaveState,
-    /// What a save in progress sent (the fields may change while it runs).
-    sending: Option<(Meta, Facts)>,
+    /// A save finished without errors (taken by `take_saved`).
+    saved: bool,
     answer: Arc<Mutex<Option<Outcome>>>,
     /// Esc was pressed with changes: a second Esc discards them.
     confirm_discard: bool,
     /// "Load theirs" was asked, and waits for the details to arrive.
     rebase_asked: bool,
     notice: Option<String>,
+    artist_search: InlineSearch,
+    album_search: InlineSearch,
+    /// Put the cursor in this album row's track number (a new album was just added).
+    focus_number: Option<usize>,
 }
 
 /// A variant's data as the server keeps it (only what the form edits).
@@ -144,6 +182,11 @@ struct Written {
     revision_id: Uuid,
 }
 
+#[derive(Deserialize)]
+struct Created {
+    id: Uuid,
+}
+
 impl TrackForm {
     /// Filled from the track's details (its shown variant). None if it has no variant.
     pub fn from_detail(d: &TrackDetail, catalog: Option<&Catalog>) -> Option<TrackForm> {
@@ -160,7 +203,7 @@ impl TrackForm {
                     .or_else(|| known.map(|k| k.artist_name.clone()))
                     .unwrap_or_else(|| "(an artist not in the library)".into());
                 let alias = known.filter(|k| k.alias_id.is_some() && k.alias_id == c.alias_id).and_then(|k| k.alias.clone());
-                CreditRow { artist_id: c.artist_id, name, role: c.role, alias_id: c.alias_id, alias }
+                CreditRow { artist_id: Some(c.artist_id), name, role: c.role, alias_id: c.alias_id, alias }
             })
             .collect();
         let meta = Meta {
@@ -176,7 +219,13 @@ impl TrackForm {
             albums: d
                 .albums
                 .iter()
-                .map(|a| AlbumRow { album_id: a.album_id, title: a.title.clone(), disc: number(a.disc_number), number: number(a.track_number) })
+                .map(|a| AlbumRow {
+                    album_id: Some(a.album_id),
+                    title: a.title.clone(),
+                    new_kind: None,
+                    disc: number(a.disc_number),
+                    number: number(a.track_number),
+                })
                 .collect(),
             relations: d.relations.iter().map(|r| RelationRow { kind: r.kind.clone(), track_id: r.track_id, title: r.title.clone() }).collect(),
         };
@@ -190,19 +239,82 @@ impl TrackForm {
             facts_was: facts.clone(),
             meta,
             facts,
+            cover: None,
             reason: String::new(),
             awaiting: None,
             state: SaveState::Idle,
-            sending: None,
+            saved: false,
             answer: Arc::default(),
             confirm_discard: false,
             rebase_asked: false,
             notice: None,
+            artist_search: InlineSearch::new(Part::Artists),
+            album_search: InlineSearch::new(Part::Albums),
+            focus_number: None,
         })
     }
 
     pub fn dirty(&self) -> bool {
-        self.meta != self.meta_was || self.facts != self.facts_was
+        self.meta != self.meta_was || self.facts != self.facts_was || self.cover.is_some()
+    }
+
+    pub fn saving(&self) -> bool {
+        matches!(self.state, SaveState::Saving)
+    }
+
+    /// A save finished without errors since this was last asked.
+    pub fn take_saved(&mut self) -> bool {
+        std::mem::take(&mut self.saved)
+    }
+
+    /// What would still be wrong with the track as the form has it (for the Review page:
+    /// done when nothing is). `has_cover`: it has one already.
+    pub fn problems(&self, has_cover: bool, file_name: Option<&str>) -> Vec<Problem> {
+        let mut found = Vec::new();
+        let title = self.meta.title.trim();
+        let artist = self.meta.credits.iter().find(|c| c.role == "primary").map(|c| c.name.as_str()).unwrap_or("");
+        if title.is_empty() {
+            found.push(Problem::NoTitle);
+        } else if problems::looks_like_file_name(title, artist, file_name) {
+            found.push(Problem::FileNameTitle);
+        }
+        if self.meta.credits.is_empty() {
+            found.push(Problem::NoArtists);
+        }
+        if self.facts.albums.is_empty() {
+            found.push(Problem::NoAlbum);
+        }
+        if !has_cover && self.cover.is_none() {
+            found.push(Problem::NoCover);
+        }
+        if self.meta.release_date.trim().is_empty() {
+            found.push(Problem::NoDate);
+        }
+        found
+    }
+
+    /// Puts `text` (a tag from the file) in the artist field, searching for it, with the
+    /// cursor there: Enter credits the match.
+    pub fn suggest_artist(&mut self, text: &str, shell: &Shell) {
+        self.artist_search.set_query(text, shell);
+        shell.ctx.memory_mut(|m| m.request_focus(egui::Id::new(ARTIST_ID)));
+    }
+
+    /// Like `suggest_artist`, for the album field.
+    pub fn suggest_album(&mut self, text: &str, shell: &Shell) {
+        self.album_search.set_query(text, shell);
+        shell.ctx.memory_mut(|m| m.request_focus(egui::Id::new(ALBUM_ID)));
+    }
+
+    /// The field to fix `problem` in, if it has one.
+    pub fn field_for(problem: Problem) -> Option<&'static str> {
+        match problem {
+            Problem::NoTitle | Problem::FileNameTitle => Some(TITLE_ID),
+            Problem::NoArtists => Some(ARTIST_ID),
+            Problem::NoAlbum => Some(ALBUM_ID),
+            Problem::NoDate => Some(DATE_ID),
+            Problem::NoCover => None,
+        }
     }
 
     /// Takes `theirs` (the form filled from newer details) as the base, with the fields
@@ -226,31 +338,39 @@ impl TrackForm {
             albums: pick(&m.albums, &w.albums, &t.albums),
             relations: pick(&m.relations, &w.relations, &t.relations),
         };
-        let reason = std::mem::take(&mut self.reason);
-        *self = TrackForm { meta, facts, reason, ..theirs };
+        let fresh = TrackForm { meta, facts, ..theirs };
+        self.replace_keeping_input(fresh);
         self.notice = Some("Their changes are loaded, with yours on top. Check them, then save.".into());
+    }
+
+    /// Becomes `fresh`, keeping what's typed but not part of the track yet: the reason,
+    /// the search fields, a new cover.
+    fn replace_keeping_input(&mut self, fresh: TrackForm) {
+        let reason = std::mem::take(&mut self.reason);
+        let cover = self.cover.take();
+        let artist_search = std::mem::replace(&mut self.artist_search, InlineSearch::new(Part::Artists));
+        let album_search = std::mem::replace(&mut self.album_search, InlineSearch::new(Part::Albums));
+        *self = TrackForm { reason, cover, artist_search, album_search, ..fresh };
     }
 
     /// Follows the details: a form without changes shows the newest; one with changes
     /// keeps them (and, if "Load theirs" was asked, is rebased now).
     fn follow(&mut self, d: &TrackDetail, catalog: Option<&Catalog>) {
         let Some(fresh) = TrackForm::from_detail(d, catalog) else { return };
-        if fresh.seen == self.seen || matches!(self.state, SaveState::Saving) {
+        if fresh.seen == self.seen || self.saving() {
             return;
         }
         self.seen = fresh.seen;
         let ours = (fresh.variant, fresh.variant_base, fresh.facts_base) == (self.variant, self.variant_base, self.facts_base);
-        if ours {
-            // Our own save, come back: only the names may be newer.
-            if !self.dirty() {
-                let reason = std::mem::take(&mut self.reason);
-                let state = std::mem::take(&mut self.state);
-                *self = TrackForm { reason, state, ..fresh };
-            }
-        } else if !self.dirty() {
+        let unchanged = self.meta == self.meta_was && self.facts == self.facts_was;
+        if unchanged {
+            // Our own save come back (only names may be newer), or someone else's.
             let state = std::mem::take(&mut self.state);
-            *self = TrackForm { state, ..fresh };
-        } else if self.rebase_asked || fresh.variant != self.variant {
+            let saved = self.saved;
+            self.replace_keeping_input(fresh);
+            self.state = state;
+            self.saved = saved;
+        } else if !ours && (self.rebase_asked || fresh.variant != self.variant) {
             self.rebase(fresh);
         }
     }
@@ -265,6 +385,7 @@ impl TrackForm {
     fn discard(&mut self) {
         self.meta = self.meta_was.clone();
         self.facts = self.facts_was.clone();
+        self.cover = None;
         self.reason.clear();
         self.confirm_discard = false;
         self.state = SaveState::Idle;
@@ -272,91 +393,50 @@ impl TrackForm {
     }
 
     /// The variant's new data, as the server takes it.
+    #[cfg(test)]
     fn meta_body(&self) -> serde_json::Value {
-        let m = &self.meta;
-        let text = |s: &str| Some(s.trim().to_string()).filter(|s| !s.is_empty());
-        let genres: Vec<String> = m.genres.split(',').map(str::trim).filter(|g| !g.is_empty()).map(str::to_string).collect();
-        let credits: Vec<serde_json::Value> =
-            m.credits.iter().map(|c| serde_json::json!({ "artist_id": c.artist_id, "role": c.role, "alias_id": c.alias_id })).collect();
-        serde_json::json!({
-            "base_revision_id": self.variant_base,
-            "reason": self.reason.trim(),
-            "data": {
-                "title": m.title.trim(),
-                "release_date": text(&m.release_date),
-                "genres": genres,
-                "comment": text(&m.comment),
-                "credits": credits,
-            },
-        })
+        meta_body(&self.meta, self.variant_base, &self.reason)
     }
 
-    /// The new facts, as the server takes them; an error for a number that isn't one.
+    #[cfg(test)]
     fn facts_body(&self) -> Result<serde_json::Value, String> {
         let base = self.facts_base.ok_or("This track has no facts revision to build on yet, so they can't be edited here.")?;
-        let number = |text: &str| -> Result<Option<i16>, String> {
-            let text = text.trim();
-            if text.is_empty() {
-                return Ok(None);
-            }
-            text.parse::<i16>().map(Some).map_err(|_| format!("Disc and track numbers are whole numbers (“{text}” isn't one)."))
-        };
-        let mut albums = Vec::new();
-        for a in &self.facts.albums {
-            albums.push(serde_json::json!({ "album_id": a.album_id, "disc_number": number(&a.disc)?, "track_number": number(&a.number)? }));
-        }
-        let relations: Vec<serde_json::Value> =
-            self.facts.relations.iter().map(|r| serde_json::json!({ "kind": r.kind, "track_id": r.track_id })).collect();
-        Ok(serde_json::json!({
-            "base_revision_id": base,
-            "status": self.facts.status,
-            "albums": albums,
-            "relations": relations,
-            "reason": self.reason.trim(),
-        }))
+        facts_body(&self.facts, base, &self.reason)
     }
 
-    /// Sends the parts that changed, one after the other, in the background.
-    fn save(&mut self, shell: &Shell) {
-        if matches!(self.state, SaveState::Saving) || !self.dirty() {
+    /// Saves what changed, in the background: new artists, new albums, the metadata, the
+    /// facts, the cover, in that order (each needs the ones before).
+    pub fn save(&mut self, shell: &Shell) {
+        if self.saving() || !self.dirty() {
             return;
         }
         if self.meta.title.trim().is_empty() {
             self.state = SaveState::Failed("A track needs a title.".into());
             return;
         }
-        let meta = (self.meta != self.meta_was).then(|| self.meta_body());
-        let facts = match (self.facts != self.facts_was).then(|| self.facts_body()).transpose() {
-            Ok(facts) => facts,
-            Err(err) => {
-                self.state = SaveState::Failed(err);
+        let meta_changed = self.meta != self.meta_was;
+        let facts_changed = self.facts != self.facts_was;
+        let facts_base = match (facts_changed, self.facts_base) {
+            (true, None) => {
+                self.state = SaveState::Failed("This track has no facts revision to build on yet, so its albums can't be edited here.".into());
                 return;
             }
+            (_, base) => base,
         };
+        // Numbers are checked now, not halfway through.
+        if let Err(err) = check_numbers(&self.facts) {
+            self.state = SaveState::Failed(err);
+            return;
+        }
         self.state = SaveState::Saving;
         self.confirm_discard = false;
         self.notice = None;
-        self.sending = Some((self.meta.clone(), self.facts.clone()));
         let (api, answer, ctx) = (shell.api.clone(), self.answer.clone(), shell.ctx.clone());
-        let (track, variant) = (self.track, self.variant);
+        let (track, variant, variant_base, reason) = (self.track, self.variant, self.variant_base, self.reason.trim().to_string());
+        let (meta, facts) = (self.meta.clone(), self.facts.clone());
+        let cover = self.cover.as_ref().map(|c| (c.bytes.clone(), c.file_name.clone(), c.on_album));
         shell.runtime.spawn(async move {
-            let mut outcome = Outcome::default();
-            let put = |path: String, body| {
-                let api = api.clone();
-                async move { api.send_json::<Written>(reqwest::Method::PUT, &path, Some(body)).await }
-            };
-            if let Some(body) = meta {
-                match put(format!("/api/tracks/{track}/variants/{variant}"), body).await {
-                    Ok(w) => outcome.meta = Some(w.revision_id),
-                    Err(err) => outcome.error = Some(err),
-                }
-            }
-            if let (Some(body), None) = (facts, &outcome.error) {
-                match put(format!("/api/tracks/{track}/facts"), body).await {
-                    Ok(w) => outcome.facts = Some(w.revision_id),
-                    Err(err) => outcome.error = Some(err),
-                }
-            }
+            let outcome = save(&api, track, variant, variant_base, facts_base, reason, meta, facts, meta_changed, facts_changed, cover).await;
             *answer.lock().unwrap() = Some(outcome);
             ctx.request_repaint();
         });
@@ -365,18 +445,38 @@ impl TrackForm {
     /// Takes in how a save went.
     fn poll(&mut self, shell: &mut Shell) {
         let Some(outcome) = self.answer.lock().unwrap().take() else { return };
-        let (sent_meta, sent_facts) = self.sending.take().unwrap_or_default();
-        if let Some(revision) = outcome.meta {
-            self.variant_base = revision;
-            self.meta_was = sent_meta;
+        // The new artists and albums have ids now (even if a later step failed): the
+        // form's rows get them, so saving again doesn't make them twice.
+        if let Some((sent_meta, sent_facts)) = &outcome.sent {
+            for row in self.meta.credits.iter_mut().filter(|r| r.artist_id.is_none()) {
+                row.artist_id = sent_meta.credits.iter().find(|s| s.name == row.name).and_then(|s| s.artist_id);
+            }
+            for row in self.facts.albums.iter_mut().filter(|r| r.album_id.is_none()) {
+                if let Some(made) = sent_facts.albums.iter().find(|s| s.title == row.title && s.new_kind == row.new_kind) {
+                    row.album_id = made.album_id;
+                    if made.album_id.is_some() {
+                        row.new_kind = None;
+                    }
+                }
+            }
+            if let Some(revision) = outcome.meta {
+                self.variant_base = revision;
+                self.meta_was = sent_meta.clone();
+            }
+            if let Some(revision) = outcome.facts {
+                self.facts_base = Some(revision);
+                let mut was = sent_facts.clone();
+                was.albums.iter_mut().for_each(|a| a.new_kind = None);
+                self.facts_was = was;
+            }
         }
-        if let Some(revision) = outcome.facts {
-            self.facts_base = Some(revision);
-            self.facts_was = sent_facts;
+        if outcome.cover {
+            self.cover = None;
         }
         self.state = match outcome.error {
             None => {
                 self.reason.clear();
+                self.saved = true;
                 SaveState::Saved(Instant::now())
             }
             Some(err) if err.code == "stale" => SaveState::Stale(err.message),
@@ -384,9 +484,7 @@ impl TrackForm {
         };
         // The details (and lists) catch up: on a stale save, that's their version.
         shell.track_details.refresh(self.track);
-        if outcome.meta.is_some() || outcome.facts.is_some() {
-            shell.act(Action::RefreshLibrary);
-        }
+        shell.act(Action::RefreshLibrary);
     }
 
     /// A pick arrived for the row that asked.
@@ -399,29 +497,51 @@ impl TrackForm {
                     *row = CreditRow { artist_id: picked.id, name: picked.name, alias_id: None, alias: None, ..row.clone() };
                 }
             }
-            Target::Credit(None) => {
-                let role = if self.meta.credits.iter().any(|c| c.role == "primary") { "featured" } else { "primary" };
-                self.meta.credits.push(CreditRow { artist_id: picked.id, name: picked.name, role: role.into(), alias_id: None, alias: None });
-            }
+            Target::Credit(None) => self.add_artist(picked.id, picked.name, false),
             Target::Album(Some(i)) => {
                 if let Some(row) = self.facts.albums.get_mut(i) {
                     row.album_id = picked.id;
                     row.title = picked.name;
+                    row.new_kind = picked.id.is_none().then(|| "album".to_string());
                 }
             }
-            Target::Album(None) => {
-                self.facts.albums.push(AlbumRow { album_id: picked.id, title: picked.name, disc: String::new(), number: String::new() });
-            }
+            Target::Album(None) => self.add_album(picked.id, picked.name, picked.id.is_none().then(|| "album".to_string())),
             Target::Relation(Some(i)) => {
-                if let Some(row) = self.facts.relations.get_mut(i) {
-                    row.track_id = picked.id;
+                if let (Some(row), Some(id)) = (self.facts.relations.get_mut(i), picked.id) {
+                    row.track_id = id;
                     row.title = picked.name;
                 }
             }
             Target::Relation(None) => {
+                let Some(id) = picked.id else { return };
                 let kind = shell.account.vocab.as_ref().and_then(|v| v.relation_kinds.first()).map(|k| k.kind.clone()).unwrap_or_default();
-                self.facts.relations.push(RelationRow { kind, track_id: picked.id, title: picked.name });
+                self.facts.relations.push(RelationRow { kind, track_id: id, title: picked.name });
             }
+        }
+    }
+
+    /// Credits an artist (None: a new one): as primary if there's no primary yet, else
+    /// as featured (`featured`: always featured).
+    fn add_artist(&mut self, id: Option<Uuid>, name: String, featured: bool) {
+        if id.is_some() && self.meta.credits.iter().any(|c| c.artist_id == id) {
+            return;
+        }
+        let has_primary = self.meta.credits.iter().any(|c| c.role == "primary");
+        let role = if featured || has_primary { "featured" } else { "primary" };
+        self.meta.credits.push(CreditRow { artist_id: id, name, role: role.into(), alias_id: None, alias: None });
+    }
+
+    /// Puts the track on an album (None: a new one of `new_kind`). A single gets disc 1,
+    /// track 1; otherwise the track number is asked next.
+    fn add_album(&mut self, id: Option<Uuid>, title: String, new_kind: Option<String>) {
+        if id.is_some() && self.facts.albums.iter().any(|a| a.album_id == id) {
+            return;
+        }
+        let single = new_kind.as_deref() == Some("single");
+        let (disc, number) = if single { ("1".into(), "1".into()) } else { (String::new(), String::new()) };
+        self.facts.albums.push(AlbumRow { album_id: id, title, new_kind, disc, number });
+        if !single {
+            self.focus_number = Some(self.facts.albums.len() - 1);
         }
     }
 
@@ -430,20 +550,62 @@ impl TrackForm {
         shell.act(Action::Pick(target.kind()));
     }
 
+    /// Takes a cover from the clipboard (Ctrl+V with an image in it) or a file dropped on
+    /// the window.
+    fn take_cover(&mut self, ctx: &egui::Context) {
+        let pasted = ctx.input(|i| {
+            i.events.iter().any(|e| matches!(e, egui::Event::Paste(_)) || matches!(e, egui::Event::Key { key: Key::V, pressed: true, modifiers, .. } if modifiers.command))
+        });
+        let mut found: Option<(Vec<u8>, String)> = None;
+        if pasted {
+            // Text in the clipboard is for the text field; only an image is taken here.
+            if let Ok(image) = arboard::Clipboard::new().and_then(|mut c| c.get_image()) {
+                let rgba = image::RgbaImage::from_raw(image.width as u32, image.height as u32, image.bytes.into_owned());
+                let mut png = Vec::new();
+                if let Some(rgba) = rgba
+                    && rgba.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).is_ok()
+                {
+                    found = Some((png, "pasted.png".into()));
+                }
+            }
+        }
+        for file in ctx.input(|i| i.raw.dropped_files.clone()) {
+            let name = file.path().file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            match file.bytes() {
+                Ok(bytes) => found = Some((bytes, name)),
+                Err(err) => self.state = SaveState::Failed(format!("Couldn't read “{name}”: {err}")),
+            }
+        }
+        let Some((bytes, file_name)) = found else { return };
+        match image::load_from_memory(&bytes) {
+            Ok(decoded) => {
+                let thumb = decoded.thumbnail(320, 320).to_rgba8();
+                let size = [thumb.width() as usize, thumb.height() as usize];
+                let preview = ctx.load_texture("new-cover", egui::ColorImage::from_rgba_unmultiplied(size, &thumb), Default::default());
+                let on_album = !self.facts.albums.is_empty();
+                self.cover = Some(NewCover { bytes: Arc::new(bytes), file_name, preview, on_album });
+                self.state = SaveState::Idle;
+            }
+            Err(_) => self.state = SaveState::Failed(format!("“{file_name}” isn't an image this can read (JPEG, PNG, WebP or GIF).")),
+        }
+    }
+
     /// The form. Ctrl+Enter saves; Esc (outside text fields) with changes asks, a second
-    /// Esc discards them.
-    pub fn show(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: Option<&Catalog>, d: &TrackDetail) {
+    /// Esc discards them. `cover`: the cover the track shows now.
+    pub fn show(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: Option<&Catalog>, d: &TrackDetail, cover: Option<Cover>) {
         self.poll(shell);
         self.follow(d, catalog);
         if let Some(picked) = shell.picker.take() {
             self.take_pick(picked, shell);
         }
         let ctx = ui.ctx().clone();
+        if !shell.palette_open {
+            self.take_cover(&ctx);
+        }
         if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Enter)) {
             self.save(shell);
         }
-        let palette_open = shell.palette_open;
-        if !palette_open && !ctx.egui_wants_keyboard_input() && ctx.input(|i| i.key_pressed(Key::Escape)) && self.dirty() {
+        if !shell.palette_open && !ctx.egui_wants_keyboard_input() && ctx.input(|i| i.key_pressed(Key::Escape)) && self.dirty() {
             if self.confirm_discard {
                 self.discard();
             } else {
@@ -452,30 +614,37 @@ impl TrackForm {
         }
 
         let vocab = shell.account.vocab.clone().unwrap_or_default();
-        let before = (self.meta.clone(), self.facts.clone());
+        let before = (self.meta.clone(), self.facts.clone(), self.cover.is_some());
 
         let label = |ui: &mut egui::Ui, text: &str| {
             ui.label(RichText::new(text).color(P.faint));
         };
-        let text = |ui: &mut egui::Ui, value: &mut String, hint: &str| {
-            ui.add(egui::TextEdit::singleline(value).hint_text(hint).desired_width(420.0));
+        let text = |ui: &mut egui::Ui, id: &str, value: &mut String, hint: &str| {
+            ui.add(egui::TextEdit::singleline(value).id(egui::Id::new(id)).hint_text(hint).desired_width(420.0));
         };
 
         // ---- The variant's metadata ----
+        let title_was = self.meta.title.clone();
         egui::Grid::new("track-form-meta").num_columns(2).spacing([18.0, 8.0]).show(ui, |ui| {
             label(ui, "Title");
-            text(ui, &mut self.meta.title, "");
+            text(ui, TITLE_ID, &mut self.meta.title, "");
             ui.end_row();
             label(ui, "Released");
-            text(ui, &mut self.meta.release_date, "as the source wrote it: 2019, 2019-05-12…");
+            text(ui, DATE_ID, &mut self.meta.release_date, "as the source wrote it: 2019, 2019-05-12…");
             ui.end_row();
             label(ui, "Genres");
-            text(ui, &mut self.meta.genres, "comma-separated");
+            text(ui, "form-genres", &mut self.meta.genres, "comma-separated");
             ui.end_row();
             label(ui, "Comment");
-            text(ui, &mut self.meta.comment, "");
+            text(ui, "form-comment", &mut self.meta.comment, "");
             ui.end_row();
         });
+        // A new single is named after the track: it follows the title.
+        if self.meta.title != title_was {
+            for row in self.facts.albums.iter_mut().filter(|a| a.new_kind.as_deref() == Some("single") && a.title == title_was) {
+                row.title = self.meta.title.clone();
+            }
+        }
 
         ui.add_space(10.0);
         heading(ui, "Artists");
@@ -483,12 +652,16 @@ impl TrackForm {
         egui::Grid::new("track-form-credits").num_columns(4).spacing([10.0, 6.0]).show(ui, |ui| {
             let count = self.meta.credits.len();
             for (i, row) in self.meta.credits.iter_mut().enumerate() {
-                if ui.button(&row.name).on_hover_text("Choose another artist").clicked() {
+                let name = if row.artist_id.is_none() { format!("{}  (new)", row.name) } else { row.name.clone() };
+                if ui.button(name).on_hover_text("Choose another artist").clicked() {
                     action = Some(RowAction::Pick(Target::Credit(Some(i))));
                 }
-                combo(ui, ("credit-role", i), &mut row.role, &vocab.credit_roles, |r| capitalized(r));
+                combo(ui, ("credit-role", i), &mut row.role, &vocab.credit_roles, capitalized);
                 // Credited as: the artist's name, or one of its aliases.
-                let aliases = shell.artist_details.get(row.artist_id).value.as_ref().map(|a| a.aliases.clone()).unwrap_or_default();
+                let aliases = match row.artist_id {
+                    Some(id) => shell.artist_details.get(id).value.as_ref().map(|a| a.aliases.clone()).unwrap_or_default(),
+                    None => Vec::new(),
+                };
                 let shown = row.alias.clone().map(|a| format!("as {a}")).unwrap_or_else(|| "as its name".into());
                 egui::ComboBox::from_id_salt(("credit-alias", i)).selected_text(shown).show_ui(ui, |ui| {
                     if ui.selectable_label(row.alias_id.is_none(), format!("as {}", row.name)).clicked() {
@@ -516,8 +689,17 @@ impl TrackForm {
                 ui.end_row();
             }
         });
-        if ui.button("+ Add an artist").clicked() {
-            action = Some(RowAction::Pick(Target::Credit(None)));
+        let typed = self.artist_search.query.trim().to_string();
+        let extras = if typed.is_empty() { vec![] } else { vec![format!("New artist “{typed}”")] };
+        let hint = "Add an artist: type a name (Enter adds it, Shift+Enter as featured)";
+        match self.artist_search.show(ui, shell, catalog, egui::Id::new(ARTIST_ID), hint, &extras) {
+            Some((Choice::Hit(i), shift)) => {
+                if let Some(a) = catalog.and_then(|c| c.artists.get(i as usize)) {
+                    self.add_artist(Some(a.id), a.name.clone(), shift);
+                }
+            }
+            Some((Choice::Extra(_), shift)) => self.add_artist(None, typed, shift),
+            None => {}
         }
         match action.take() {
             Some(RowAction::Pick(target)) => self.ask(shell, target),
@@ -534,19 +716,34 @@ impl TrackForm {
         heading(ui, "Albums and status");
         ui.horizontal(|ui| {
             label(ui, "Status");
-            combo(ui, "status", &mut self.facts.status, &vocab.statuses, |s| capitalized(s));
+            combo(ui, "status", &mut self.facts.status, &vocab.statuses, capitalized);
         });
         ui.add_space(4.0);
+        let focus_number = self.focus_number.take();
         egui::Grid::new("track-form-albums").num_columns(4).spacing([10.0, 6.0]).show(ui, |ui| {
             for (i, row) in self.facts.albums.iter_mut().enumerate() {
-                if ui.button(&row.title).on_hover_text("Choose another album").clicked() {
-                    action = Some(RowAction::Pick(Target::Album(Some(i))));
+                match &mut row.new_kind {
+                    // A new one: its title and kind are still to choose.
+                    Some(kind) => {
+                        ui.horizontal(|ui| {
+                            ui.add(egui::TextEdit::singleline(&mut row.title).desired_width(220.0).hint_text("title"));
+                            combo(ui, ("album-kind", i), kind, &vocab.album_kinds, |k| format!("new {k}"));
+                        });
+                    }
+                    None => {
+                        if ui.button(&row.title).on_hover_text("Choose another album").clicked() {
+                            action = Some(RowAction::Pick(Target::Album(Some(i))));
+                        }
+                    }
                 }
                 ui.horizontal(|ui| {
                     label(ui, "disc");
                     ui.add(egui::TextEdit::singleline(&mut row.disc).desired_width(36.0));
                     label(ui, "track");
-                    ui.add(egui::TextEdit::singleline(&mut row.number).desired_width(36.0));
+                    let number = ui.add(egui::TextEdit::singleline(&mut row.number).desired_width(36.0));
+                    if focus_number == Some(i) {
+                        number.request_focus();
+                    }
                 });
                 if ui.small_button("✕").on_hover_text("Take it off this album").clicked() {
                     action = Some(RowAction::Remove(i));
@@ -554,8 +751,28 @@ impl TrackForm {
                 ui.end_row();
             }
         });
-        if ui.button("+ Add to an album").clicked() {
-            action = Some(RowAction::Pick(Target::Album(None)));
+        let typed = self.album_search.query.trim().to_string();
+        let title = self.meta.title.trim().to_string();
+        let mut extras = vec![format!("New single “{title}” (disc 1, track 1)")];
+        if !typed.is_empty() {
+            extras.push(format!("New album “{typed}”"));
+        }
+        let hint = "Add to an album: type its title";
+        match self.album_search.show(ui, shell, catalog, egui::Id::new(ALBUM_ID), hint, &extras) {
+            Some((Choice::Hit(i), _)) => {
+                if let Some(a) = catalog.and_then(|c| c.albums.get(i as usize)) {
+                    self.add_album(Some(a.id), a.title.clone(), None);
+                }
+            }
+            Some((Choice::Extra(0), _)) => self.add_album(None, title, Some("single".into())),
+            Some((Choice::Extra(_), _)) => self.add_album(None, typed, Some("album".into())),
+            None => {}
+        }
+        // Without typing, a new single is a button (the field lists it only while typing).
+        let offer_single = self.album_search.query.trim().is_empty() && !self.facts.albums.iter().any(|a| a.new_kind.is_some());
+        let tip = "An album of kind single, named after the track, with its artists; the track is disc 1, track 1";
+        if offer_single && ui.button("New single from this track").on_hover_text(tip).clicked() {
+            self.add_album(None, self.meta.title.trim().to_string(), Some("single".into()));
         }
         match action.take() {
             Some(RowAction::Pick(target)) => self.ask(shell, target),
@@ -565,20 +782,64 @@ impl TrackForm {
             _ => {}
         }
 
+        // ---- Cover ----
+        ui.add_space(14.0);
+        heading(ui, "Cover");
+        ui.horizontal(|ui| {
+            let size = egui::Vec2::splat(96.0);
+            match &self.cover {
+                Some(new) => {
+                    ui.add(egui::Image::from_texture(&new.preview).fit_to_exact_size(size).corner_radius(6));
+                }
+                None => {
+                    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+                    shell.cover(ui, cover, self.track, rect, 6, 0.0);
+                }
+            }
+            ui.vertical(|ui| {
+                match (&mut self.cover, cover) {
+                    (Some(new), _) => {
+                        ui.label(RichText::new(format!("New: {} (added when saved)", new.file_name)).color(P.text));
+                        if let Some(album) = self.facts.albums.first() {
+                            ui.checkbox(&mut new.on_album, format!("On the album “{}” (its tracks show it too)", album.title));
+                        } else {
+                            new.on_album = false;
+                        }
+                        if ui.small_button("Don't add it").clicked() {
+                            self.cover = None;
+                        }
+                    }
+                    (None, Some(_)) => {
+                        ui.label(RichText::new("Ctrl+V pastes an image to add, or drop an image file here.").color(P.faint));
+                    }
+                    (None, None) => {
+                        ui.label(RichText::new("No cover. Ctrl+V pastes an image, or drop an image file here.").color(P.muted));
+                    }
+                }
+            });
+        });
+
         if shell.account.can("edit_relations") {
             ui.add_space(14.0);
             heading(ui, "Related tracks");
             egui::Grid::new("track-form-relations").num_columns(3).spacing([10.0, 6.0]).show(ui, |ui| {
                 for (i, row) in self.facts.relations.iter_mut().enumerate() {
-                    let phrase = |kind: &str| {
-                        vocab.relation_kinds.iter().find(|k| k.kind == kind).map(|k| relation_phrase(&k.template)).unwrap_or_else(|| kind.replace('_', " "))
+                    // Each kind as the sentence it makes, in its direction ("This track
+                    // is a remix of …" or "… is a remix of this track"); the chosen one
+                    // with the other track's title in it.
+                    let sentence = |kind: &str, other: &str| match vocab.relation_kinds.iter().find(|k| k.kind == kind) {
+                        Some(k) => relation_sentence(&k.template, other),
+                        None => format!("{} {other}", kind.replace('_', " ")),
                     };
-                    let kinds: Vec<String> = vocab.relation_kinds.iter().map(|k| k.kind.clone()).collect();
-                    ui.horizontal(|ui| {
-                        label(ui, "This track");
-                        combo(ui, ("relation-kind", i), &mut row.kind, &kinds, phrase);
+                    let shown = sentence(&row.kind, &format!("“{}”", row.title));
+                    egui::ComboBox::from_id_salt(("relation-kind", i)).selected_text(shown).width(420.0).show_ui(ui, |ui| {
+                        for k in &vocab.relation_kinds {
+                            if ui.selectable_label(row.kind == k.kind, sentence(&k.kind, "…")).clicked() {
+                                row.kind = k.kind.clone();
+                            }
+                        }
                     });
-                    if ui.button(&row.title).on_hover_text("Choose another track").clicked() {
+                    if ui.button("Other track…").on_hover_text("Choose another track").clicked() {
                         action = Some(RowAction::Pick(Target::Relation(Some(i))));
                     }
                     if ui.small_button("✕").on_hover_text("Remove").clicked() {
@@ -599,9 +860,9 @@ impl TrackForm {
             }
         }
 
-        if (self.meta.clone(), self.facts.clone()) != before {
+        if (self.meta.clone(), self.facts.clone(), self.cover.is_some()) != before {
             self.confirm_discard = false;
-            if !matches!(self.state, SaveState::Saving) {
+            if !self.saving() {
                 self.state = SaveState::Idle;
             }
         }
@@ -612,7 +873,7 @@ impl TrackForm {
         ui.add_space(6.0);
         let dirty = self.dirty();
         ui.horizontal(|ui| {
-            let saving = matches!(self.state, SaveState::Saving);
+            let saving = self.saving();
             if ui.add_enabled(dirty && !saving, egui::Button::new("Save  (Ctrl+Enter)")).clicked() {
                 self.save(shell);
             }
@@ -630,10 +891,10 @@ impl TrackForm {
             };
             ui.label(RichText::new(text).color(color));
         });
-        if let SaveState::Saved(at) = self.state {
-            if at.elapsed().as_secs() < 5 {
-                ui.ctx().request_repaint_after(std::time::Duration::from_secs(5));
-            }
+        if let SaveState::Saved(at) = self.state
+            && at.elapsed().as_secs() < 5
+        {
+            ui.ctx().request_repaint_after(std::time::Duration::from_secs(5));
         }
         // Someone else changed it: offer to take theirs with yours on top.
         let stale = matches!(self.state, SaveState::Stale(_));
@@ -662,6 +923,142 @@ impl TrackForm {
     }
 }
 
+/// The saving itself (see `TrackForm::save`), step by step; stops at the first error.
+#[allow(clippy::too_many_arguments)]
+async fn save(
+    api: &Api,
+    track: Uuid,
+    variant: Uuid,
+    variant_base: Uuid,
+    facts_base: Option<Uuid>,
+    reason: String,
+    mut meta: Meta,
+    mut facts: Facts,
+    meta_changed: bool,
+    facts_changed: bool,
+    cover: Option<(Arc<Vec<u8>>, String, bool)>,
+) -> Outcome {
+    let mut outcome = Outcome::default();
+    let result: Result<(), ApiError> = async {
+        // New artists (one per name, even if it's credited twice). After each, what's
+        // made so far is kept in the outcome: on an error later, the form still learns
+        // the new ids and won't make them again.
+        let mut made: Vec<(String, Uuid)> = Vec::new();
+        for i in 0..meta.credits.len() {
+            if meta.credits[i].artist_id.is_some() {
+                continue;
+            }
+            let name = meta.credits[i].name.clone();
+            let id = match made.iter().find(|(n, _)| *n == name) {
+                Some((_, id)) => *id,
+                None => {
+                    let created: Created = api.send_json(reqwest::Method::POST, "/api/artists", Some(serde_json::json!({ "name": name }))).await?;
+                    made.push((name, created.id));
+                    created.id
+                }
+            };
+            meta.credits[i].artist_id = Some(id);
+            outcome.sent = Some((meta.clone(), facts.clone()));
+        }
+        // New albums, credited to the track's primary artists; a single gets its date.
+        let primary: Vec<serde_json::Value> = meta
+            .credits
+            .iter()
+            .filter(|c| c.role == "primary")
+            .map(|c| serde_json::json!({ "artist_id": c.artist_id, "role": "primary", "alias_id": c.alias_id }))
+            .collect();
+        for i in 0..facts.albums.len() {
+            if facts.albums[i].album_id.is_some() {
+                continue;
+            }
+            let row = &facts.albums[i];
+            let kind = row.new_kind.clone().unwrap_or_else(|| "album".into());
+            let date = Some(meta.release_date.trim()).filter(|d| !d.is_empty() && kind == "single");
+            let body = serde_json::json!({ "title": row.title.trim(), "kind": kind, "release_date": date, "credits": primary });
+            let created: Created = api.send_json(reqwest::Method::POST, "/api/albums", Some(body)).await?;
+            facts.albums[i].album_id = Some(created.id);
+            outcome.sent = Some((meta.clone(), facts.clone()));
+        }
+        outcome.sent = Some((meta.clone(), facts.clone()));
+        if meta_changed {
+            let body = meta_body(&meta, variant_base, &reason);
+            let written: Written = api.send_json(reqwest::Method::PUT, &format!("/api/tracks/{track}/variants/{variant}"), Some(body)).await?;
+            outcome.meta = Some(written.revision_id);
+        }
+        if let (true, Some(base)) = (facts_changed, facts_base) {
+            let body = facts_body(&facts, base, &reason).map_err(|message| ApiError { status: None, code: "invalid".into(), message })?;
+            let written: Written = api.send_json(reqwest::Method::PUT, &format!("/api/tracks/{track}/facts"), Some(body)).await?;
+            outcome.facts = Some(written.revision_id);
+        }
+        if let Some((bytes, file_name, on_album)) = cover {
+            let album = facts.albums.first().and_then(|a| a.album_id).filter(|_| on_album);
+            let path = match album {
+                Some(album) => format!("/api/albums/{album}/covers"),
+                None => format!("/api/tracks/{track}/covers"),
+            };
+            let _: Created = api.upload(&path, (*bytes).clone(), &file_name).await?;
+            outcome.cover = true;
+        }
+        Ok(())
+    }
+    .await;
+    outcome.error = result.err();
+    outcome
+}
+
+/// The variant's new data, as the server takes it.
+fn meta_body(m: &Meta, base: Uuid, reason: &str) -> serde_json::Value {
+    let text = |s: &str| Some(s.trim().to_string()).filter(|s| !s.is_empty());
+    let genres: Vec<String> = m.genres.split(',').map(str::trim).filter(|g| !g.is_empty()).map(str::to_string).collect();
+    let credits: Vec<serde_json::Value> =
+        m.credits.iter().map(|c| serde_json::json!({ "artist_id": c.artist_id, "role": c.role, "alias_id": c.alias_id })).collect();
+    serde_json::json!({
+        "base_revision_id": base,
+        "reason": reason.trim(),
+        "data": {
+            "title": m.title.trim(),
+            "release_date": text(&m.release_date),
+            "genres": genres,
+            "comment": text(&m.comment),
+            "credits": credits,
+        },
+    })
+}
+
+/// A disc or track number as typed: empty is none; anything else must be a number.
+fn number(text: &str) -> Result<Option<i16>, String> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Ok(None);
+    }
+    text.parse::<i16>().map(Some).map_err(|_| format!("Disc and track numbers are whole numbers (“{text}” isn't one)."))
+}
+
+fn check_numbers(facts: &Facts) -> Result<(), String> {
+    for a in &facts.albums {
+        number(&a.disc)?;
+        number(&a.number)?;
+    }
+    Ok(())
+}
+
+/// The new facts, as the server takes them (every album has its id by now).
+fn facts_body(facts: &Facts, base: Uuid, reason: &str) -> Result<serde_json::Value, String> {
+    let mut albums = Vec::new();
+    for a in &facts.albums {
+        let id = a.album_id.ok_or_else(|| format!("The album “{}” wasn't made.", a.title))?;
+        albums.push(serde_json::json!({ "album_id": id, "disc_number": number(&a.disc)?, "track_number": number(&a.number)? }));
+    }
+    let relations: Vec<serde_json::Value> = facts.relations.iter().map(|r| serde_json::json!({ "kind": r.kind, "track_id": r.track_id })).collect();
+    Ok(serde_json::json!({
+        "base_revision_id": base,
+        "status": facts.status,
+        "albums": albums,
+        "relations": relations,
+        "reason": reason.trim(),
+    }))
+}
+
 enum RowAction {
     Pick(Target),
     Swap(usize, usize),
@@ -685,9 +1082,10 @@ fn combo(ui: &mut egui::Ui, id: impl std::hash::Hash + std::fmt::Debug, value: &
     });
 }
 
-/// "%A is a remix of %B" → "is a remix of".
-fn relation_phrase(template: &str) -> String {
-    template.replace("%A", "").replace("%B", "").trim().to_string()
+/// "%A is a remix of %B" → "This track is a remix of `other`"; "%B is a remix of %A" →
+/// "`other` is a remix of this track".
+fn relation_sentence(template: &str, other: &str) -> String {
+    capitalized(&template.replace("%A", "this track").replace("%B", other))
 }
 
 fn capitalized(text: &str) -> String {
@@ -719,12 +1117,14 @@ mod tests {
         let (r1, f1, r2, f2) = (Uuid::from_u128(10), Uuid::from_u128(11), Uuid::from_u128(20), Uuid::from_u128(21));
         let mut mine = TrackForm::from_detail(&detail(r1, f1, "Old", &["rap"], "released"), None).unwrap();
         mine.meta.title = "My title".into();
+        mine.reason = "why".into();
         // They changed the genres and the status, and the title too.
         let theirs = TrackForm::from_detail(&detail(r2, f2, "Their title", &["rap", "trap"], "unreleased"), None).unwrap();
         mine.rebase(theirs);
         assert_eq!(mine.meta.title, "My title");
         assert_eq!(mine.meta.genres, "rap, trap");
         assert_eq!(mine.facts.status, "unreleased");
+        assert_eq!(mine.reason, "why");
         // The bases are theirs now, and the title is still a change against them.
         assert_eq!((mine.variant_base, mine.facts_base), (r2, Some(f2)));
         assert!(mine.dirty());
@@ -748,6 +1148,12 @@ mod tests {
     }
 
     #[test]
+    fn relations_read_as_sentences_both_ways() {
+        assert_eq!(relation_sentence("%A is a slowed version of %B", "“X”"), "This track is a slowed version of “X”");
+        assert_eq!(relation_sentence("%B is a slowed version of %A", "“X”"), "“X” is a slowed version of this track");
+    }
+
+    #[test]
     fn bodies_are_what_the_server_takes() {
         let mut form = TrackForm::from_detail(&detail(Uuid::from_u128(10), Uuid::from_u128(11), "T", &[], "released"), None).unwrap();
         form.meta.genres = " rap ,, trap ".into();
@@ -755,10 +1161,33 @@ mod tests {
         let body = form.meta_body();
         assert_eq!(body["data"]["genres"], serde_json::json!(["rap", "trap"]));
         assert!(body["data"]["release_date"].is_null());
-        form.facts.albums.push(AlbumRow { album_id: Uuid::from_u128(5), title: "A".into(), disc: "".into(), number: "x".into() });
+        let row = AlbumRow { album_id: Some(Uuid::from_u128(5)), title: "A".into(), new_kind: None, disc: "".into(), number: "x".into() };
+        form.facts.albums.push(row);
         assert!(form.facts_body().unwrap_err().contains("“x”"));
+        assert!(check_numbers(&form.facts).is_err());
         form.facts.albums[0].number = " 3 ".into();
         assert_eq!(form.facts_body().unwrap()["albums"][0]["track_number"], 3);
+    }
+
+    #[test]
+    fn artists_and_albums_are_added_in_place() {
+        let mut form = TrackForm::from_detail(&detail(Uuid::from_u128(10), Uuid::from_u128(11), "Song", &[], "released"), None).unwrap();
+        form.add_artist(Some(Uuid::from_u128(7)), "A".into(), false);
+        form.add_artist(None, "New person".into(), false);
+        form.add_artist(Some(Uuid::from_u128(7)), "A".into(), false); // already there
+        let roles: Vec<&str> = form.meta.credits.iter().map(|c| c.role.as_str()).collect();
+        assert_eq!(roles, ["primary", "featured"]);
+
+        form.add_album(None, "Song".into(), Some("single".into()));
+        assert_eq!((form.facts.albums[0].disc.as_str(), form.facts.albums[0].number.as_str()), ("1", "1"));
+        assert_eq!(form.focus_number, None);
+        form.add_album(Some(Uuid::from_u128(8)), "LP".into(), None);
+        assert_eq!(form.focus_number, Some(1));
+
+        // Nothing wrong but the cover and the date.
+        let found = form.problems(false, None);
+        assert_eq!(found, [Problem::NoCover, Problem::NoDate]);
+        assert_eq!(form.problems(true, None), [Problem::NoDate]);
     }
 }
 
@@ -818,6 +1247,60 @@ mod against_a_server {
             back.reason = "the desktop client's form test (putting it back)".into();
             put(variant_path, back.meta_body()).await.unwrap();
             assert_eq!(detail().await.title, original);
+        });
+    }
+
+    /// A new artist, a new single and a new cover, made by one save. Makes an artist and
+    /// an album: run it against a throwaway database.
+    #[test]
+    #[ignore]
+    fn new_artist_single_and_cover_in_one_save() {
+        let (Ok(server), Ok(token), Ok(track)) =
+            (std::env::var("ACETATE_TEST_SERVER"), std::env::var("ACETATE_TEST_TOKEN"), std::env::var("ACETATE_TEST_TRACK"))
+        else {
+            return;
+        };
+        let dir = std::env::temp_dir().join(format!("acetate-form-test-new-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("session.json"), serde_json::json!({"server": server, "token": token, "username": "test"}).to_string()).unwrap();
+        let api = Api::new(dir);
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let detail = || async { api.send_json::<TrackDetail>(reqwest::Method::GET, &format!("/api/tracks/{track}"), None).await.unwrap() };
+            let mut form = TrackForm::from_detail(&detail().await, None).unwrap();
+            let name = format!("Form test artist {}", std::process::id());
+            // Its own names each run, and on no album but the new single.
+            form.meta.title = format!("Form test single {}", std::process::id());
+            form.facts.albums.clear();
+            form.meta.release_date = "2026".into();
+            form.add_artist(None, name.clone(), false);
+            form.add_album(None, form.meta.title.clone(), Some("single".into()));
+            let mut png = Vec::new();
+            image::RgbaImage::from_pixel(8, 8, image::Rgba([200, 100, 50, 255]))
+                .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+                .unwrap();
+            let outcome = save(
+                &api, form.track, form.variant, form.variant_base, form.facts_base, "form test".into(),
+                form.meta.clone(), form.facts.clone(), true, true, Some((Arc::new(png), "cover.png".into(), true)),
+            )
+            .await;
+            assert!(outcome.error.is_none(), "{:?}", outcome.error.map(|e| e.message));
+            assert!(outcome.meta.is_some() && outcome.facts.is_some() && outcome.cover);
+
+            let d = detail().await;
+            assert_eq!(d.title, form.meta.title);
+            // Credited after the primary artist the track already had: as featured.
+            assert!(d.credits.iter().any(|c| c.artist_name == name && c.role == "featured"), "{:?}", d.credits);
+            let single = d.albums.first().expect("on the new single");
+            assert_eq!(d.albums.len(), 1);
+            assert_eq!((&single.title, single.disc_number, single.track_number), (&form.meta.title, Some(1), Some(1)));
+            let album: crate::details::AlbumDetail =
+                api.send_json(reqwest::Method::GET, &format!("/api/albums/{}", single.album_id), None).await.unwrap();
+            assert_eq!(album.covers.len(), 1, "the cover went on the single");
+            // Credited to the track's primary artists (only).
+            let primary: Vec<&str> = d.credits.iter().filter(|c| c.role == "primary").map(|c| c.artist_name.as_str()).collect();
+            let credited: Vec<&str> = album.credits.iter().map(|c| c.artist_name.as_str()).collect();
+            assert_eq!(credited, primary);
         });
     }
 }

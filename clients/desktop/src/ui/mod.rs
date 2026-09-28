@@ -4,8 +4,8 @@
 //! keyboard (and later the command palette) do the same, so there's one way to do each
 //! thing.
 //!
-//! Keys, see `keys`: Ctrl+1–5 (anywhere) or 1–5 (outside text fields): albums, artists,
-//! tracks, now playing, queue · q add to the queue · Shift+Q play next · Esc / Alt+← back · Alt+→ forward · / filter · Space pause · Ctrl+←/→
+//! Keys, see `keys`: Ctrl+1–6 (anywhere) or 1–6 (outside text fields): albums, artists,
+//! tracks, now playing, queue, review · q add to the queue · Shift+Q play next · Esc / Alt+← back · Alt+→ forward · / filter · Space pause · Ctrl+←/→
 //! previous/next · Shift+←/→ seek 10 s · s star the selected one · Shift+S star what
 //! plays · 9/0 volume down/up · m mute · i the selected track's page · +/− rate the selected one · r loop the track · z shuffle · F5 refresh the library · arrows or hjkl move ·
 //! Enter open or play · Shift+Enter play.
@@ -52,6 +52,8 @@ pub enum Page {
     /// Everything about one track.
     Track(Uuid),
     Settings,
+    /// The workbench: fixing what's flagged or missing.
+    Review,
 }
 
 /// Something to do, asked for by a page, a key or a button.
@@ -120,6 +122,8 @@ pub struct Shell {
     pub account: crate::account::Account,
     /// Pages show their editors (only with `edit_metadata`).
     pub edit_mode: bool,
+    /// Open review flags (the Review page's list).
+    pub flags: crate::review::Flags,
     /// Where picks from the palette arrive, for the form that asked.
     pub picker: edit::Picker,
     /// Track forms, per track: changes not saved yet are kept while you look elsewhere.
@@ -357,6 +361,7 @@ impl Shell {
         self.account.fetch(&self.api, self.runtime.handle(), ctx);
         self.edit_mode = false;
         self.track_forms.clear();
+        self.flags.reset(Some(self.data_dir.join(format!("review-{}.json", store::key(&session)))));
         let (sender, api, ctx) = (self.updates.0.clone(), self.api.clone(), ctx.clone());
         self.runtime.spawn(store::load_and_refresh(store, api, move |update| {
             let _ = sender.send(update);
@@ -486,6 +491,7 @@ impl App {
             account: crate::account::Account::default(),
             edit_mode: false,
             picker: edit::Picker::default(),
+            flags: Default::default(),
             track_forms: Default::default(),
             form_dirty: false,
             palette_open: false,
@@ -668,6 +674,9 @@ impl App {
                 }
                 Action::LogOut => {
                     self.shell.api.logout();
+                    // (The queue was kept on disk as it played; it comes back at the next login.)
+                    let c = self.shell.controller.clone();
+                    self.shell.runtime.spawn(async move { c.stop().await });
                     self.shell.catalog = Cached::default();
                     self.shell.marks.clear();
                     self.shell.playlists.reset(None);
@@ -676,6 +685,7 @@ impl App {
                     self.shell.album_details.reset(None);
                     self.shell.artist_details.reset(None);
                     self.shell.track_forms.clear();
+                    self.shell.flags.reset(None);
                     self.shell.store = None;
                     self.shell.generation += 1;
                 }
@@ -719,12 +729,16 @@ impl App {
         }
         let m = ctx.input(|i| i.modifiers);
         let key = |k: Key| ctx.input(|i| i.key_pressed(k));
+        // By the character typed, not the key: "/" and "?" are on different keys (and
+        // need Shift or not) on different keyboard layouts.
+        let typed = |text: &str| ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Text(t) if t == text)));
         let pages = [
             (Key::Num1, Page::Albums),
             (Key::Num2, Page::Artists),
             (Key::Num3, Page::Tracks),
             (Key::Num4, Page::NowPlaying),
             (Key::Num5, Page::Queue),
+            (Key::Num6, Page::Review),
         ];
 
         // Everywhere, text fields included.
@@ -786,7 +800,8 @@ impl App {
         }
         if (key(Key::Escape) || key(Key::Backspace)) && !self.shell.form_dirty {
             self.shell.act(Action::Back);
-        } else if key(Key::Space) {
+        } else if key(Key::Space) && self.page != Page::Review {
+            // (On the Review page, Space plays the track being fixed: the page does it.)
             self.shell.act(Action::TogglePause);
         } else if key(Key::Num9) {
             self.shell.act(Action::VolumeBy(-0.05));
@@ -800,9 +815,9 @@ impl App {
             self.shell.act(Action::ToggleRepeat);
         } else if !m.shift && key(Key::Z) {
             self.shell.act(Action::ToggleShuffle);
-        } else if key(Key::Questionmark) || (m.shift && key(Key::Slash)) {
+        } else if typed("?") {
             self.shell.act(Action::ShowKeys);
-        } else if key(Key::Slash) {
+        } else if typed("/") {
             // Swallow the "/" itself, or the field would get it as text this frame.
             ctx.input_mut(|i| {
                 i.consume_key(egui::Modifiers::NONE, Key::Slash);
@@ -906,11 +921,11 @@ fn app_dir(base: Option<PathBuf>) -> PathBuf {
     const OLD: &str = "dev.acetate.desktop";
     let base = base.unwrap_or_default();
     let (dir, old) = (base.join(NAME), base.join(OLD));
-    if !dir.exists() && old.exists() {
-        if let Err(err) = std::fs::rename(&old, &dir) {
-            // It starts afresh; the old folder stays as it was.
-            eprintln!("couldn't move {} to {}: {err}", old.display(), dir.display());
-        }
+    if !dir.exists() && old.exists()
+        && let Err(err) = std::fs::rename(&old, &dir)
+    {
+        // It starts afresh; the old folder stays as it was.
+        eprintln!("couldn't move {} to {}: {err}", old.display(), dir.display());
     }
     dir
 }
@@ -934,7 +949,7 @@ pub fn thousands(n: usize) -> String {
     let digits = n.to_string();
     let mut out = String::new();
     for (i, c) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i) % 3 == 0 {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
             out.push(',');
         }
         out.push(c);

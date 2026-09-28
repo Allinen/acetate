@@ -12,6 +12,7 @@ pub mod palette;
 pub mod player_bar;
 pub mod playlist;
 pub mod queue;
+pub mod review;
 pub mod settings;
 pub mod sidebar;
 pub mod track_table;
@@ -39,6 +40,7 @@ pub struct Pages {
     artist: artist::ArtistPage,
     playlist: playlist::PlaylistPage,
     track: track::TrackPage,
+    review: review::Review,
     queue: queue::QueuePage,
     pub settings: settings::SettingsPage,
 }
@@ -52,6 +54,7 @@ impl Pages {
             Page::Playlist(_) | Page::Liked => self.playlist = Default::default(),
             Page::Track(_) => self.track = Default::default(),
             Page::Queue => self.queue.opened(),
+            Page::Review => self.review.opened(),
             _ => {}
         }
     }
@@ -82,6 +85,7 @@ impl Pages {
             Page::Liked => self.playlist.show_liked(ui, shell, &catalog, player),
             Page::Playlist(id) => self.playlist.show(ui, shell, &catalog, id, player),
             Page::Track(id) => self.track.show(ui, shell, &catalog, id, player),
+            Page::Review => self.review.show(ui, shell, &catalog, player),
             Page::NowPlaying | Page::Queue | Page::Settings => {}
         }
     }

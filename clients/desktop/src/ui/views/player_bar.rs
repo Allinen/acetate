@@ -96,10 +96,10 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell, player: &PlayerView) {
     }
     ui.painter().text(bar.left_center() - Vec2::new(10.0, 0.0), Align2::RIGHT_CENTER, widgets::clock(position), font(11.0, medium()), P.muted);
     ui.painter().text(bar.right_center() + Vec2::new(10.0, 0.0), Align2::LEFT_CENTER, total.map(widgets::clock).unwrap_or_default(), font(11.0, medium()), P.muted);
-    if let (Some(total), Some(at)) = (total, pointer_fraction) {
-        if response.clicked() || response.drag_stopped() {
-            shell.controller.seek(total.mul_f32(at));
-        }
+    if let (Some(total), Some(at)) = (total, pointer_fraction)
+        && (response.clicked() || response.drag_stopped())
+    {
+        shell.controller.seek(total.mul_f32(at));
     }
     if playing {
         // The bar and clock move smoothly: redraw at the display's rate, but only this.
@@ -173,10 +173,10 @@ fn volume(ui: &mut egui::Ui, shell: &mut Shell, player: &PlayerView, rect: Rect)
     let track = Rect::from_min_max(Pos2::new(speaker.right() + 8.0, rect.center().y - 8.0), Pos2::new(rect.right() - 6.0, rect.center().y + 8.0));
     let response = ui.interact(track, egui::Id::new("volume"), Sense::click_and_drag());
     let hover = ctx.animate_bool_with_time(response.id, response.hovered() || response.dragged(), 0.12);
-    if let Some(pointer) = response.interact_pointer_pos() {
-        if response.clicked() || response.dragged() {
-            shell.act(Action::SetVolume(((pointer.x - track.left()) / track.width()).clamp(0.0, 1.0)));
-        }
+    if let Some(pointer) = response.interact_pointer_pos()
+        && (response.clicked() || response.dragged())
+    {
+        shell.act(Action::SetVolume(((pointer.x - track.left()) / track.width()).clamp(0.0, 1.0)));
     }
     if response.hovered() {
         let scroll = ui.input(|i| i.smooth_scroll_delta.y);

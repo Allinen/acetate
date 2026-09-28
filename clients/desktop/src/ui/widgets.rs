@@ -287,7 +287,7 @@ pub fn chip(ui: &mut egui::Ui, text: &str, active: bool) -> bool {
 pub fn draw_star(painter: &egui::Painter, center: Pos2, r: f32, color: Color32) {
     let point = |i: usize| {
         let angle = -std::f32::consts::FRAC_PI_2 + i as f32 * std::f32::consts::PI / 5.0;
-        let radius = if i % 2 == 0 { r } else { r * 0.45 };
+        let radius = if i.is_multiple_of(2) { r } else { r * 0.45 };
         center + Vec2::angled(angle) * radius
     };
     for i in 0..10 {

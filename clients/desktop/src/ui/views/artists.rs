@@ -78,10 +78,10 @@ impl Artists {
                 shell.act(Action::AddToPlaylist(tracks));
             }
         }
-        if moved.enter {
-            if let Some(&i) = self.list.get(self.selected) {
-                shell.act(Action::Go(Page::Artist(catalog.artists[i as usize].id)));
-            }
+        if moved.enter
+            && let Some(&i) = self.list.get(self.selected)
+        {
+            shell.act(Action::Go(Page::Artist(catalog.artists[i as usize].id)));
         }
         let mut scroll = egui::ScrollArea::vertical().auto_shrink([false, false]).id_salt("artists");
         if let Some(row) = self.scroll_to.take() {

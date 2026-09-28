@@ -119,7 +119,7 @@ impl Queue {
                     return None;
                 }
                 let queued = Arc::make_mut(&mut self.queued);
-                let item = queued.drain(..=i).last()?;
+                let item = queued.drain(..=i).next_back()?;
                 self.current = Some(Current { item: item.clone(), queued: true });
                 item
             }

@@ -38,6 +38,7 @@ const COMMANDS: &[Command] = &[
     Command { name: "Go to Tracks", keys: "3", action: || Action::Go(Page::Tracks) },
     Command { name: "Go to Now playing", keys: "4", action: || Action::Go(Page::NowPlaying) },
     Command { name: "Go to the queue", keys: "5", action: || Action::Go(Page::Queue) },
+    Command { name: "Go to Review (fix the library)", keys: "6", action: || Action::Go(Page::Review) },
     Command { name: "Play / pause", keys: "Space", action: || Action::TogglePause },
     Command { name: "Next track", keys: "Ctrl+→", action: || Action::Next },
     Command { name: "Previous track", keys: "Ctrl+←", action: || Action::Previous },
@@ -141,11 +142,11 @@ impl Palette {
                 self.query = p.1.clone();
             }
         }
-        if let Some((number, hits)) = self.answer.lock().unwrap().take() {
-            if number == self.asked {
-                self.hits = hits;
-                self.selected = 0;
-            }
+        if let Some((number, hits)) = self.answer.lock().unwrap().take()
+            && number == self.asked
+        {
+            self.hits = hits;
+            self.selected = 0;
         }
 
         // Keys for the list, taken before the text field sees them.
@@ -424,11 +425,8 @@ fn run(shell: &mut Shell, catalog: Option<&Catalog>, mode: &Mode, query: &str, e
         (Mode::Name(None), Entry::Create) => shell.playlists.create(query.to_string(), Vec::new()),
         (Mode::Name(Some(id)), Entry::Create) => shell.playlists.update(*id, Some(query.to_string()), None),
         (Mode::Search, _) => search_result(shell, catalog, entry, shift),
-        (Mode::Pick(kind), Entry::Create) => {
-            let controller = shell.controller.clone();
-            let failed = move |err: crate::api::ApiError| controller.report(format!("Couldn't make it. {err}"));
-            shell.picker.create(&shell.api, shell.runtime.handle(), *kind, query.to_string(), failed);
-        }
+        // Made when the form is saved.
+        (Mode::Pick(kind), Entry::Create) => shell.picker.pick(*kind, None, query.to_string()),
         (Mode::Pick(kind), entry) => {
             let Some(c) = catalog else { return };
             let (id, name) = match entry {
@@ -437,7 +435,7 @@ fn run(shell: &mut Shell, catalog: Option<&Catalog>, mode: &Mode, query: &str, e
                 Entry::Track(i) => (c.tracks[i as usize].id, c.tracks[i as usize].title.clone()),
                 _ => return,
             };
-            shell.picker.pick(*kind, id, name);
+            shell.picker.pick(*kind, Some(id), name);
         }
         _ => {}
     }
