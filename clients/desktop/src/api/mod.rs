@@ -33,7 +33,6 @@ pub struct ApiError {
     /// The server's error code (`not_found`, `stale`…), or ours: `unreachable`,
     /// `unexpected` (an answer this app can't read). For acting on (edit mode: offer to
     /// reload on `stale`), not for showing.
-    #[allow(dead_code)]
     pub code: String,
     pub message: String,
 }
@@ -206,10 +205,14 @@ impl Api {
         self.send_json(reqwest::Method::POST, &format!("/api/tracks/{track}/played"), None).await
     }
 
-    /// The whole library (`GET /api/catalog`). With the ETag of the copy we have, an
-    /// unchanged library costs the server no body to send.
-    pub async fn catalog(&self, etag: Option<&str>) -> Result<CatalogResponse, ApiError> {
+    /// The library (`GET /api/catalog`). With the version of the copy we have (`since`),
+    /// only what changed since (a delta); with its ETag, an unchanged library costs the
+    /// server no body to send.
+    pub async fn catalog(&self, etag: Option<&str>, since: Option<&str>) -> Result<CatalogResponse, ApiError> {
         let (mut request, server) = self.request(reqwest::Method::GET, "/api/catalog")?;
+        if let Some(since) = since {
+            request = request.query(&[("since", since)]);
+        }
         if let Some(etag) = etag {
             request = request.header(reqwest::header::IF_NONE_MATCH, etag);
         }

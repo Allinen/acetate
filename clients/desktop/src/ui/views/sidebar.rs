@@ -100,6 +100,13 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell, page: Page, username: &str) {
         });
 
     ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
+        if shell.account.can("edit_metadata") {
+            let label = if shell.edit_mode { "Editing  ·  e to stop" } else { "Edit mode  e" };
+            if widgets::chip(ui, label, shell.edit_mode) {
+                shell.act(Action::ToggleEditMode);
+            }
+            ui.add_space(6.0);
+        }
         ui.horizontal(|ui| {
             let settings = RichText::new("Settings").color(if page == Page::Settings { P.text } else { P.muted });
             if ui.add(egui::Button::new(settings).frame(false)).on_hover_text("Ctrl+,").clicked() {

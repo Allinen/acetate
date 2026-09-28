@@ -2,7 +2,7 @@
 //! (as you may see it) locally, so browsing, sorting and filtering never wait on the
 //! network, and plays natively and gapless.
 //!
-//! - `api`: talking to the server.
+//! - `api`: talking to the server; `account`: who's logged in, what they may do.
 //! - `catalog`: the library kept locally, and its lookups.
 //! - `details`: everything about one track, album or artist, for their pages.
 //! - `lyrics`: synced lyrics (LRC).
@@ -12,6 +12,7 @@
 //! - `settings`: volume and sound output.
 //! - `ui`: the window, its pages and the pieces they're drawn with.
 
+mod account;
 mod api;
 mod catalog;
 mod details;

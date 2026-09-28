@@ -1,0 +1,41 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT kind AS \"kind!\", entity_id\n        FROM library_changes\n        WHERE xid >= pg_snapshot_xmin($1::text::pg_snapshot)\n          AND NOT pg_visible_in_snapshot(xid, $1::text::pg_snapshot)\n        GROUP BY kind, entity_id\n        LIMIT $2\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "kind!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "library_changes",
+            "name": "kind"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "entity_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "library_changes",
+            "name": "entity_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      true
+    ]
+  },
+  "hash": "b3c6cb12668983c2392d1c74eb72478f624bba5cd35b47fbee7977a9709c4377"
+}

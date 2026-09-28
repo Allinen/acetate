@@ -3,7 +3,7 @@
 
 use std::time::Duration;
 
-use eframe::egui::{self, Align2, Color32, Pos2, Rect, Sense, Vec2};
+use eframe::egui::{self, Align2, Pos2, Rect, Sense, Vec2};
 
 use crate::catalog::marks::Kind;
 use crate::playback::PlayerView;
@@ -112,7 +112,7 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell, player: &PlayerView) {
     let notice = shell.playlists.notice.clone().filter(|(_, at)| at.elapsed() < Duration::from_secs(4));
     let message = match (error, notice) {
         (Some(e), Some(n)) if n.1 > e.1 => Some((n.0, P.accent)),
-        (Some(e), _) => Some((e.0, Color32::from_rgb(255, 120, 120))),
+        (Some(e), _) => Some((e.0, P.danger)),
         (None, Some(n)) => Some((n.0, P.accent)),
         (None, None) => None,
     };

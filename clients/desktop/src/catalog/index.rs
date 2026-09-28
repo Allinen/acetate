@@ -13,6 +13,8 @@ use uuid::Uuid;
 use super::model::{self, Album, Annotation, Artist, Playlist, Track};
 
 pub struct Catalog {
+    /// Its version, for asking the server what changed since (None: an older server).
+    pub version: Option<String>,
     pub tracks: Vec<Track>,
     pub albums: Vec<Album>,
     pub artists: Vec<Artist>,
@@ -129,6 +131,7 @@ impl Catalog {
             .collect();
 
         Catalog {
+            version: raw.version,
             track_album_rank,
             album_title_key,
             track_title_key: tracks.iter().map(|t| sort_key(&t.title)).collect(),
@@ -150,6 +153,46 @@ impl Catalog {
             album_text,
             artist_text,
         }
+    }
+
+    /// This catalog with a delta applied (`Raw::delta`): changed rows replaced by id,
+    /// new ones added, removed ones dropped; then indexed again (a fraction of a second
+    /// at 185k tracks: call it off the UI thread).
+    pub fn apply(&self, delta: model::Raw) -> Catalog {
+        fn merge<T: Clone>(rows: &[T], changed: Vec<T>, removed: &[Uuid], id: impl Fn(&T) -> Uuid) -> Vec<T> {
+            let mut changed: HashMap<Uuid, T> = changed.into_iter().map(|r| (id(&r), r)).collect();
+            let mut out: Vec<T> = rows
+                .iter()
+                .filter(|r| !removed.contains(&id(r)))
+                .map(|r| changed.remove(&id(r)).unwrap_or_else(|| r.clone()))
+                .collect();
+            // New ones (their order doesn't matter: lists are sorted when shown).
+            out.extend(changed.into_values());
+            out
+        }
+        let removed = &delta.removed;
+        let tracks = merge(&self.tracks, delta.tracks.rows, &removed.tracks, |t| t.id);
+        let albums = merge(&self.albums, delta.albums.rows, &removed.albums, |a| a.id);
+        let artists = merge(&self.artists, delta.artists.rows, &removed.artists, |a| a.id);
+        let mut annotations = self.annotations.clone();
+        for id in &removed.annotations {
+            annotations.remove(id);
+        }
+        for a in delta.annotations.rows {
+            annotations.insert(a.id, a);
+        }
+        let part = |rows| model::Part { columns: Vec::new(), rows };
+        Catalog::build(model::Raw {
+            format: delta.format,
+            version: delta.version.or_else(|| self.version.clone()),
+            delta: false,
+            removed: model::Removed::default(),
+            tracks: part(tracks),
+            albums: model::Part { columns: Vec::new(), rows: albums },
+            artists: model::Part { columns: Vec::new(), rows: artists },
+            annotations: model::Part { columns: Vec::new(), rows: annotations.into_values().collect() },
+            playlists: delta.playlists,
+        })
     }
 
     /// A track's position in `tracks`.
@@ -420,6 +463,35 @@ mod tests {
     }
 
     #[test]
+    fn a_delta_replaces_adds_and_removes() {
+        let c = catalog();
+        let t = |n: u8| format!("00000000-0000-7000-8000-00000000000{n}");
+        let track = |n: u8, title: &str| {
+            let album = serde_json::json!([["00000000-0000-7000-8000-0000000000b1", 1, 2]]);
+            serde_json::json!([t(n), title, "Ann", [], album, 1000, "00000000-0000-7000-8000-0000000000f9", null, null, null, null, "released", [], "", false, "flac"])
+        };
+        let delta = serde_json::json!({
+            "format": 1, "delta": true, "version": "10:20:",
+            "tracks": {"columns": [], "rows": [track(1, "Second (edited)"), track(4, "Fourth")]},
+            "albums": {"columns": [], "rows": []},
+            "artists": {"columns": [], "rows": []},
+            "annotations": {"columns": [], "rows": []},
+            "playlists": [],
+            "removed": {"tracks": [t(3)]}
+        });
+        let delta: model::Raw = serde_json::from_value(delta).unwrap();
+        let c = c.apply(delta);
+        let mut titles: Vec<String> = c.tracks.iter().map(|t| t.title.clone()).collect();
+        titles.sort();
+        assert_eq!(titles, ["First", "Fourth", "Second (edited)"]);
+        assert_eq!(c.version.as_deref(), Some("10:20:"));
+        // The index follows: "The Third" is gone from the album, "Fourth" is on it (by
+        // number, then title).
+        let a = "00000000-0000-7000-8000-0000000000b1".parse().unwrap();
+        assert_eq!(super::tests::titles(&c, c.album_tracks(a)), ["First", "Fourth", "Second (edited)"]);
+    }
+
+    #[test]
     fn unknown_columns_ask_for_an_update() {
         let body = br#"{"format": 2}"#;
         let err = model::parse(body).err().unwrap().to_string();
@@ -460,6 +532,23 @@ mod bench {
             let hits = search.run(&c, query, 10);
             println!("search {query:?}: {:?} ({} tracks)", t.elapsed(), hits.tracks.len());
         }
+        // A one-track delta, applied (index rebuilt).
+        let mut changed = c.tracks[5000].clone();
+        changed.title.push_str(" (edited)");
+        let delta = model::Raw {
+            format: 1,
+            version: Some("1:2:".into()),
+            delta: true,
+            removed: model::Removed::default(),
+            tracks: model::Part { columns: Vec::new(), rows: vec![changed] },
+            albums: model::Part { columns: Vec::new(), rows: Vec::new() },
+            artists: model::Part { columns: Vec::new(), rows: Vec::new() },
+            annotations: model::Part { columns: Vec::new(), rows: Vec::new() },
+            playlists: Vec::new(),
+        };
+        let t = Instant::now();
+        let c = c.apply(delta);
+        println!("applying a one-track delta: {:?}", t.elapsed());
         let t = Instant::now();
         let list = c.album_list("", AlbumSort::Artist);
         println!("albums by artist: {:?} ({})", t.elapsed(), list.len());

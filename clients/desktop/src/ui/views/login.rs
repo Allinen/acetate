@@ -83,7 +83,7 @@ impl Login {
                     ctx.request_repaint();
                 });
             }
-            ui.colored_label(Color32::from_rgb(255, 120, 120), &self.error);
+            ui.colored_label(P.danger, &self.error);
         });
     }
 }

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT f.id, f.kind, f.track_id, t.title AS track_title, t.artist_display AS track_artist,\n               f.related - 'tracks' - 'artists' AS \"related!\",\n               COALESCE((\n                   SELECT jsonb_agg(jsonb_build_object(\n                       'id', rt.id, 'title', rt.title, 'artist_display', rt.artist_display))\n                   FROM tracks rt\n                   WHERE rt.id IN (SELECT (jsonb_array_elements_text(f.related -> 'tracks'))::uuid)\n               ), '[]') AS \"related_tracks!\",\n               COALESCE((\n                   SELECT jsonb_agg(jsonb_build_object(\n                       'id', a.id, 'name', a.name, 'disambiguation', a.disambiguation))\n                   FROM artists a\n                   WHERE a.id IN (SELECT (jsonb_array_elements_text(f.related -> 'artists'))::uuid)\n               ), '[]') AS \"related_artists!\",\n               f.created_at, f.resolved_at, u.username AS \"resolved_by?\", f.resolution\n        FROM review_flags f\n        JOIN tracks t ON t.id = f.track_id\n        LEFT JOIN users u ON u.id = f.resolved_by\n        WHERE (f.resolved_at IS NOT NULL) = $1\n          AND f.id < COALESCE($2, 'ffffffff-ffff-ffff-ffff-ffffffffffff'::uuid)\n          AND ($4::text IS NULL OR f.kind = $4)\n          AND ($5::text IS NULL OR f.kind <> $5)\n        ORDER BY f.id DESC\n        LIMIT $3\n        ",
+  "query": "\n        SELECT f.id, f.kind, f.track_id, t.title AS track_title, t.artist_display AS track_artist,\n               f.related - 'tracks' - 'artists' AS \"related!\",\n               COALESCE((\n                   SELECT jsonb_agg(jsonb_build_object(\n                       'id', rt.id, 'title', rt.title, 'artist_display', rt.artist_display))\n                   FROM tracks rt\n                   WHERE rt.id IN (SELECT (jsonb_array_elements_text(f.related -> 'tracks'))::uuid)\n               ), '[]') AS \"related_tracks!\",\n               COALESCE((\n                   SELECT jsonb_agg(jsonb_build_object(\n                       'id', a.id, 'name', a.name, 'disambiguation', a.disambiguation))\n                   FROM artists a\n                   WHERE a.id IN (SELECT (jsonb_array_elements_text(f.related -> 'artists'))::uuid)\n               ), '[]') AS \"related_artists!\",\n               f.created_at, f.resolved_at, u.username AS \"resolved_by?\", f.resolution,\n               fi.imported_from\n        FROM review_flags f\n        JOIN tracks t ON t.id = f.track_id\n        LEFT JOIN files fi ON fi.id = t.file_id\n        LEFT JOIN users u ON u.id = f.resolved_by\n        WHERE (f.resolved_at IS NOT NULL) = $1\n          AND f.id < COALESCE($2, 'ffffffff-ffff-ffff-ffff-ffffffffffff'::uuid)\n          AND ($4::text IS NULL OR f.kind = $4)\n          AND ($5::text IS NULL OR f.kind <> $5)\n        ORDER BY f.id DESC\n        LIMIT $3\n        ",
   "describe": {
     "columns": [
       {
@@ -119,6 +119,17 @@
             "name": "resolution"
           }
         }
+      },
+      {
+        "ordinal": 12,
+        "name": "imported_from",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "files",
+            "name": "imported_from"
+          }
+        }
       }
     ],
     "parameters": {
@@ -142,8 +153,9 @@
       false,
       true,
       false,
-      false
+      false,
+      true
     ]
   },
-  "hash": "026fd4aa492d79c034a31660f2a664ef669dad273337a7a64cee2f8e4e354766"
+  "hash": "160ad30735b6d00ff1d095501a0d69771e4252dbec3aa7412665abec52bfe76a"
 }

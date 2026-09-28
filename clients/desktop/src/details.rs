@@ -22,8 +22,12 @@ pub struct TrackDetail {
     pub id: Uuid,
     pub title: String,
     pub artist_display: String,
+    pub status: String,
     pub release_date: Option<String>,
     pub primary_variant_id: Option<Uuid>,
+    /// The latest external revision (status, albums, relations): the base for editing
+    /// those.
+    pub external_revision_id: Option<Uuid>,
     pub file: FileInfo,
     #[serde(default)]
     pub file_shared_with: Vec<Shared>,
@@ -33,6 +37,8 @@ pub struct TrackDetail {
     pub sources: Vec<Source>,
     #[serde(default)]
     pub credits: Vec<Credit>,
+    #[serde(default)]
+    pub albums: Vec<AlbumEntry>,
     #[serde(default)]
     pub relations: Vec<Relation>,
     #[serde(default)]
@@ -112,11 +118,21 @@ pub struct Credit {
     pub artist_id: Uuid,
     pub artist_name: String,
     pub role: String,
+    pub alias_id: Option<Uuid>,
     pub alias: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
+pub struct AlbumEntry {
+    pub album_id: Uuid,
+    pub title: String,
+    pub disc_number: Option<i16>,
+    pub track_number: Option<i16>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub struct Relation {
+    pub kind: String,
     pub track_id: Uuid,
     pub title: String,
     pub artist_display: String,
@@ -128,6 +144,8 @@ pub struct Relation {
 pub struct Variant {
     pub id: Uuid,
     pub label: String,
+    /// Its latest revision: the base for editing it.
+    pub revision_id: Uuid,
     #[serde(default)]
     pub data: serde_json::Value,
 }
@@ -180,6 +198,9 @@ pub struct AlbumMerge {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ArtistDetail {
+    /// Other names it's credited under (the listed ones), for "credited as".
+    #[serde(default)]
+    pub aliases: Vec<AliasInfo>,
     #[serde(default)]
     pub sources: Vec<Source>,
 }
@@ -189,6 +210,12 @@ impl Cover {
     pub fn cover(&self) -> Option<crate::catalog::model::Cover> {
         Some(crate::catalog::model::Cover { id: self.id, key: crate::catalog::model::CoverKey::from_hex(&self.blob_sha256)? })
     }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct AliasInfo {
+    pub id: Uuid,
+    pub name: String,
 }
 
 /// One kind of detail (tracks, albums or artists), kept per id.

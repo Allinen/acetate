@@ -68,6 +68,8 @@ pub const APP_ROLE: &str = "acetate_app";
 /// them decides who sees what. Every other table must have RLS; see `check_row_level_security`.
 const TABLES_WITHOUT_RLS: &[&str] = &[
     "_sqlx_migrations",
+    // One row: how far the change log was trimmed (see migration 0029).
+    "library_changes_trimmed",
     "users",
     "groups",
     "user_groups",

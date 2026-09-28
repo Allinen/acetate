@@ -162,6 +162,15 @@ pub struct Part<T> {
 #[derive(Deserialize)]
 pub struct Raw {
     pub format: u32,
+    /// The catalog's version: ask `?since=` it for what changed (None: an older server).
+    #[serde(default)]
+    pub version: Option<String>,
+    /// Only what changed since a version (to apply to a copy), not the whole catalog.
+    #[serde(default)]
+    pub delta: bool,
+    /// In a delta: what to drop.
+    #[serde(default)]
+    pub removed: Removed,
     pub tracks: Part<Track>,
     pub albums: Part<Album>,
     pub artists: Part<Artist>,
@@ -179,6 +188,17 @@ impl Album {
     pub fn cover(&self) -> Option<Cover> {
         Some(Cover { id: self.cover_id?, key: self.cover_key? })
     }
+}
+
+/// What a delta drops: tracks, albums and artists merged into another, and annotations
+/// that say nothing anymore.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct Removed {
+    pub tracks: Vec<Uuid>,
+    pub albums: Vec<Uuid>,
+    pub artists: Vec<Uuid>,
+    pub annotations: Vec<Uuid>,
 }
 
 /// Reads a catalog body. A format or columns this client doesn't know is an error that

@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO library_changes_trimmed (before) VALUES (($1::bigint + 1)::text::xid8)\n         ON CONFLICT (one) DO UPDATE SET before = EXCLUDED.before",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "689ffbc143c7f2dfb244c761b661243dd22506ac697f6415983f831f4acb97d5"
+}

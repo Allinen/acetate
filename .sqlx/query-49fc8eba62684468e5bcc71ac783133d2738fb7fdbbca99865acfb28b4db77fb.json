@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM library_changes WHERE xid <= $1::text::xid8",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "49fc8eba62684468e5bcc71ac783133d2738fb7fdbbca99865acfb28b4db77fb"
+}

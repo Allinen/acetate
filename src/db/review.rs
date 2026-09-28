@@ -162,6 +162,9 @@ pub struct Flag {
     pub resolved_at: Option<DateTime<Utc>>,
     pub resolved_by: Option<String>,
     pub resolution: String,
+    /// Where the track's file was imported from, if known (`files.imported_from`): for
+    /// going through flags by folder.
+    pub imported_from: Option<String>,
 }
 
 /// Open (or resolved) flags, newest first, a page at a time (`before` = last id seen).
@@ -191,9 +194,11 @@ pub async fn list(
                    FROM artists a
                    WHERE a.id IN (SELECT (jsonb_array_elements_text(f.related -> 'artists'))::uuid)
                ), '[]') AS "related_artists!",
-               f.created_at, f.resolved_at, u.username AS "resolved_by?", f.resolution
+               f.created_at, f.resolved_at, u.username AS "resolved_by?", f.resolution,
+               fi.imported_from
         FROM review_flags f
         JOIN tracks t ON t.id = f.track_id
+        LEFT JOIN files fi ON fi.id = t.file_id
         LEFT JOIN users u ON u.id = f.resolved_by
         WHERE (f.resolved_at IS NOT NULL) = $1
           AND f.id < COALESCE($2, 'ffffffff-ffff-ffff-ffff-ffffffffffff'::uuid)

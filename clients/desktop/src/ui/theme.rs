@@ -20,6 +20,8 @@ pub struct Palette {
     pub faint: Color32,
     pub accent: Color32,
     pub accent_soft: Color32,
+    /// Errors.
+    pub danger: Color32,
 }
 
 pub const PALETTE: Palette = Palette {
@@ -33,6 +35,7 @@ pub const PALETTE: Palette = Palette {
     faint: Color32::from_rgb(0x55, 0x5a, 0x68),
     accent: Color32::from_rgb(0xf5, 0xa6, 0x5b),
     accent_soft: Color32::from_rgb(0x3a, 0x2b, 0x1f),
+    danger: Color32::from_rgb(255, 120, 120),
 };
 
 /// Font families by weight (egui picks fonts by family, not by weight).

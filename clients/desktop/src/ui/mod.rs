@@ -11,6 +11,7 @@
 //! Enter open or play · Shift+Enter play.
 
 pub mod covers;
+pub mod edit;
 pub mod keymap;
 pub mod theme;
 pub mod widgets;
@@ -96,8 +97,13 @@ pub enum Action {
     NewPlaylist,
     RenamePlaylist(Uuid),
     RefreshLibrary,
+    /// Switch edit mode on or off (pages become editable in place).
+    ToggleEditMode,
     /// Show every key (the `?` overlay).
     ShowKeys,
+    /// Choose an artist, album or track for the form that asked (the palette; the
+    /// choice arrives through `Shell::picker`).
+    Pick(edit::PickKind),
     LoggedIn,
     LogOut,
 }
@@ -110,6 +116,19 @@ pub struct Shell {
     pub logo: egui::TextureHandle,
     /// Volume and sound output, kept between runs.
     pub settings: crate::settings::Settings,
+    /// Who's logged in, what they may do, and the server's fixed lists.
+    pub account: crate::account::Account,
+    /// Pages show their editors (only with `edit_metadata`).
+    pub edit_mode: bool,
+    /// Where picks from the palette arrive, for the form that asked.
+    pub picker: edit::Picker,
+    /// Track forms, per track: changes not saved yet are kept while you look elsewhere.
+    pub track_forms: std::collections::HashMap<Uuid, edit::track_form::TrackForm>,
+    /// The form shown has changes not saved (set by the form each frame): Esc doesn't
+    /// leave the page then, it asks to discard them.
+    pub form_dirty: bool,
+    /// The palette is open (it takes Esc, before the page's form could).
+    pub palette_open: bool,
     pub runtime: Runtime,
     pub api: Api,
     pub controller: Arc<Controller>,
@@ -335,6 +354,9 @@ impl Shell {
         self.artist_details.reset(Some(details));
         self.catalog = Cached { refreshing: true, ..Cached::default() };
         self.refresh_asked = Some(Instant::now());
+        self.account.fetch(&self.api, self.runtime.handle(), ctx);
+        self.edit_mode = false;
+        self.track_forms.clear();
         let (sender, api, ctx) = (self.updates.0.clone(), self.api.clone(), ctx.clone());
         self.runtime.spawn(store::load_and_refresh(store, api, move |update| {
             let _ = sender.send(update);
@@ -349,10 +371,10 @@ impl Shell {
         }
         self.catalog.refreshing = true;
         self.refresh_asked = Some(Instant::now());
-        let have_copy = self.catalog.value.is_some();
+        let current = self.catalog.value.clone();
         let (sender, api, ctx) = (self.updates.0.clone(), self.api.clone(), ctx.clone());
         self.runtime.spawn(async move {
-            store::refresh(&store, &api, have_copy, &move |update| {
+            store::refresh(&store, &api, current, &move |update| {
                 let _ = sender.send(update);
                 ctx.request_repaint();
             })
@@ -442,8 +464,8 @@ impl App {
     pub fn new(cc: &eframe::CreationContext) -> App {
         theme::apply(&cc.egui_ctx);
         let runtime = Runtime::new().expect("a tokio runtime");
-        let data_dir = dirs::data_dir().unwrap_or_default().join("dev.acetate.desktop");
-        let cache_dir = dirs::cache_dir().unwrap_or_default().join("dev.acetate.desktop");
+        let data_dir = app_dir(dirs::data_dir());
+        let cache_dir = app_dir(dirs::cache_dir());
         let api = Api::new(data_dir.clone());
         let controller = runtime.block_on(async { Controller::new(api.clone(), cc.egui_ctx.clone()) });
         runtime.spawn(controller.clone().monitor());
@@ -461,6 +483,12 @@ impl App {
             ctx: cc.egui_ctx.clone(),
             logo: widgets::logo_texture(&cc.egui_ctx),
             settings: crate::settings::Settings::load(&data_dir),
+            account: crate::account::Account::default(),
+            edit_mode: false,
+            picker: edit::Picker::default(),
+            track_forms: Default::default(),
+            form_dirty: false,
+            palette_open: false,
             runtime,
             api,
             controller,
@@ -624,6 +652,14 @@ impl App {
                 Action::RenamePlaylist(id) => self.pages.palette.open(ctx, views::palette::Mode::Name(Some(id))),
                 Action::RefreshLibrary => self.shell.refresh_library(ctx),
                 Action::ShowKeys => self.keys_open = true,
+                Action::Pick(kind) => self.pages.palette.open(ctx, views::palette::Mode::Pick(kind)),
+                Action::ToggleEditMode => {
+                    if self.shell.account.can("edit_metadata") {
+                        self.shell.edit_mode = !self.shell.edit_mode;
+                    } else {
+                        self.shell.playlists.notice = Some(("Editing needs the edit_metadata permission.".into(), Instant::now()));
+                    }
+                }
                 Action::LoggedIn => {
                     self.shell.load_library(ctx);
                     self.page = Page::Albums;
@@ -639,6 +675,7 @@ impl App {
                     self.shell.track_details.reset(None);
                     self.shell.album_details.reset(None);
                     self.shell.artist_details.reset(None);
+                    self.shell.track_forms.clear();
                     self.shell.store = None;
                     self.shell.generation += 1;
                 }
@@ -747,7 +784,7 @@ impl App {
                 self.shell.act(Action::Go(page));
             }
         }
-        if key(Key::Escape) || key(Key::Backspace) {
+        if (key(Key::Escape) || key(Key::Backspace)) && !self.shell.form_dirty {
             self.shell.act(Action::Back);
         } else if key(Key::Space) {
             self.shell.act(Action::TogglePause);
@@ -757,6 +794,8 @@ impl App {
             self.shell.act(Action::VolumeBy(0.05));
         } else if !m.shift && key(Key::M) {
             self.shell.act(Action::ToggleMute);
+        } else if !m.shift && key(Key::E) {
+            self.shell.act(Action::ToggleEditMode);
         } else if !m.shift && key(Key::R) {
             self.shell.act(Action::ToggleRepeat);
         } else if !m.shift && key(Key::Z) {
@@ -799,6 +838,14 @@ impl eframe::App for App {
         self.keys(&ctx);
         self.shell.take_mark_answers();
         self.shell.playlists.poll();
+        self.shell.account.poll();
+        // The library is asked what changed every two minutes (a delta: cheap), so
+        // edits made elsewhere show up without F5.
+        // (Two minutes after the last attempt, so a failing one isn't retried every frame.)
+        if self.shell.refresh_asked.is_some_and(|at| at.elapsed() > std::time::Duration::from_secs(120)) {
+            self.shell.act(Action::RefreshLibrary);
+        }
+        ctx.request_repaint_after(std::time::Duration::from_secs(121));
         self.shell.track_details.poll();
         self.shell.album_details.poll();
         self.shell.artist_details.poll();
@@ -832,14 +879,40 @@ impl eframe::App for App {
                 if t < 1.0 {
                     ctx.request_repaint();
                 }
+                // Edit mode: an accent line along the top says so.
+                if self.shell.edit_mode {
+                    let top = ui.max_rect();
+                    let line = egui::Rect::from_min_size(egui::pos2(top.left() - 28.0, top.top() - 22.0), egui::vec2(top.width() + 56.0, 3.0));
+                    ui.painter().rect_filled(line, 0, P.accent);
+                }
                 ui.multiply_opacity(t);
                 ui.add_space((1.0 - t) * 16.0);
+                // Set again by a form with changes, if one is shown.
+                self.shell.form_dirty = false;
+                self.shell.palette_open = self.pages.palette.is_open();
                 self.pages.show(ui, &mut self.shell, self.page, &player, &mut self.spectrum, dt);
             });
         self.pages.palette.show(&ctx, &mut self.shell);
         keymap::overlay(&ctx, &mut self.keys_open);
         self.apply(&ctx);
     }
+}
+
+/// The app's own folder in `base` (the system's data or cache folder). It used to be
+/// named `dev.acetate.desktop`: a folder by that name is moved over (renamed, so the
+/// session, library, covers and queue are kept) the first time.
+fn app_dir(base: Option<PathBuf>) -> PathBuf {
+    const NAME: &str = "allinen.acetate.desktop";
+    const OLD: &str = "dev.acetate.desktop";
+    let base = base.unwrap_or_default();
+    let (dir, old) = (base.join(NAME), base.join(OLD));
+    if !dir.exists() && old.exists() {
+        if let Err(err) = std::fs::rename(&old, &dir) {
+            // It starts afresh; the old folder stays as it was.
+            eprintln!("couldn't move {} to {}: {err}", old.display(), dir.display());
+        }
+    }
+    dir
 }
 
 /// A track (a position in the catalog) as the queue keeps it.

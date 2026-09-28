@@ -15,6 +15,7 @@ use super::album::{marks, play_button};
 use crate::catalog::marks::Kind;
 use crate::catalog::Catalog;
 use crate::details::{Source, TrackDetail};
+use crate::ui::edit::track_form::TrackForm;
 use crate::lyrics;
 use crate::playback::PlayerView;
 use crate::ui::theme::{bold, font, medium, semibold, PALETTE as P};
@@ -127,6 +128,9 @@ impl TrackPage {
             }
 
             // ---- Sections ----
+            if shell.edit_mode {
+                section(ui, "Edit", true, |ui| edit(ui, shell, catalog, &d));
+            }
             if !d.lyrics.is_empty() {
                 section(ui, "Lyrics", true, |ui| self.lyrics(ui, shell, &d, is_playing, player));
             }
@@ -257,6 +261,19 @@ fn section(ui: &mut egui::Ui, title: &str, open: bool, add: impl FnOnce(&mut egu
             ui.add_space(8.0);
         });
     ui.add_space(6.0);
+}
+
+/// The track's form (edit mode). Kept in the shell per track, so changes not saved yet
+/// are still there after looking elsewhere.
+fn edit(ui: &mut egui::Ui, shell: &mut Shell, catalog: &Arc<Catalog>, d: &TrackDetail) {
+    // Taken out of the shell while it's shown (showing it needs the shell too: Rust
+    // allows only one mutable borrow of it at a time), then put back.
+    let Some(mut form) = shell.track_forms.remove(&d.id).or_else(|| TrackForm::from_detail(d, Some(catalog))) else {
+        ui.label(RichText::new("This track has no version to edit.").color(P.muted));
+        return;
+    };
+    form.show(ui, shell, Some(catalog), d);
+    shell.track_forms.insert(d.id, form);
 }
 
 /// Every credit, by role: the artist (a link) and the name it's credited under.

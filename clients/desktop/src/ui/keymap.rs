@@ -22,6 +22,7 @@ pub const GROUPS: &[(&str, &[Binding])] = &[
             ("Esc  or  Backspace", "back (a text field: leave it)"),
             ("/", "filter this list"),
             ("F5", "check the library for changes"),
+            ("e", "edit mode on / off"),
         ],
     ),
     (
@@ -58,6 +59,13 @@ pub const GROUPS: &[(&str, &[Binding])] = &[
             ("Delete", "take the track out"),
             ("Ctrl+↑ / Ctrl+↓", "move it up / down"),
             ("F2", "rename the playlist"),
+        ],
+    ),
+    (
+        "Edit mode (e)",
+        &[
+            ("Ctrl+Enter", "save the changes (one revision each for metadata and facts)"),
+            ("Esc", "discard the changes (asks first: Esc again)"),
         ],
     ),
     (

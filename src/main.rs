@@ -338,6 +338,16 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("running migrations")?;
 
+    // The catalog's change log keeps 90 days (clients with an older copy get the whole
+    // catalog); see migration 0029.
+    {
+        let mut conn = pool.acquire().await?;
+        let trimmed = db::library::trim_changes(&mut conn, 90).await?;
+        if trimmed > 0 {
+            tracing::info!("trimmed {trimmed} old catalog changes");
+        }
+    }
+
     let store = BlobStore::open_volumes(&config.volumes)?;
     check_volumes(&pool, &store).await?;
 
