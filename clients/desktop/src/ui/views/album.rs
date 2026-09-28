@@ -11,11 +11,13 @@ use crate::catalog::marks::Kind;
 use crate::catalog::Catalog;
 use crate::playback::PlayerView;
 use crate::ui::theme::{bold, font, medium, semibold, PALETTE as P};
-use crate::ui::{playing_track, widgets, Action, Page, Shell};
+use crate::ui::{playing_track, widgets, Action, Shell};
 
 #[derive(Default)]
 pub struct AlbumPage {
     list: TrackList,
+    /// The details panel is open.
+    details: bool,
 }
 
 impl AlbumPage {
@@ -29,7 +31,7 @@ impl AlbumPage {
         // Header: a big cover, and what the album is.
         let header = ui.allocate_exact_size(Vec2::new(ui.available_width(), 232.0), Sense::hover()).0;
         let cover_rect = Rect::from_min_size(header.min, Vec2::splat(220.0));
-        shell.cover(ui, album.cover_id, album.id, cover_rect, 12, 0.6);
+        shell.cover(ui, album.cover(), album.id, cover_rect, 12, 0.6);
         let left = cover_rect.right() + 28.0;
         let painter = ui.painter();
         painter.text(Pos2::new(left, cover_rect.top() + 70.0), Align2::LEFT_BOTTOM, album.kind.to_uppercase(), font(11.0, semibold()), P.accent);
@@ -47,16 +49,69 @@ impl AlbumPage {
         // The album's artists, each a link.
         let artists_rect = Rect::from_min_size(Pos2::new(left, cover_rect.top() + 126.0), Vec2::new(header.right() - left, 20.0));
         let mut artists_ui = ui.new_child(egui::UiBuilder::new().max_rect(artists_rect).layout(egui::Layout::left_to_right(egui::Align::Center)));
-        artist_links(&mut artists_ui, shell, catalog, &album.credits, &album.artist_display, 15.0);
+        super::artist_links(&mut artists_ui, shell, catalog, &album.credits, &album.artist_display, font(15.0, medium()), P.text);
 
         let play_rect = Rect::from_min_size(Pos2::new(left, cover_rect.bottom() - 44.0), Vec2::new(116.0, 42.0));
         if play_button(ui, "album-play", play_rect) && !tracks.is_empty() {
             shell.act(Action::Play { tracks: tracks.to_vec(), start: 0 });
         }
-        let marks_rect = Rect::from_min_size(Pos2::new(play_rect.right() + 18.0, play_rect.top()), Vec2::new(200.0, play_rect.height()));
+        let marks_rect = Rect::from_min_size(Pos2::new(play_rect.right() + 18.0, play_rect.top()), Vec2::new(460.0, play_rect.height()));
         let mut marks_ui = ui.new_child(egui::UiBuilder::new().max_rect(marks_rect).layout(egui::Layout::left_to_right(egui::Align::Center)));
         marks(&mut marks_ui, shell, Kind::Album, id);
+        marks_ui.add_space(8.0);
+        if widgets::chip(&mut marks_ui, "Details", self.details) {
+            self.details = !self.details;
+        }
         ui.add_space(22.0);
+        if self.details {
+            details_panel(ui, "album-details", |ui| {
+                let cached = shell.album_details.get(id);
+                let Some(d) = cached.value.clone() else {
+                    ui.label(RichText::new(if cached.refreshing { "Loading…" } else { "Couldn't load the details" }).color(P.muted));
+                    return;
+                };
+                if !d.credits.is_empty() {
+                    ui.label(RichText::new("Credits").font(font(14.0, semibold())));
+                    for c in &d.credits {
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(&c.role).color(P.faint));
+                            let name = c.alias.clone().unwrap_or_else(|| c.artist_name.clone());
+                            if widgets::link(ui, &name, font(14.0, medium()), P.text) {
+                                shell.act(Action::Go(crate::ui::Page::Artist(c.artist_id)));
+                            }
+                        });
+                    }
+                    ui.add_space(8.0);
+                }
+                if !d.covers.is_empty() {
+                    ui.label(RichText::new(format!("Covers ({})", d.covers.len())).font(font(14.0, semibold())));
+                    ui.horizontal_wrapped(|ui| {
+                        for c in &d.covers {
+                            let (rect, response) = ui.allocate_exact_size(Vec2::splat(110.0), Sense::hover());
+                            shell.cover(ui, c.cover(), c.id, rect, 6, 0.1);
+                            let size = match (c.width, c.height) {
+                                (Some(w), Some(h)) => format!("{w}×{h} · {}", c.source),
+                                _ => c.source.clone(),
+                            };
+                            response.on_hover_text(size);
+                        }
+                    });
+                    ui.add_space(8.0);
+                }
+                if !d.sources.is_empty() {
+                    ui.label(RichText::new(format!("Sources ({})", d.sources.len())).font(font(14.0, semibold())));
+                    super::track::sources(ui, &d.sources);
+                }
+                if !d.merges.is_empty() {
+                    ui.label(RichText::new("Merged into this album").font(font(14.0, semibold())));
+                    for m in &d.merges {
+                        let undone = if m.undone_at.is_some() { " · undone" } else { "" };
+                        ui.label(format!("{} · {}{undone}", m.from_title, m.merged_at.get(..10).unwrap_or(&m.merged_at)));
+                    }
+                }
+            });
+            ui.add_space(12.0);
+        }
 
         if tracks.is_empty() {
             ui.label(RichText::new("No tracks you can see").color(P.muted));
@@ -102,6 +157,12 @@ impl TrackList {
             }
             if moved.add {
                 shell.act(Action::AddToPlaylist(vec![id]));
+            }
+            if let Some(next) = moved.queue {
+                shell.act(Action::Enqueue { tracks: vec![i], next });
+            }
+            if moved.info {
+                shell.act(Action::Go(crate::ui::Page::Track(id)));
             }
         }
         if moved.enter {
@@ -152,7 +213,7 @@ impl TrackList {
                     }
                     Rows::Mixed => {
                         let cover = Rect::from_center_size(rect.left_center() + Vec2::new(24.0, 0.0), Vec2::splat(34.0));
-                        shell.cover(ui, track.cover_id, track.id, cover, 5, 0.0);
+                        shell.cover(ui, track.cover(), track.id, cover, 5, 0.0);
                         if is_playing {
                             ui.painter().rect_filled(cover, 5, egui::Color32::from_black_alpha(150));
                             widgets::equalizer(ui.painter(), cover.center(), ui.input(|i| i.time) as f32, !player.paused);
@@ -210,6 +271,14 @@ pub fn marks(ui: &mut egui::Ui, shell: &mut Shell, kind: Kind, id: Uuid) {
     }
 }
 
+/// A panel for an album's or artist's details: framed, scrolling if long.
+pub fn details_panel(ui: &mut egui::Ui, id: &str, add: impl FnOnce(&mut egui::Ui)) {
+    egui::Frame::NONE.fill(P.surface).corner_radius(10).inner_margin(egui::Margin::same(14)).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        egui::ScrollArea::vertical().id_salt(id).max_height(300.0).show(ui, add);
+    });
+}
+
 /// The big round-cornered Play button.
 pub fn play_button(ui: &mut egui::Ui, id: &str, rect: Rect) -> bool {
     let response = ui.interact(rect, egui::Id::new(id), Sense::click());
@@ -220,28 +289,3 @@ pub fn play_button(ui: &mut egui::Ui, id: &str, rect: Rect) -> bool {
     response.clicked()
 }
 
-/// Credited artists as links to their pages ("credited as" names shown as credited),
-/// or `fallback` if there are no credits.
-pub fn artist_links(ui: &mut egui::Ui, shell: &mut Shell, catalog: &Catalog, credits: &[crate::catalog::model::Credit], fallback: &str, size: f32) {
-    ui.spacing_mut().item_spacing.x = 0.0;
-    let primary: Vec<_> = credits.iter().filter(|c| c.1 != crate::catalog::model::Role::Producer).collect();
-    if primary.is_empty() {
-        ui.label(RichText::new(fallback).font(font(size, medium())).color(P.text));
-        return;
-    }
-    for (i, credit) in primary.iter().enumerate() {
-        if i > 0 {
-            ui.label(RichText::new(", ").font(font(size, medium())).color(P.muted));
-        }
-        let name = credit.2.clone().or_else(|| catalog.artist(credit.0).map(|a| a.name.clone())).unwrap_or_default();
-        let response = ui.add(egui::Label::new(RichText::new(name).font(font(size, medium())).color(P.text)).sense(Sense::click()));
-        let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
-        if response.hovered() {
-            let rect = response.rect;
-            ui.painter().hline(rect.x_range(), rect.bottom(), egui::Stroke::new(1.0, P.muted));
-        }
-        if response.clicked() {
-            shell.act(Action::Go(Page::Artist(credit.0)));
-        }
-    }
-}

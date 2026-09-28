@@ -22,7 +22,7 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell, player: &PlayerView) {
     if response.clicked() {
         shell.act(Action::Go(Page::NowPlaying));
     }
-    shell.cover(ui, current.as_ref().and_then(|c| c.cover_id), current.as_ref().map(|c| c.track_id).unwrap_or_default(), cover_rect, 8, 0.0);
+    shell.cover_crossfade(ui, "player-bar", current.as_ref().and_then(|c| c.cover), current.as_ref().map(|c| c.track_id).unwrap_or_default(), cover_rect, 8, 0.0);
     if let Some(item) = &current {
         let text_left = cover_rect.right() + 14.0;
         let width = left.right() - text_left - 44.0;
@@ -32,8 +32,19 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell, player: &PlayerView) {
         if widgets::star_button(&mut star_ui, shell.mark(item.track_id).starred, 24.0) {
             shell.act(Action::ToggleStar(Kind::Track, item.track_id));
         }
-        widgets::text_in(ui.painter(), Rect::from_min_size(Pos2::new(text_left, cover_rect.top() + 8.0), Vec2::new(width, 20.0)), &item.title, font(14.0, semibold()), P.text);
-        widgets::text_in(ui.painter(), Rect::from_min_size(Pos2::new(text_left, cover_rect.top() + 30.0), Vec2::new(width, 18.0)), &item.artist, font(14.0, egui::FontFamily::Proportional), P.muted);
+        // The title (to its album) and artists (to theirs) are links; the rest of this
+        // area goes to Now playing.
+        super::playing_links(
+            ui,
+            shell,
+            item.track_id,
+            &item.title,
+            &item.artist,
+            Rect::from_min_size(Pos2::new(text_left, cover_rect.top() + 8.0), Vec2::new(width, 20.0)),
+            Rect::from_min_size(Pos2::new(text_left, cover_rect.top() + 30.0), Vec2::new(width, 18.0)),
+            font(14.0, semibold()),
+            font(13.5, medium()),
+        );
     } else {
         ui.painter().text(cover_rect.right_center() + Vec2::new(14.0, 0.0), Align2::LEFT_CENTER, "Nothing playing", font(13.0, medium()), P.faint);
     }
@@ -50,6 +61,14 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell, player: &PlayerView) {
     }
     if widgets::icon_button(ui, "next", Pos2::new(center_x + 52.0, buttons_y), 16.0, widgets::Icon::Next, false) {
         shell.act(Action::Next);
+    }
+    let shuffle_tip = if player.shuffle { "Shuffle is on (z)" } else { "Shuffle (z)" };
+    if widgets::toggle_button(ui, "shuffle", Pos2::new(center_x - 100.0, buttons_y), 14.0, widgets::Icon::Shuffle, player.shuffle, shuffle_tip) {
+        shell.act(Action::ToggleShuffle);
+    }
+    let repeat_tip = if player.repeat { "Looping this track (r)" } else { "Loop this track (r)" };
+    if widgets::toggle_button(ui, "repeat", Pos2::new(center_x + 100.0, buttons_y), 14.0, widgets::Icon::Repeat, player.repeat, repeat_tip) {
+        shell.act(Action::ToggleRepeat);
     }
 
     let bar = Rect::from_center_size(Pos2::new(center_x, full.bottom() - 12.0), Vec2::new((full.width() * 0.42).min(620.0), 16.0));
@@ -87,19 +106,25 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell, player: &PlayerView) {
         ctx.request_repaint_after(Duration::from_millis(250));
     }
 
-    // Right: the queue position, and errors.
-    let error = shell.controller.error.lock().unwrap().clone();
-    let right = full.right_center() - Vec2::new(4.0, 0.0);
+    // Right: the newest message for a few seconds (errors a little longer), else the
+    // queue position.
+    let error = shell.controller.error.lock().unwrap().clone().filter(|(_, at)| at.elapsed() < Duration::from_secs(8));
     let notice = shell.playlists.notice.clone().filter(|(_, at)| at.elapsed() < Duration::from_secs(4));
-    if notice.is_some() {
-        // Gone after 4 s: draw again then.
+    let message = match (error, notice) {
+        (Some(e), Some(n)) if n.1 > e.1 => Some((n.0, P.accent)),
+        (Some(e), _) => Some((e.0, Color32::from_rgb(255, 120, 120))),
+        (None, Some(n)) => Some((n.0, P.accent)),
+        (None, None) => None,
+    };
+    let width = (full.right() - bar.right() - 70.0).max(80.0);
+    let right_rect = Rect::from_min_max(Pos2::new(full.right() - width, full.top()), Pos2::new(full.right() - 4.0, full.bottom()));
+    if let Some((text, color)) = message {
+        // Gone after a few seconds: draw again then.
         ctx.request_repaint_after(Duration::from_millis(500));
-    }
-    if let Some((notice, _)) = notice {
-        ui.painter().text(right, Align2::RIGHT_CENTER, notice, font(12.5, medium()), P.accent);
-    } else if !error.is_empty() {
-        ui.painter().text(right, Align2::RIGHT_CENTER, error, font(12.0, medium()), Color32::from_rgb(255, 120, 120));
+        let galley_width = ui.painter().layout_no_wrap(text.clone(), font(12.5, medium()), color).size().x.min(width);
+        let rect = Rect::from_min_max(Pos2::new(right_rect.right() - galley_width, right_rect.top()), right_rect.max);
+        widgets::text_in(ui.painter(), rect, &text, font(12.5, medium()), color);
     } else if current.is_some() {
-        ui.painter().text(right, Align2::RIGHT_CENTER, format!("{} of {}", player.index + 1, player.items.len()), font(12.0, medium()), P.faint);
+        ui.painter().text(right_rect.right_center(), Align2::RIGHT_CENTER, format!("{} of {}", player.index + 1, player.items.len()), font(12.0, medium()), P.faint);
     }
 }

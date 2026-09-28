@@ -1,9 +1,13 @@
 //! Cover images: loaded in the background, scaled down to at most `SIZE`, uploaded to the
 //! GPU once and kept. Each remembers when it arrived, so it can fade in instead of popping.
 //!
-//! Scaled copies are kept on disk (`covers/<id>.jpg` in the cache folder): a cover's
-//! image never changes under its id, so the copy is good forever, and the next start
-//! shows it without the network.
+//! Everything is per image, not per cover: the tracks of an album often each have their
+//! own cover with the same image, and it's loaded, kept and shown once (the same texture,
+//! so moving between those tracks doesn't flicker).
+//!
+//! Scaled copies are kept on disk (`covers/<key>.jpg` in the cache folder): an image
+//! never changes under its key, so the copy is good forever, and the next start shows it
+//! without the network.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -14,6 +18,7 @@ use tokio::runtime::Handle;
 use uuid::Uuid;
 
 use crate::api::Api;
+use crate::catalog::model::{Cover, CoverKey};
 
 /// Longest side of a scaled cover (sharp in the grid and on "now playing").
 const SIZE: u32 = 600;
@@ -27,9 +32,9 @@ enum State {
 }
 
 pub struct Covers {
-    states: HashMap<Uuid, State>,
+    states: HashMap<CoverKey, State>,
     /// Decoded images from the background, waiting to be uploaded.
-    done: Arc<Mutex<Vec<(Uuid, Option<ColorImage>)>>>,
+    done: Arc<Mutex<Vec<(CoverKey, Option<ColorImage>)>>>,
     loading: usize,
     dir: Arc<PathBuf>,
     api: Api,
@@ -51,23 +56,24 @@ impl Covers {
     /// Takes what finished loading. Call once per frame, before `get`.
     pub fn poll(&mut self, ctx: &egui::Context) {
         let now = ctx.input(|i| i.time);
-        for (id, image) in std::mem::take(&mut *self.done.lock().unwrap()) {
+        for (key, image) in std::mem::take(&mut *self.done.lock().unwrap()) {
             self.loading -= 1;
             let state = match image {
                 Some(image) => State::Ready {
-                    texture: ctx.load_texture(format!("cover-{id}"), image, TextureOptions::LINEAR),
+                    texture: ctx.load_texture(format!("cover-{:016x}", key.0), image, TextureOptions::LINEAR),
                     arrived: now,
                 },
                 None => State::Failed,
             };
-            self.states.insert(id, state);
+            self.states.insert(key, state);
         }
     }
 
     /// The cover's texture and how far it has faded in (0 to 1), starting a load if it
     /// isn't there yet. None while loading (or if it failed).
-    pub fn get(&mut self, ctx: &egui::Context, id: Uuid) -> Option<(TextureHandle, f32)> {
-        match self.states.get(&id) {
+    pub fn get(&mut self, ctx: &egui::Context, cover: Cover) -> Option<(TextureHandle, f32)> {
+        let (id, key) = (cover.id, cover.key);
+        match self.states.get(&key) {
             Some(State::Ready { texture, arrived }) => {
                 let age = (ctx.input(|i| i.time) - arrived) as f32;
                 let fade = (age / 0.25).clamp(0.0, 1.0);
@@ -80,11 +86,11 @@ impl Covers {
             None => {
                 if self.loading < PARALLEL {
                     self.loading += 1;
-                    self.states.insert(id, State::Loading);
+                    self.states.insert(key, State::Loading);
                     let (done, api, dir, ctx) = (self.done.clone(), self.api.clone(), self.dir.clone(), ctx.clone());
                     self.runtime.spawn(async move {
-                        let image = load(&api, &dir, id).await;
-                        done.lock().unwrap().push((id, image));
+                        let image = load(&api, &dir, id, key).await;
+                        done.lock().unwrap().push((key, image));
                         ctx.request_repaint();
                     });
                 }
@@ -94,8 +100,13 @@ impl Covers {
     }
 }
 
-async fn load(api: &Api, dir: &std::path::Path, id: Uuid) -> Option<ColorImage> {
-    let path = dir.join(format!("{id}.jpg"));
+/// Where an image's scaled copy is kept.
+pub fn path(dir: &std::path::Path, key: CoverKey) -> std::path::PathBuf {
+    dir.join(format!("{:016x}.jpg", key.0))
+}
+
+async fn load(api: &Api, dir: &std::path::Path, id: Uuid, key: CoverKey) -> Option<ColorImage> {
+    let path = path(dir, key);
     let cached = {
         let path = path.clone();
         tokio::task::spawn_blocking(move || std::fs::read(path).ok()).await.ok().flatten()

@@ -17,6 +17,8 @@ use crate::ui::{thousands, widgets, Action, Page, Shell};
 #[derive(Default)]
 pub struct ArtistPage {
     list: TrackList,
+    /// The details panel is open.
+    details: bool,
 }
 
 impl ArtistPage {
@@ -48,8 +50,28 @@ impl ArtistPage {
             }
             ui.add_space(6.0);
             super::album::marks(ui, shell, Kind::Artist, id);
+            ui.add_space(8.0);
+            if widgets::chip(ui, "Details", self.details) {
+                self.details = !self.details;
+            }
         });
         ui.add_space(22.0);
+        if self.details {
+            super::album::details_panel(ui, "artist-details", |ui| {
+                let cached = shell.artist_details.get(id);
+                let Some(d) = cached.value.clone() else {
+                    ui.label(RichText::new(if cached.refreshing { "Loading…" } else { "Couldn't load the details" }).color(P.muted));
+                    return;
+                };
+                if d.sources.is_empty() {
+                    ui.label(RichText::new("No sources").color(P.muted));
+                } else {
+                    ui.label(RichText::new(format!("Sources ({})", d.sources.len())).font(font(14.0, semibold())));
+                    super::track::sources(ui, &d.sources);
+                }
+            });
+            ui.add_space(12.0);
+        }
 
         if !albums.is_empty() {
             ui.label(RichText::new("Releases").font(font(18.0, bold())));
@@ -63,7 +85,7 @@ impl ArtistPage {
                         let (rect, response) = ui.allocate_exact_size(Vec2::new(card, card + 48.0), Sense::click());
                         let hover = ctx.animate_bool_with_time(response.id, response.hovered(), 0.16);
                         let cover = Rect::from_min_size(rect.min + Vec2::new(0.0, 6.0 - hover * 4.0), Vec2::splat(card));
-                        shell.cover(ui, album.cover_id, album.id, cover, 8, hover);
+                        shell.cover(ui, album.cover(), album.id, cover, 8, hover);
                         let top = cover.bottom() + 8.0 + hover * 4.0;
                         widgets::text_in(ui.painter(), Rect::from_min_size(Pos2::new(rect.left(), top), Vec2::new(card, 17.0)), &album.title, font(13.0, semibold()), P.text);
                         let sub = match album.year {

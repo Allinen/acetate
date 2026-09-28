@@ -84,8 +84,8 @@ impl MediaKeys {
         let mut controls = self.controls.lock().unwrap();
         if track_changed {
             let cover = current
-                .and_then(|c| c.cover_id)
-                .map(|id| self.covers.join(format!("{id}.jpg")))
+                .and_then(|c| c.cover)
+                .map(|c| crate::ui::covers::path(&self.covers, c.key))
                 .filter(|path| path.exists())
                 .map(|path| format!("file://{}", path.display()));
             let _ = controls.set_metadata(MediaMetadata {

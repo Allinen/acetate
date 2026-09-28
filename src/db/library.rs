@@ -14,17 +14,19 @@ use sqlx::PgConnection;
 /// credited under when that's an alias, else null.
 /// `albums`: `[[album_id, disc, track], …]`, every album it's on, its main one first (a real
 /// album before a single, then the oldest). `cover_id`: its own first cover, else its main
-/// album's.
+/// album's. `cover_key`: the start of that image's SHA-256, the same for the same image
+/// under different covers (every track of an album often has its own copy): clients can
+/// keep one copy per image.
 pub const TRACK_COLUMNS: &[&str] = &[
     "id", "title", "artist_display", "credits", "albums", "duration_ms",
-    "file_id", "cover_id", "release_date", "year", "status", "genres", "created_at",
+    "file_id", "cover_id", "cover_key", "release_date", "year", "status", "genres", "created_at",
     "is_restricted", "codec",
 ];
 
 /// `credits` as for tracks; `artist_display` with aliases as credited.
-/// `cover_id`: its own first cover, else its first track's.
+/// `cover_id`: its own first cover, else its first track's; `cover_key` as for tracks.
 pub const ALBUM_COLUMNS: &[&str] = &[
-    "id", "title", "kind", "artist_display", "credits", "release_date", "year", "cover_id",
+    "id", "title", "kind", "artist_display", "credits", "release_date", "year", "cover_id", "cover_key",
     "created_at", "track_count", "duration_ms",
 ];
 
@@ -52,12 +54,12 @@ pub async fn tracks_json(conn: &mut PgConnection) -> sqlx::Result<String> {
             JOIN albums a ON a.id = at.album_id AND a.merged_into IS NULL
             GROUP BY at.track_id
         ), track_cover AS (
-            SELECT DISTINCT ON (c.track_id) c.track_id, c.id
+            SELECT DISTINCT ON (c.track_id) c.track_id, c.id, left(c.blob_sha256, 16) AS key
             FROM covers c
             WHERE c.track_id IS NOT NULL AND c.trashed_at IS NULL
             ORDER BY c.track_id, c.position, c.id
         ), album_cover AS (
-            SELECT DISTINCT ON (c.album_id) c.album_id, c.id
+            SELECT DISTINCT ON (c.album_id) c.album_id, c.id, left(c.blob_sha256, 16) AS key
             FROM covers c
             WHERE c.album_id IS NOT NULL AND c.trashed_at IS NULL
             ORDER BY c.album_id, c.position, c.id
@@ -65,7 +67,8 @@ pub async fn tracks_json(conn: &mut PgConnection) -> sqlx::Result<String> {
         SELECT COALESCE(json_agg(json_build_array(
                    t.id, t.title, t.artist_display, COALESCE(cr.credits, '[]'::json),
                    COALESCE(m.albums, '[]'::json), f.duration_ms,
-                   t.file_id, COALESCE(tc.id, ac.id), t.release_date, t.release_year, t.status,
+                   t.file_id, COALESCE(tc.id, ac.id), CASE WHEN tc.id IS NOT NULL THEN tc.key ELSE ac.key END,
+                   t.release_date, t.release_year, t.status,
                    t.genres, t.created_at, t.is_restricted, f.codec
                ) ORDER BY t.id), '[]'::json)::text AS "rows!"
         FROM tracks t
@@ -94,12 +97,12 @@ pub async fn albums_json(conn: &mut PgConnection) -> sqlx::Result<String> {
             LEFT JOIN artist_aliases al ON al.id = c.alias_id
             GROUP BY c.album_id
         ), own_cover AS (
-            SELECT DISTINCT ON (c.album_id) c.album_id, c.id
+            SELECT DISTINCT ON (c.album_id) c.album_id, c.id, left(c.blob_sha256, 16) AS key
             FROM covers c
             WHERE c.album_id IS NOT NULL AND c.trashed_at IS NULL
             ORDER BY c.album_id, c.position, c.id
         ), track_cover AS (
-            SELECT DISTINCT ON (at.album_id) at.album_id, c.id
+            SELECT DISTINCT ON (at.album_id) at.album_id, c.id, left(c.blob_sha256, 16) AS key
             FROM album_tracks at
             JOIN covers c ON c.track_id = at.track_id AND c.trashed_at IS NULL
             ORDER BY at.album_id, at.disc_number NULLS FIRST, at.track_number NULLS LAST, c.position, c.id
@@ -114,7 +117,8 @@ pub async fn albums_json(conn: &mut PgConnection) -> sqlx::Result<String> {
                    a.id, a.title, a.kind, COALESCE(cr.display, ''), COALESCE(cr.credits, '[]'::json),
                    a.release_date,
                    CASE WHEN a.release_date ~ '^\d{4}' THEN substr(a.release_date, 1, 4)::int END,
-                   COALESCE(oc.id, tc.id), a.created_at,
+                   COALESCE(oc.id, tc.id), CASE WHEN oc.id IS NOT NULL THEN oc.key ELSE tc.key END,
+                   a.created_at,
                    COALESCE(n.tracks, 0), COALESCE(n.duration_ms, 0)
                ) ORDER BY a.id), '[]'::json)::text AS "rows!"
         FROM albums a

@@ -4,10 +4,10 @@
 //! keyboard (and later the command palette) do the same, so there's one way to do each
 //! thing.
 //!
-//! Keys, see `keys`: Ctrl+1–4 (anywhere) or 1–4 (outside text fields): albums, artists,
-//! tracks, now playing · Esc / Alt+← back · Alt+→ forward · / filter · Space pause · Ctrl+←/→
+//! Keys, see `keys`: Ctrl+1–5 (anywhere) or 1–5 (outside text fields): albums, artists,
+//! tracks, now playing, queue · q add to the queue · Shift+Q play next · Esc / Alt+← back · Alt+→ forward · / filter · Space pause · Ctrl+←/→
 //! previous/next · Shift+←/→ seek 10 s · s star the selected one · Shift+S star what
-//! plays · +/− rate the selected one · F5 refresh the library · arrows or hjkl move ·
+//! plays · i the selected track's page · +/− rate the selected one · r loop the track · z shuffle · F5 refresh the library · arrows or hjkl move ·
 //! Enter open or play · Shift+Enter play.
 
 pub mod covers;
@@ -25,6 +25,7 @@ use uuid::Uuid;
 
 use crate::api::Api;
 use crate::catalog::marks::{Kind, Mark, Marks};
+use crate::catalog::model::Cover;
 use crate::catalog::store::{self, Store, Update};
 use crate::catalog::{Cached, Catalog};
 use crate::playback::spectrum::Spectrum;
@@ -41,9 +42,13 @@ pub enum Page {
     Album(Uuid),
     Artist(Uuid),
     NowPlaying,
+    /// What plays, what's next, what played.
+    Queue,
     /// The starred tracks (a playlist that's always there).
     Liked,
     Playlist(Uuid),
+    /// Everything about one track.
+    Track(Uuid),
 }
 
 /// Something to do, asked for by a page, a key or a button.
@@ -53,11 +58,23 @@ pub enum Action {
     Forward,
     /// Play these tracks (positions in the catalog), starting with `start`.
     Play { tracks: Vec<u32>, start: usize },
+    /// Add these tracks to the queue: at the end, or (`next`) to play next.
+    Enqueue { tracks: Vec<u32>, next: bool },
+    /// Play the queue from this item.
+    PlayQueueAt(usize),
+    RemoveFromQueue(usize),
+    /// Move a queue item from one place to another.
+    MoveInQueue(usize, usize),
     TogglePause,
     Next,
     Previous,
     /// Seek by this many seconds (negative: back).
     SeekBy(f32),
+    /// Seek to this point of the current track.
+    SeekTo(std::time::Duration),
+    /// Loop the current track (or stop looping it).
+    ToggleRepeat,
+    ToggleShuffle,
     /// Star it, or unstar it if it's starred.
     ToggleStar(Kind, Uuid),
     /// Set its rating (0 to 10, half stars).
@@ -88,7 +105,16 @@ pub struct Shell {
     pub data_dir: PathBuf,
     /// Stars, ratings and plays as shown (the catalog's, with this session's changes).
     pub marks: Marks,
+    /// The queue kept between runs (set at login), and whether it was brought back yet.
+    resume: Option<crate::resume::Resume>,
+    resumed: bool,
+    /// What each changing cover place shows (see `cover_crossfade`).
+    cover_slots: std::collections::HashMap<&'static str, CoverSlot>,
     pub playlists: crate::playlists::Playlists,
+    /// Everything about one track, album or artist, for their pages.
+    pub track_details: crate::details::Details<crate::details::TrackDetail>,
+    pub album_details: crate::details::Details<crate::details::AlbumDetail>,
+    pub artist_details: crate::details::Details<crate::details::ArtistDetail>,
     updates: (mpsc::Sender<Update>, mpsc::Receiver<Update>),
     store: Option<Arc<Store>>,
     /// When the catalog being loaded was asked for.
@@ -135,7 +161,7 @@ impl Shell {
         for (track, answer) in std::mem::take(&mut *self.controller.played.lock().unwrap()) {
             match answer {
                 Ok(a) => self.marks.set(track, Mark { play_count: a.play_count, rating: a.rating, starred: a.starred }),
-                Err(err) => *self.controller.error.lock().unwrap() = format!("couldn't count the play: {err}"),
+                Err(err) => self.controller.report(format!("couldn't count the play: {err}")),
             }
         }
         for (id, answer) in std::mem::take(&mut *self.mark_answers.lock().unwrap()) {
@@ -143,7 +169,7 @@ impl Shell {
                 Ok(mark) => self.marks.set(id, mark),
                 Err((err, before)) => {
                     self.marks.set(id, before);
-                    *self.controller.error.lock().unwrap() = err;
+                    self.controller.report(err);
                 }
             }
         }
@@ -151,7 +177,7 @@ impl Shell {
 
     /// A cover, with a placeholder (a small disc on a color made from `seed`) until it
     /// has loaded, fading in. `lift`: 0 to 1, how raised it looks (its shadow).
-    pub fn cover(&mut self, ui: &egui::Ui, cover: Option<Uuid>, seed: Uuid, rect: egui::Rect, radius: u8, lift: f32) {
+    pub fn cover(&mut self, ui: &egui::Ui, cover: Option<Cover>, seed: Uuid, rect: egui::Rect, radius: u8, lift: f32) {
         let painter = ui.painter();
         painter.add(
             egui::Shadow {
@@ -162,7 +188,7 @@ impl Shell {
             }
             .as_shape(rect, radius),
         );
-        let loaded = cover.and_then(|id| self.covers.get(ui.ctx(), id));
+        let loaded = cover.and_then(|c| self.covers.get(ui.ctx(), c));
         let fade = loaded.as_ref().map(|(_, f)| *f).unwrap_or(0.0);
         if fade < 1.0 {
             widgets::placeholder(ui.painter(), rect, radius, seed);
@@ -175,12 +201,96 @@ impl Shell {
         }
     }
 
+    /// Keeps the queue for next time, and brings back last time's once the library is
+    /// here (paused, where it was; tracks no longer in the library are left out).
+    fn resume_queue(&mut self, player: &PlayerView) {
+        let Some(resume) = self.resume.as_mut() else { return };
+        if self.resumed {
+            resume.save(player, self.runtime.handle());
+            return;
+        }
+        let Some(catalog) = self.catalog.value.clone() else { return };
+        self.resumed = true;
+        if !player.items.is_empty() {
+            return;
+        }
+        let Some((saved, position)) = resume.load() else { return };
+        let current = saved.tracks.get(saved.index).copied();
+        let at = position
+            .filter(|p| Some(p.track) == current)
+            .map(|p| std::time::Duration::from_millis(p.position_ms))
+            .unwrap_or_default();
+        let controller = self.controller.clone();
+        // Built in the background: it can be the whole library.
+        self.runtime.spawn(async move {
+            let items: Vec<QueueItem> = saved.tracks.iter().filter_map(|id| catalog.track_index(*id)).map(|i| queue_item(&catalog, i)).collect();
+            let index = current.and_then(|id| items.iter().position(|i| i.track_id == id)).unwrap_or(0);
+            controller.restore(items, index, at, saved.repeat, saved.shuffle).await
+        });
+    }
+
+    /// Like `cover`, for a place whose cover changes (what plays): the old one fades out
+    /// as the new one fades in, and stays until the new one has loaded. `slot` names the
+    /// place ("player-bar"), each remembering its own.
+    #[allow(clippy::too_many_arguments)]
+    pub fn cover_crossfade(&mut self, ui: &egui::Ui, slot: &'static str, cover: Option<Cover>, seed: Uuid, rect: egui::Rect, radius: u8, lift: f32) {
+        let now = ui.input(|i| i.time);
+        let state = self.cover_slots.entry(slot).or_insert(CoverSlot { shown: cover, seed, previous: None, since: now });
+        if state.shown.map(|c| c.key) != cover.map(|c| c.key) {
+            // The old one fades out from the moment the new one is there.
+            state.previous = state.shown.map(|c| (c, state.seed));
+            state.shown = cover;
+            state.seed = seed;
+            state.since = f64::INFINITY;
+        }
+        let state = *state;
+        let new = cover.and_then(|c| self.covers.get(ui.ctx(), c));
+        let old = state.previous.and_then(|(c, _)| self.covers.get(ui.ctx(), c));
+        if new.is_some() && state.since.is_infinite() {
+            self.cover_slots.get_mut(slot).unwrap().since = now;
+        }
+        let t = if new.is_some() { ease_out((((now - state.since) as f32) / 0.4).clamp(0.0, 1.0)) } else { 0.0 };
+        let painter = ui.painter();
+        painter.add(
+            egui::Shadow {
+                offset: [0, (4.0 + lift * 10.0) as i8],
+                blur: (10.0 + lift * 22.0) as u8,
+                spread: 0,
+                color: egui::Color32::from_black_alpha((90.0 + lift * 70.0) as u8),
+            }
+            .as_shape(rect, radius),
+        );
+        match &old {
+            Some((texture, _)) if t < 1.0 => {
+                egui::Image::from_texture(texture).corner_radius(radius).paint_at(ui, rect);
+                ui.ctx().request_repaint();
+            }
+            None if t < 1.0 => widgets::placeholder(ui.painter(), rect, radius, seed),
+            _ => {}
+        }
+        if let Some((texture, _)) = new {
+            egui::Image::from_texture(&texture)
+                .corner_radius(radius)
+                .tint(egui::Color32::from_white_alpha((t * 255.0) as u8))
+                .paint_at(ui, rect);
+            if t < 1.0 {
+                ui.ctx().request_repaint();
+            }
+        }
+    }
+
     /// Starts loading the library: the copy on disk first, then the server's.
     fn load_library(&mut self, ctx: &egui::Context) {
         let Some(session) = self.api.session() else { return };
         let store = Arc::new(Store::new(&self.data_dir, &session));
         self.store = Some(store.clone());
         self.playlists.reset(Some(self.data_dir.join(format!("playlists-{}", store::key(&session)))));
+        self.resume = Some(crate::resume::Resume::new(&self.data_dir, &store::key(&session)));
+        self.resumed = false;
+        let details = self.data_dir.join(format!("details-{}", store::key(&session)));
+        self.track_details.reset(Some(details.clone()));
+        self.album_details.reset(Some(details.clone()));
+        self.artist_details.reset(Some(details));
         self.catalog = Cached { refreshing: true, ..Cached::default() };
         self.refresh_asked = Some(Instant::now());
         let (sender, api, ctx) = (self.updates.0.clone(), self.api.clone(), ctx.clone());
@@ -259,6 +369,16 @@ impl Shell {
     }
 }
 
+/// A place whose cover changes: what it shows, what it showed before (fading out), and
+/// since when the new one fades in (infinite: not loaded yet).
+#[derive(Clone, Copy)]
+struct CoverSlot {
+    shown: Option<Cover>,
+    seed: Uuid,
+    previous: Option<(Cover, Uuid)>,
+    since: f64,
+}
+
 pub struct App {
     shell: Shell,
     spectrum: Spectrum,
@@ -283,6 +403,13 @@ impl App {
         controller.attach_media_keys(runtime.handle().clone(), cache_dir.join("covers"));
         let covers = Covers::new(api.clone(), runtime.handle().clone(), cache_dir);
         let playlists = crate::playlists::Playlists::new(api.clone(), runtime.handle().clone(), cc.egui_ctx.clone());
+        let details = |kind| (kind, api.clone(), runtime.handle().clone(), cc.egui_ctx.clone());
+        let (k, a, r, c) = details("tracks");
+        let track_details = crate::details::Details::new(k, a, r, c);
+        let (k, a, r, c) = details("albums");
+        let album_details = crate::details::Details::new(k, a, r, c);
+        let (k, a, r, c) = details("artists");
+        let artist_details = crate::details::Details::new(k, a, r, c);
         let mut shell = Shell {
             ctx: cc.egui_ctx.clone(),
             runtime,
@@ -294,7 +421,13 @@ impl App {
             actions: Vec::new(),
             data_dir,
             marks: Marks::default(),
+            cover_slots: Default::default(),
+            resume: None,
+            resumed: false,
             playlists,
+            track_details,
+            album_details,
+            artist_details,
             updates: mpsc::channel(),
             store: None,
             refresh_asked: None,
@@ -322,6 +455,13 @@ impl App {
             self.page = page;
             self.page_since = now;
             self.pages.opened(page);
+            // Details shown as kept, and fetched again (cache first).
+            match page {
+                Page::Track(id) => self.shell.track_details.open(id),
+                Page::Album(id) => self.shell.album_details.open(id),
+                Page::Artist(id) => self.shell.artist_details.open(id),
+                _ => {}
+            }
         }
     }
 
@@ -346,6 +486,29 @@ impl App {
                     }
                 }
                 Action::Play { tracks, start } => self.play(tracks, start),
+                Action::Enqueue { tracks, next } => {
+                    let Some(catalog) = self.shell.catalog.value.clone() else { continue };
+                    let (controller, count) = (self.shell.controller.clone(), tracks.len());
+                    self.shell.runtime.spawn(async move {
+                        let items: Vec<QueueItem> = tracks.iter().map(|&i| queue_item(&catalog, i)).collect();
+                        controller.enqueue(items, next).await
+                    });
+                    let what = if count == 1 { "1 track".to_string() } else { format!("{count} tracks") };
+                    let text = if next { format!("Playing {what} next") } else { format!("Added {what} to the queue") };
+                    self.shell.playlists.notice = Some((text, Instant::now()));
+                }
+                Action::PlayQueueAt(index) => {
+                    let c = self.shell.controller.clone();
+                    self.shell.runtime.spawn(async move { c.play_at(index).await });
+                }
+                Action::RemoveFromQueue(index) => {
+                    let c = self.shell.controller.clone();
+                    self.shell.runtime.spawn(async move { c.remove(index).await });
+                }
+                Action::MoveInQueue(from, to) => {
+                    let c = self.shell.controller.clone();
+                    self.shell.runtime.spawn(async move { c.move_item(from, to).await });
+                }
                 Action::TogglePause => self.shell.controller.toggle_pause(),
                 Action::Next => {
                     let c = self.shell.controller.clone();
@@ -356,6 +519,15 @@ impl App {
                     self.shell.runtime.spawn(async move { c.previous().await });
                 }
                 Action::SeekBy(seconds) => self.shell.controller.seek_by(seconds),
+                Action::SeekTo(at) => self.shell.controller.seek(at),
+                Action::ToggleRepeat => {
+                    let c = self.shell.controller.clone();
+                    self.shell.runtime.spawn(async move { c.toggle_repeat().await });
+                }
+                Action::ToggleShuffle => {
+                    let c = self.shell.controller.clone();
+                    self.shell.runtime.spawn(async move { c.toggle_shuffle().await });
+                }
                 Action::ToggleStar(kind, id) => {
                     let mark = self.shell.mark(id);
                     self.shell.change_mark(kind, id, Mark { starred: !mark.starred, ..mark });
@@ -383,6 +555,10 @@ impl App {
                     self.shell.catalog = Cached::default();
                     self.shell.marks.clear();
                     self.shell.playlists.reset(None);
+                    self.shell.resume = None;
+                    self.shell.track_details.reset(None);
+                    self.shell.album_details.reset(None);
+                    self.shell.artist_details.reset(None);
                     self.shell.store = None;
                     self.shell.generation += 1;
                 }
@@ -393,30 +569,25 @@ impl App {
     /// Queues tracks from the catalog and starts playing.
     fn play(&mut self, tracks: Vec<u32>, start: usize) {
         let Some(catalog) = self.shell.catalog.value.clone() else { return };
-        let items: Vec<QueueItem> = tracks
-            .iter()
-            .map(|&i| {
-                let t = &catalog.tracks[i as usize];
-                QueueItem {
-                    track_id: t.id,
-                    file_id: t.file_id,
-                    title: t.title.clone(),
-                    artist: t.artist_display.clone(),
-                    album: catalog.main_album(t).map(|a| a.title.clone()),
-                    duration_ms: t.duration_ms,
-                    cover_id: t.cover_id,
-                }
-            })
-            .collect();
         let controller = self.shell.controller.clone();
-        self.shell.runtime.spawn(async move { controller.play(items, start).await });
+        // Built in the background: a queue of the whole library is 185k items.
+        self.shell.runtime.spawn(async move {
+            let items: Vec<QueueItem> = tracks.iter().map(|&i| queue_item(&catalog, i)).collect();
+            controller.play(items, start).await
+        });
     }
 
     /// Keys that work everywhere (outside text fields).
     fn keys(&mut self, ctx: &egui::Context) {
         let m = ctx.input(|i| i.modifiers);
         let key = |k: Key| ctx.input(|i| i.key_pressed(k));
-        let pages = [(Key::Num1, Page::Albums), (Key::Num2, Page::Artists), (Key::Num3, Page::Tracks), (Key::Num4, Page::NowPlaying)];
+        let pages = [
+            (Key::Num1, Page::Albums),
+            (Key::Num2, Page::Artists),
+            (Key::Num3, Page::Tracks),
+            (Key::Num4, Page::NowPlaying),
+            (Key::Num5, Page::Queue),
+        ];
 
         // Everywhere, text fields included.
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, Key::K)) {
@@ -473,6 +644,10 @@ impl App {
             self.shell.act(Action::Back);
         } else if key(Key::Space) {
             self.shell.act(Action::TogglePause);
+        } else if !m.shift && key(Key::R) {
+            self.shell.act(Action::ToggleRepeat);
+        } else if !m.shift && key(Key::Z) {
+            self.shell.act(Action::ToggleShuffle);
         } else if key(Key::Slash) {
             // Swallow the "/" itself, or the field would get it as text this frame.
             ctx.input_mut(|i| {
@@ -504,10 +679,18 @@ impl eframe::App for App {
         self.keys(&ctx);
         self.shell.take_mark_answers();
         self.shell.playlists.poll();
+        self.shell.track_details.poll();
+        self.shell.album_details.poll();
+        self.shell.artist_details.poll();
         if let Some(id) = self.shell.playlists.created.take() {
             self.shell.act(Action::Go(Page::Playlist(id)));
         }
         let player = self.shell.controller.view.lock().unwrap().clone();
+        self.shell.resume_queue(&player);
+        // The next track's cover, loaded ahead, so it can fade in the moment it plays.
+        if let Some(next) = player.items.get(player.index + 1).and_then(|i| i.cover) {
+            self.shell.covers.get(&ctx, next);
+        }
 
         egui::Panel::bottom("player")
             .exact_size(84.0)
@@ -534,6 +717,20 @@ impl eframe::App for App {
             });
         self.pages.palette.show(&ctx, &mut self.shell);
         self.apply(&ctx);
+    }
+}
+
+/// A track (a position in the catalog) as the queue keeps it.
+pub fn queue_item(catalog: &Catalog, i: u32) -> QueueItem {
+    let t = &catalog.tracks[i as usize];
+    QueueItem {
+        track_id: t.id,
+        file_id: t.file_id,
+        title: t.title.clone(),
+        artist: t.artist_display.clone(),
+        album: catalog.main_album(t).map(|a| a.title.clone()),
+        duration_ms: t.duration_ms,
+        cover: t.cover(),
     }
 }
 

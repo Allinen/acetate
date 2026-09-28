@@ -15,6 +15,25 @@ pub enum Icon {
     Pause,
     Previous,
     Next,
+    Shuffle,
+    /// Repeat one: a loop with a small "1".
+    Repeat,
+}
+
+/// A small toggle button at `center`: the icon lit (accent, with a dot under it) when on.
+pub fn toggle_button(ui: &mut egui::Ui, id: &str, center: Pos2, radius: f32, icon: Icon, on: bool, tip: &str) -> bool {
+    let rect = Rect::from_center_size(center, Vec2::splat(radius * 2.0));
+    let response = ui.interact(rect, egui::Id::new(id), Sense::click());
+    let hover = ui.ctx().animate_bool_with_time(response.id, response.hovered(), 0.12);
+    let lit = ui.ctx().animate_bool_with_time(response.id.with("on"), on, 0.15);
+    let painter = ui.painter();
+    painter.circle_filled(center, radius, P.surface_hi.gamma_multiply(hover));
+    let color = lerp(lerp(P.faint, P.text, hover), P.accent, lit);
+    draw_icon(painter, icon, center, radius * 0.5, color);
+    if lit > 0.0 {
+        painter.circle_filled(center + Vec2::new(0.0, radius * 0.95), 1.8, P.accent.gamma_multiply(lit));
+    }
+    response.on_hover_text(tip).clicked()
 }
 
 /// A round icon button at `center`. `primary`: filled with the accent.
@@ -52,6 +71,32 @@ pub fn draw_icon(painter: &egui::Painter, icon: Icon, c: Pos2, s: f32, color: Co
         Icon::Next => {
             painter.add(triangle(-s * 0.9, s * 0.5));
             painter.rect_filled(Rect::from_center_size(Pos2::new(c.x + s * 0.75, c.y), Vec2::new(s * 0.3, s * 1.9)), 1, color);
+        }
+        Icon::Shuffle => {
+            // Two crossing lines, each ending in an arrowhead on the right.
+            let stroke = Stroke::new(s * 0.2, color);
+            for (from, to) in [(-0.6, 0.6), (0.6, -0.6)] {
+                let (a, b) = (Pos2::new(c.x - s, c.y + from * s), Pos2::new(c.x + s * 0.7, c.y + to * s));
+                painter.line_segment([a, b], stroke);
+                painter.add(Shape::convex_polygon(
+                    vec![Pos2::new(b.x + s * 0.45, b.y), Pos2::new(b.x - s * 0.05, b.y - s * 0.35), Pos2::new(b.x - s * 0.05, b.y + s * 0.35)],
+                    color,
+                    Stroke::NONE,
+                ));
+            }
+        }
+        Icon::Repeat => {
+            let stroke = Stroke::new(s * 0.2, color);
+            let rect = Rect::from_center_size(c, Vec2::new(s * 2.0, s * 1.3));
+            painter.rect_stroke(rect, s * 0.4, stroke, egui::StrokeKind::Middle);
+            // An arrowhead on the top edge, pointing right.
+            let tip = Pos2::new(c.x + s * 0.35, rect.top());
+            painter.add(Shape::convex_polygon(
+                vec![Pos2::new(tip.x + s * 0.4, tip.y), Pos2::new(tip.x - s * 0.1, tip.y - s * 0.35), Pos2::new(tip.x - s * 0.1, tip.y + s * 0.35)],
+                color,
+                Stroke::NONE,
+            ));
+            painter.text(c, egui::Align2::CENTER_CENTER, "1", egui::FontId::proportional(s * 0.9), color);
         }
         Icon::Previous => {
             painter.add(Shape::convex_polygon(vec![Pos2::new(c.x + s * 0.9, c.y - s), Pos2::new(c.x + s * 0.9, c.y + s), Pos2::new(c.x - s * 0.5, c.y)], color, Stroke::NONE));
@@ -138,11 +183,15 @@ pub struct Moved {
     pub rate_by: i16,
     /// `p`: add it to a playlist.
     pub add: bool,
+    /// `i`: open its page (a track's: everything about it).
+    pub info: bool,
+    /// `q`: add it to the end of the queue (false); Shift+Q: play it next (true).
+    pub queue: Option<bool>,
 }
 
 /// Moves `selected` through `len` items laid out in `columns` (1 for a list) with the
 /// arrow keys or hjkl, Page Up/Down and Home/End; also reads the keys for the selected
-/// item (Enter, `s` star, `+`/`-` rate, `p` add to a playlist). Does nothing while a text field has
+/// item (Enter, `s` star, `+`/`-` rate, `p` add to a playlist, `q`/Shift+Q queue). Does nothing while a text field has
 /// the keyboard, or with Ctrl/Alt held (those keys belong to playback and navigation).
 pub fn move_selection(ctx: &egui::Context, selected: &mut usize, len: usize, columns: usize, page: usize) -> Moved {
     let mut out = Moved::default();
@@ -190,12 +239,28 @@ pub fn move_selection(ctx: &egui::Context, selected: &mut usize, len: usize, col
     if !modifiers.shift && key(Key::P) {
         out.add = true;
     }
+    if !modifiers.shift && key(Key::I) {
+        out.info = true;
+    }
+    if key(Key::Q) {
+        out.queue = Some(modifiers.shift);
+    }
     if key(Key::Plus) || key(Key::Equals) {
         out.rate_by = 1;
     } else if key(Key::Minus) {
         out.rate_by = -1;
     }
     out
+}
+
+/// Text that's a link: underlined on hover, a pointing hand. Returns true when clicked.
+pub fn link(ui: &mut egui::Ui, text: &str, font: egui::FontId, color: Color32) -> bool {
+    let label = egui::Label::new(egui::RichText::new(text).font(font).color(color)).sense(Sense::click()).truncate();
+    let response = ui.add(label).on_hover_cursor(egui::CursorIcon::PointingHand);
+    if response.hovered() {
+        ui.painter().hline(response.rect.x_range(), response.rect.bottom(), Stroke::new(1.0, color.gamma_multiply(0.7)));
+    }
+    response.clicked()
 }
 
 /// A small pill button with text; `active` fills it with the accent's soft color.

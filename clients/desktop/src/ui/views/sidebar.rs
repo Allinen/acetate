@@ -20,6 +20,7 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell, page: Page, username: &str) {
         ("Artists", "2", Page::Artists),
         ("Tracks", "3", Page::Tracks),
         ("Now playing", "4", Page::NowPlaying),
+        ("Queue", "5", Page::Queue),
     ];
     // An album's page belongs to Albums, an artist's to Artists.
     let active = match page {
@@ -27,8 +28,9 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell, page: Page, username: &str) {
         Page::Artists | Page::Artist(_) => Some(1),
         Page::Tracks => Some(2),
         Page::NowPlaying => Some(3),
+        Page::Queue => Some(4),
         // Playlists are marked in their own list below.
-        Page::Liked | Page::Playlist(_) => None,
+        Page::Liked | Page::Playlist(_) | Page::Track(_) => None,
     };
     let height = 36.0;
     let top = ui.cursor().top();

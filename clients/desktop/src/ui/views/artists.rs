@@ -70,6 +70,9 @@ impl Artists {
             if moved.rate_by != 0 {
                 shell.act(Action::RateBy(Kind::Artist, id, moved.rate_by));
             }
+            if let Some(next) = moved.queue {
+                shell.act(Action::Enqueue { tracks: catalog.artist_tracks(id).to_vec(), next });
+            }
             if moved.add {
                 let tracks = catalog.artist_tracks(id).iter().map(|&t| catalog.tracks[t as usize].id).collect();
                 shell.act(Action::AddToPlaylist(tracks));

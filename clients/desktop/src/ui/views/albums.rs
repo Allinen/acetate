@@ -92,6 +92,9 @@ impl Albums {
             if moved.rate_by != 0 {
                 shell.act(Action::RateBy(Kind::Album, id, moved.rate_by));
             }
+            if let Some(next) = moved.queue {
+                shell.act(Action::Enqueue { tracks: catalog.album_tracks(id).to_vec(), next });
+            }
             if moved.add {
                 let tracks = catalog.album_tracks(id).iter().map(|&t| catalog.tracks[t as usize].id).collect();
                 shell.act(Action::AddToPlaylist(tracks));
@@ -121,7 +124,7 @@ impl Albums {
                         let (rect, response) = ui.allocate_exact_size(Vec2::new(card, row_height - 8.0), Sense::click());
                         let hover = ctx.animate_bool_with_time(response.id, response.hovered(), 0.16);
                         let cover_rect = Rect::from_min_size(rect.min - Vec2::new(0.0, hover * 5.0), Vec2::splat(card));
-                        shell.cover(ui, album.cover_id, album.id, cover_rect, 10, hover);
+                        shell.cover(ui, album.cover(), album.id, cover_rect, 10, hover);
                         if shell.mark(album.id).starred {
                             let badge = cover_rect.left_top() + Vec2::splat(18.0);
                             ui.painter().circle_filled(badge, 12.0, Color32::from_black_alpha(140));

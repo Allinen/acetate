@@ -49,7 +49,8 @@ async fn each_user_gets_what_they_can_see(_: PgPoolOptions, connect: PgConnectOp
     assert_eq!((track_count(lib.both), track_count(lib.x)), (2, 0));
     // The album's tracks: V only, and V's row names the album and Both as primary.
     let albums: Vec<Vec<Value>> = serde_json::from_str(&db::library::albums_json(&mut tx).await?)?;
-    assert_eq!(albums[0][9], 1, "track_count");
+    let track_count = db::library::ALBUM_COLUMNS.iter().position(|c| *c == "track_count").unwrap();
+    assert_eq!(albums[0][track_count], 1, "track_count");
     let tracks: Vec<Vec<Value>> = serde_json::from_str(&db::library::tracks_json(&mut tx).await?)?;
     let v = tracks.iter().find(|r| r[0] == lib.v.to_string()).unwrap();
     assert_eq!(v[4][0][0], lib.album.to_string());

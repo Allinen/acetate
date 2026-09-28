@@ -26,6 +26,32 @@ pub enum Role {
 #[derive(Debug, Clone, Deserialize)]
 pub struct Credit(pub Uuid, pub Role, pub Option<String>);
 
+/// A cover to show: its id (to download it) and its key, which is the same for the same
+/// image under different covers (so each image is loaded and kept once).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Cover {
+    pub id: Uuid,
+    pub key: CoverKey,
+}
+
+/// The start of a cover image's SHA-256 (16 hex digits), as a number.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct CoverKey(pub u64);
+
+impl CoverKey {
+    /// From hex (a key, or a whole SHA-256: its start is used).
+    pub fn from_hex(hex: &str) -> Option<CoverKey> {
+        u64::from_str_radix(hex.get(..16)?, 16).ok().map(CoverKey)
+    }
+}
+
+impl<'de> Deserialize<'de> for CoverKey {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<CoverKey, D::Error> {
+        let hex = String::deserialize(d)?;
+        CoverKey::from_hex(&hex).ok_or_else(|| serde::de::Error::custom("a cover key is 16 hex digits"))
+    }
+}
+
 /// An album a track is on, with its disc and track number there.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Membership(pub Uuid, pub Option<i16>, pub Option<i16>);
@@ -43,6 +69,7 @@ pub struct Track {
     pub duration_ms: Option<i64>,
     pub file_id: Uuid,
     pub cover_id: Option<Uuid>,
+    pub cover_key: Option<CoverKey>,
     /// As written, never reformatted.
     pub release_date: Option<String>,
     pub year: Option<i16>,
@@ -55,7 +82,7 @@ pub struct Track {
 
 const TRACK_COLUMNS: &[&str] = &[
     "id", "title", "artist_display", "credits", "albums", "duration_ms", "file_id", "cover_id",
-    "release_date", "year", "status", "genres", "created_at", "is_restricted", "codec",
+    "cover_key", "release_date", "year", "status", "genres", "created_at", "is_restricted", "codec",
 ];
 
 // Every column is read (rows are arrays in column order); not all are shown yet.
@@ -70,6 +97,7 @@ pub struct Album {
     pub release_date: Option<String>,
     pub year: Option<i32>,
     pub cover_id: Option<Uuid>,
+    pub cover_key: Option<CoverKey>,
     pub created_at: String,
     pub track_count: i64,
     pub duration_ms: i64,
@@ -77,7 +105,7 @@ pub struct Album {
 
 const ALBUM_COLUMNS: &[&str] = &[
     "id", "title", "kind", "artist_display", "credits", "release_date", "year", "cover_id",
-    "created_at", "track_count", "duration_ms",
+    "cover_key", "created_at", "track_count", "duration_ms",
 ];
 
 #[derive(Debug, Clone, Deserialize)]
@@ -139,6 +167,18 @@ pub struct Raw {
     pub artists: Part<Artist>,
     pub annotations: Part<Annotation>,
     pub playlists: Vec<Playlist>,
+}
+
+impl Track {
+    pub fn cover(&self) -> Option<Cover> {
+        Some(Cover { id: self.cover_id?, key: self.cover_key? })
+    }
+}
+
+impl Album {
+    pub fn cover(&self) -> Option<Cover> {
+        Some(Cover { id: self.cover_id?, key: self.cover_key? })
+    }
 }
 
 /// Reads a catalog body. A format or columns this client doesn't know is an error that

@@ -11,8 +11,10 @@ pub mod now_playing;
 pub mod palette;
 pub mod player_bar;
 pub mod playlist;
+pub mod queue;
 pub mod sidebar;
 pub mod track_table;
+pub mod track;
 pub mod tracks;
 
 use eframe::egui::{self, RichText};
@@ -35,6 +37,8 @@ pub struct Pages {
     album: album::AlbumPage,
     artist: artist::ArtistPage,
     playlist: playlist::PlaylistPage,
+    track: track::TrackPage,
+    queue: queue::QueuePage,
 }
 
 impl Pages {
@@ -44,6 +48,8 @@ impl Pages {
             Page::Album(_) => self.album = Default::default(),
             Page::Artist(_) => self.artist = Default::default(),
             Page::Playlist(_) | Page::Liked => self.playlist = Default::default(),
+            Page::Track(_) => self.track = Default::default(),
+            Page::Queue => self.queue.opened(),
             _ => {}
         }
     }
@@ -51,6 +57,10 @@ impl Pages {
     pub fn show(&mut self, ui: &mut egui::Ui, shell: &mut Shell, page: Page, player: &PlayerView, spectrum: &mut Spectrum, dt: f32) {
         if page == Page::NowPlaying {
             now_playing::show(ui, shell, player, spectrum, dt);
+            return;
+        }
+        if page == Page::Queue {
+            self.queue.show(ui, shell, player);
             return;
         }
         let Some(catalog) = shell.catalog.value.clone() else {
@@ -65,7 +75,76 @@ impl Pages {
             Page::Artist(id) => self.artist.show(ui, shell, &catalog, id, player),
             Page::Liked => self.playlist.show_liked(ui, shell, &catalog, player),
             Page::Playlist(id) => self.playlist.show(ui, shell, &catalog, id, player),
-            Page::NowPlaying => {}
+            Page::Track(id) => self.track.show(ui, shell, &catalog, id, player),
+            Page::NowPlaying | Page::Queue => {}
+        }
+    }
+}
+
+/// Credited artists (producers left out) as links to their pages, each as credited
+/// ("credited as" names as written), or `fallback` if there are no credits.
+pub fn artist_links(
+    ui: &mut egui::Ui,
+    shell: &mut Shell,
+    catalog: &crate::catalog::Catalog,
+    credits: &[crate::catalog::model::Credit],
+    fallback: &str,
+    font: egui::FontId,
+    color: egui::Color32,
+) {
+    use crate::catalog::model::Role;
+    ui.spacing_mut().item_spacing.x = 0.0;
+    let shown: Vec<_> = credits.iter().filter(|c| c.1 != Role::Producer).collect();
+    if shown.is_empty() {
+        ui.add(egui::Label::new(RichText::new(fallback).font(font).color(color)).truncate());
+        return;
+    }
+    for (i, credit) in shown.iter().enumerate() {
+        if i > 0 {
+            // "feat." before the first featured artist, else a comma.
+            let joiner = if credit.1 == Role::Featured && shown[i - 1].1 != Role::Featured { " feat. " } else { ", " };
+            ui.label(RichText::new(joiner).font(font.clone()).color(P.faint));
+        }
+        let name = credit.2.clone().or_else(|| catalog.artist(credit.0).map(|a| a.name.clone())).unwrap_or_default();
+        if super::widgets::link(ui, &name, font.clone(), color) {
+            shell.act(super::Action::Go(Page::Artist(credit.0)));
+        }
+    }
+}
+
+/// What plays, as links: the title to its page, the artists to theirs (from the
+/// catalog's credits; plain text for a track the catalog doesn't have).
+#[allow(clippy::too_many_arguments)]
+pub fn playing_links(
+    ui: &mut egui::Ui,
+    shell: &mut Shell,
+    track: uuid::Uuid,
+    title: &str,
+    artist: &str,
+    title_rect: egui::Rect,
+    artist_rect: egui::Rect,
+    title_font: egui::FontId,
+    artist_font: egui::FontId,
+) {
+    let catalog = shell.catalog.value.clone();
+    let t = catalog.as_deref().and_then(|c| c.track_index(track).map(|i| &c.tracks[i as usize]));
+    let layout = egui::Layout::left_to_right(egui::Align::Center);
+    let mut title_ui = ui.new_child(egui::UiBuilder::new().max_rect(title_rect).layout(layout));
+    match t {
+        Some(t) => {
+            if super::widgets::link(&mut title_ui, title, title_font, P.text) {
+                shell.act(super::Action::Go(Page::Track(t.id)));
+            }
+        }
+        None => {
+            title_ui.add(egui::Label::new(RichText::new(title).font(title_font).color(P.text)).truncate());
+        }
+    }
+    let mut artist_ui = ui.new_child(egui::UiBuilder::new().max_rect(artist_rect).layout(layout));
+    match (t, catalog.as_deref()) {
+        (Some(t), Some(c)) => artist_links(&mut artist_ui, shell, c, &t.credits, artist, artist_font, P.muted),
+        _ => {
+            artist_ui.add(egui::Label::new(RichText::new(artist).font(artist_font).color(P.muted)).truncate());
         }
     }
 }

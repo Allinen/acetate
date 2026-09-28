@@ -35,19 +35,58 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell, player: &PlayerView, spectrum:
         Shadow { offset: [0, 10], blur: (70.0 + bass * 50.0) as u8, spread: (6.0 + bass * 14.0) as u8, color: P.accent.gamma_multiply(0.10 + bass * 0.22) }
             .as_shape(cover_rect, 18),
     );
-    shell.cover(ui, item.cover_id, item.track_id, cover_rect, 16, 1.0);
+    shell.cover_crossfade(ui, "now-playing", item.cover, item.track_id, cover_rect, 16, 1.0);
 
     let left = cover_rect.right() + 40.0;
     let width = area.right() - left;
-    let middle = cover_rect.center().y;
-    widgets::text_in(ui.painter(), Rect::from_min_size(Pos2::new(left, middle - 52.0), Vec2::new(width, 50.0)), &item.title, font(40.0, bold()), P.text);
-    widgets::text_in(ui.painter(), Rect::from_min_size(Pos2::new(left, middle + 4.0), Vec2::new(width, 26.0)), &item.artist, font(19.0, medium()), P.muted);
+    // With lyrics, the title goes to the top and the lyrics fill the column below it;
+    // without, the title sits in the middle, beside the cover.
+    let detail = shell.track_details.get(item.track_id).value.clone();
+    let lyrics = detail.as_ref().and_then(|d| d.lyrics.iter().find(|l| l.is_synced).or(d.lyrics.first()).cloned());
+    let middle = if lyrics.is_some() { cover_rect.top() + 52.0 } else { cover_rect.center().y };
+    super::playing_links(
+        ui,
+        shell,
+        item.track_id,
+        &item.title,
+        &item.artist,
+        Rect::from_min_size(Pos2::new(left, middle - 52.0), Vec2::new(width, 50.0)),
+        Rect::from_min_size(Pos2::new(left, middle + 4.0), Vec2::new(width, 26.0)),
+        font(40.0, bold()),
+        font(19.0, medium()),
+    );
     // Star, rating and plays of what plays.
     let marks_rect = Rect::from_min_size(Pos2::new(left, middle + 44.0), Vec2::new(width, 30.0));
     let mut marks_ui = ui.new_child(egui::UiBuilder::new().max_rect(marks_rect).layout(egui::Layout::left_to_right(egui::Align::Center)));
     super::album::marks(&mut marks_ui, shell, Kind::Track, item.track_id);
-    if let Some(next) = player.items.get(player.index + 1) {
-        ui.painter().text(Pos2::new(left, middle + 92.0), Align2::LEFT_TOP, format!("Next  ·  {} — {}", next.title, next.artist), font(13.0, medium()), P.faint);
+    let next = if player.repeat { Some(&item) } else { player.items.get(player.index + 1) };
+    if let Some(next) = next {
+        let text = format!("Next  ·  {} — {}", next.title, next.artist);
+        widgets::text_in(ui.painter(), Rect::from_min_size(Pos2::new(left, middle + 88.0), Vec2::new(width, 18.0)), &text, font(13.0, medium()), P.faint);
+    }
+
+    // The lyrics, down to the visualizer.
+    if let Some(lyrics) = lyrics {
+        let bottom = area.bottom() - spectrum_height - 8.0;
+        let rect = Rect::from_min_max(Pos2::new(left, middle + 124.0), Pos2::new(area.right(), bottom));
+        if rect.height() > 60.0 {
+            let mut lyrics_ui = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::top_down(egui::Align::Min)));
+            let followed_id = egui::Id::new(("now-playing-lyrics", item.track_id));
+            let mut followed = ctx.data(|d| d.get_temp::<Option<usize>>(followed_id)).flatten();
+            egui::ScrollArea::vertical()
+                .id_salt(followed_id)
+                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                .auto_shrink([false, false])
+                .show(&mut lyrics_ui, |ui| {
+                    // Synced: room above and below, so the first and last lines can be in
+                    // the middle.
+                    let room = if lyrics.is_synced { rect.height() / 2.0 - 20.0 } else { 0.0 };
+                    ui.add_space(room);
+                    super::track::lyrics_lines(ui, shell, &lyrics, true, player, &mut followed, 17.0);
+                    ui.add_space(room);
+                });
+            ctx.data_mut(|d| d.insert_temp(followed_id, followed));
+        }
     }
 
     // The spectrum, with a faint reflection.

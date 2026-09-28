@@ -18,8 +18,6 @@ use crate::playback::PlayerView;
 use crate::ui::theme::{font, medium, semibold, PALETTE as P};
 use crate::ui::{playing_track, thousands, widgets, Action, Shell};
 
-/// How many tracks to queue when playing from the table (from the one chosen on).
-const QUEUE: usize = 1000;
 const ROW: f32 = 36.0;
 
 /// What a table shows besides the usual columns.
@@ -111,6 +109,12 @@ impl TrackTable {
             if moved.add {
                 shell.act(Action::AddToPlaylist(vec![id]));
             }
+            if let Some(next) = moved.queue {
+                shell.act(Action::Enqueue { tracks: vec![rows.track(row)], next });
+            }
+            if moved.info {
+                shell.act(Action::Go(crate::ui::Page::Track(id)));
+            }
             if moved.enter {
                 self.play_from(shell, rows, self.selected);
             }
@@ -190,7 +194,7 @@ impl TrackTable {
                     }
                     row.col(|ui| {
                         let (rect, _) = ui.allocate_exact_size(Vec2::splat(28.0), Sense::hover());
-                        shell.cover(ui, t.cover_id, t.id, rect, 4, 0.0);
+                        shell.cover(ui, t.cover(), t.id, rect, 4, 0.0);
                     });
                     row.col(|ui| {
                         // The star on the title's line, not above it.
@@ -199,15 +203,22 @@ impl TrackTable {
                                 let (rect, _) = ui.allocate_exact_size(Vec2::new(14.0, 14.0), Sense::hover());
                                 widgets::draw_star(ui.painter(), rect.center(), 5.5, P.accent);
                             }
-                            ui.add(Label::new(RichText::new(&t.title).color(color).font(font(13.5, medium()))).truncate());
+                            if widgets::link(ui, &t.title, font(13.5, medium()), color) {
+                                shell.act(Action::Go(crate::ui::Page::Track(t.id)));
+                            }
                         });
                     });
                     row.col(|ui| {
-                        ui.add(Label::new(RichText::new(&t.artist_display).color(P.muted)).truncate());
+                        ui.horizontal(|ui| {
+                            super::artist_links(ui, shell, catalog, &t.credits, &t.artist_display, font(13.0, medium()), P.muted);
+                        });
                     });
                     row.col(|ui| {
-                        let album = catalog.main_album(t).map(|a| a.title.as_str()).unwrap_or("");
-                        ui.add(Label::new(RichText::new(album).color(P.muted)).truncate());
+                        if let Some(album) = catalog.main_album(t) {
+                            if widgets::link(ui, &album.title, font(13.0, medium()), P.muted) {
+                                shell.act(Action::Go(crate::ui::Page::Album(album.id)));
+                            }
+                        }
                     });
                     row.col(|ui| {
                         ui.label(RichText::new(t.release_date.as_deref().unwrap_or("")).color(P.faint));
@@ -272,9 +283,11 @@ impl TrackTable {
         self.selected = self.selected.min(self.order.len().saturating_sub(1));
     }
 
+    /// Plays every row shown, starting at `n` (so shuffle mixes all of them, and
+    /// Previous goes back up the list).
     fn play_from(&self, shell: &mut Shell, rows: &TrackRows, n: usize) {
-        let tracks: Vec<u32> = self.order.iter().skip(n).take(QUEUE).map(|&r| rows.track(r)).collect();
-        shell.act(Action::Play { tracks, start: 0 });
+        let tracks: Vec<u32> = self.order.iter().map(|&r| rows.track(r)).collect();
+        shell.act(Action::Play { tracks, start: n });
     }
 }
 

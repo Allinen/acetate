@@ -36,9 +36,12 @@ const COMMANDS: &[Command] = &[
     Command { name: "Go to Artists", keys: "2", action: || Action::Go(Page::Artists) },
     Command { name: "Go to Tracks", keys: "3", action: || Action::Go(Page::Tracks) },
     Command { name: "Go to Now playing", keys: "4", action: || Action::Go(Page::NowPlaying) },
+    Command { name: "Go to the queue", keys: "5", action: || Action::Go(Page::Queue) },
     Command { name: "Play / pause", keys: "Space", action: || Action::TogglePause },
     Command { name: "Next track", keys: "Ctrl+→", action: || Action::Next },
     Command { name: "Previous track", keys: "Ctrl+←", action: || Action::Previous },
+    Command { name: "Loop this track (repeat) on / off", keys: "r", action: || Action::ToggleRepeat },
+    Command { name: "Shuffle on / off", keys: "z", action: || Action::ToggleShuffle },
     Command { name: "Check the library for changes", keys: "F5", action: || Action::RefreshLibrary },
     Command { name: "Back", keys: "Alt+←", action: || Action::Back },
     Command { name: "Forward", keys: "Alt+→", action: || Action::Forward },
@@ -353,7 +356,7 @@ impl Palette {
             }
             (Entry::Album(i), Some(c)) => {
                 let album = &c.albums[i as usize];
-                shell.cover(ui, album.cover_id, album.id, cover_rect, 5, 0.0);
+                shell.cover(ui, album.cover(), album.id, cover_rect, 5, 0.0);
                 let sub = match album.year {
                     Some(year) => format!("{} · {year}", album.artist_display),
                     None => album.artist_display.clone(),
@@ -362,7 +365,7 @@ impl Palette {
             }
             (Entry::Track(i), Some(c)) => {
                 let track = &c.tracks[i as usize];
-                shell.cover(ui, track.cover_id, track.id, cover_rect, 5, 0.0);
+                shell.cover(ui, track.cover(), track.id, cover_rect, 5, 0.0);
                 let sub = match c.main_album(track) {
                     Some(album) if album.kind != "single" => format!("{} · {}", track.artist_display, album.title),
                     _ => track.artist_display.clone(),

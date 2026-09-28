@@ -4,14 +4,20 @@
 //!
 //! - `api`: talking to the server.
 //! - `catalog`: the library kept locally, and its lookups.
+//! - `details`: everything about one track, album or artist, for their pages.
+//! - `lyrics`: synced lyrics (LRC).
 //! - `playback`: the queue and the audio.
 //! - `playlists`: playlists, kept locally like the catalog.
+//! - `resume`: the queue kept between runs.
 //! - `ui`: the window, its pages and the pieces they're drawn with.
 
 mod api;
 mod catalog;
+mod details;
+mod lyrics;
 mod playback;
 mod playlists;
+mod resume;
 mod ui;
 
 fn main() -> eframe::Result {
