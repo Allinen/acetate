@@ -59,6 +59,8 @@ pub enum Page {
     Trash,
     /// A collective, an era, a project…: its tracks and releases.
     Grouping(Uuid),
+    /// Every grouping, to browse.
+    Groupings,
 }
 
 /// Something to do, asked for by a page, a key or a button.

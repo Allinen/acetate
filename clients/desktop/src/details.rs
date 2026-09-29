@@ -308,9 +308,12 @@ pub struct ArtistDetail {
 pub struct GroupingDetail {
     #[serde(default)]
     pub description: String,
-    /// The artists credited on its tracks, most tracks first.
+    /// Who's in it (said by hand), with how many of its tracks each is credited on.
     #[serde(default)]
     pub members: Vec<GroupingMember>,
+    /// Others credited on its tracks (not members unless someone says so).
+    #[serde(default)]
+    pub credited: Vec<GroupingMember>,
     #[serde(default)]
     pub sources: Vec<Source>,
     /// Every change, newest first.
@@ -333,6 +336,11 @@ pub struct GroupingChange {
     pub action: String,
     pub track_id: Option<Uuid>,
     pub album_id: Option<Uuid>,
+    /// A member added or taken out.
+    #[serde(default)]
+    pub artist_id: Option<Uuid>,
+    #[serde(default)]
+    pub detail: serde_json::Value,
     #[serde(default)]
     pub reason: String,
 }

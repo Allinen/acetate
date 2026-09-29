@@ -9,7 +9,7 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 /// The catalog format this client reads (the server's `FORMAT`).
-pub const FORMAT: u32 = 2;
+pub const FORMAT: u32 = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -124,9 +124,11 @@ pub struct Grouping {
     pub name: String,
     pub track_count: i64,
     pub album_count: i64,
+    /// Its members (said by hand, not worked out from credits).
+    pub artists: Vec<Uuid>,
 }
 
-const GROUPING_COLUMNS: &[&str] = &["id", "kind", "name", "track_count", "album_count"];
+const GROUPING_COLUMNS: &[&str] = &["id", "kind", "name", "track_count", "album_count", "artists"];
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Artist {

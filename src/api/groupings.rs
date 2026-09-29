@@ -55,42 +55,77 @@ pub struct Members {
     reason: String,
 }
 
-/// `POST /api/groupings/{id}/add`, JSON `{"track_ids": […], "album_ids": […]}`. Returns
-/// how many were added (ones already in it aren't counted).
-pub async fn add(State(state): State<AppState>, user: CurrentUser, Path(id): Path<Uuid>, Json(body): Json<Members>) -> Result<Json<serde_json::Value>, AppError> {
+/// `POST /api/groupings/{id}/add`, JSON `{"track_ids": […], "album_ids": […]}`. A track
+/// alone on a single brings the single, and a single its only track. Returns how many
+/// were added, `{"tracks", "albums"}` (ones already in it aren't counted).
+pub async fn add(State(state): State<AppState>, user: CurrentUser, Path(id): Path<Uuid>, Json(body): Json<Members>) -> Result<Json<db::groupings::Changed>, AppError> {
     let mut tx = state.db(&user).await?;
     let added = db::groupings::add(&mut tx, id, &body.track_ids, &body.album_ids, &body.reason).await?;
+    tx.commit().await?;
+    Ok(Json(added))
+}
+
+/// `POST /api/groupings/{id}/remove`, the same JSON: takes them out (a single and its
+/// only track together).
+pub async fn remove(State(state): State<AppState>, user: CurrentUser, Path(id): Path<Uuid>, Json(body): Json<Members>) -> Result<Json<db::groupings::Changed>, AppError> {
+    let mut tx = state.db(&user).await?;
+    let removed = db::groupings::remove(&mut tx, id, &body.track_ids, &body.album_ids, &body.reason).await?;
+    tx.commit().await?;
+    Ok(Json(removed))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Artists {
+    artist_ids: Vec<Uuid>,
+    #[serde(default)]
+    reason: String,
+}
+
+/// `POST /api/groupings/{id}/members/add`, JSON `{"artist_ids": […]}`: who's in it.
+pub async fn add_members(State(state): State<AppState>, user: CurrentUser, Path(id): Path<Uuid>, Json(body): Json<Artists>) -> Result<Json<serde_json::Value>, AppError> {
+    let mut tx = state.db(&user).await?;
+    let added = db::groupings::add_members(&mut tx, id, &body.artist_ids, &body.reason).await?;
     tx.commit().await?;
     Ok(Json(serde_json::json!({ "added": added })))
 }
 
-/// `POST /api/groupings/{id}/remove`, the same JSON: takes them out.
-pub async fn remove(State(state): State<AppState>, user: CurrentUser, Path(id): Path<Uuid>, Json(body): Json<Members>) -> Result<Json<serde_json::Value>, AppError> {
+/// `POST /api/groupings/{id}/members/remove`, the same JSON.
+pub async fn remove_members(State(state): State<AppState>, user: CurrentUser, Path(id): Path<Uuid>, Json(body): Json<Artists>) -> Result<Json<serde_json::Value>, AppError> {
     let mut tx = state.db(&user).await?;
-    let removed = db::groupings::remove(&mut tx, id, &body.track_ids, &body.album_ids, &body.reason).await?;
+    let removed = db::groupings::remove_members(&mut tx, id, &body.artist_ids, &body.reason).await?;
     tx.commit().await?;
     Ok(Json(serde_json::json!({ "removed": removed })))
 }
 
-/// `GET /api/artists/{id}/collective`: what turning the artist into a collective would do
-/// (changes nothing). See `db::groupings::collective_preview`.
-pub async fn collective_preview(State(state): State<AppState>, user: CurrentUser, Path(id): Path<Uuid>) -> Result<Json<db::groupings::CollectivePreview>, AppError> {
+#[derive(Debug, Default, Deserialize)]
+pub struct IntoQuery {
+    /// An existing collective (else a new one).
+    into: Option<Uuid>,
+}
+
+/// `GET /api/artists/{id}/collective[?into=<grouping>]`: what turning the artist into a
+/// collective (or merging it into that one) would do; changes nothing. See
+/// `db::groupings::collective_preview`.
+pub async fn collective_preview(State(state): State<AppState>, user: CurrentUser, Path(id): Path<Uuid>, axum::extract::Query(q): axum::extract::Query<IntoQuery>) -> Result<Json<db::groupings::CollectivePreview>, AppError> {
     let mut tx = state.db(&user).await?;
-    Ok(Json(db::groupings::collective_preview(&mut tx, id).await?))
+    Ok(Json(db::groupings::collective_preview(&mut tx, id, q.into).await?))
 }
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct Reason {
     reason: String,
+    /// An existing collective to merge into (else a new one).
+    into: Option<Uuid>,
 }
 
-/// `POST /api/artists/{id}/collective`, JSON `{"reason": ""}` (optional): does it. Returns
-/// the collective's id.
+/// `POST /api/artists/{id}/collective`, JSON `{"reason": "", "into": null}` (optional): does
+/// it. Returns the collective's id.
 pub async fn turn_into_collective(State(state): State<AppState>, user: CurrentUser, Path(id): Path<Uuid>, body: Option<Json<Reason>>) -> Result<Json<serde_json::Value>, AppError> {
-    let reason = body.map(|Json(b)| b.reason).unwrap_or_default();
+    let body = body.map(|Json(b)| b).unwrap_or_default();
     let mut tx = state.db(&user).await?;
-    let grouping = db::groupings::turn_into_collective(&mut tx, id, &reason).await?;
+    let grouping = db::groupings::turn_into_collective(&mut tx, id, body.into, &body.reason).await?;
     tx.commit().await?;
     Ok(Json(serde_json::json!({ "grouping_id": grouping })))
 }

@@ -96,14 +96,47 @@ async fn exists(conn: &mut PgConnection, id: Uuid) -> sqlx::Result<bool> {
     sqlx::query_scalar!(r#"SELECT EXISTS (SELECT 1 FROM groupings WHERE id = $1) AS "e!""#, id).fetch_one(conn).await
 }
 
-/// Puts tracks and albums in the grouping (those already in it stay as they are). Only
-/// ones the user can see: an id they can't is refused like one that doesn't exist.
-/// Returns how many were added.
-pub async fn add(conn: &mut PgConnection, id: Uuid, tracks: &[Uuid], albums: &[Uuid], reason: &str) -> anyhow::Result<usize> {
-    if !exists(conn, id).await? {
-        return Err(EditRejected::NotFound("grouping").into());
-    }
-    let mut added = 0;
+/// What `add` or `remove` changed (a single goes with its only track, and the other way).
+#[derive(Debug, Default, Serialize, PartialEq)]
+pub struct Changed {
+    pub tracks: usize,
+    pub albums: usize,
+}
+
+/// The singles `track` is the only track of: in a grouping, they go with it.
+async fn singles_of(conn: &mut PgConnection, track: Uuid) -> sqlx::Result<Vec<Uuid>> {
+    sqlx::query_scalar!(
+        r#"SELECT a.id FROM album_tracks at
+           JOIN albums a ON a.id = at.album_id AND a.kind = 'single' AND a.merged_into IS NULL
+           WHERE at.track_id = $1
+             AND (SELECT count(*) FROM album_tracks x JOIN tracks t ON t.id = x.track_id AND t.merged_into IS NULL
+                  WHERE x.album_id = a.id) = 1"#,
+        track
+    )
+    .fetch_all(conn)
+    .await
+}
+
+/// A single's only track: it goes with it.
+async fn only_track_of(conn: &mut PgConnection, album: Uuid) -> sqlx::Result<Option<Uuid>> {
+    let tracks = sqlx::query_scalar!(
+        r#"SELECT x.track_id FROM album_tracks x
+           JOIN albums a ON a.id = x.album_id AND a.kind = 'single'
+           JOIN tracks t ON t.id = x.track_id AND t.merged_into IS NULL
+           WHERE x.album_id = $1"#,
+        album
+    )
+    .fetch_all(conn)
+    .await?;
+    Ok(if tracks.len() == 1 { tracks.first().copied() } else { None })
+}
+
+/// The tracks and albums meant: the ones given (each one the user can see, or it's
+/// refused like one that doesn't exist), and what goes with them (a single and its only
+/// track), each with what it goes with.
+async fn with_singles(conn: &mut PgConnection, tracks: &[Uuid], albums: &[Uuid]) -> anyhow::Result<(Vec<(Uuid, Option<Uuid>)>, Vec<(Uuid, Option<Uuid>)>)> {
+    let mut out_tracks: Vec<(Uuid, Option<Uuid>)> = Vec::new();
+    let mut out_albums: Vec<(Uuid, Option<Uuid>)> = Vec::new();
     for &track in tracks {
         let visible = sqlx::query_scalar!(r#"SELECT EXISTS (SELECT 1 FROM tracks WHERE id = $1 AND merged_into IS NULL) AS "e!""#, track)
             .fetch_one(&mut *conn)
@@ -111,13 +144,9 @@ pub async fn add(conn: &mut PgConnection, id: Uuid, tracks: &[Uuid], albums: &[U
         if !visible {
             return Err(EditRejected::NotFound("track").into());
         }
-        let inserted = sqlx::query!("INSERT INTO grouping_tracks (grouping_id, track_id) VALUES ($1, $2) ON CONFLICT DO NOTHING", id, track)
-            .execute(&mut *conn)
-            .await?
-            .rows_affected();
-        if inserted > 0 {
-            log(conn, id, "added", Some(track), None, serde_json::json!({}), reason).await?;
-            added += 1;
+        out_tracks.push((track, None));
+        for single in singles_of(conn, track).await? {
+            out_albums.push((single, Some(track)));
         }
     }
     for &album in albums {
@@ -127,41 +156,142 @@ pub async fn add(conn: &mut PgConnection, id: Uuid, tracks: &[Uuid], albums: &[U
         if !visible {
             return Err(EditRejected::NotFound("album").into());
         }
+        out_albums.push((album, None));
+        if let Some(track) = only_track_of(conn, album).await? {
+            out_tracks.push((track, Some(album)));
+        }
+    }
+    // Given explicitly wins over "went along" (first one stays).
+    let mut seen = std::collections::HashSet::new();
+    out_tracks.retain(|(id, _)| seen.insert(*id));
+    let mut seen = std::collections::HashSet::new();
+    out_albums.retain(|(id, _)| seen.insert(*id));
+    Ok((out_tracks, out_albums))
+}
+
+fn along(with: Option<Uuid>) -> serde_json::Value {
+    match with {
+        Some(id) => serde_json::json!({ "along_with": id }),
+        None => serde_json::json!({}),
+    }
+}
+
+/// Puts tracks and albums in the grouping (those already in it stay as they are). A track
+/// that's the only one on a single brings the single along, and a single its only track:
+/// they're one release. Returns how many were added.
+pub async fn add(conn: &mut PgConnection, id: Uuid, tracks: &[Uuid], albums: &[Uuid], reason: &str) -> anyhow::Result<Changed> {
+    if !exists(conn, id).await? {
+        return Err(EditRejected::NotFound("grouping").into());
+    }
+    let (tracks, albums) = with_singles(conn, tracks, albums).await?;
+    let mut changed = Changed::default();
+    for (track, with) in tracks {
+        let inserted = sqlx::query!("INSERT INTO grouping_tracks (grouping_id, track_id) VALUES ($1, $2) ON CONFLICT DO NOTHING", id, track)
+            .execute(&mut *conn)
+            .await?
+            .rows_affected();
+        if inserted > 0 {
+            log(conn, id, "added", Some(track), None, along(with), reason).await?;
+            changed.tracks += 1;
+        }
+    }
+    for (album, with) in albums {
         let inserted = sqlx::query!("INSERT INTO grouping_albums (grouping_id, album_id) VALUES ($1, $2) ON CONFLICT DO NOTHING", id, album)
             .execute(&mut *conn)
             .await?
             .rows_affected();
         if inserted > 0 {
-            log(conn, id, "added", None, Some(album), serde_json::json!({}), reason).await?;
+            log(conn, id, "added", None, Some(album), along(with), reason).await?;
+            changed.albums += 1;
+        }
+    }
+    Ok(changed)
+}
+
+/// Takes tracks and albums out of the grouping (a single and its only track together, as
+/// they went in). Returns how many were in it.
+pub async fn remove(conn: &mut PgConnection, id: Uuid, tracks: &[Uuid], albums: &[Uuid], reason: &str) -> anyhow::Result<Changed> {
+    if !exists(conn, id).await? {
+        return Err(EditRejected::NotFound("grouping").into());
+    }
+    let (tracks, albums) = with_singles(conn, tracks, albums).await?;
+    let mut changed = Changed::default();
+    for (track, with) in tracks {
+        let gone = sqlx::query!("DELETE FROM grouping_tracks WHERE grouping_id = $1 AND track_id = $2", id, track)
+            .execute(&mut *conn)
+            .await?
+            .rows_affected();
+        if gone > 0 {
+            log(conn, id, "removed", Some(track), None, along(with), reason).await?;
+            changed.tracks += 1;
+        }
+    }
+    for (album, with) in albums {
+        let gone = sqlx::query!("DELETE FROM grouping_albums WHERE grouping_id = $1 AND album_id = $2", id, album)
+            .execute(&mut *conn)
+            .await?
+            .rows_affected();
+        if gone > 0 {
+            log(conn, id, "removed", None, Some(album), along(with), reason).await?;
+            changed.albums += 1;
+        }
+    }
+    Ok(changed)
+}
+
+/// A member added to or taken from the log.
+async fn log_member(conn: &mut PgConnection, grouping: Uuid, action: &str, artist: Uuid, reason: &str) -> sqlx::Result<()> {
+    sqlx::query!(
+        "INSERT INTO grouping_log (grouping_id, action, artist_id, reason) VALUES ($1, $2, $3, $4)",
+        grouping,
+        action,
+        artist,
+        reason
+    )
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
+}
+
+/// Makes artists members (who's in it, said by hand: being credited on one of its songs
+/// isn't enough). Returns how many weren't already.
+pub async fn add_members(conn: &mut PgConnection, id: Uuid, artists: &[Uuid], reason: &str) -> anyhow::Result<usize> {
+    if !exists(conn, id).await? {
+        return Err(EditRejected::NotFound("grouping").into());
+    }
+    let mut added = 0;
+    for &artist in artists {
+        let usable = sqlx::query_scalar!(r#"SELECT EXISTS (SELECT 1 FROM artists WHERE id = $1 AND merged_into IS NULL) AS "e!""#, artist)
+            .fetch_one(&mut *conn)
+            .await?;
+        if !usable {
+            return Err(EditRejected::NotFound("artist").into());
+        }
+        let inserted = sqlx::query!("INSERT INTO grouping_artists (grouping_id, artist_id) VALUES ($1, $2) ON CONFLICT DO NOTHING", id, artist)
+            .execute(&mut *conn)
+            .await?
+            .rows_affected();
+        if inserted > 0 {
+            log_member(conn, id, "member_added", artist, reason).await?;
             added += 1;
         }
     }
     Ok(added)
 }
 
-/// Takes tracks and albums out of the grouping. Returns how many were in it.
-pub async fn remove(conn: &mut PgConnection, id: Uuid, tracks: &[Uuid], albums: &[Uuid], reason: &str) -> anyhow::Result<usize> {
+/// Takes artists out of the members. Returns how many were.
+pub async fn remove_members(conn: &mut PgConnection, id: Uuid, artists: &[Uuid], reason: &str) -> anyhow::Result<usize> {
     if !exists(conn, id).await? {
         return Err(EditRejected::NotFound("grouping").into());
     }
     let mut removed = 0;
-    for &track in tracks {
-        let gone = sqlx::query!("DELETE FROM grouping_tracks WHERE grouping_id = $1 AND track_id = $2", id, track)
+    for &artist in artists {
+        let gone = sqlx::query!("DELETE FROM grouping_artists WHERE grouping_id = $1 AND artist_id = $2", id, artist)
             .execute(&mut *conn)
             .await?
             .rows_affected();
         if gone > 0 {
-            log(conn, id, "removed", Some(track), None, serde_json::json!({}), reason).await?;
-            removed += 1;
-        }
-    }
-    for &album in albums {
-        let gone = sqlx::query!("DELETE FROM grouping_albums WHERE grouping_id = $1 AND album_id = $2", id, album)
-            .execute(&mut *conn)
-            .await?
-            .rows_affected();
-        if gone > 0 {
-            log(conn, id, "removed", None, Some(album), serde_json::json!({}), reason).await?;
+            log_member(conn, id, "member_removed", artist, reason).await?;
             removed += 1;
         }
     }
@@ -198,6 +328,53 @@ pub async fn follow_merge(conn: &mut PgConnection, from: Uuid, into: Uuid, reaso
     Ok(())
 }
 
+/// Undoing a merge: the kept track or album (`into`) leaves the groupings the merge put it
+/// in (`follow_merge`), where that's still how it got there: the merge's "added" is the
+/// latest word on it (someone taking it out and putting it back since, say, is left as
+/// it is). Returns the groupings it left.
+pub async fn undo_follow(conn: &mut PgConnection, from: Uuid, into: Uuid, reason: &str) -> sqlx::Result<Vec<Uuid>> {
+    let added = follow_to_undo(conn, from, into).await?;
+    let mut left = Vec::new();
+    for entry in added {
+        let gone = if entry.track_id == Some(into) {
+            sqlx::query!("DELETE FROM grouping_tracks WHERE grouping_id = $1 AND track_id = $2", entry.grouping_id, into).execute(&mut *conn).await?
+        } else {
+            sqlx::query!("DELETE FROM grouping_albums WHERE grouping_id = $1 AND album_id = $2", entry.grouping_id, into).execute(&mut *conn).await?
+        };
+        if gone.rows_affected() > 0 {
+            log(conn, entry.grouping_id, "removed", entry.track_id, entry.album_id, serde_json::json!({ "merge_undone": from }), reason).await?;
+            left.push(entry.grouping_id);
+        }
+    }
+    Ok(left)
+}
+
+/// A grouping a merge put the kept one in, still only because of it (see `undo_follow`).
+pub struct Followed {
+    pub grouping_id: Uuid,
+    pub name: String,
+    track_id: Option<Uuid>,
+    album_id: Option<Uuid>,
+}
+
+/// What `undo_follow` would take the kept one out of (for an undo's preview).
+pub async fn follow_to_undo(conn: &mut PgConnection, from: Uuid, into: Uuid) -> sqlx::Result<Vec<Followed>> {
+    sqlx::query_as!(
+        Followed,
+        r#"SELECT l.grouping_id, g.name, l.track_id, l.album_id FROM grouping_log l
+           JOIN groupings g ON g.id = l.grouping_id
+           WHERE l.action = 'added' AND l.detail->>'merged_from' = $1::text
+             AND (l.track_id = $2 OR l.album_id = $2)
+             AND NOT EXISTS (SELECT 1 FROM grouping_log later
+                             WHERE later.grouping_id = l.grouping_id AND later.id > l.id
+                               AND (later.track_id = $2 OR later.album_id = $2))"#,
+        from.to_string(),
+        into
+    )
+    .fetch_all(conn)
+    .await
+}
+
 /// The groupings with this platform id among their sources (ingest: a song's artist id
 /// that is a collective's account). Not trashed ones. Oldest first.
 pub async fn with_platform_id(conn: &mut PgConnection, platform: &str, external_id: &str) -> sqlx::Result<Vec<Uuid>> {
@@ -228,6 +405,8 @@ pub struct Change {
     pub action: String,
     pub track_id: Option<Uuid>,
     pub album_id: Option<Uuid>,
+    /// A member added or taken out.
+    pub artist_id: Option<Uuid>,
     pub detail: serde_json::Value,
     pub reason: String,
 }
@@ -242,9 +421,11 @@ pub struct Detail {
     /// Its tracks and albums the user can see (not merged ones).
     pub tracks: Vec<Uuid>,
     pub albums: Vec<Uuid>,
-    /// The artists credited on its tracks, most tracks first: who's in it, as far as the
-    /// credits say.
+    /// Who's in it (said by hand), with how many of its tracks each is credited on.
     pub members: Vec<Member>,
+    /// Others credited on its tracks (a feature, a producer…), most tracks first: not
+    /// members unless someone says so.
+    pub credited: Vec<Member>,
     pub sources: Vec<super::sources::Source>,
     /// Newest first.
     pub changes: Vec<Change>,
@@ -271,7 +452,9 @@ pub async fn detail(conn: &mut PgConnection, id: Uuid) -> sqlx::Result<Option<De
     )
     .fetch_all(&mut *conn)
     .await?;
-    let members = sqlx::query_as!(
+    // Everyone credited on its tracks, with on how many; the members among them (and the
+    // members credited on none) apart.
+    let credited_all = sqlx::query_as!(
         Member,
         r#"SELECT c.artist_id, a.name, count(DISTINCT c.track_id) AS "tracks!"
            FROM grouping_tracks gt
@@ -285,17 +468,29 @@ pub async fn detail(conn: &mut PgConnection, id: Uuid) -> sqlx::Result<Option<De
     )
     .fetch_all(&mut *conn)
     .await?;
+    let member_rows = sqlx::query!(
+        "SELECT a.id, a.name FROM grouping_artists ga JOIN artists a ON a.id = ga.artist_id WHERE ga.grouping_id = $1 ORDER BY a.name",
+        id
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    let mut members: Vec<Member> = member_rows
+        .into_iter()
+        .map(|m| Member { tracks: credited_all.iter().find(|c| c.artist_id == m.id).map_or(0, |c| c.tracks), artist_id: m.id, name: m.name })
+        .collect();
+    members.sort_by(|a, b| b.tracks.cmp(&a.tracks).then(a.name.cmp(&b.name)));
+    let credited: Vec<Member> = credited_all.into_iter().filter(|c| !members.iter().any(|m| m.artist_id == c.artist_id)).collect();
     let sources = super::sources::list_for(conn, id).await?;
     let changes = sqlx::query_as!(
         Change,
-        r#"SELECT l.at, u.username AS "by?", l.action, l.track_id, l.album_id, l.detail, l.reason
+        r#"SELECT l.at, u.username AS "by?", l.action, l.track_id, l.album_id, l.artist_id, l.detail, l.reason
            FROM grouping_log l LEFT JOIN users u ON u.id = l.by_user
            WHERE l.grouping_id = $1 ORDER BY l.id DESC"#,
         id
     )
     .fetch_all(&mut *conn)
     .await?;
-    Ok(Some(Detail { id: g.id, kind: g.kind, name: g.name, description: g.description, created_at: g.created_at, tracks, albums, members, sources, changes }))
+    Ok(Some(Detail { id: g.id, kind: g.kind, name: g.name, description: g.description, created_at: g.created_at, tracks, albums, members, credited, sources, changes }))
 }
 
 // ---- An artist that is really a collective ----
@@ -312,6 +507,8 @@ pub struct Named {
 pub struct CollectivePreview {
     pub artist_id: Uuid,
     pub name: String,
+    /// The collective it goes into (None: a new one, with its name).
+    pub into: Option<Named>,
     /// Its sources (the accounts), which move to the collective: ingest then puts new
     /// songs from them into it.
     pub sources: Vec<super::sources::Source>,
@@ -373,8 +570,21 @@ async fn artist_name(conn: &mut PgConnection, artist: Uuid) -> anyhow::Result<St
     Ok(row.name)
 }
 
-pub async fn collective_preview(conn: &mut PgConnection, artist: Uuid) -> anyhow::Result<CollectivePreview> {
+/// The grouping an artist goes into, if one is given: it must exist.
+async fn target(conn: &mut PgConnection, into: Option<Uuid>) -> anyhow::Result<Option<Named>> {
+    let Some(id) = into else { return Ok(None) };
+    let name = sqlx::query_scalar!("SELECT name FROM groupings WHERE id = $1", id)
+        .fetch_optional(&mut *conn)
+        .await?
+        .ok_or(EditRejected::NotFound("grouping"))?;
+    Ok(Some(Named { id, title: name }))
+}
+
+/// `into`: an existing collective it goes into (the same collective on another platform,
+/// say); None: a new one.
+pub async fn collective_preview(conn: &mut PgConnection, artist: Uuid, into: Option<Uuid>) -> anyhow::Result<CollectivePreview> {
     let name = artist_name(conn, artist).await?;
+    let into = target(conn, into).await?;
     let (variants, albums) = crediting(conn, artist).await?;
     let mut tracks: Vec<Uuid> = variants.iter().map(|v| v.0).collect();
     tracks.sort();
@@ -394,6 +604,7 @@ pub async fn collective_preview(conn: &mut PgConnection, artist: Uuid) -> anyhow
     Ok(CollectivePreview {
         artist_id: artist,
         name,
+        into,
         sources: super::sources::list_for(conn, artist).await?,
         tracks: tracks.len() as i64,
         albums: albums.len() as i64,
@@ -409,10 +620,22 @@ pub async fn collective_preview(conn: &mut PgConnection, artist: Uuid) -> anyhow
 ///
 /// Tracks and albums the user can't see change too (as for an artist merge), or they'd
 /// keep crediting it: that part runs as the system.
-pub async fn turn_into_collective(conn: &mut PgConnection, artist: Uuid, reason: &str) -> anyhow::Result<Uuid> {
+///
+/// `into`: an existing collective it goes into instead of a new one (the same collective,
+/// as another platform's account made another artist of it): its sources join that one's
+/// (one with a platform id the collective already has joins that source).
+pub async fn turn_into_collective(conn: &mut PgConnection, artist: Uuid, into: Option<Uuid>, reason: &str) -> anyhow::Result<Uuid> {
     let name = artist_name(conn, artist).await?;
-    let reason = if reason.trim().is_empty() { format!("\"{name}\" is a collective, not an artist") } else { reason.trim().to_string() };
-    let grouping = create(conn, "collective", &name, "", &reason).await?;
+    let into = target(conn, into).await?;
+    let reason = match (&into, reason.trim()) {
+        (_, given) if !given.is_empty() => given.to_string(),
+        (Some(into), _) => format!("\"{name}\" is the collective \"{}\"", into.title),
+        (None, _) => format!("\"{name}\" is a collective, not an artist"),
+    };
+    let grouping = match &into {
+        Some(into) => into.id,
+        None => create(conn, "collective", &name, "", &reason).await?,
+    };
 
     let system = super::as_system(conn).await?;
     let (variants, albums) = crediting(conn, artist).await?;
@@ -440,14 +663,9 @@ pub async fn turn_into_collective(conn: &mut PgConnection, artist: Uuid, reason:
             .execute(&mut *conn)
             .await?;
     }
-    let sources = sqlx::query_scalar!(
-        "UPDATE sources SET artist_id = NULL, grouping_id = $2 WHERE artist_id = $1 RETURNING id",
-        artist,
-        grouping
-    )
-    .fetch_all(&mut *conn)
-    .await?;
-    let detail = serde_json::json!({ "artist_id": artist, "sources": sources, "tracks": tracks, "albums": album_ids });
+    // Its accounts are the collective's now (one it has already joins that one).
+    let sources = super::sources::move_all(conn, crate::model::sources::SourceOwner::Artist(artist), crate::model::sources::SourceOwner::Grouping(grouping)).await?;
+    let detail = serde_json::json!({ "artist_id": artist, "name": name, "sources": sources, "tracks": tracks, "albums": album_ids, "into_existing": into.is_some() });
     log(conn, grouping, "from_artist", None, None, detail, &reason).await?;
     system.end(conn).await?;
     Ok(grouping)

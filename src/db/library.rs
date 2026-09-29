@@ -33,7 +33,8 @@ pub const ALBUM_COLUMNS: &[&str] = &[
 
 /// Every grouping (collective, era, project…), sent whole with the catalog and every
 /// delta (there are few). `track_count`/`album_count`: of those the user can see.
-pub const GROUPING_COLUMNS: &[&str] = &["id", "kind", "name", "track_count", "album_count"];
+/// `artists`: its members (said by hand), by id.
+pub const GROUPING_COLUMNS: &[&str] = &["id", "kind", "name", "track_count", "album_count", "artists"];
 
 pub const ARTIST_COLUMNS: &[&str] = &["id", "name", "disambiguation", "aliases", "track_count", "album_count"];
 
@@ -194,7 +195,8 @@ pub async fn groupings_json(conn: &mut PgConnection) -> sqlx::Result<String> {
         SELECT COALESCE(json_agg(json_build_array(
                    g.id, g.kind, g.name,
                    (SELECT count(*) FROM grouping_tracks gt JOIN tracks t ON t.id = gt.track_id AND t.merged_into IS NULL WHERE gt.grouping_id = g.id),
-                   (SELECT count(*) FROM grouping_albums ga JOIN albums a ON a.id = ga.album_id AND a.merged_into IS NULL WHERE ga.grouping_id = g.id)
+                   (SELECT count(*) FROM grouping_albums ga JOIN albums a ON a.id = ga.album_id AND a.merged_into IS NULL WHERE ga.grouping_id = g.id),
+                   COALESCE((SELECT json_agg(gr.artist_id ORDER BY gr.artist_id) FROM grouping_artists gr WHERE gr.grouping_id = g.id), '[]'::json)
                ) ORDER BY g.name, g.id), '[]'::json)::text AS "rows!"
         FROM groupings g
         "#

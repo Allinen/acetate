@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT x.track_id FROM album_tracks x\n           JOIN albums a ON a.id = x.album_id AND a.kind = 'single'\n           JOIN tracks t ON t.id = x.track_id AND t.merged_into IS NULL\n           WHERE x.album_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "track_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "album_tracks",
+            "name": "track_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "6ac45aa2e290b5ac85b25e91cc2b91be9fdf3b37b51e8c9166f6ac390af8608d"
+}

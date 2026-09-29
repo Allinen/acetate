@@ -1647,6 +1647,8 @@ pub async fn undo_track_merge(conn: &mut PgConnection, merge_id: Uuid, reason: &
     .execute(&mut *conn)
     .await?;
     super::sources::unmove_all(conn, &record.sources, SourceOwner::Track(dupe), SourceOwner::Track(kept)).await?;
+    // The groupings the merge put the kept track in (the other one is still in them).
+    super::groupings::undo_follow(conn, dupe, kept, &reason).await?;
 
     // 7. Links and redirects as they were. (Review flags stay settled, see `MergeRecord::flags`.)
     sqlx::query!("UPDATE shares SET track_id = $2 WHERE id = ANY($1)", &record.shares, dupe)

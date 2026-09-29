@@ -1,0 +1,65 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT l.grouping_id, g.name, l.track_id, l.album_id FROM grouping_log l\n           JOIN groupings g ON g.id = l.grouping_id\n           WHERE l.action = 'added' AND l.detail->>'merged_from' = $1::text\n             AND (l.track_id = $2 OR l.album_id = $2)\n             AND NOT EXISTS (SELECT 1 FROM grouping_log later\n                             WHERE later.grouping_id = l.grouping_id AND later.id > l.id\n                               AND (later.track_id = $2 OR later.album_id = $2))",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "grouping_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "grouping_log",
+            "name": "grouping_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "groupings",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "track_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "grouping_log",
+            "name": "track_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "album_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "grouping_log",
+            "name": "album_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "9267007b9e860f243034e56df197ddff1b887e1e5af25ac8f577732778950742"
+}

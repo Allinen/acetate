@@ -104,7 +104,22 @@ struct Outcome {
     sent: Option<(Meta, Facts)>,
     meta: Option<Uuid>,
     facts: Option<Uuid>,
+    /// Its single, changed to match (see `SinglePlan`).
+    single: Option<Uuid>,
     error: Option<ApiError>,
+}
+
+/// The single a track is the only track of, changed along with it ("Change its single
+/// too"): 1:1, nothing guessed. Its title and release date become the track's; its artists
+/// the track's primary and featured ones, in order (not producers).
+#[derive(Clone)]
+struct SinglePlan {
+    album: Uuid,
+    /// Its revision the plan was made from (a change in between is refused, not undone).
+    base: Uuid,
+    kind: String,
+    /// What would change, in words ("title: “A” → “B”"); empty: it matches.
+    changes: Vec<String>,
 }
 
 pub struct TrackForm {
@@ -136,6 +151,9 @@ pub struct TrackForm {
     album_search: InlineSearch,
     /// Put the cursor in this album row's track number (a new album was just added).
     focus_number: Option<usize>,
+    /// "Change its single too" (on unless unticked), and what that would do now.
+    pub mirror_single: bool,
+    single_plan: Option<SinglePlan>,
 }
 
 /// A variant's data as the server keeps it (only what the form edits).
@@ -239,6 +257,8 @@ impl TrackForm {
             credits_editor: CreditsEditor::default(),
             album_search: InlineSearch::new(Part::Albums),
             focus_number: None,
+            mirror_single: true,
+            single_plan: None,
         })
     }
 
@@ -343,13 +363,47 @@ impl TrackForm {
         self.notice = Some("Their changes are loaded, with yours on top. Check them, then save.".into());
     }
 
+    /// The single this track is the only track of (as the form has its albums), and what
+    /// making it match the form would change. None: it's on no such single (or the single
+    /// isn't loaded yet).
+    fn plan_single(&self, shell: &mut Shell, catalog: &Catalog) -> Option<SinglePlan> {
+        let album = self
+            .facts
+            .albums
+            .iter()
+            .filter_map(|a| a.album_id)
+            .find(|id| catalog.album(*id).is_some_and(|a| a.kind == "single" && a.track_count == 1))?;
+        let d = shell.album_details.get(album).value.clone()?;
+        let base = d.revision_id?;
+        let mut changes = Vec::new();
+        let quote = |s: &str| if s.is_empty() { "none".to_string() } else { format!("“{s}”") };
+        if d.title != self.meta.title.trim() {
+            changes.push(format!("title: {} → {}", quote(&d.title), quote(self.meta.title.trim())));
+        }
+        let date = d.release_date.clone().unwrap_or_default();
+        if date != self.meta.release_date.trim() {
+            changes.push(format!("released: {} → {}", quote(&date), quote(self.meta.release_date.trim())));
+        }
+        let performers: Vec<&CreditRow> = self.meta.credits.iter().filter(|c| c.role == "primary" || c.role == "featured").collect();
+        let same = performers.len() == d.credits.len()
+            && performers.iter().zip(&d.credits).all(|(p, c)| p.artist_id == Some(c.artist_id) && p.role == c.role && p.alias_id == c.alias_id);
+        if !same {
+            let names = |list: Vec<(String, String)>| if list.is_empty() { "none".to_string() } else { list.iter().map(|(n, r)| if r == "primary" { n.clone() } else { format!("{n} ({r})") }).collect::<Vec<_>>().join(", ") };
+            let before = names(d.credits.iter().map(|c| (c.alias.clone().unwrap_or_else(|| c.artist_name.clone()), c.role.clone())).collect());
+            let after = names(performers.iter().map(|c| (c.alias.clone().unwrap_or_else(|| c.name.clone()), c.role.clone())).collect());
+            changes.push(format!("artists: {before} → {after}"));
+        }
+        Some(SinglePlan { album, base, kind: d.kind.clone(), changes })
+    }
+
     /// Becomes `fresh`, keeping what's typed but not part of the track yet: the reason,
     /// the search fields.
     fn replace_keeping_input(&mut self, fresh: TrackForm) {
         let reason = std::mem::take(&mut self.reason);
         let credits_editor = std::mem::take(&mut self.credits_editor);
         let album_search = std::mem::replace(&mut self.album_search, InlineSearch::new(Part::Albums));
-        *self = TrackForm { reason, credits_editor, album_search, ..fresh };
+        let mirror_single = self.mirror_single;
+        *self = TrackForm { reason, credits_editor, album_search, mirror_single, ..fresh };
     }
 
     /// Follows the details: a form without changes shows the newest; one with changes
@@ -412,7 +466,8 @@ impl TrackForm {
     /// Saves what changed, in the background: new artists, new albums, the metadata, the
     /// facts, the cover, in that order (each needs the ones before).
     pub fn save(&mut self, shell: &Shell) {
-        if self.saving() || !self.dirty() {
+        let single = self.single_plan.clone().filter(|p| self.mirror_single && !p.changes.is_empty());
+        if self.saving() || (!self.dirty() && single.is_none()) {
             return;
         }
         if self.meta.title.trim().is_empty() {
@@ -440,7 +495,24 @@ impl TrackForm {
         let (track, variant, variant_base, reason) = (self.track, self.variant, self.variant_base, self.reason.trim().to_string());
         let (meta, facts) = (self.meta.clone(), self.facts.clone());
         shell.runtime.spawn(async move {
-            let outcome = save(&api, track, variant, variant_base, facts_base, reason, meta, facts, meta_changed, facts_changed).await;
+            let mut outcome = save(&api, track, variant, variant_base, facts_base, reason.clone(), meta, facts, meta_changed, facts_changed).await;
+            // Its single, the same way (with the artists' ids, new ones made by now).
+            if let (None, Some(plan), Some((meta, _))) = (&outcome.error, single, outcome.sent.clone()) {
+                let performers: Vec<CreditRow> = meta.credits.iter().filter(|c| c.role == "primary" || c.role == "featured").cloned().collect();
+                let date = Some(meta.release_date.trim()).filter(|d| !d.is_empty());
+                let body = serde_json::json!({
+                    "base_revision_id": plan.base,
+                    "title": meta.title.trim(),
+                    "kind": plan.kind,
+                    "release_date": date,
+                    "credits": credits::to_json(&performers),
+                    "reason": if reason.is_empty() { "changed along with its track".to_string() } else { reason },
+                });
+                match api.send_json::<serde_json::Value>(reqwest::Method::PUT, &format!("/api/albums/{}", plan.album), Some(body)).await {
+                    Ok(_) => outcome.single = Some(plan.album),
+                    Err(err) => outcome.error = Some(err),
+                }
+            }
             *answer.lock().unwrap() = Some(outcome);
             ctx.request_repaint();
         });
@@ -471,6 +543,10 @@ impl TrackForm {
                 was.albums.iter_mut().for_each(|a| a.new_kind = None);
                 self.facts_was = was;
             }
+        }
+        if let Some(album) = outcome.single {
+            shell.album_details.refresh(album);
+            shell.act(Action::RefreshLibrary);
         }
         self.state = match outcome.error {
             None => {
@@ -726,11 +802,29 @@ impl TrackForm {
             }
         }
 
+        // ---- Its single, kept matching ----
+        self.single_plan = catalog.and_then(|c| self.plan_single(shell, c));
+        if let Some(plan) = &self.single_plan {
+            ui.add_space(14.0);
+            let title = catalog.and_then(|c| c.album(plan.album)).map(|a| a.title.clone()).unwrap_or_default();
+            ui.checkbox(&mut self.mirror_single, format!("Change its single “{title}” too (it's the only track on it)"))
+                .on_hover_text("Its title and release date become the track's, its artists the track's primary and featured ones: nothing else, nothing guessed.");
+            if self.mirror_single {
+                if plan.changes.is_empty() {
+                    ui.label(RichText::new("It matches the track.").color(P.faint).small());
+                } else {
+                    for line in &plan.changes {
+                        ui.label(RichText::new(format!("  single · {line}")).color(P.accent));
+                    }
+                }
+            }
+        }
+
         // ---- Saving ----
         ui.add_space(14.0);
         ui.add(egui::TextEdit::singleline(&mut self.reason).hint_text("Why (optional: kept with the change)").desired_width(560.0));
         ui.add_space(6.0);
-        let dirty = self.dirty();
+        let dirty = self.dirty() || self.single_plan.as_ref().is_some_and(|p| self.mirror_single && !p.changes.is_empty());
         ui.horizontal(|ui| {
             let saving = self.saving();
             if ui.add_enabled(dirty && !saving, egui::Button::new("Save  (Ctrl+Enter)")).clicked() {

@@ -498,7 +498,7 @@ mod tests {
         };
         let album = |id: &str| serde_json::json!([id, "EP", "ep", "Ann", [], null, null, null, null, "", 2, 1]);
         let body = serde_json::json!({
-            "format": 2,
+            "format": 3,
             "tracks": {"columns": ["id", "title", "artist_display", "credits", "albums", "duration_ms", "file_id", "cover_id", "cover_key",
                                     "release_date", "year", "status", "genres", "created_at", "is_restricted", "codec", "groupings"],
                        "rows": [track(1, "One", a, None, 1), track(2, "Two", a, None, 2),
@@ -509,7 +509,7 @@ mod tests {
             "artists": {"columns": ["id", "name", "disambiguation", "aliases", "track_count", "album_count"], "rows": []},
             "annotations": {"columns": ["kind", "id", "play_count", "last_played_at", "rating", "starred_at"], "rows": []},
             "issues": {"columns": ["track_id", "flags"], "rows": []},
-            "groupings": {"columns": ["id", "kind", "name", "track_count", "album_count"], "rows": []},
+            "groupings": {"columns": ["id", "kind", "name", "track_count", "album_count", "artists"], "rows": []},
             "playlists": []
         });
         Catalog::build(model::parse(body.to_string().as_bytes()).unwrap())

@@ -1,6 +1,8 @@
 //! "Turn into a collective…" on an artist's page (edit mode): for an artist that is really
 //! a collective (an account several artists post under, made an artist by an import from
-//! before there were groupings). A popup shows the server's preview first, changing
+//! before there were groupings). Into a new collective (its name), or merged into one there
+//! is already (the same collective, whose account on another platform made another
+//! artist of it). A popup shows the server's preview first, changing
 //! nothing: the sources (accounts) that move to the collective, how many tracks and albums
 //! go in it and lose the artist's credit, and which are left with no one credited (the
 //! server flags those for Review). Then the button. See the server's
@@ -24,6 +26,7 @@ struct Named {
 #[derive(Debug, Clone, Deserialize)]
 struct Preview {
     name: String,
+    into: Option<Named>,
     sources: Vec<crate::details::Source>,
     tracks: i64,
     albums: i64,
@@ -33,7 +36,11 @@ struct Preview {
 
 pub struct ToCollective {
     artist: Uuid,
-    preview: Arc<Mutex<Option<Result<Preview, String>>>>,
+    /// An existing collective it goes into (None: a new one).
+    into: Option<Uuid>,
+    /// The preview's answer, with the target it's for (one for a target no longer chosen
+    /// is dropped).
+    preview: Arc<Mutex<Option<(Option<Uuid>, Result<Preview, String>)>>>,
     loaded: Option<Result<Preview, String>>,
     reason: String,
     sending: bool,
@@ -44,19 +51,28 @@ pub struct ToCollective {
 impl ToCollective {
     /// Asks the server what it would do.
     pub fn open(shell: &Shell, artist: Uuid) -> ToCollective {
-        let preview: Arc<Mutex<Option<Result<Preview, String>>>> = Arc::default();
-        let (api, answer, ctx) = (shell.api.clone(), preview.clone(), shell.ctx.clone());
+        let mut popup = ToCollective { artist, into: None, preview: Arc::default(), loaded: None, reason: String::new(), sending: false, done: Arc::default(), error: None };
+        popup.ask(shell);
+        popup
+    }
+
+    /// The preview, for a new collective or the one chosen.
+    fn ask(&mut self, shell: &Shell) {
+        self.loaded = None;
+        let query = self.into.map(|g| format!("?into={g}")).unwrap_or_default();
+        let (api, answer, ctx, artist, into) = (shell.api.clone(), self.preview.clone(), shell.ctx.clone(), self.artist, self.into);
         shell.runtime.spawn(async move {
-            let result = api.send_json::<Preview>(reqwest::Method::GET, &format!("/api/artists/{artist}/collective"), None).await.map_err(|e| e.message);
-            *answer.lock().unwrap() = Some(result);
+            let result = api.send_json::<Preview>(reqwest::Method::GET, &format!("/api/artists/{artist}/collective{query}"), None).await.map_err(|e| e.message);
+            *answer.lock().unwrap() = Some((into, result));
             ctx.request_repaint();
         });
-        ToCollective { artist, preview, loaded: None, reason: String::new(), sending: false, done: Arc::default(), error: None }
     }
 
     /// The popup. True when it's over (closed, or done: then its collective's page opens).
     pub fn show(&mut self, shell: &mut Shell) -> bool {
-        if let Some(result) = self.preview.lock().unwrap().take() {
+        if let Some((into, result)) = self.preview.lock().unwrap().take()
+            && into == self.into
+        {
             self.loaded = Some(result);
         }
         if let Some(result) = self.done.lock().unwrap().take() {
@@ -75,7 +91,29 @@ impl ToCollective {
         let ctx = shell.ctx.clone();
         let mut go = false;
         let mut cancel = false;
-        let closed = crate::ui::modal::show(&ctx, "to-collective", "Turn into a collective", egui::Vec2::new(760.0, 620.0), |ui| {
+        let mut choose: Option<Option<Uuid>> = None;
+        let catalog = shell.catalog.value.clone();
+        let closed = crate::ui::modal::show(&ctx, "to-collective", "Turn into a collective", egui::Vec2::new(760.0, 660.0), |ui| {
+            // Into a new one, or one there is (collectives first, then other groupings).
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new("Into").color(P.faint));
+                let chosen = self.into.and_then(|g| catalog.as_ref()?.grouping(g).map(|g| format!("{} ({})", g.name, g.kind))).unwrap_or_else(|| "a new collective, with its name".into());
+                egui::ComboBox::from_id_salt("to-collective-into").selected_text(chosen).width(360.0).show_ui(ui, |ui| {
+                    if ui.selectable_label(self.into.is_none(), "a new collective, with its name").clicked() {
+                        choose = Some(None);
+                    }
+                    if let Some(c) = &catalog {
+                        let mut groupings: Vec<_> = c.groupings.iter().collect();
+                        groupings.sort_by_key(|g| (g.kind != "collective", g.name.to_lowercase()));
+                        for g in groupings {
+                            if ui.selectable_label(self.into == Some(g.id), format!("{} ({})", g.name, g.kind)).clicked() {
+                                choose = Some(Some(g.id));
+                            }
+                        }
+                    }
+                });
+            });
+            ui.add_space(6.0);
             let preview = match &self.loaded {
                 None => {
                     ui.label(RichText::new("Asking the server what it would do…").color(P.muted));
@@ -88,17 +126,23 @@ impl ToCollective {
                 Some(Ok(preview)) => preview.clone(),
             };
             egui::ScrollArea::vertical().max_height(440.0).show(ui, |ui| {
-                ui.label(format!(
-                    "“{}” becomes a collective: a grouping, not an artist. Credits say who made a song; a collective is where it was posted.",
-                    preview.name
-                ));
+                match &preview.into {
+                    Some(into) => ui.label(format!(
+                        "“{}” is merged into the collective “{}”: the same collective, another account. Credits say who made a song; a collective is where it was posted.",
+                        preview.name, into.title
+                    )),
+                    None => ui.label(format!(
+                        "“{}” becomes a collective: a grouping, not an artist. Credits say who made a song; a collective is where it was posted.",
+                        preview.name
+                    )),
+                };
                 ui.add_space(8.0);
                 ui.label(RichText::new("What happens").font(font(14.0, semibold())));
                 let accounts = if preview.sources.is_empty() {
                     "It has no sources (accounts): songs from its account won't go in by themselves until the collective gets one.".to_string()
                 } else {
                     let list: Vec<String> = preview.sources.iter().map(|s| format!("{} {}", s.platform, s.external_id.as_deref().unwrap_or(""))).collect();
-                    format!("Its sources move to the collective ({}): songs imported from those accounts go in it from now on, credited to no one as it.", list.join(", "))
+                    format!("Its sources move to the collective ({}; one it has already joins that one): songs imported from those accounts go in it from now on, credited to no one as it.", list.join(", "))
                 };
                 ui.label(format!("• {accounts}"));
                 ui.label(format!(
@@ -129,7 +173,8 @@ impl ToCollective {
             ui.add_space(8.0);
             ui.add(egui::TextEdit::singleline(&mut self.reason).hint_text("Why (optional: kept with every change)").desired_width(460.0));
             ui.horizontal(|ui| {
-                go = ui.add_enabled(!self.sending, egui::Button::new("Turn it into a collective")).clicked();
+                let text = if self.into.is_some() { "Merge it into the collective" } else { "Turn it into a collective" };
+                go = ui.add_enabled(!self.sending && matches!(self.loaded, Some(Ok(_))), egui::Button::new(text)).clicked();
                 cancel = ui.button("Cancel").clicked();
                 if self.sending {
                     ui.label(RichText::new("Working…").color(P.muted));
@@ -139,6 +184,12 @@ impl ToCollective {
                 ui.label(RichText::new(err.as_str()).color(P.danger));
             }
         });
+        if let Some(into) = choose
+            && into != self.into
+        {
+            self.into = into;
+            self.ask(shell);
+        }
         if go {
             self.sending = true;
             self.error = None;
@@ -146,7 +197,7 @@ impl ToCollective {
             struct Done {
                 grouping_id: Uuid,
             }
-            let body = serde_json::json!({ "reason": self.reason.trim() });
+            let body = serde_json::json!({ "reason": self.reason.trim(), "into": self.into });
             let (api, answer, ctx, artist) = (shell.api.clone(), self.done.clone(), shell.ctx.clone(), self.artist);
             shell.runtime.spawn(async move {
                 let result = api

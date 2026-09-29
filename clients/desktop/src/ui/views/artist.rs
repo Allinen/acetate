@@ -272,10 +272,29 @@ impl ArtistPage {
             }
         }
         in_groupings.sort_by_key(|g| std::cmp::Reverse(g.1));
+        // Member of: said by hand on the grouping (not worked out from credits).
+        let member_of: Vec<&crate::catalog::model::Grouping> = catalog.groupings.iter().filter(|g| g.artists.contains(&id)).collect();
+        if !member_of.is_empty() {
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
+                ui.label(RichText::new("Member of ").font(font(14.0, medium())).color(P.faint));
+                for (n, g) in member_of.iter().enumerate() {
+                    if n > 0 {
+                        ui.label(RichText::new(", ").font(font(14.0, medium())).color(P.faint));
+                    }
+                    if widgets::link(ui, &g.name, font(14.0, medium()), P.text) {
+                        shell.act(Action::Go(Page::Grouping(g.id)));
+                    }
+                    ui.label(RichText::new(format!(" ({})", g.kind)).font(font(14.0, medium())).color(P.faint));
+                }
+            });
+        }
+        // Where its tracks are (an era, a collective it isn't a member of…).
+        in_groupings.retain(|(g, _)| !member_of.iter().any(|m| m.id == *g));
         if !in_groupings.is_empty() {
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing.x = 0.0;
-                ui.label(RichText::new("In ").font(font(14.0, medium())).color(P.faint));
+                ui.label(RichText::new("Its tracks are in ").font(font(14.0, medium())).color(P.faint));
                 for (n, (g, count)) in in_groupings.iter().enumerate() {
                     let Some(grouping) = catalog.grouping(*g) else { continue };
                     if n > 0 {
@@ -316,7 +335,7 @@ impl ArtistPage {
                     shell.act(Action::Pick { kind: crate::ui::edit::PickKind::Artist, except: Some(id) });
                 }
                 let tip = "It's really an account several artists post under: make it a grouping (its tracks, albums and sources go there, its credits come off). Shows what it would do first.";
-                if shell.account.can("edit_sources") && ui.button("Turn into a collective…").on_hover_text(tip).clicked() {
+                if shell.account.can("edit_sources") && ui.button("Turn into a collective, or merge into one…").on_hover_text(tip).clicked() {
                     self.to_collective = Some(super::to_collective::ToCollective::open(shell, id));
                 }
             }

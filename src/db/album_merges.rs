@@ -661,6 +661,10 @@ pub async fn undo_album_merge(conn: &mut PgConnection, merge_id: Uuid, reason: &
     if !shares_back.is_empty() {
         goes_back.push(format!("{} share links back to {b}", shares_back.len()));
     }
+    let groupings: Vec<String> = super::groupings::follow_to_undo(conn, from, into).await?.into_iter().map(|g| format!("\"{}\"", g.name)).collect();
+    if !groupings.is_empty() {
+        goes_back.push(format!("{a} leaves the groupings the merge put it in: {} ({b} is still in them)", groupings.join(", ")));
+    }
     if !record.redirected.is_empty() {
         goes_back.push(format!(
             "{} albums merged into {b} before lead to {b} again",
@@ -724,6 +728,8 @@ pub async fn undo_album_merge(conn: &mut PgConnection, merge_id: Uuid, reason: &
         .execute(&mut *conn)
         .await?;
         super::sources::unmove_all(conn, &record.sources, SourceOwner::Album(from), SourceOwner::Album(into)).await?;
+        // The groupings the merge put the kept album in (the other one is still in them).
+        super::groupings::undo_follow(conn, from, into, &reason).await?;
         annotations::split(conn, Item::Album(into), &record.annotations).await?;
         sqlx::query!("UPDATE shares SET album_id = $2 WHERE id = ANY($1)", &shares_back, from)
             .execute(&mut *conn)

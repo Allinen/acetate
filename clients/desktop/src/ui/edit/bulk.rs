@@ -1,7 +1,7 @@
 //! Editing many tracks at once (the marked rows of a track table, in edit mode): set or
 //! add artists, put them on an album (replacing their albums, or as well; numbered in the
-//! order shown, or not), set the status, the release date, the genres. Only the parts
-//! ticked apply.
+//! order shown, or not), set the status, the release date, the genres; put them in a grouping (a
+//! collective, an era…). Only the parts ticked apply.
 //!
 //! Nothing is written before a preview: each marked track's details are loaded, the
 //! change is worked out on them, and every track is listed with exactly what changes (in
@@ -57,6 +57,9 @@ pub struct Change {
     pub genres: Option<Vec<String>>,
     /// Their numbers on one album (the tracks on it; others aren't changed).
     pub numbering: Option<Numbering>,
+    /// A grouping to put them in (and its name, for the preview). Not a revision: the
+    /// tracks not in it yet are put in it once they're written.
+    pub grouping: Option<(Uuid, String)>,
 }
 
 /// Numbers on one album: the disc to set, and the track numbers in the order given,
@@ -164,6 +167,8 @@ pub struct Item {
     /// What changes, in words (empty: nothing).
     pub lines: Vec<String>,
     pub state: ItemState,
+    /// It goes in the grouping (it isn't in it yet).
+    pub joins_grouping: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -207,6 +212,7 @@ enum ChangePart {
     Genres,
     Disc,
     Renumber,
+    Grouping,
 }
 
 /// What an entry of "What to change" does.
@@ -229,6 +235,8 @@ enum Pick {
     /// An artist to credit (as featured, or as primary if there's none yet).
     Credit { id: Uuid, name: String, featured: bool },
     SetAlbum { id: Uuid, title: String },
+    /// Put them in this grouping.
+    SetGrouping { id: Uuid, name: String },
 }
 
 /// What the new artists and album are called (for the preview, before they exist): their
@@ -257,6 +265,9 @@ pub struct BulkEditor {
     disc: i16,
     renumber_on: bool,
     renumber_from: i16,
+    /// Put them in a grouping: which one.
+    grouping_on: bool,
+    grouping: Option<(Uuid, String)>,
     /// The album the list is of (an album's page), for its numbers.
     context_album: Option<Uuid>,
     reason: String,
@@ -293,6 +304,8 @@ impl Default for BulkEditor {
             disc: 1,
             renumber_on: false,
             renumber_from: 1,
+            grouping_on: false,
+            grouping: None,
             context_album: None,
             reason: String::new(),
             picker: String::new(),
@@ -312,6 +325,7 @@ impl BulkEditor {
             || self.date_on
             || self.genres_on
             || (self.numbering_album().is_some() && (self.disc_on || self.renumber_on))
+            || (self.grouping_on && self.grouping.is_some())
     }
 
     /// The album whose numbers change: the list's (an album's page), else the existing
@@ -357,6 +371,7 @@ impl BulkEditor {
             date: self.date_on.then(|| self.date.clone()),
             genres,
             numbering,
+            grouping: self.grouping.clone().filter(|_| self.grouping_on),
         };
         (change, names)
     }
@@ -392,10 +407,10 @@ impl BulkEditor {
                 .zip(&details)
                 .enumerate()
                 .map(|(n, (id, d))| match d {
-                    None => Item { track: *id, title: "(couldn't be loaded)".into(), lines: vec![], state: ItemState::Failed("couldn't load it".into()) },
+                    None => Item { track: *id, title: "(couldn't be loaded)".into(), lines: vec![], state: ItemState::Failed("couldn't load it".into()), joins_grouping: false },
                     Some(d) => {
                         let Some((_, _, meta)) = shown_variant(d) else {
-                            return Item { track: *id, title: d.title.clone(), lines: vec![], state: ItemState::Failed("no version to edit".into()) };
+                            return Item { track: *id, title: d.title.clone(), lines: vec![], state: ItemState::Failed("no version to edit".into()), joins_grouping: false };
                         };
                         let facts = facts_of(d);
                         let (new_meta, new_facts) = apply(&change, &meta, &facts, n);
@@ -405,8 +420,15 @@ impl BulkEditor {
                                 lines.extend(crate::ui::views::history::changes_named(Some(old), new, &catalog, &names));
                             }
                         }
+                        // Into the grouping, if it isn't in it yet (as the library has it).
+                        let joins_grouping = change.grouping.as_ref().is_some_and(|(g, _)| {
+                            catalog.track_index(*id).is_some_and(|i| !catalog.tracks[i as usize].groupings.contains(g))
+                        });
+                        if let (true, Some((_, name))) = (joins_grouping, &change.grouping) {
+                            lines.push(format!("grouping: + “{name}” (and a single it's alone on)"));
+                        }
                         let state = if lines.is_empty() { ItemState::Unchanged } else { ItemState::Pending };
-                        Item { track: *id, title: d.title.clone(), lines, state }
+                        Item { track: *id, title: d.title.clone(), lines, state, joins_grouping }
                     }
                 })
                 .collect();
@@ -498,6 +520,16 @@ impl BulkEditor {
             }
             for task in tasks {
                 let _ = task.await;
+            }
+            // The grouping: the ones written that go in it, in one go.
+            if let Some((grouping, name)) = &change.grouping {
+                let joining: Vec<Uuid> = job.lock().unwrap().items.iter().filter(|i| i.joins_grouping && i.state == ItemState::Done).map(|i| i.track).collect();
+                if !joining.is_empty() {
+                    let body = json!({ "track_ids": joining, "reason": reason });
+                    if let Err(err) = api.send_json::<Value>(reqwest::Method::POST, &format!("/api/groupings/{grouping}/add"), Some(body)).await {
+                        job.lock().unwrap().error = Some(format!("Their other changes were made, but they couldn't be put in “{name}”: {}", err.message));
+                    }
+                }
             }
             {
                 let mut job = job.lock().unwrap();
@@ -600,6 +632,24 @@ impl BulkEditor {
                             ui.checkbox(&mut self.number, "Number them in the order shown (disc 1, tracks 1, 2, 3…)");
                         }
                         // ---- Status, date, genres ----
+                        // ---- A grouping ----
+                        if let Some(c) = &shell.catalog.value
+                            && !c.groupings.is_empty()
+                        {
+                            ui.horizontal(|ui| {
+                                ui.checkbox(&mut self.grouping_on, "Put in a grouping");
+                                if self.grouping_on {
+                                    let shown = self.grouping.as_ref().map(|g| g.1.clone()).unwrap_or_else(|| "choose one…".into());
+                                    egui::ComboBox::from_id_salt("bulk-grouping").selected_text(shown).show_ui(ui, |ui| {
+                                        for g in &c.groupings {
+                                            if ui.selectable_label(self.grouping.as_ref().is_some_and(|x| x.0 == g.id), format!("{} · {}", g.name, g.kind)).clicked() {
+                                                self.grouping = Some((g.id, g.name.clone()));
+                                            }
+                                        }
+                                    });
+                                }
+                            });
+                        }
                         ui.horizontal(|ui| {
                             ui.checkbox(&mut self.status_on, "Status");
                             if self.status_on {
@@ -761,6 +811,7 @@ impl BulkEditor {
             (self.genres_on, "genres", ChangePart::Genres),
             (self.disc_on, "disc", ChangePart::Disc),
             (self.renumber_on, "track numbers", ChangePart::Renumber),
+            (self.grouping_on, "grouping", ChangePart::Grouping),
         ] {
             if on {
                 picks.push((format!("Don't change: {name}"), Pick::Untick(part)));
@@ -780,6 +831,11 @@ impl BulkEditor {
         if self.numbering_album().is_some() {
             picks.push(("Disc number…".into(), Pick::Disc));
             picks.push(("Track numbers, in the order shown, from…".into(), Pick::Renumber));
+        }
+        if let Some(c) = &shell.catalog.value {
+            for g in &c.groupings {
+                picks.push((format!("Grouping: into “{}” ({})", g.name, g.kind), Pick::SetGrouping { id: g.id, name: g.name.clone() }));
+            }
         }
         picks
     }
@@ -852,6 +908,10 @@ impl BulkEditor {
                 self.album_on = true;
                 self.album = Some((Some(id), title));
             }
+            Pick::SetGrouping { id, name } => {
+                self.grouping_on = true;
+                self.grouping = Some((id, name));
+            }
             Pick::Untick(part) => match part {
                 ChangePart::Artists => self.artists_on = false,
                 ChangePart::Album => self.album_on = false,
@@ -860,6 +920,7 @@ impl BulkEditor {
                 ChangePart::Genres => self.genres_on = false,
                 ChangePart::Disc => self.disc_on = false,
                 ChangePart::Renumber => self.renumber_on = false,
+                ChangePart::Grouping => self.grouping_on = false,
             },
         }
     }
@@ -921,6 +982,17 @@ impl BulkEditor {
                     Some(a) => (format!("album → “{}” ({})", a.title, a.artist_display), Some(Pick::SetAlbum { id: a.id, title: a.title.clone() })),
                     None => (format!("no album like “{value}”"), None),
                 },
+                Key::Group if value.is_empty() => ("grouping (type its name after the colon)".into(), None),
+                Key::Group => {
+                    let found = shell.catalog.value.as_ref().and_then(|c| {
+                        let lower = value.to_lowercase();
+                        c.groupings.iter().find(|g| g.name.to_lowercase() == lower).or_else(|| c.groupings.iter().find(|g| loosely_in(value, &g.name))).map(|g| (g.id, g.name.clone()))
+                    });
+                    match found {
+                        Some((id, name)) => (format!("grouping → into “{name}”"), Some(Pick::SetGrouping { id, name })),
+                        None => (format!("no grouping like “{value}”"), None),
+                    }
+                }
                 other => (format!("{}: not something to change here", other.name()), None),
             };
             picks.push(pick);
@@ -1029,10 +1101,10 @@ impl BulkEditor {
     /// Everything the change depends on, to notice it changing.
     fn change_key(&self) -> String {
         format!(
-            "{}{:?}{:?}{}{:?}{:?}{}{}{}{}{}{}{}{}{}{}{}{}{:?}",
+            "{}{:?}{:?}{}{:?}{:?}{}{}{}{}{}{}{}{}{}{}{}{}{:?}{}{:?}",
             self.artists_on, self.artist_mode, self.credits, self.album_on, self.album_mode, self.album, self.new_kind, self.number, self.status_on,
             self.status, self.date_on, self.date, self.genres_on, self.genres, self.disc_on, self.disc, self.renumber_on, self.renumber_from,
-            self.context_album
+            self.context_album, self.grouping_on, self.grouping
         )
     }
 }

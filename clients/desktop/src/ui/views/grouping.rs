@@ -1,6 +1,7 @@
 //! A grouping's page: a collective (an account several artists post under), an era, a
-//! project… Its releases (a row; the heading shows them all) and its tracks, with the
-//! artists credited on them (who's in it, as far as the credits say). In edit mode: its
+//! project… Its members (said by hand: being credited on one of its songs isn't enough),
+//! its releases (a row; the heading shows them all) and its tracks. In edit mode: members
+//! added (from the palette, or one of those credited on its songs) and taken out; its
 //! kind, name and description; its sources (the accounts: ingest puts songs from them in
 //! it, see the server's `db::groupings`); every change made to it.
 
@@ -41,6 +42,10 @@ pub struct GroupingPage {
     saving: bool,
     answer: Arc<Mutex<Option<Result<(), String>>>>,
     result: Option<Result<(), String>>,
+    /// "Add a member…" asked the palette for an artist.
+    picking_member: bool,
+    member_answer: Arc<Mutex<Option<Result<(), String>>>>,
+    member_error: Option<String>,
 }
 
 impl GroupingPage {
@@ -80,21 +85,9 @@ impl GroupingPage {
             ui.label(RichText::new(&d.description).font(font(14.0, medium())).color(P.muted));
         }
         ui.label(RichText::new(format!("{} tracks · {} releases", thousands(tracks.len()), thousands(releases.len()))).font(font(14.0, medium())).color(P.muted));
-        // Who's in it: the artists credited on its tracks.
-        if let Some(d) = detail.as_ref().filter(|d| !d.members.is_empty()) {
-            ui.horizontal_wrapped(|ui| {
-                ui.spacing_mut().item_spacing.x = 0.0;
-                ui.label(RichText::new("With ").font(font(14.0, medium())).color(P.faint));
-                for (n, m) in d.members.iter().enumerate() {
-                    if n > 0 {
-                        ui.label(RichText::new(", ").font(font(14.0, medium())).color(P.faint));
-                    }
-                    if widgets::link(ui, &m.name, font(14.0, medium()), P.text) {
-                        shell.act(Action::Go(Page::Artist(m.artist_id)));
-                    }
-                    ui.label(RichText::new(format!(" ({})", m.tracks)).font(font(14.0, medium())).color(P.faint));
-                }
-            });
+        // Who's in it (said by hand), and in edit mode who else is credited on its songs.
+        if let Some(d) = detail.as_ref() {
+            self.members(ui, shell, id, d);
         }
         ui.add_space(12.0);
         let (play_rect, _) = ui.allocate_exact_size(Vec2::new(116.0, 42.0), Sense::hover());
@@ -142,6 +135,91 @@ impl GroupingPage {
             };
             self.list.show(ui, shell, catalog, &rows, shell.generation, player, &options);
         }
+    }
+
+    /// Its members, as links (with on how many of its tracks each is credited). In edit
+    /// mode: × takes one out; "Add a member…" picks one in the palette; those credited on
+    /// its songs who aren't members are offered, one click each.
+    fn members(&mut self, ui: &mut egui::Ui, shell: &mut Shell, id: Uuid, d: &crate::details::GroupingDetail) {
+        if let Some(result) = self.member_answer.lock().unwrap().take() {
+            match result {
+                Ok(()) => {
+                    self.member_error = None;
+                    shell.grouping_details.refresh(id);
+                    shell.act(Action::RefreshLibrary);
+                }
+                Err(err) => self.member_error = Some(err),
+            }
+        }
+        if self.picking_member
+            && let Some(picked) = shell.picker.take()
+        {
+            self.picking_member = false;
+            if let (crate::ui::edit::PickKind::Artist, Some(artist)) = (picked.kind, picked.id) {
+                self.send_members(shell, id, "add", artist);
+            }
+        }
+        let editing = shell.edit_mode && shell.account.can("edit_metadata");
+        if d.members.is_empty() && !editing {
+            return;
+        }
+        let mut remove = None;
+        let mut add = None;
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            ui.label(RichText::new("Members ").font(font(14.0, medium())).color(P.faint));
+            if d.members.is_empty() {
+                ui.label(RichText::new("none yet").font(font(14.0, medium())).color(P.faint));
+            }
+            for (n, m) in d.members.iter().enumerate() {
+                if n > 0 {
+                    ui.label(RichText::new(", ").font(font(14.0, medium())).color(P.faint));
+                }
+                if widgets::link(ui, &m.name, font(14.0, medium()), P.text) {
+                    shell.act(Action::Go(Page::Artist(m.artist_id)));
+                }
+                ui.label(RichText::new(format!(" ({})", m.tracks)).font(font(14.0, medium())).color(P.faint));
+                if editing && ui.small_button("×").on_hover_text("Not a member").clicked() {
+                    remove = Some(m.artist_id);
+                }
+            }
+            if editing {
+                ui.add_space(8.0);
+                if ui.small_button("Add a member…").clicked() {
+                    self.picking_member = true;
+                    shell.act(Action::Pick { kind: crate::ui::edit::PickKind::Artist, except: None });
+                }
+            }
+        });
+        if editing && !d.credited.is_empty() {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new("Also credited on its songs (not members):").color(P.faint).small());
+                for m in d.credited.iter().take(20) {
+                    if widgets::chip(ui, &format!("+ {}  {}", m.name, m.tracks), false) {
+                        add = Some(m.artist_id);
+                    }
+                }
+            });
+        }
+        if let Some(artist) = remove {
+            self.send_members(shell, id, "remove", artist);
+        }
+        if let Some(artist) = add {
+            self.send_members(shell, id, "add", artist);
+        }
+        if let Some(err) = &self.member_error {
+            ui.label(RichText::new(err.as_str()).color(P.danger));
+        }
+    }
+
+    fn send_members(&mut self, shell: &Shell, id: Uuid, action: &'static str, artist: Uuid) {
+        let (api, answer, ctx) = (shell.api.clone(), self.member_answer.clone(), shell.ctx.clone());
+        shell.runtime.spawn(async move {
+            let path = format!("/api/groupings/{id}/members/{action}");
+            let result = api.send_json::<serde_json::Value>(reqwest::Method::POST, &path, Some(json!({ "artist_ids": [artist] }))).await.map(|_| ()).map_err(|e| e.message);
+            *answer.lock().unwrap() = Some(result);
+            ctx.request_repaint();
+        });
     }
 
     /// Edit mode: its kind, name and description; its sources; its history.
@@ -233,8 +311,14 @@ impl GroupingPage {
                 let action = match c.action.as_str() {
                     "created" => "made".to_string(),
                     "edited" => "changed its name or kind".to_string(),
+                    "added" if c.detail.get("along_with").is_some() => format!("added {what} (along with its single or its track)"),
                     "added" => format!("added {what}"),
+                    "removed" if c.detail.get("along_with").is_some() => format!("took out {what} (along with its single or its track)"),
                     "removed" => format!("took out {what}"),
+                    "member_added" | "member_removed" => {
+                        let name = c.artist_id.and_then(|a| catalog.as_ref()?.artist(a).map(|a| a.name.clone())).unwrap_or_else(|| "an artist".into());
+                        if c.action == "member_added" { format!("{name} is a member") } else { format!("{name} isn't a member") }
+                    }
                     "from_artist" => "made from an artist (its credits, tracks and sources)".to_string(),
                     other => other.to_string(),
                 };

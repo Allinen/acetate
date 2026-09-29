@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM grouping_artists WHERE grouping_id = $1 AND artist_id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d59f5d50ad9748768a44ef60adf87295fccc754486e2bec0c6ab15f2694356c9"
+}

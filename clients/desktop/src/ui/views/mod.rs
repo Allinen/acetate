@@ -9,6 +9,7 @@ pub mod artist;
 pub mod artist_merge;
 pub mod artists;
 pub mod grouping;
+pub mod groupings;
 pub mod history;
 pub mod login;
 pub mod now_playing;
@@ -52,6 +53,7 @@ pub struct Pages {
     pub settings: settings::SettingsPage,
     pub trash: trash::TrashPage,
     grouping: grouping::GroupingPage,
+    groupings: groupings::GroupingsPage,
 }
 
 impl Pages {
@@ -101,6 +103,7 @@ impl Pages {
             Page::Track(id) => self.track.show(ui, shell, &catalog, id, player),
             Page::Review => self.review.show(ui, shell, &catalog, player),
             Page::Grouping(id) => self.grouping.show(ui, shell, &catalog, id, player),
+            Page::Groupings => self.groupings.show(ui, shell, &catalog),
             Page::NowPlaying | Page::Queue | Page::Settings | Page::Trash => {}
         }
     }

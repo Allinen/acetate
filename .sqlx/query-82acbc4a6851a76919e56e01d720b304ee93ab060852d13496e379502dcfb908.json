@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT l.at, u.username AS \"by?\", l.action, l.track_id, l.album_id, l.detail, l.reason\n           FROM grouping_log l LEFT JOIN users u ON u.id = l.by_user\n           WHERE l.grouping_id = $1 ORDER BY l.id DESC",
+  "query": "SELECT l.at, u.username AS \"by?\", l.action, l.track_id, l.album_id, l.artist_id, l.detail, l.reason\n           FROM grouping_log l LEFT JOIN users u ON u.id = l.by_user\n           WHERE l.grouping_id = $1 ORDER BY l.id DESC",
   "describe": {
     "columns": [
       {
@@ -60,6 +60,17 @@
       },
       {
         "ordinal": 5,
+        "name": "artist_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "grouping_log",
+            "name": "artist_id"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
         "name": "detail",
         "type_info": "Jsonb",
         "origin": {
@@ -70,7 +81,7 @@
         }
       },
       {
-        "ordinal": 6,
+        "ordinal": 7,
         "name": "reason",
         "type_info": "Text",
         "origin": {
@@ -92,9 +103,10 @@
       false,
       true,
       true,
+      true,
       false,
       false
     ]
   },
-  "hash": "3d272b91ba61a60f10a1c40c5130f51a01e3cc05d281f23dedfa2a002878e312"
+  "hash": "82acbc4a6851a76919e56e01d720b304ee93ab060852d13496e379502dcfb908"
 }

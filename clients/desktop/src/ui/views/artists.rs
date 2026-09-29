@@ -49,6 +49,11 @@ impl Artists {
                     self.scroll_to = Some(0);
                 }
             }
+            ui.add_space(12.0);
+            let groupings = format!("Collectives & groupings  {}  ›", crate::ui::thousands(catalog.groupings.len()));
+            if widgets::chip(ui, &groupings, false) {
+                shell.act(crate::ui::Action::Go(crate::ui::Page::Groupings));
+            }
         });
         ui.add_space(14.0);
         if remake {

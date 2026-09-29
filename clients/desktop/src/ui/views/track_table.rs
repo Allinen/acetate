@@ -465,7 +465,11 @@ impl TrackTable {
                             let result = api
                                 .send_json::<serde_json::Value>(reqwest::Method::POST, &format!("/api/groupings/{grouping}/add"), Some(body))
                                 .await
-                                .map(|v| format!("Put {} in “{name}” (the others were in it already).", v["added"].as_u64().unwrap_or(0)))
+                                .map(|v| {
+                                    let (tracks, albums) = (v["tracks"].as_u64().unwrap_or(0), v["albums"].as_u64().unwrap_or(0));
+                                    let singles = if albums > 0 { format!(" and {albums} single(s) they're alone on") } else { String::new() };
+                                    format!("Put {tracks} track(s){singles} in “{name}” (the others were in it already).")
+                                })
                                 .map_err(|e| format!("Couldn't put them in “{name}”: {}", e.message));
                             *answer.lock().unwrap() = Some(result);
                             ctx.request_repaint();
