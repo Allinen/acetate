@@ -311,6 +311,7 @@ impl Catalog {
             TrackSort::Year => list.sort_by(|a, b| newest_first(&t[track(*a) as usize], &t[track(*b) as usize])),
             TrackSort::Length => list.sort_by(|a, b| t[track(*b) as usize].duration_ms.cmp(&t[track(*a) as usize].duration_ms)),
             TrackSort::Plays => list.sort_by(|a, b| plays(track(*b)).cmp(&plays(track(*a))).then(a.cmp(b))),
+            TrackSort::Og => list.sort_by_key(|r| t[track(*r) as usize].original_filename.is_none()),
         }
         if descending {
             list.reverse();
@@ -325,13 +326,21 @@ impl Catalog {
             .into_iter()
             .filter(|&i| {
                 let a = &self.albums[i as usize];
-                query.fields.iter().filter(|(_, v)| !v.is_empty()).all(|(key, value)| {
+                query.fields.iter().filter(|(k, v)| !v.is_empty() || *k == Key::Og).all(|(key, value)| {
                     let value = value.to_lowercase();
                     match key {
                         Key::Artist => a.artist_display.to_lowercase().contains(&value),
                         Key::Title | Key::Album => a.title.to_lowercase().contains(&value),
                         Key::Year => a.release_date.as_deref().is_some_and(|d| d.starts_with(&value)) || a.year.is_some_and(|y| y.to_string() == value),
                         Key::Kind => a.kind.starts_with(&value),
+                        // Albums with an original file on them (or, `og:no`, without any).
+                        Key::Og => {
+                            let tracks = self.album_tracks(a.id);
+                            match value.as_str() {
+                                "no" | "n" | "false" | "0" => tracks.iter().all(|&t| self.tracks[t as usize].original_filename.is_none()),
+                                _ => tracks.iter().any(|&t| super::query::og_matches(self.tracks[t as usize].original_filename.as_deref(), &value)),
+                            }
+                        }
                         // Keys about tracks don't apply to albums.
                         _ => true,
                     }
@@ -385,6 +394,8 @@ pub enum TrackSort {
     Year,
     Length,
     Plays,
+    /// Original files (og files) first, the rest after, each in the list's order.
+    Og,
 }
 
 /// Tracks to list: `tracks` (positions in the catalog; None: all of them), and when each

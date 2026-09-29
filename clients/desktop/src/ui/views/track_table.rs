@@ -52,6 +52,8 @@ pub enum Column {
     Released,
     Plays,
     Format,
+    /// Whether its file is an original file (an og file): the OG badge.
+    Og,
     Length,
     /// When it was added (to the playlist; starred, for Liked songs).
     Added,
@@ -70,6 +72,7 @@ impl Column {
             Column::Released => "released",
             Column::Plays => "plays",
             Column::Format => "format",
+            Column::Og => "og",
             Column::Length => "length",
             Column::Added => "added",
         }
@@ -85,6 +88,7 @@ impl Column {
             Column::Released => "Released",
             Column::Plays => "Plays",
             Column::Format => "Format",
+            Column::Og => "OG",
             Column::Length => "Length",
             Column::Added => options.added.unwrap_or("Added"),
         }
@@ -96,6 +100,7 @@ impl Column {
             Column::Position => "Position",
             Column::Number => "Track number",
             Column::Cover => "Cover",
+            Column::Og => "Original file (OG)",
             other => other.name(options),
         }
     }
@@ -110,6 +115,7 @@ impl Column {
             Column::Released => Some(TrackSort::Year),
             Column::Plays => Some(TrackSort::Plays),
             Column::Length => Some(TrackSort::Length),
+            Column::Og => Some(TrackSort::Og),
             Column::Added => Some(TrackSort::Added),
         }
     }
@@ -125,6 +131,7 @@ impl Column {
             Column::Released => Width::exact(92.0),
             Column::Plays => Width::exact(52.0),
             Column::Format => Width::exact(52.0),
+            Column::Og => Width::exact(40.0),
             Column::Length => Width::exact(56.0),
             Column::Added => Width::exact(96.0),
         }
@@ -230,6 +237,24 @@ impl TrackTable {
             credited_as: None,
             grouping_answer: Default::default(),
         }
+    }
+
+    /// Whether the filter has `og:` in it (only original files).
+    pub fn og_only(&self) -> bool {
+        crate::catalog::query::Query::parse(&self.filter).fields.iter().any(|(k, _)| *k == crate::catalog::query::Key::Og)
+    }
+
+    /// Only original files, or not: `og:` added to the filter (shown there, to edit) or
+    /// taken out of it.
+    pub fn toggle_og(&mut self) {
+        if self.og_only() {
+            let kept: Vec<&str> = self.filter.split_whitespace().filter(|w| !w.split_once(':').is_some_and(|(k, _)| crate::catalog::query::Key::parse(k) == Some(crate::catalog::query::Key::Og))).collect();
+            self.filter = kept.join(" ");
+        } else {
+            self.filter = format!("{} og:", self.filter.trim()).trim().to_string();
+        }
+        // The rows follow at once.
+        self.made_for = None;
     }
 
     /// Ctrl+M is the table's (merging the marked tracks) rather than the page's (merging
@@ -715,6 +740,14 @@ impl TrackTable {
                             }
                             Column::Format => {
                                 ui.label(RichText::new(t.codec.as_deref().unwrap_or("")).color(P.faint).small());
+                            }
+                            Column::Og => {
+                                let cell = ui.max_rect();
+                                let response = ui.allocate_rect(cell, Sense::hover());
+                                if let Some(name) = &t.original_filename {
+                                    widgets::og_badge(ui.painter(), cell.left_center() + Vec2::new(4.0, 0.0), 15.0);
+                                    response.on_hover_text(format!("Original file · {name}"));
+                                }
                             }
                             Column::Length => {
                                 ui.label(RichText::new(widgets::length(t.duration_ms)).color(P.muted));

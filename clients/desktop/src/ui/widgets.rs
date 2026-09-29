@@ -166,6 +166,44 @@ pub fn text_in(painter: &egui::Painter, rect: Rect, text: &str, font: egui::Font
     painter.galley(Pos2::new(rect.left(), top), galley, color);
 }
 
+/// The "OG" badge (an original file): the letters in amber inside a rounded amber outline,
+/// its left edge's middle at `at`, `height` tall. Returns its width.
+pub fn og_badge(painter: &egui::Painter, at: Pos2, height: f32) -> f32 {
+    let galley = painter.layout_no_wrap("OG".into(), og_badge_font(height), P.accent);
+    let width = galley.size().x + height * 0.6;
+    let rect = Rect::from_min_size(Pos2::new(at.x, at.y - height / 2.0), Vec2::new(width, height));
+    painter.rect_stroke(rect, (height * 0.3) as u8, Stroke::new(1.0, P.accent.gamma_multiply(0.85)), egui::StrokeKind::Inside);
+    painter.galley(rect.center() - galley.size() / 2.0, galley, P.accent);
+    width
+}
+
+/// How wide the badge is at `height` (to leave room for it).
+pub fn og_badge_width(painter: &egui::Painter, height: f32) -> f32 {
+    painter.layout_no_wrap("OG".into(), og_badge_font(height), P.accent).size().x + height * 0.6
+}
+
+fn og_badge_font(height: f32) -> egui::FontId {
+    super::theme::font(height * 0.62, super::theme::bold())
+}
+
+/// `text_in`, and (`og`) the OG badge right after the text: the text shortened to leave it
+/// room.
+pub fn text_in_og(painter: &egui::Painter, rect: Rect, text: &str, font: egui::FontId, color: Color32, og: bool) {
+    if !og {
+        return text_in(painter, rect, text, font, color);
+    }
+    use egui::text::{LayoutJob, TextFormat, TextWrapping};
+    let height = (font.size * 1.05).round();
+    let room = og_badge_width(painter, height) + 6.0;
+    let mut job = LayoutJob::single_section(text.to_string(), TextFormat::simple(font, color));
+    job.wrap = TextWrapping { max_width: (rect.width() - room).max(0.0), max_rows: 1, break_anywhere: true, overflow_character: Some('…') };
+    let galley = painter.layout_job(job);
+    let top = rect.center().y - galley.size().y / 2.0;
+    let right = rect.left() + galley.size().x;
+    painter.galley(Pos2::new(rect.left(), top), galley, color);
+    og_badge(painter, Pos2::new(right + 6.0, rect.center().y), height);
+}
+
 /// A length in milliseconds as a clock ("3:07"), or nothing.
 pub fn length(ms: Option<i64>) -> String {
     ms.map(|ms| clock(Duration::from_millis(ms.max(0) as u64))).unwrap_or_default()

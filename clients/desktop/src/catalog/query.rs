@@ -2,7 +2,8 @@
 //! `key:value` parts, the same everywhere: `artist:qlvarn`, `album:…`, `title:…`,
 //! `year:2019`, `genre:…`, `status:demo`, `format:flac`, `flag:cover`, `kind:ep`,
 //! `disc:2`, `track:5` (its number), `group:` (a collective, era, project it's in),
-//! `source:youtube` (where it came from: a platform it has a source on). A value
+//! `source:youtube` (where it came from: a platform it has a source on), `og:` (original
+//! files: `og:` or `og:yes`; `og:no` the rest; other words look in the original filename). A value
 //! runs until the next key, so `artist:lil quill year:2017` needs no quotes. A key can be
 //! shortened to any start of it (`art:`, `yr` isn't one: the aliases are listed below),
 //! and a word with a colon that isn't a key is a plain word.
@@ -35,6 +36,9 @@ pub enum Key {
     Group,
     /// A platform it has a source on (youtube, soundcloud…).
     Source,
+    /// Its file is an original file (an og file): yes, no, or words in its name. Alone
+    /// (`og:`) it means yes.
+    Og,
 }
 
 /// Every key's names: the first is its own, the rest are other names for it. A typed key
@@ -54,6 +58,7 @@ const KEYS: &[(Key, &[&str])] = &[
     (Key::Number, &["track", "number", "numbers", "no", "renumber"]),
     (Key::Group, &["group", "grouping", "collective"]),
     (Key::Source, &["source", "sources", "platform", "from"]),
+    (Key::Og, &["og", "original"]),
 ];
 
 impl Key {
@@ -128,7 +133,7 @@ impl Query {
             return false;
         }
         let t = &catalog.tracks[i as usize];
-        self.fields.iter().filter(|(_, v)| !v.is_empty()).all(|(key, value)| track_has(catalog, t, *key, &value.to_lowercase()))
+        self.fields.iter().filter(|(k, v)| !v.is_empty() || *k == Key::Og).all(|(key, value)| track_has(catalog, t, *key, &value.to_lowercase()))
     }
 }
 
@@ -160,6 +165,18 @@ fn track_has(catalog: &Catalog, t: &Track, key: Key, value: &str) -> bool {
             t.groupings.iter().any(named) || t.albums.iter().any(|m| catalog.album(m.0).is_some_and(|a| a.groupings.iter().any(named)))
         }
         Key::Source => t.platforms.iter().any(|p| p.starts_with(value)),
+        Key::Og => og_matches(t.original_filename.as_deref(), value),
+    }
+}
+
+/// Whether an original filename (None: not an og file) matches `og:value` (lowercase):
+/// empty or yes-like is "an og file", no-like "not one", anything else is looked for in
+/// the name.
+pub fn og_matches(original: Option<&str>, value: &str) -> bool {
+    match value {
+        "" | "yes" | "y" | "true" | "1" => original.is_some(),
+        "no" | "n" | "false" | "0" => original.is_none(),
+        _ => original.is_some_and(|name| name.to_lowercase().contains(value)),
     }
 }
 
@@ -191,6 +208,8 @@ mod tests {
         assert_eq!(Query::parse("no:5").fields, [(Key::Number, "5".into())]);
         assert_eq!(Query::parse("group:tide crew").fields, [(Key::Group, "tide crew".into())]);
         assert_eq!(Query::parse("source:youtube").fields, [(Key::Source, "youtube".into())]);
+        assert_eq!(Query::parse("og: artist:kai").fields, [(Key::Og, "".into()), (Key::Artist, "kai".into())]);
+        assert_eq!(Query::parse("original:no").fields, [(Key::Og, "no".into())]);
         assert_eq!(Query::parse("track:5").fields, [(Key::Number, "5".into())], "track: is its number, everywhere");
         let q = Query::parse("re:zero");
         assert_eq!((q.words.len(), q.fields.len()), (0, 1), "re: is the start of released");
@@ -207,5 +226,13 @@ mod tests {
         assert!(loosely_in("st demo", "Status: demo"));
         assert!(loosely_in("gnone", "Genres: none"));
         assert!(!loosely_in("demos", "Status: demo"));
+    }
+
+    #[test]
+    fn og_is_yes_no_or_words_in_the_name() {
+        let og = Some("glass_harbor_MASTER_v7.wav");
+        assert!(og_matches(og, "") && og_matches(og, "yes") && !og_matches(og, "no"));
+        assert!(og_matches(None, "no") && !og_matches(None, "") && !og_matches(None, "master"));
+        assert!(og_matches(og, "master") && !og_matches(og, "demo"));
     }
 }

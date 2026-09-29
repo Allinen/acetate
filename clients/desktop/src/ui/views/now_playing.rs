@@ -72,7 +72,8 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell, player: &PlayerView, spectrum:
     let next = player.next();
     if let Some(next) = next {
         let text = format!("Next  ·  {} — {}", next.title, next.artist);
-        widgets::text_in(ui.painter(), Rect::from_min_size(Pos2::new(left, middle + 88.0), Vec2::new(width, 18.0)), &text, font(13.0, medium()), P.faint);
+        let og = super::original_filename(shell, next.track_id).is_some();
+        widgets::text_in_og(ui.painter(), Rect::from_min_size(Pos2::new(left, middle + 88.0), Vec2::new(width, 18.0)), &text, font(13.0, medium()), P.faint, og);
     }
 
     // The lyrics, down to the visualizer.

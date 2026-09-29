@@ -19,6 +19,7 @@ pub const LIBRARY_COLUMNS: &[(Column, bool)] = &[
     (Column::Released, true),
     (Column::Plays, true),
     (Column::Format, true),
+    (Column::Og, false),
     (Column::Length, true),
 ];
 

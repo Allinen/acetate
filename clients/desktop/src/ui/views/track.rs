@@ -89,12 +89,18 @@ impl TrackPage {
             let cover_rect = Rect::from_min_size(header.min, Vec2::splat(220.0));
             let cover = track.and_then(|t| t.cover()).or_else(|| detail.as_ref().and_then(|d| d.covers.first().and_then(|c| c.cover())));
             shell.cover_with_original(ui, cover, id, cover_rect, 12, 0.6);
+            // An original file (an og file): an amber edge, an amber title, and it says so.
+            let og = track.is_some_and(|t| t.original_filename.is_some());
+            if og {
+                widgets::og_edge(ui.painter(), cover_rect, 12, 2.0);
+            }
             let left = cover_rect.right() + 28.0;
             let width = header.right() - left;
             let title = track.map(|t| t.title.clone()).or_else(|| detail.as_ref().map(|d| d.title.clone())).unwrap_or_default();
             let painter = ui.painter().clone();
-            painter.text(Pos2::new(left, cover_rect.top() + 40.0), Align2::LEFT_BOTTOM, "TRACK", font(11.0, semibold()), P.accent);
-            widgets::text_in(&painter, Rect::from_min_size(Pos2::new(left, cover_rect.top() + 44.0), Vec2::new(width, 44.0)), &title, font(34.0, bold()), P.text);
+            let kind = if og { "TRACK  ·  ORIGINAL FILE" } else { "TRACK" };
+            painter.text(Pos2::new(left, cover_rect.top() + 40.0), Align2::LEFT_BOTTOM, kind, font(11.0, semibold()), P.accent);
+            widgets::text_in(&painter, Rect::from_min_size(Pos2::new(left, cover_rect.top() + 44.0), Vec2::new(width, 44.0)), &title, font(34.0, bold()), if og { P.accent } else { P.text });
 
             // Artists, then the albums it's on, each a link.
             let layout = egui::Layout::left_to_right(egui::Align::Center);

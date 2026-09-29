@@ -173,7 +173,8 @@ impl QueuePage {
                 };
                 let left = rect.left() + 56.0;
                 let width = rect.width() - 56.0 - 80.0;
-                widgets::text_in(ui.painter(), Rect::from_min_size(Pos2::new(left, rect.center().y - 17.0), Vec2::new(width, 18.0)), &item.title, font(14.0, medium()), title_color);
+                let og = super::original_filename(shell, item.track_id).is_some();
+                widgets::text_in_og(ui.painter(), Rect::from_min_size(Pos2::new(left, rect.center().y - 17.0), Vec2::new(width, 18.0)), &item.title, font(14.0, medium()), title_color, og);
                 let sub = match &item.album {
                     Some(album) => format!("{}  ·  {album}", item.artist),
                     None => item.artist.clone(),

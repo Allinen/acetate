@@ -42,6 +42,8 @@ pub struct ArtistPage {
     /// Only what's credited under this name: None, everything; Some(None), its own
     /// name; Some(Some(alias)), that alias.
     credited_as: Option<Option<String>>,
+    /// Only original files (og files), and releases with one.
+    og_only: bool,
 }
 
 /// The parts of an artist's page, each shown as a preview, or alone and whole.
@@ -159,40 +161,62 @@ impl ArtistPage {
             self.credited_as = None;
         }
         let chosen = self.credited_as.clone();
+        // Its original files (og files): a chip to see only those (and releases with one).
+        let is_og = |t: u32| catalog.tracks[t as usize].original_filename.is_some();
+        let og_count = all_tracks.iter().filter(|&&t| is_og(t)).count();
+        if og_count == 0 {
+            self.og_only = false;
+        }
+        let og_only = self.og_only;
         // Every track it's credited on (under the name chosen, if one is), in any role.
         let tracks: Vec<u32> = match &chosen {
             None => all_tracks.to_vec(),
             Some(name) => all_tracks.iter().copied().filter(|&t| names_in(&catalog.tracks[t as usize].credits, id).any(|n| n == name.as_deref())).collect(),
         };
+        let tracks: Vec<u32> = tracks.into_iter().filter(|&t| !og_only || is_og(t)).collect();
         let tracks = &tracks[..];
         // What it's credited for, as what (and under the name chosen, if one is).
         use crate::catalog::model::Role;
         let credited = |credits: &[crate::catalog::model::Credit], role: Role| {
             credits.iter().any(|c| c.0 == id && c.1 == role && chosen.as_ref().is_none_or(|name| c.2.as_deref() == name.as_deref()))
         };
-        let releases: Vec<u32> = all_albums.iter().copied().filter(|&a| credited(&catalog.albums[a as usize].credits, Role::Primary)).collect();
-        let by_role = |role: Role| -> Vec<u32> { all_tracks.iter().copied().filter(|&t| credited(&catalog.tracks[t as usize].credits, role)).collect() };
+        let has_og = |a: u32| catalog.album_tracks(catalog.albums[a as usize].id).iter().any(|&t| is_og(t));
+        let releases: Vec<u32> = all_albums.iter().copied().filter(|&a| credited(&catalog.albums[a as usize].credits, Role::Primary) && (!og_only || has_og(a))).collect();
+        let by_role = |role: Role| -> Vec<u32> { all_tracks.iter().copied().filter(|&t| credited(&catalog.tracks[t as usize].credits, role) && (!og_only || is_og(t))).collect() };
         let (own, featured, produced) = (by_role(Role::Primary), by_role(Role::Featured), by_role(Role::Producer));
 
         // Credited under several names: one chip each, to see only that name's.
-        let name_chips = |ui: &mut egui::Ui, credited_as: &mut Option<Option<String>>| {
+        // And "Original files": only those (with or without a name chosen).
+        let name_chips = |ui: &mut egui::Ui, credited_as: &mut Option<Option<String>>, og_only: &mut bool| {
             ui.horizontal_wrapped(|ui| {
-                if widgets::chip(ui, &format!("All  {}", thousands(all_tracks.len())), chosen.is_none()) {
-                    *credited_as = None;
+                if names.len() >= 2 {
+                    if widgets::chip(ui, &format!("All  {}", thousands(all_tracks.len())), chosen.is_none()) {
+                        *credited_as = None;
+                    }
+                    for (name, count) in &names {
+                        let shown = name.as_deref().unwrap_or(&artist.name);
+                        if widgets::chip(ui, &format!("as {shown}  {}", thousands(*count)), chosen.as_ref() == Some(name)) {
+                            *credited_as = Some(name.clone());
+                        }
+                    }
                 }
-                for (name, count) in &names {
-                    let shown = name.as_deref().unwrap_or(&artist.name);
-                    if widgets::chip(ui, &format!("as {shown}  {}", thousands(*count)), chosen.as_ref() == Some(name)) {
-                        *credited_as = Some(name.clone());
+                if og_count > 0 {
+                    if names.len() >= 2 {
+                        ui.add_space(8.0);
+                    }
+                    let chip = widgets::chip(ui, &format!("Original files  {}", thousands(og_count)), *og_only);
+                    if chip {
+                        *og_only = !*og_only;
                     }
                 }
             });
         };
+        let chips_shown = names.len() >= 2 || og_count > 0;
         // A new name chosen is new rows (the version tells the tables to remake them).
         let version = {
             use std::hash::{Hash, Hasher};
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
-            (shell.generation, &chosen).hash(&mut hasher);
+            (shell.generation, &chosen, og_only).hash(&mut hasher);
             hasher.finish()
         };
 
@@ -214,9 +238,9 @@ impl ArtistPage {
                 }
                 ui.label(RichText::new(format!("{}  {}", section.title(), thousands(rows.len()))).font(font(22.0, bold())));
             });
-            if names.len() >= 2 {
+            if chips_shown {
                 ui.add_space(4.0);
-                name_chips(ui, &mut self.credited_as);
+                name_chips(ui, &mut self.credited_as, &mut self.og_only);
             }
             ui.add_space(10.0);
             if back {
@@ -254,12 +278,13 @@ impl ArtistPage {
         ui.label(RichText::new("ARTIST").font(font(11.0, semibold())).color(P.accent));
         let name = artist.label();
         ui.label(RichText::new(name).font(font(40.0, bold())));
-        if names.len() >= 2 {
-            ui.add_space(4.0);
-            name_chips(ui, &mut self.credited_as);
-            ui.add_space(4.0);
-        } else if !artist.aliases.is_empty() {
+        if names.len() < 2 && !artist.aliases.is_empty() {
             ui.label(RichText::new(format!("Also credited as {}", artist.aliases.join(", "))).font(font(14.0, medium())).color(P.muted));
+        }
+        if chips_shown {
+            ui.add_space(4.0);
+            name_chips(ui, &mut self.credited_as, &mut self.og_only);
+            ui.add_space(4.0);
         }
         // The groupings its tracks are in (collectives it posts under, eras…), most first.
         let mut in_groupings: Vec<(Uuid, usize)> = Vec::new();

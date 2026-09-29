@@ -662,7 +662,7 @@ impl Review {
                         let color = if playing == Some(t.id) { P.accent } else { P.text };
                         let unsaved = shell.track_forms.get(&t.id).is_some_and(|f| f.dirty());
                         let title = if unsaved { format!("● {title}") } else { title.to_string() };
-                        widgets::text_in(painter, egui::Rect::from_min_size(rect.min + Vec2::new(10.0, 6.0), Vec2::new(rect.width() - 20.0, 18.0)), &title, font(13.5, medium()), color);
+                        widgets::text_in_og(painter, egui::Rect::from_min_size(rect.min + Vec2::new(10.0, 6.0), Vec2::new(rect.width() - 20.0, 18.0)), &title, font(13.5, medium()), color, t.original_filename.is_some());
                         let mut sub: Vec<String> = Vec::new();
                         if !t.artist_display.is_empty() {
                             sub.push(t.artist_display.clone());

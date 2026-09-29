@@ -24,6 +24,7 @@ const ALBUM_COLUMNS: &[(Column, bool)] = &[
     (Column::Released, false),
     (Column::Plays, true),
     (Column::Format, false),
+    (Column::Og, false),
     (Column::Length, true),
 ];
 
@@ -102,6 +103,14 @@ impl AlbumPage {
         }
         marks_ui.add_space(4.0);
         widgets::share_chip(&mut marks_ui, shell, crate::links::Target::Album(id));
+        // Its original files (og files): a chip that shows only those (`og:` in the filter).
+        let og_count = tracks.iter().filter(|&&t| catalog.tracks[t as usize].original_filename.is_some()).count();
+        if og_count > 0 {
+            marks_ui.add_space(4.0);
+            if widgets::chip(&mut marks_ui, &format!("Original files  {og_count}"), self.list.og_only()) {
+                self.list.toggle_og();
+            }
+        }
         if shell.edit_mode && self.merge.is_none() {
             marks_ui.add_space(8.0);
             let tip = "The same album twice: choose the other one, then see both before merging";

@@ -365,6 +365,8 @@ impl Palette {
         let cover_rect = Rect::from_center_size(rect.left_center() + Vec2::new(24.0, 0.0), Vec2::splat(32.0));
         let text_left = rect.left() + 50.0;
         let width = rect.width() - 50.0 - 90.0;
+        // An original file's track: the OG badge after its title.
+        let og = matches!((entry, catalog), (Entry::Track(i), Some(c)) if c.tracks[i as usize].original_filename.is_some());
         let (title, sub, kind) = match (entry, catalog) {
             (Entry::Playlist(id), _) => {
                 let Some(p) = playlists.iter().find(|p| p.0 == id) else { return };
@@ -429,7 +431,7 @@ impl Palette {
             _ => return,
         };
         let y = if sub.is_some() { -8.0 } else { 0.0 };
-        widgets::text_in(&painter, Rect::from_min_size(Pos2::new(text_left, rect.center().y + y - 9.0), Vec2::new(width, 18.0)), &title, font(14.0, medium()), P.text);
+        widgets::text_in_og(&painter, Rect::from_min_size(Pos2::new(text_left, rect.center().y + y - 9.0), Vec2::new(width, 18.0)), &title, font(14.0, medium()), P.text, og);
         if let Some(sub) = sub {
             widgets::text_in(&painter, Rect::from_min_size(Pos2::new(text_left, rect.center().y + 1.0), Vec2::new(width, 16.0)), &sub, font(12.0, medium()), P.muted);
         }
