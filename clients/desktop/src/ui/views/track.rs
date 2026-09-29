@@ -28,6 +28,8 @@ pub struct TrackPage {
     /// Its sources, and which one its file came from (edit mode).
     sources: crate::ui::edit::sources::SourcesEditor,
     origin: crate::ui::edit::sources::OriginPicker,
+    /// Which version the form edits, and making, renaming and showing versions.
+    versions: crate::ui::edit::versions::VersionsBar,
     /// This track and another side by side, to merge (edit mode).
     merge: Option<super::merge::MergeView>,
     /// "Merge with another track…" asked the palette for the other one.
@@ -169,7 +171,7 @@ impl TrackPage {
                     ui.horizontal_top(|ui| {
                         ui.allocate_ui_with_layout(Vec2::new(left_width, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
                             ui.set_width(left_width);
-                            section(ui, "Edit", true, |ui| edit(ui, shell, catalog, &d));
+                            section(ui, "Edit", true, |ui| edit(ui, shell, catalog, &d, &mut self.versions));
                             self.edit_sources(ui, shell, &d);
                         });
                         ui.add_space(gap);
@@ -179,7 +181,7 @@ impl TrackPage {
                         });
                     });
                 } else {
-                    section(ui, "Edit", true, |ui| edit(ui, shell, catalog, &d));
+                    section(ui, "Edit", true, |ui| edit(ui, shell, catalog, &d, &mut self.versions));
                     self.edit_sources(ui, shell, &d);
                     self.view_sections(ui, shell, catalog, &d, is_playing, player);
                 }
@@ -470,9 +472,10 @@ fn section(ui: &mut egui::Ui, title: &str, open: bool, add: impl FnOnce(&mut egu
     ui.add_space(6.0);
 }
 
-/// The track's form (edit mode). Kept in the shell per track, so changes not saved yet
+/// The track's form (edit mode), under the bar choosing which version it edits. Kept in
+/// the shell per track, so changes not saved yet
 /// are still there after looking elsewhere.
-fn edit(ui: &mut egui::Ui, shell: &mut Shell, catalog: &Arc<Catalog>, d: &TrackDetail) {
+fn edit(ui: &mut egui::Ui, shell: &mut Shell, catalog: &Arc<Catalog>, d: &TrackDetail, versions: &mut crate::ui::edit::versions::VersionsBar) {
     let cover = catalog.track_index(d.id).and_then(|i| catalog.tracks[i as usize].cover());
     // Taken out of the shell while it's shown (showing it needs the shell too: Rust
     // allows only one mutable borrow of it at a time), then put back.
@@ -480,6 +483,7 @@ fn edit(ui: &mut egui::Ui, shell: &mut Shell, catalog: &Arc<Catalog>, d: &TrackD
         ui.label(RichText::new("This track has no version to edit.").color(P.muted));
         return;
     };
+    versions.show(ui, shell, catalog, d, &mut form);
     form.show(ui, shell, Some(catalog), d, cover);
     shell.track_forms.insert(d.id, form);
 }

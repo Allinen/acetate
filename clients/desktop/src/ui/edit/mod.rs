@@ -13,6 +13,7 @@ pub mod credits;
 pub mod inline_search;
 pub mod sources;
 pub mod track_form;
+pub mod versions;
 
 use std::sync::{Arc, Mutex};
 use std::time::Instant;

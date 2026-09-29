@@ -181,7 +181,16 @@ struct Created {
 impl TrackForm {
     /// Filled from the track's details (its shown variant). None if it has no variant.
     pub fn from_detail(d: &TrackDetail, catalog: Option<&Catalog>) -> Option<TrackForm> {
-        let variant = d.primary_variant_id.and_then(|id| d.variants.iter().find(|v| v.id == id)).or(d.variants.first())?;
+        TrackForm::for_variant(d, catalog, None)
+    }
+
+    /// Filled from the track's details, editing the variant `variant` (None, or one the
+    /// details don't have: the shown one).
+    pub fn for_variant(d: &TrackDetail, catalog: Option<&Catalog>, variant: Option<Uuid>) -> Option<TrackForm> {
+        let variant = variant
+            .and_then(|id| d.variants.iter().find(|v| v.id == id))
+            .or_else(|| d.primary_variant_id.and_then(|id| d.variants.iter().find(|v| v.id == id)))
+            .or(d.variants.first())?;
         let data: MetaData = serde_json::from_value(variant.data.clone()).unwrap_or_default();
         let credits = data
             .credits
@@ -245,8 +254,30 @@ impl TrackForm {
         })
     }
 
+    /// The variant being edited.
+    pub fn variant(&self) -> Uuid {
+        self.variant
+    }
+
+    /// Edits `variant` instead (its latest revision), keeping what's typed but not part
+    /// of the track yet (the reason, a new cover). Only without changes: a changed form
+    /// is saved or discarded first.
+    pub fn switch_to(&mut self, d: &TrackDetail, catalog: Option<&Catalog>, variant: Uuid) {
+        if self.fields_changed() || self.saving() {
+            return;
+        }
+        if let Some(fresh) = TrackForm::for_variant(d, catalog, Some(variant)) {
+            self.replace_keeping_input(fresh);
+        }
+    }
+
     pub fn dirty(&self) -> bool {
         self.meta != self.meta_was || self.facts != self.facts_was || self.cover.is_some()
+    }
+
+    /// Changes in the fields (a new cover aside: it's the track's, whichever variant).
+    pub fn fields_changed(&self) -> bool {
+        self.meta != self.meta_was || self.facts != self.facts_was
     }
 
     pub fn saving(&self) -> bool {
@@ -337,7 +368,7 @@ impl TrackForm {
     /// Follows the details: a form without changes shows the newest; one with changes
     /// keeps them (and, if "Load theirs" was asked, is rebased now).
     fn follow(&mut self, d: &TrackDetail, catalog: Option<&Catalog>) {
-        let Some(fresh) = TrackForm::from_detail(d, catalog) else { return };
+        let Some(fresh) = TrackForm::for_variant(d, catalog, Some(self.variant)) else { return };
         if fresh.seen == self.seen || self.saving() {
             return;
         }
