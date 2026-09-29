@@ -697,6 +697,9 @@ fn file(ui: &mut egui::Ui, shell: &mut Shell, d: &TrackDetail) {
         ui.add(egui::Label::new(RichText::new(&f.sha256).monospace().color(P.faint).small()).selectable(true));
         ui.end_row();
     });
+    // Whether it's an original file: corrected by hand (edit mode, `edit_files`), and the
+    // changes of it.
+    crate::ui::edit::og_file::show(ui, shell, d);
     if let Some(history) = d.file_history.as_ref().filter(|h| !h.is_empty()) {
         ui.add_space(8.0);
         ui.label(RichText::new(format!("Earlier files ({})", history.len())).font(font(14.0, semibold())));

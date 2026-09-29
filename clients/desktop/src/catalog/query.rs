@@ -150,7 +150,7 @@ fn track_has(catalog: &Catalog, t: &Track, key: Key, value: &str) -> bool {
         Key::Year => t.release_date.as_deref().is_some_and(|d| d.starts_with(value)) || t.year.is_some_and(|y| y.to_string() == value),
         Key::Genre => t.genres.iter().any(|g| has(g)),
         Key::Status => t.status.to_lowercase().starts_with(value),
-        Key::Format => t.codec.as_deref().is_some_and(has),
+        Key::Format => t.codec.as_deref().is_some_and(|codec| format_matches(codec, value)),
         // A flag's kind ("missing_cover"): typed with spaces or underscores alike.
         Key::Flag => {
             let value = value.replace(' ', "_");
@@ -167,6 +167,13 @@ fn track_has(catalog: &Catalog, t: &Track, key: Key, value: &str) -> bool {
         Key::Source => t.platforms.iter().any(|p| p.starts_with(value)),
         Key::Og => og_matches(t.original_filename.as_deref(), value),
     }
+}
+
+/// Whether a codec matches `format:value` (lowercase): in its name, and WAV files, which
+/// are PCM ("pcm_s16le"…), for `wav`.
+fn format_matches(codec: &str, value: &str) -> bool {
+    let codec = codec.to_lowercase();
+    codec.contains(value) || (matches!(value, "wav" | "wave" | "pcm") && codec.starts_with("pcm"))
 }
 
 /// Whether an original filename (None: not an og file) matches `og:value` (lowercase):
@@ -234,5 +241,13 @@ mod tests {
         assert!(og_matches(og, "") && og_matches(og, "yes") && !og_matches(og, "no"));
         assert!(og_matches(None, "no") && !og_matches(None, "") && !og_matches(None, "master"));
         assert!(og_matches(og, "master") && !og_matches(og, "demo"));
+    }
+
+    #[test]
+    fn format_wav_finds_pcm() {
+        let q = Query::parse("format:wav");
+        let has = |codec: &str| format_matches(codec, &q.fields[0].1);
+        assert!(has("pcm_s16le") && has("pcm_s24le") && !has("flac"));
+        assert!(format_matches("flac", "fla"));
     }
 }

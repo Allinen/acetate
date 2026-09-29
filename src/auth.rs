@@ -32,6 +32,8 @@ pub enum Permission {
     EditSources,
     Stream,
     Share,
+    /// Correcting what's recorded about a file itself (whether it's an original file).
+    EditFiles,
 }
 
 impl Permission {
@@ -50,6 +52,7 @@ impl Permission {
         Permission::EditSources,
         Permission::Stream,
         Permission::Share,
+        Permission::EditFiles,
     ];
 
     /// The name used in the database and the API.
@@ -69,6 +72,7 @@ impl Permission {
             Permission::EditSources => "edit_sources",
             Permission::Stream => "stream",
             Permission::Share => "share",
+            Permission::EditFiles => "edit_files",
         }
     }
 }

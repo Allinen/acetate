@@ -206,6 +206,8 @@ pub struct TrackTable {
     merge: Option<super::merge::MergeView>,
     /// The marked tracks' "credited as" (an artist's name on them and their albums).
     credited_as: Option<super::credited_as::CreditedAs>,
+    /// The marked tracks' files marked as original files (`edit_files`).
+    mark_og: Option<super::mark_og::MarkOg>,
     /// Marked tracks being put in a grouping: the server's answer (how many, or why not).
     grouping_answer: std::sync::Arc<std::sync::Mutex<Option<Result<String, String>>>>,
 }
@@ -235,6 +237,7 @@ impl TrackTable {
             quick: None,
             merge: None,
             credited_as: None,
+            mark_og: None,
             grouping_answer: Default::default(),
         }
     }
@@ -375,6 +378,7 @@ impl TrackTable {
         if !marking {
             self.merge = None;
             self.credited_as = None;
+            self.mark_og = None;
         }
         // Ctrl+M: the two marked tracks side by side, to merge (again: close). In a text
         // field too, as on the track page.
@@ -406,6 +410,11 @@ impl TrackTable {
         {
             self.credited_as = None;
         }
+        if let Some(popup) = &mut self.mark_og
+            && popup.show(shell)
+        {
+            self.mark_og = None;
+        }
         // The change for all of them, in a popup (drawn first: it takes Esc and Ctrl+Enter
         // before the table sees them).
         if self.bulk_open {
@@ -434,7 +443,7 @@ impl TrackTable {
             }
         }
         let typing = ctx.egui_wants_keyboard_input();
-        let popup = self.bulk_open || self.merge.is_some() || self.credited_as.is_some();
+        let popup = self.bulk_open || self.merge.is_some() || self.credited_as.is_some() || self.mark_og.is_some();
         // Ctrl+E with nothing marked (or outside edit mode): the popup for the selected
         // track alone, a quick fix.
         if options.keys && !popup && !typing && !shell.palette_open && (!marking || self.marked.is_empty()) && shell.account.can("edit_metadata") {
@@ -513,6 +522,10 @@ impl TrackTable {
                 }
                 if ui.button("Credited as…").on_hover_text("An artist's name on these tracks and their albums (an alias, or its own name)").clicked() {
                     self.credited_as = Some(super::credited_as::CreditedAs::open(self.marked(catalog, rows)));
+                }
+                // Only for someone allowed to correct files (admins): a very specific fix.
+                if shell.account.can("edit_files") && ui.button("Mark as original files…").on_hover_text("Their files are original files (og files) whose tags didn't say so").clicked() {
+                    self.mark_og = Some(super::mark_og::MarkOg::open(shell, self.marked(catalog, rows)));
                 }
                 if self.marked.len() == 2 && ui.button("Merge the two…  (Ctrl+M)").clicked() {
                     let marked = self.marked(catalog, rows);

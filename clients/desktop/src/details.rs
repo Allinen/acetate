@@ -36,6 +36,10 @@ pub struct TrackDetail {
     /// Changes of the file's origin, newest first (only for users who may see history).
     #[serde(default)]
     pub origin_changes: Option<Vec<OriginChange>>,
+    /// Changes of whether the file is an original file (and its name), newest first (only
+    /// for users who may see history).
+    #[serde(default)]
+    pub original_filename_changes: Option<Vec<OriginalFilenameChange>>,
     #[serde(default)]
     pub sources: Vec<Source>,
     #[serde(default)]
@@ -126,6 +130,18 @@ pub struct FileChange {
     pub old_origin: Option<Origin>,
     pub old_trashed_at: Option<String>,
     pub old_purged_at: Option<String>,
+}
+
+/// A change of whether a file is an original file (`PUT /api/files/{id}/original-filename`).
+/// Names None: not an original file.
+#[derive(Debug, Clone, Deserialize)]
+pub struct OriginalFilenameChange {
+    pub changed_at: String,
+    pub changed_by: Option<String>,
+    #[serde(default)]
+    pub reason: String,
+    pub old_name: Option<String>,
+    pub new_name: Option<String>,
 }
 
 /// A change of where a file came from (`PUT /api/files/{id}/origin`).

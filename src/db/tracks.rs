@@ -103,6 +103,10 @@ pub struct TrackDetail {
     /// `sources::set_file_origin`). Only included for users allowed to view history.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub origin_changes: Option<Vec<super::sources::OriginChange>>,
+    /// Changes of whether the current file is an original file (and its name), newest
+    /// first (see `og_files`). Only for users allowed to view history.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub original_filename_changes: Option<Vec<super::og_files::Change>>,
     pub sources: Vec<super::sources::Source>,
     pub credits: Vec<Credit>,
     pub albums: Vec<AlbumEntry>,
@@ -327,6 +331,7 @@ pub async fn get_track(
         .collect();
     let file_history = with_history.then_some(file_history);
     let origin_changes = if with_history { Some(super::sources::origin_changes(conn, row.file_id).await?) } else { None };
+    let original_filename_changes = if with_history { Some(super::og_files::changes(conn, row.file_id).await?) } else { None };
 
     let sources = super::sources::list_for(conn, id).await?;
     let file_shared_with = super::track_files::shared_with(conn, row.file_id, id).await?;
@@ -462,6 +467,7 @@ pub async fn get_track(
         file_shared_with,
         file_history,
         origin_changes,
+        original_filename_changes,
         sources,
         credits,
         albums,

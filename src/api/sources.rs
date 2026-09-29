@@ -119,6 +119,60 @@ pub async fn set_origin(
     Ok(Json(serde_json::json!({ "change_id": change })))
 }
 
+#[derive(Debug, serde::Deserialize)]
+pub struct SetOriginalFilename {
+    /// The name; null: not an original file.
+    original_filename: Option<String>,
+    #[serde(default)]
+    reason: String,
+}
+
+/// `PUT /api/files/{id}/original-filename`, JSON `{"original_filename": "…" | null,
+/// "reason": "…"}` (needs `edit_files`): whether the file is an original file, and its
+/// name (see `db::og_files`). Answers whether anything changed.
+pub async fn set_original_filename(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<Uuid>,
+    Json(body): Json<SetOriginalFilename>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let mut tx = state.db(&user).await?;
+    let changed = db::og_files::set(&mut tx, id, body.original_filename.as_deref(), &body.reason).await?;
+    tx.commit().await?;
+    Ok(Json(serde_json::json!({ "changed": changed })))
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct MarkOriginal {
+    track_ids: Vec<Uuid>,
+    #[serde(default)]
+    reason: String,
+    /// Only say what would change (nothing is kept).
+    #[serde(default)]
+    preview: bool,
+}
+
+/// `POST /api/tracks/mark-original`, JSON `{"track_ids": [...], "reason": "…", "preview":
+/// true}` (needs `edit_files`): each track's file marked as an original file, under the
+/// name it was uploaded with. `preview`: the same, answered and not kept.
+pub async fn mark_original(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Json(body): Json<MarkOriginal>,
+) -> Result<Json<db::og_files::Marked>, AppError> {
+    if body.track_ids.len() > 10_000 {
+        return Err(AppError::BadRequest("at most 10000 tracks at once".into()));
+    }
+    let mut tx = state.db(&user).await?;
+    let marked = db::og_files::mark_original(&mut tx, &body.track_ids, &body.reason).await?;
+    if body.preview {
+        tx.rollback().await?;
+    } else {
+        tx.commit().await?;
+    }
+    Ok(Json(marked))
+}
+
 /// `GET /api/source-shapes`: every supported platform/kind and its fields, so clients
 /// (like the web UI) can build forms without hard-coding them.
 pub async fn shapes() -> Json<serde_json::Value> {

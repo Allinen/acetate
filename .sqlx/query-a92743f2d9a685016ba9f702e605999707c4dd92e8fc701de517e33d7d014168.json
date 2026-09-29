@@ -1,0 +1,88 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT c.id, c.changed_at, u.username AS \"changed_by?\", c.reason, c.old_name, c.new_name\n        FROM file_original_filename_changes c\n        LEFT JOIN users u ON u.id = c.changed_by\n        WHERE c.file_id = $1\n        ORDER BY c.id DESC\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "file_original_filename_changes",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "changed_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "file_original_filename_changes",
+            "name": "changed_at"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "changed_by?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "username"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "reason",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "file_original_filename_changes",
+            "name": "reason"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "old_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "file_original_filename_changes",
+            "name": "old_name"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "new_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "file_original_filename_changes",
+            "name": "new_name"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "a92743f2d9a685016ba9f702e605999707c4dd92e8fc701de517e33d7d014168"
+}

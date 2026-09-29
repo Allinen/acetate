@@ -21,6 +21,7 @@ pub mod queue;
 pub mod review;
 pub mod review_bulk;
 pub mod credited_as;
+pub mod mark_og;
 pub mod settings;
 pub mod sidebar;
 pub mod track_table;

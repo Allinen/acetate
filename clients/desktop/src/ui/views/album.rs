@@ -71,9 +71,20 @@ impl AlbumPage {
         let header = ui.allocate_exact_size(Vec2::new(ui.available_width(), 232.0), Sense::hover()).0;
         let cover_rect = Rect::from_min_size(header.min, Vec2::splat(220.0));
         shell.cover_with_original(ui, album.cover(), album.id, cover_rect, 12, 0.6);
+        // Every track an original file (an og file): it says so, with an amber edge.
+        let og_count = tracks.iter().filter(|&&t| catalog.tracks[t as usize].original_filename.is_some()).count();
+        let all_og = og_count > 0 && og_count == tracks.len();
+        if all_og {
+            widgets::og_edge(ui.painter(), cover_rect, 12, 2.0);
+        }
         let left = cover_rect.right() + 28.0;
         let painter = ui.painter();
-        painter.text(Pos2::new(left, cover_rect.top() + 70.0), Align2::LEFT_BOTTOM, album.kind.to_uppercase(), font(11.0, semibold()), P.accent);
+        let kind = match (all_og, tracks.len()) {
+            (false, _) => album.kind.to_uppercase(),
+            (true, 1) => format!("{}  ·  ORIGINAL FILE", album.kind.to_uppercase()),
+            (true, _) => format!("{}  ·  ORIGINAL FILES", album.kind.to_uppercase()),
+        };
+        painter.text(Pos2::new(left, cover_rect.top() + 70.0), Align2::LEFT_BOTTOM, kind, font(11.0, semibold()), P.accent);
         widgets::text_in(painter, Rect::from_min_size(Pos2::new(left, cover_rect.top() + 76.0), Vec2::new(header.right() - left, 44.0)), &album.title, font(36.0, bold()), P.text);
         let mut facts = Vec::new();
         if let Some(date) = &album.release_date {
@@ -104,7 +115,6 @@ impl AlbumPage {
         marks_ui.add_space(4.0);
         widgets::share_chip(&mut marks_ui, shell, crate::links::Target::Album(id));
         // Its original files (og files): a chip that shows only those (`og:` in the filter).
-        let og_count = tracks.iter().filter(|&&t| catalog.tracks[t as usize].original_filename.is_some()).count();
         if og_count > 0 {
             marks_ui.add_space(4.0);
             if widgets::chip(&mut marks_ui, &format!("Original files  {og_count}"), self.list.og_only()) {

@@ -198,6 +198,8 @@ pub fn router(state: AppState) -> Router {
         // Previous (replaced) files additionally need `view_history`, checked in the handler.
         .route("/api/files/{id}/stream", require(&[Stream], get(media::stream_file)))
         .route("/api/files/{id}/origin", require(&[EditSources], put(sources::set_origin)))
+        .route("/api/files/{id}/original-filename", require(&[EditFiles], put(sources::set_original_filename)))
+        .route("/api/tracks/mark-original", require(&[EditFiles], post(sources::mark_original)))
         .route("/api/images/{hash}", require(&[Browse], get(media::image)))
         .route(
             "/api/covers/{id}",
