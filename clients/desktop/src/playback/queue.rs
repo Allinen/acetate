@@ -225,6 +225,7 @@ mod tests {
         QueueItem {
             track_id: Uuid::from_u128(n),
             file_id: Uuid::from_u128(n),
+            source: Default::default(),
             title: n.to_string(),
             artist: String::new(),
             album: None,

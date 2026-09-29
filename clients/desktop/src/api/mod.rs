@@ -246,8 +246,15 @@ impl Api {
     }
 
     /// A file's bytes from `from` on (a Range request), as a response to read in chunks.
+    #[cfg(test)]
     pub async fn file_from(&self, file_id: Uuid, from: u64) -> Result<reqwest::Response, ApiError> {
-        let (request, server) = self.request(reqwest::Method::GET, &format!("/api/files/{file_id}/stream"))?;
+        self.stream_from(&format!("/api/files/{file_id}/stream"), from).await
+    }
+
+    /// Audio at `path` (a file's stream, a kept file that didn't import) from `from` on (a
+    /// Range request), as a response to read in chunks.
+    pub async fn stream_from(&self, path: &str, from: u64) -> Result<reqwest::Response, ApiError> {
+        let (request, server) = self.request(reqwest::Method::GET, path)?;
         self.go(request.header(reqwest::header::RANGE, format!("bytes={from}-")), &server).await
     }
 }

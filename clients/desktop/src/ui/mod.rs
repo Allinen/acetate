@@ -1206,6 +1206,7 @@ pub fn queue_item(catalog: &Catalog, i: u32) -> QueueItem {
     QueueItem {
         track_id: t.id,
         file_id: t.file_id,
+        source: Default::default(),
         title: t.title.clone(),
         artist: t.artist_display.clone(),
         album: catalog.main_album(t).map(|a| a.title.clone()),
@@ -1229,5 +1230,6 @@ pub fn thousands(n: usize) -> String {
 
 /// What plays right now, if anything (for pages marking the playing track).
 pub fn playing_track(player: &PlayerView) -> Option<Uuid> {
-    player.current().map(|c| c.track_id)
+    // A file that didn't import plays like a track, but isn't one.
+    player.current().filter(|c| c.source == crate::playback::AudioSource::File).map(|c| c.track_id)
 }

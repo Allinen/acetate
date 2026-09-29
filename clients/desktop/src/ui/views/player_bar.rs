@@ -29,11 +29,13 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell, player: &PlayerView) {
     if let Some(item) = &current {
         let text_left = cover_rect.right() + 14.0;
         let width = left.right() - text_left - 44.0;
-        // A star for what plays (Shift+S anywhere).
-        let star_rect = Rect::from_center_size(Pos2::new(left.right() - 22.0, cover_rect.center().y), Vec2::splat(28.0));
-        let mut star_ui = ui.new_child(egui::UiBuilder::new().max_rect(star_rect));
-        if widgets::star_button(&mut star_ui, shell.mark(item.track_id).starred, 24.0) {
-            shell.act(Action::ToggleStar(Kind::Track, item.track_id));
+        // A star for what plays (Shift+S anywhere); a file that didn't import isn't a track.
+        if item.source == crate::playback::AudioSource::File {
+            let star_rect = Rect::from_center_size(Pos2::new(left.right() - 22.0, cover_rect.center().y), Vec2::splat(28.0));
+            let mut star_ui = ui.new_child(egui::UiBuilder::new().max_rect(star_rect));
+            if widgets::star_button(&mut star_ui, shell.mark(item.track_id).starred, 24.0) {
+                shell.act(Action::ToggleStar(Kind::Track, item.track_id));
+            }
         }
         // The title (to its album) and artists (to theirs) are links; the rest of this
         // area goes to Now playing.

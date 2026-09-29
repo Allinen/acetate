@@ -46,7 +46,9 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell, player: &PlayerView, spectrum:
     let width = area.right() - left;
     // With lyrics, the title goes to the top and the lyrics fill the column below it;
     // without, the title sits in the middle, beside the cover.
-    let detail = shell.track_details.get(item.track_id).value.clone();
+    // (A file that didn't import isn't a track: no details, marks or lyrics.)
+    let is_track = item.source == crate::playback::AudioSource::File;
+    let detail = if is_track { shell.track_details.get(item.track_id).value.clone() } else { None };
     let lyrics = detail.as_ref().and_then(|d| d.lyrics.iter().find(|l| l.is_synced).or(d.lyrics.first()).cloned());
     let middle = if lyrics.is_some() { cover_rect.top() + 52.0 } else { cover_rect.center().y };
     super::playing_links(
@@ -63,7 +65,9 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell, player: &PlayerView, spectrum:
     // Star, rating and plays of what plays.
     let marks_rect = Rect::from_min_size(Pos2::new(left, middle + 44.0), Vec2::new(width, 30.0));
     let mut marks_ui = ui.new_child(egui::UiBuilder::new().max_rect(marks_rect).layout(egui::Layout::left_to_right(egui::Align::Center)));
-    super::album::marks(&mut marks_ui, shell, Kind::Track, item.track_id);
+    if is_track {
+        super::album::marks(&mut marks_ui, shell, Kind::Track, item.track_id);
+    }
     // An original file: said quietly, next to the marks, with its name.
     if let Some(name) = &original {
         marks_ui.add_space(12.0);

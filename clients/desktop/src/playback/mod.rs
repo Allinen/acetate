@@ -21,17 +21,39 @@ use crate::api::{Annotation, Api};
 use scrobble::Listen;
 use engine::{Command, Scope, Status};
 
+/// Where a queued item's audio comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum AudioSource {
+    /// A file in the library (`file_id`).
+    #[default]
+    File,
+    /// A file that didn't import, kept for review (`file_id` is its entry's id): heard
+    /// like any track, but it isn't one (no plays counted).
+    NotImported,
+}
+
 /// One queued track, with what the UI shows about it.
 #[derive(Debug, Clone)]
 pub struct QueueItem {
     pub track_id: Uuid,
     pub file_id: Uuid,
+    pub source: AudioSource,
     pub title: String,
     pub artist: String,
     /// Its main album's title, for the system's media controls.
     pub album: Option<String>,
     pub duration_ms: Option<i64>,
     pub cover: Option<crate::catalog::model::Cover>,
+}
+
+impl QueueItem {
+    /// Where its audio is fetched from.
+    pub fn stream_path(&self) -> String {
+        match self.source {
+            AudioSource::File => format!("/api/files/{}/stream", self.file_id),
+            AudioSource::NotImported => format!("/api/ingest-problems/{}/audio", self.file_id),
+        }
+    }
 }
 
 /// What the UI needs about playback.
@@ -184,13 +206,13 @@ impl Controller {
     }
 
     /// Starts downloading a file; it can be played as soon as this returns.
-    async fn fetch(&self, file_id: Uuid) -> anyhow::Result<stream::RemoteFile> {
+    async fn fetch(&self, file_id: Uuid, path: String) -> anyhow::Result<stream::RemoteFile> {
         // Kept (see `prepare`): another reader of the same download.
         let kept = self.kept.lock().unwrap().iter().find(|(id, _)| *id == file_id).map(|(_, f)| f.clone());
         if let Some(file) = kept {
             return Ok(file);
         }
-        stream::RemoteFile::open(&self.api, file_id).await
+        stream::RemoteFile::open(&self.api, path).await
     }
 
     /// Plays from a list (an album, a playlist, a table), starting with `start`. Shuffled:
@@ -218,7 +240,8 @@ impl Controller {
             files.iter().filter(|id| !kept.iter().any(|(k, _)| k == *id)).copied().collect()
         };
         for id in missing {
-            match self.fetch(id).await {
+            // (Library files: comparing two tracks.)
+            match self.fetch(id, format!("/api/files/{id}/stream")).await {
                 Ok(file) => self.kept.lock().unwrap().push((id, file)),
                 Err(err) => self.report(format!("{err:#}")),
             }
@@ -249,7 +272,7 @@ impl Controller {
             *self.pending_seek.lock().unwrap() = None;
             state.generation
         };
-        match self.fetch(item.file_id).await {
+        match self.fetch(item.file_id, item.stream_path()).await {
             Ok(file) => {
                 if self.state.lock().await.generation == generation {
                     self.send(Command::Replace { file, paused, at, fade });
@@ -260,16 +283,18 @@ impl Controller {
         self.ctx.request_repaint();
     }
 
-    /// What comes next, as the "next" slot would hold it: which, and which file.
-    fn upcoming(&self, state: &State) -> Option<(queue::Upcoming, Uuid)> {
+    /// What comes next, as the "next" slot would hold it: which, and which file (and where
+    /// it's fetched from).
+    fn upcoming(&self, state: &State) -> Option<(queue::Upcoming, (Uuid, String))> {
         let upcoming = state.queue.upcoming(self.repeat.load(Relaxed))?;
-        Some((upcoming, state.queue.item(upcoming)?.file_id))
+        let item = state.queue.item(upcoming)?;
+        Some((upcoming, (item.file_id, item.stream_path())))
     }
 
     /// After a change: if what comes next isn't what it was, the "next" slot is emptied
     /// (and filled again with the right track). Works until the current track's last
     /// sample.
-    fn next_changed(&self, state: &mut State, before: Option<(queue::Upcoming, Uuid)>) {
+    fn next_changed(&self, state: &mut State, before: Option<(queue::Upcoming, (Uuid, String))>) {
         if self.upcoming(state) != before || (state.appended.is_none() && state.fetching) {
             state.appended = None;
             state.fetching = false;
@@ -561,7 +586,9 @@ impl Controller {
             // the window isn't drawn).
             let current = view.current();
             let length = current.and_then(|c| c.duration_ms).map(|ms| Duration::from_millis(ms.max(0) as u64));
-            let heard = self.listen.lock().unwrap().update(current.map(|c| c.track_id), length, view.position_now(), view.paused);
+            // (A file that didn't import isn't a track: nothing to count.)
+            let track = current.filter(|c| c.source == AudioSource::File).map(|c| c.track_id);
+            let heard = self.listen.lock().unwrap().update(track, length, view.position_now(), view.paused);
             if let Some(track) = heard {
                 let this = self.clone();
                 tokio::spawn(async move {
@@ -598,7 +625,7 @@ impl Controller {
                 drop(state);
                 let this = self.clone();
                 tokio::spawn(async move {
-                    let result = this.fetch(file_id).await;
+                    let result = this.fetch(file_id.0, file_id.1).await;
                     let mut state = this.state.lock().await;
                     if state.next_asked != asked {
                         return;

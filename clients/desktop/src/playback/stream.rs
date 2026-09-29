@@ -12,7 +12,6 @@ use std::ops::Range;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
-use uuid::Uuid;
 
 use crate::api::Api;
 
@@ -89,8 +88,9 @@ pub struct RemoteFile {
 
 impl RemoteFile {
     /// Starts downloading, and returns once the file's size is known.
-    pub async fn open(api: &Api, file_id: Uuid) -> anyhow::Result<RemoteFile> {
-        let response = api.file_from(file_id, 0).await?;
+    /// `path`: where it's fetched from (see `QueueItem::stream_path`).
+    pub async fn open(api: &Api, path: String) -> anyhow::Result<RemoteFile> {
+        let response = api.stream_from(&path, 0).await?;
         let len = total_length(&response).ok_or_else(|| anyhow::anyhow!("The server didn't say how big the file is, so it can't be played while it downloads."))?;
         let shared = Arc::new(Shared {
             state: Mutex::new(State {
@@ -105,7 +105,7 @@ impl RemoteFile {
             }),
             changed: Condvar::new(),
         });
-        tokio::spawn(download(api.clone(), file_id, shared.clone(), response));
+        tokio::spawn(download(api.clone(), path, shared.clone(), response));
         Ok(RemoteFile { shared, position: 0 })
     }
 
@@ -209,14 +209,14 @@ impl symphonia::core::io::MediaSource for RemoteFile {
 
 /// The download: from where it's wanted to the end, then the parts skipped, until the
 /// whole file is here. `first` is the response `open` already has (from byte 0).
-async fn download(api: Api, file_id: Uuid, shared: Arc<Shared>, first: reqwest::Response) {
+async fn download(api: Api, path: String, shared: Arc<Shared>, first: reqwest::Response) {
     let mut response = Some(first);
     let mut from = 0u64;
     loop {
         let restart = shared.state.lock().unwrap().restart;
         let mut current = match response.take() {
             Some(r) => r,
-            None => match api.file_from(file_id, from).await {
+            None => match api.stream_from(&path, from).await {
                 Ok(r) => r,
                 Err(err) => {
                     shared.state.lock().unwrap().error = Some(format!("{err:#}"));
@@ -320,11 +320,11 @@ mod against_a_server {
         std::fs::write(dir.join("session.json"), serde_json::json!({"server": server, "token": token, "username": "test"}).to_string()).unwrap();
         let api = Api::new(dir);
         let runtime = tokio::runtime::Runtime::new().unwrap();
-        let file: Uuid = file.parse().unwrap();
+        let file: uuid::Uuid = file.parse().unwrap();
         let whole = runtime.block_on(async {
             api.file_from(file, 0).await.unwrap().bytes().await.unwrap().to_vec()
         });
-        let mut remote = runtime.block_on(RemoteFile::open(&api, file)).unwrap();
+        let mut remote = runtime.block_on(RemoteFile::open(&api, format!("/api/files/{file}/stream"))).unwrap();
         assert_eq!(remote.len(), whole.len() as u64);
         // Near the end first (before the download gets there), then from the start.
         let near_end = whole.len() as u64 - 1000;

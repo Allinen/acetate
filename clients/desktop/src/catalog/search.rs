@@ -22,6 +22,7 @@ pub struct Hits {
 pub enum Part {
     Artists,
     Albums,
+    Tracks,
 }
 
 pub struct Search {
@@ -50,10 +51,11 @@ impl Search {
     /// Up to `limit` of one kind only (a form's artist or album field).
     pub fn run_part(&mut self, catalog: &Catalog, query: &str, part: Part, limit: usize) -> Vec<(u32, u32)> {
         let pattern = Pattern::parse(query, CaseMatching::Ignore, Normalization::Smart);
-        let (_, albums, artists) = catalog.texts();
+        let (tracks, albums, artists) = catalog.texts();
         let texts = match part {
             Part::Artists => artists,
             Part::Albums => albums,
+            Part::Tracks => tracks,
         };
         self.best(&pattern, texts, limit)
     }

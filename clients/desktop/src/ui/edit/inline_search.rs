@@ -148,6 +148,17 @@ pub fn describe(catalog: &Catalog, part: Part, i: u32) -> (String, String) {
             sub.push(if a.track_count == 1 { "1 track".into() } else { format!("{} tracks", a.track_count) });
             (a.name.clone(), sub.join(" · "))
         }
+        Part::Tracks => {
+            let t = &catalog.tracks[i as usize];
+            let mut sub = vec![t.artist_display.clone()];
+            if let Some(album) = catalog.main_album(t) {
+                sub.push(album.title.clone());
+            }
+            if let Some(codec) = &t.codec {
+                sub.push(codec.clone());
+            }
+            (t.title.clone(), sub.join(" · "))
+        }
         Part::Albums => {
             let a = &catalog.albums[i as usize];
             let mut sub = vec![a.artist_display.clone(), a.kind.clone()];

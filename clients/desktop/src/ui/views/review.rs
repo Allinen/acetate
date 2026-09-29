@@ -7,7 +7,8 @@
 //! date), with their names from `/api/vocab`. Which tracks have which comes with the
 //! library kept on this computer (`Catalog::issues`), so filtering and counting are
 //! instant even for the whole library. One row of chips filters by kind (with counts);
-//! text filters too. Group by folder, note, artist or kind.
+//! text filters too. Group by folder, note, artist or kind. The first chip, "Didn't
+//! import", shows the files the server refused or failed on instead (`not_imported`).
 //!
 //! Right, the selected track's form, with the cursor already in the first field that
 //! needs fixing, and the file's name, folder and tags to fix from.
@@ -125,11 +126,16 @@ pub struct Review {
     settle_on_save: HashMap<Uuid, (Uuid, String)>,
     /// The bulk tools, open.
     bulk: Option<super::review_bulk::ReviewBulk>,
+    /// Files that didn't import, and whether they're shown (in place of the list).
+    not_imported: super::not_imported::NotImported,
+    showing_not_imported: bool,
+    asked_not_imported: bool,
 }
 
 impl Review {
     pub fn opened(&mut self) {
         self.asked_flags = false;
+        self.asked_not_imported = false;
         self.focus_first = true;
     }
 
@@ -149,6 +155,11 @@ impl Review {
             self.asked_flags = true;
             shell.flags.refresh(&shell.api, shell.runtime.handle(), &shell.ctx);
         }
+        if !self.asked_not_imported {
+            self.asked_not_imported = true;
+            self.not_imported.refresh(shell);
+        }
+        self.not_imported.poll(shell);
         self.after_save(shell, catalog);
         self.build(shell, catalog);
         // The bulk popup first: while it's open, the page's keys wait.
@@ -157,7 +168,10 @@ impl Review {
         {
             self.bulk = None;
         }
-        self.keys(ui.ctx(), shell, catalog, player);
+        // (Files that didn't import have their own keys.)
+        if !self.showing_not_imported {
+            self.keys(ui.ctx(), shell, catalog, player);
+        }
         // A key may have marked a flag done: the rows follow at once.
         self.build(shell, catalog);
         let vocab = shell.account.vocab.clone().unwrap_or_default();
@@ -190,8 +204,17 @@ impl Review {
             let mut unknown: Vec<String> = self.counts.keys().filter(|k| !kinds.contains(k)).cloned().collect();
             unknown.sort();
             kinds.extend(unknown);
-            if widgets::chip(ui, "Everything", self.only.is_none()) {
+            // Files that didn't import: not tracks, so shown in place of the list.
+            let files = self.not_imported.list.len();
+            if files > 0 || self.showing_not_imported {
+                if widgets::chip(ui, &format!("Didn't import {}", crate::ui::thousands(files)), self.showing_not_imported) {
+                    self.showing_not_imported = !self.showing_not_imported;
+                }
+                ui.add_space(8.0);
+            }
+            if widgets::chip(ui, "Everything", self.only.is_none() && !self.showing_not_imported) {
                 self.only = None;
+                self.showing_not_imported = false;
             }
             for kind in kinds {
                 let count = self.counts.get(&kind).copied().unwrap_or(0);
@@ -200,12 +223,18 @@ impl Review {
                     continue;
                 }
                 let text = format!("{} {}", vocab.review_kind_name(&kind), crate::ui::thousands(count));
-                if widgets::chip(ui, &text, self.only.as_ref() == Some(&kind)) {
-                    self.only = if self.only.as_ref() == Some(&kind) { None } else { Some(kind) };
+                if widgets::chip(ui, &text, self.only.as_ref() == Some(&kind) && !self.showing_not_imported) {
+                    self.only = if self.only.as_ref() == Some(&kind) && !self.showing_not_imported { None } else { Some(kind) };
+                    self.showing_not_imported = false;
                 }
             }
         });
         ui.add_space(4.0);
+        if self.showing_not_imported {
+            ui.add_space(6.0);
+            self.not_imported.show(ui, shell, catalog);
+            return;
+        }
         let left = self.entries.len();
         let mut status = format!("{} to go", crate::ui::thousands(left));
         if self.done > 0 {
