@@ -130,9 +130,12 @@ pub struct ImportWith {
     title: Option<String>,
     /// Used instead of the tags' artists. Each is split on `;` like the ARTIST tag.
     artists: Vec<String>,
+    /// The file is an original file (an og file) with this name, when its tags don't say.
+    original_filename: Option<String>,
 }
 
-/// `POST /api/ingest-problems/{id}/import`, JSON `{"title": "...", "artists": ["..."]}`:
+/// `POST /api/ingest-problems/{id}/import`, JSON `{"title": "...", "artists": ["..."],
+/// "original_filename": "..."}` (the last: it's an original file, when its tags don't say):
 /// imports the kept file again, with what it was imported with the first time, using these
 /// values for what its tags lack. The file and its raw tags aren't changed; the track's
 /// first revision says which values were given by hand. Returns the ingest report; if it's
@@ -143,7 +146,10 @@ pub async fn import(
     Path(id): Path<Uuid>,
     Json(with): Json<ImportWith>,
 ) -> Result<Json<Report>, AppError> {
-    let (file, problem, description) = load_open(&state, &user, id).await?;
+    let (file, problem, mut description) = load_open(&state, &user, id).await?;
+    if let Some(name) = with.original_filename.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
+        description.hints.original_filename = Some(name.to_string());
+    }
     if description.restrict_to.is_some() && !user.has(Permission::ManageAccess) {
         return Err(AppError::Forbidden(
             "this file was to be restricted; importing it needs the manage_access permission".to_string(),
@@ -177,6 +183,9 @@ pub struct AddToTrack {
     add_as: AddAs,
     #[serde(default)]
     reason: String,
+    /// The file is an original file (an og file) with this name, when its tags don't say.
+    #[serde(default)]
+    original_filename: Option<String>,
 }
 
 /// `POST /api/ingest-problems/{id}/add-to-track`, JSON `{"track_id": "...", "add_as":
@@ -195,6 +204,7 @@ pub async fn add_to_track(
         origin: description.origin,
         reason: body.reason,
         volume: None,
+        original_filename: body.original_filename.map(|n| n.trim().to_string()).filter(|n| !n.is_empty()),
     };
     let outcome = ingest::add_file_to_track(&state.pool, &file, body.track_id, body.add_as, &options).await?;
     Ok(Json(serde_json::json!({

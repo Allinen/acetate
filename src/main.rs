@@ -479,6 +479,7 @@ async fn main() -> anyhow::Result<()> {
                 origin,
                 reason,
                 volume,
+                original_filename: None,
             };
             let outcome = ingest::replace_file(&pool, &store, track_id, pending, options).await?;
             println!(

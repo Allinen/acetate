@@ -195,6 +195,7 @@ pub async fn replace_file(
             origin,
             reason,
             volume,
+            original_filename: None,
         };
         let outcome =
             ingest::replace_file(&state.pool, &state.store, track_id, pending, options).await?;

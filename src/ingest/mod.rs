@@ -780,6 +780,9 @@ pub struct ReplaceOptions {
     pub reason: String,
     /// Which storage volume the new file goes to (None: the default one).
     pub volume: Option<String>,
+    /// The file is an original file (an og file) with this name, when its tags don't say
+    /// (said by whoever adds it, as a description's `original_filename` hint).
+    pub original_filename: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -842,7 +845,10 @@ pub async fn add_file_to_track(
         };
         return Err(Rejected::AlreadyStored { track_id }.into());
     }
-    let (probe, tags) = read_file_info(&file.path, &options.uploaded_filename).await?;
+    let (probe, mut tags) = read_file_info(&file.path, &options.uploaded_filename).await?;
+    if tags.original_filename.is_none() {
+        tags.original_filename = options.original_filename.clone();
+    }
 
     let mut tx = db::begin(pool, options.user).await?;
     // Locking the row means two changes to the same track's files can't interleave.

@@ -180,12 +180,8 @@ impl Review {
         ui.horizontal(|ui| {
             ui.label(RichText::new("Review").font(font(28.0, bold())));
             ui.add_space(12.0);
-            ui.add(
-                egui::TextEdit::singleline(&mut self.filter)
-                    .id(egui::Id::new(super::FILTER_ID))
-                    .hint_text("/  filter: words, or artist:… album:… year:… status:… flag:…")
-                    .desired_width(260.0),
-            );
+            let hint = if self.showing_not_imported { "/  filter: words in the name, folder, reason or tags" } else { "/  filter: words, or artist:… album:… year:… status:… flag:…" };
+            ui.add(egui::TextEdit::singleline(&mut self.filter).id(egui::Id::new(super::FILTER_ID)).hint_text(hint).desired_width(260.0));
             egui::ComboBox::from_id_salt("review-group").selected_text(format!("group by {}", self.group.name())).show_ui(ui, |ui| {
                 for group in Group::ALL {
                     ui.selectable_value(&mut self.group, group, group.name());
@@ -205,7 +201,7 @@ impl Review {
             unknown.sort();
             kinds.extend(unknown);
             // Files that didn't import: not tracks, so shown in place of the list.
-            let files = self.not_imported.list.len();
+            let files = self.not_imported.matching(&self.filter);
             if files > 0 || self.showing_not_imported {
                 if widgets::chip(ui, &format!("Didn't import {}", crate::ui::thousands(files)), self.showing_not_imported) {
                     self.showing_not_imported = !self.showing_not_imported;
@@ -232,7 +228,7 @@ impl Review {
         ui.add_space(4.0);
         if self.showing_not_imported {
             ui.add_space(6.0);
-            self.not_imported.show(ui, shell, catalog);
+            self.not_imported.show(ui, shell, catalog, &self.filter);
             return;
         }
         let left = self.entries.len();

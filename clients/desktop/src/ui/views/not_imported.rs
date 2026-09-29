@@ -8,6 +8,11 @@
 //! * **import it as a new track**, with the title and artists its tags lack typed in;
 //! * **resolve it** with a note (nothing to import).
 //!
+//! Adding or importing can say the file is an original file (an og file, named as it was
+//! uploaded): on to start with for WAV files, which are nearly always the artist's own.
+//! Review's filter works here too: words in the name, the path (folders), the reason or
+//! the tags.
+//!
 //! Done ones leave the list at once (the server resolves them too).
 
 use std::sync::{Arc, Mutex};
@@ -65,6 +70,9 @@ pub struct NotImported {
     reason: String,
     title: String,
     artists: String,
+    /// It's an original file (an og file), with this name: on to start with for WAVs.
+    is_og: bool,
+    og_name: String,
     /// The form was filled for this file (moving to another fills it again).
     filled_for: Option<Uuid>,
     sending: bool,
@@ -136,37 +144,53 @@ impl NotImported {
         }
     }
 
-    /// The list and the chosen file, in `rect`.
-    pub fn show(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: &Arc<Catalog>) {
-        if self.selected.is_none_or(|id| !self.list.iter().any(|p| p.id == id)) {
-            self.selected = self.list.first().map(|p| p.id);
+    /// How many match `filter` (words anywhere in a file's name, path, reason or tags).
+    pub fn matching(&self, filter: &str) -> usize {
+        let words = words(filter);
+        self.list.iter().filter(|p| matches(p, &words)).count()
+    }
+
+    /// The list (those matching `filter`) and the chosen file, in `rect`.
+    pub fn show(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: &Arc<Catalog>, filter: &str) {
+        let words = words(filter);
+        let shown: Vec<usize> = (0..self.list.len()).filter(|&n| matches(&self.list[n], &words)).collect();
+        if self.selected.is_none_or(|id| !shown.iter().any(|&n| self.list[n].id == id)) {
+            self.selected = shown.first().map(|&n| self.list[n].id);
         }
         // Ctrl+↓/↑: the next or previous file (anywhere, as on the rest of Review).
         let (next, previous) = ui.ctx().input_mut(|i| (i.consume_key(egui::Modifiers::COMMAND, egui::Key::ArrowDown), i.consume_key(egui::Modifiers::COMMAND, egui::Key::ArrowUp)));
         if (next || previous) && !shell.modal_open {
-            let at = self.selected.and_then(|id| self.list.iter().position(|p| p.id == id)).unwrap_or(0);
-            let to = if next { (at + 1).min(self.list.len().saturating_sub(1)) } else { at.saturating_sub(1) };
-            self.selected = self.list.get(to).map(|p| p.id);
+            let at = self.selected.and_then(|id| shown.iter().position(|&n| self.list[n].id == id)).unwrap_or(0);
+            let to = if next { (at + 1).min(shown.len().saturating_sub(1)) } else { at.saturating_sub(1) };
+            self.selected = shown.get(to).map(|&n| self.list[n].id);
         }
         let rest = ui.available_rect_before_wrap();
         let list_rect = egui::Rect::from_min_size(rest.min, Vec2::new(LIST_WIDTH, rest.height()));
         let detail_rect = egui::Rect::from_min_max(egui::pos2(list_rect.right() + 24.0, rest.top()), rest.max);
         let mut list_ui = ui.new_child(egui::UiBuilder::new().max_rect(list_rect));
-        self.list(&mut list_ui);
+        self.list(&mut list_ui, &shown);
         let mut detail_ui = ui.new_child(egui::UiBuilder::new().max_rect(detail_rect));
         self.detail(&mut detail_ui, shell, catalog);
         ui.allocate_rect(rest, Sense::hover());
     }
 
-    fn list(&mut self, ui: &mut egui::Ui) {
-        if self.list.is_empty() {
-            let text = if self.loading { "Loading…".to_string() } else if let Some(err) = &self.error { format!("Couldn't load them: {err}") } else { "Every file imported.".to_string() };
+    fn list(&mut self, ui: &mut egui::Ui, shown: &[usize]) {
+        if shown.is_empty() {
+            let text = if self.loading {
+                "Loading…".to_string()
+            } else if let Some(err) = &self.error {
+                format!("Couldn't load them: {err}")
+            } else if !self.list.is_empty() {
+                "Nothing matches the filter.".to_string()
+            } else {
+                "Every file imported.".to_string()
+            };
             ui.label(RichText::new(text).color(P.muted));
             return;
         }
-        egui::ScrollArea::vertical().id_salt("not-imported-list").auto_shrink([false, false]).show_rows(ui, ROW, self.list.len(), |ui, range| {
+        egui::ScrollArea::vertical().id_salt("not-imported-list").auto_shrink([false, false]).show_rows(ui, ROW, shown.len(), |ui, range| {
             for n in range {
-                let p = &self.list[n];
+                let p = &self.list[shown[n]];
                 let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW), Sense::click());
                 let chosen = self.selected == Some(p.id);
                 if chosen || response.hovered() {
@@ -200,6 +224,8 @@ impl NotImported {
             self.reason.clear();
             self.title = p.tag_title.clone().unwrap_or_else(|| name.clone());
             self.artists = p.tag_artists.join("; ");
+            self.is_og = is_wav(&p.uploaded_filename);
+            self.og_name = p.uploaded_filename.clone();
         }
         egui::ScrollArea::vertical().id_salt(("not-imported-detail", p.id)).auto_shrink([false, false]).show(ui, |ui| {
             self.notice_line(ui, shell);
@@ -234,6 +260,15 @@ impl NotImported {
             }
             ui.label(RichText::new(&p.reason).color(P.danger));
             tags(ui, &p);
+            ui.add_space(12.0);
+            // For either way in (added to a track, or imported).
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut self.is_og, "It's an original file (og file)").on_hover_text("The file as the artist made and named it, not a rip or a download. On to start with for WAV files");
+                if self.is_og {
+                    ui.label(RichText::new("named").color(P.muted));
+                    ui.add(egui::TextEdit::singleline(&mut self.og_name).desired_width(360.0));
+                }
+            });
             ui.add_space(12.0);
 
             if shell.account.can("replace_file") {
@@ -310,7 +345,7 @@ impl NotImported {
                     .clicked();
                 if current || older {
                     let add_as = if current { "current_file" } else { "previous_file" };
-                    let body = serde_json::json!({ "track_id": t.id, "add_as": add_as, "reason": self.reason.trim() });
+                    let body = serde_json::json!({ "track_id": t.id, "add_as": add_as, "reason": self.reason.trim(), "original_filename": self.og() });
                     let text = if current { format!("“{}” plays this file now (its old file is kept as an older one).", t.title) } else { format!("Kept as an older file of “{}”.", t.title) };
                     self.send(shell, p.id, format!("/api/ingest-problems/{}/add-to-track", p.id), body, Some(t.id), text, true);
                 }
@@ -337,9 +372,14 @@ impl NotImported {
             let title = (Some(title) != p.tag_title.as_deref()).then(|| title.to_string());
             let artists = self.artists.trim();
             let artists: Vec<String> = if artists != p.tag_artists.join("; ") { vec![artists.to_string()] } else { Vec::new() };
-            let body = serde_json::json!({ "title": title, "artists": artists });
+            let body = serde_json::json!({ "title": title, "artists": artists, "original_filename": self.og() });
             self.send(shell, p.id, format!("/api/ingest-problems/{}/import", p.id), body, None, "Imported.".into(), true);
         }
+    }
+
+    /// The original filename to send: the name, if it's said to be an original file.
+    fn og(&self) -> Option<String> {
+        Some(self.og_name.trim().to_string()).filter(|n| self.is_og && !n.is_empty())
     }
 
     /// Sends an action on `problem`; `track`: the track it goes to (known, or from the
@@ -395,6 +435,33 @@ fn tags(ui: &mut egui::Ui, p: &Problem) {
     });
 }
 
+/// A WAV file (by its name): nearly always an artist's own file, not a rip.
+fn is_wav(filename: &str) -> bool {
+    std::path::Path::new(filename).extension().and_then(|e| e.to_str()).is_some_and(|e| matches!(e.to_lowercase().as_str(), "wav" | "wave"))
+}
+
+/// A filter's words, lowercase.
+fn words(filter: &str) -> Vec<String> {
+    filter.to_lowercase().split_whitespace().map(str::to_string).collect()
+}
+
+/// Whether every word is in the file's name, path, reason or tags' title and artists.
+fn matches(p: &Problem, words: &[String]) -> bool {
+    if words.is_empty() {
+        return true;
+    }
+    let text = format!(
+        "{}\n{}\n{}\n{}\n{}",
+        p.uploaded_filename,
+        p.path.as_deref().unwrap_or(""),
+        p.reason,
+        p.tag_title.as_deref().unwrap_or(""),
+        p.tag_artists.join("\n")
+    )
+    .to_lowercase();
+    words.iter().all(|w| text.contains(w.as_str()))
+}
+
 /// A file's name as something to search for: no extension, underscores as spaces.
 fn searchable_name(filename: &str) -> String {
     let stem = std::path::Path::new(filename).file_stem().and_then(|s| s.to_str()).unwrap_or(filename);
@@ -417,6 +484,30 @@ mod tests {
         assert_eq!(searchable_name("STFU (Prod5.10).mp3"), "STFU (Prod5.10)");
         assert_eq!(searchable_name("no extension"), "no extension");
         assert_eq!(folder("/music/some artist/song.flac"), "some artist");
+        assert!(is_wav("MASTER.WAV") && is_wav("a.wav") && !is_wav("a.flac") && !is_wav("wav"));
+    }
+
+    #[test]
+    fn the_filter_looks_in_the_name_path_reason_and_tags() {
+        let p = Problem {
+            id: Uuid::nil(),
+            kind: "refused".into(),
+            size_bytes: 1,
+            uploaded_filename: "bounce v3.wav".into(),
+            path: Some("/music/Verdigrix/unreleased/bounce v3.wav".into()),
+            reason: "missing required tags: title, artist".into(),
+            embedded_tags: None,
+            tag_title: None,
+            tag_artists: vec!["Mira Vale".into()],
+            attempts: 1,
+            created_by: None,
+            last_attempt_at: String::new(),
+        };
+        assert!(matches(&p, &words("verdigrix unreleased")));
+        assert!(matches(&p, &words("BOUNCE mira")));
+        assert!(matches(&p, &words("missing")));
+        assert!(!matches(&p, &words("verdigrix demo")));
+        assert!(matches(&p, &words("")));
     }
 
     #[test]

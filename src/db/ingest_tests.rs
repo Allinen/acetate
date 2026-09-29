@@ -456,6 +456,8 @@ async fn listed_files_can_be_added_to_a_track(
         origin: netease(Kind::Track, "song_id", 1),
         reason: "untagged copy".into(),
         volume: None,
+        // Said to be an original file (its tags don't say).
+        original_filename: Some("no-artist.opus".into()),
     };
 
     // As a previous file: the track keeps playing its file.
@@ -467,6 +469,8 @@ async fn listed_files_can_be_added_to_a_track(
     assert!(v.file_history.as_ref().unwrap().iter().any(|h| h.old_file_id == added.new_file_id));
     drop(tx);
     assert!(problems_seen_by(&lib.app, lib.alice).await?.is_empty(), "resolved");
+    let og: Option<String> = sqlx::query_scalar("SELECT original_filename FROM files WHERE id = $1").bind(added.new_file_id).fetch_one(&lib.owner).await?;
+    assert_eq!(og.as_deref(), Some("no-artist.opus"));
 
     // The same file can't be added twice.
     let err = ingest::add_file_to_track(&lib.app, &file, lib.o, ingest::AddAs::CurrentFile, &replace).await.unwrap_err();
