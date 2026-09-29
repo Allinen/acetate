@@ -36,6 +36,10 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell, player: &PlayerView, spectrum:
             .as_shape(cover_rect, 18),
     );
     shell.cover_crossfade(ui, "now-playing", item.cover, item.track_id, cover_rect, 16, 1.0);
+    let original = super::original_filename(shell, item.track_id);
+    if original.is_some() {
+        widgets::og_edge(ui.painter(), cover_rect, 16, 2.0);
+    }
     shell.original_on_click(ui, item.cover, cover_rect);
 
     let left = cover_rect.right() + 40.0;
@@ -60,6 +64,11 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell, player: &PlayerView, spectrum:
     let marks_rect = Rect::from_min_size(Pos2::new(left, middle + 44.0), Vec2::new(width, 30.0));
     let mut marks_ui = ui.new_child(egui::UiBuilder::new().max_rect(marks_rect).layout(egui::Layout::left_to_right(egui::Align::Center)));
     super::album::marks(&mut marks_ui, shell, Kind::Track, item.track_id);
+    // An original file: said quietly, next to the marks, with its name.
+    if let Some(name) = &original {
+        marks_ui.add_space(12.0);
+        marks_ui.add(egui::Label::new(egui::RichText::new(format!("Original file · {name}")).font(font(12.5, medium())).color(P.accent.gamma_multiply(0.8))).truncate());
+    }
     let next = player.next();
     if let Some(next) = next {
         let text = format!("Next  ·  {} — {}", next.title, next.artist);

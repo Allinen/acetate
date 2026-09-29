@@ -23,6 +23,9 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell, player: &PlayerView) {
         shell.act(Action::Go(Page::NowPlaying));
     }
     shell.cover_crossfade(ui, "player-bar", current.as_ref().and_then(|c| c.cover), current.as_ref().map(|c| c.track_id).unwrap_or_default(), cover_rect, 8, 0.0);
+    if current.as_ref().is_some_and(|c| super::original_filename(shell, c.track_id).is_some()) {
+        widgets::og_edge(ui.painter(), cover_rect, 8, 1.5);
+    }
     if let Some(item) = &current {
         let text_left = cover_rect.right() + 14.0;
         let width = left.right() - text_left - 44.0;

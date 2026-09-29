@@ -142,6 +142,12 @@ pub fn artist_links(
     }
 }
 
+/// The original filename of a track's file, if it's an original file (an og file).
+pub fn original_filename(shell: &Shell, track: uuid::Uuid) -> Option<String> {
+    let catalog = shell.catalog.value.as_ref()?;
+    catalog.track_index(track).and_then(|i| catalog.tracks[i as usize].original_filename.clone())
+}
+
 /// What plays, as links: the title to its page, the artists to theirs (from the
 /// catalog's credits; plain text for a track the catalog doesn't have).
 #[allow(clippy::too_many_arguments)]
@@ -162,7 +168,12 @@ pub fn playing_links(
     let mut title_ui = ui.new_child(egui::UiBuilder::new().max_rect(title_rect).layout(layout));
     match t {
         Some(t) => {
-            if super::widgets::link(&mut title_ui, title, title_font, P.text) {
+            // An original file's track: its title as in track lists (amber, a wave on hover).
+            let clicked = match &t.original_filename {
+                Some(name) => super::widgets::og_link(&mut title_ui, title, title_font, name),
+                None => super::widgets::link(&mut title_ui, title, title_font, P.text),
+            };
+            if clicked {
                 shell.act(super::Action::Go(Page::Track(t.id)));
             }
         }

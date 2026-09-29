@@ -35,7 +35,8 @@ use crate::playback::PlayerView;
 use crate::ui::theme::{font, medium, semibold, PALETTE as P};
 use crate::ui::{playing_track, thousands, widgets, Action, Shell};
 
-pub const ROW: f32 = 36.0;
+/// A row's height (rows touch: the space between them is inside it, see `show`).
+pub const ROW: f32 = 42.0;
 
 /// A column a list can have.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -539,7 +540,17 @@ impl TrackTable {
         // On an album: numbers as disc-track when any track is on another disc.
         let numbers = options.album.map(|(album, _)| AlbumNumbers::new(catalog, rows, album));
         // Its own id (by the kind of list): tables side by side don't share a scroll.
-        let mut builder = TableBuilder::new(ui).id_salt(options.key).sense(Sense::click()).animate_scrolling(false).vscroll(options.scroll);
+        // No gap between rows (it's in `ROW`): the row's background is painted half a gap
+        // past each side, and the first row's top half would be cut off by the table's top.
+        let spacing = ui.spacing().item_spacing.y;
+        ui.spacing_mut().item_spacing.y = 0.0;
+        // Each cell's contents centred on the row's height.
+        let mut builder = TableBuilder::new(ui)
+            .id_salt(options.key)
+            .sense(Sense::click())
+            .animate_scrolling(false)
+            .vscroll(options.scroll)
+            .cell_layout(egui::Layout::left_to_right(egui::Align::Center));
         if !options.scroll {
             // All of it: its height isn't capped (the page around it scrolls).
             builder = builder.max_scroll_height(f32::INFINITY);
@@ -559,7 +570,8 @@ impl TrackTable {
         let mut shown_columns_changed: Option<Vec<Column>> = None;
         let (mut clicked, mut double, mut boxed) = (None, None, None);
         builder
-            .header(26.0, |mut header| {
+            // 2 px more than the labels need: a little air above the first row.
+            .header(28.0, |mut header| {
                 if marking {
                     header.col(|_| {});
                 }
@@ -658,7 +670,7 @@ impl TrackTable {
                                 // An original file's track: an amber edge (inside the cover,
                                 // so nothing clips it).
                                 if t.original_filename.is_some() {
-                                    ui.painter().rect_stroke(rect, 4, egui::Stroke::new(1.5, P.accent), egui::StrokeKind::Inside);
+                                    widgets::og_edge(ui.painter(), rect, 4, 1.5);
                                 }
                             }
                             Column::Title => {
@@ -722,6 +734,7 @@ impl TrackTable {
                     }
                 });
             });
+        ui.spacing_mut().item_spacing.y = spacing;
 
         if let Some(next) = shown_columns_changed {
             shell.settings.table_columns.insert(options.key.to_string(), next.iter().map(|c| c.key().to_string()).collect());

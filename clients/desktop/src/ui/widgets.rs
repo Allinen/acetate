@@ -287,6 +287,12 @@ pub fn og_link(ui: &mut egui::Ui, text: &str, font: egui::FontId, original_filen
     response.clicked()
 }
 
+/// The amber edge on an og file's cover: inside the cover (so nothing clips it), `width`
+/// thick, following its corners.
+pub fn og_edge(painter: &egui::Painter, rect: Rect, radius: u8, width: f32) {
+    painter.rect_stroke(rect, radius, Stroke::new(width, P.accent), egui::StrokeKind::Inside);
+}
+
 /// An og file's title: all accent, or (`wave`: the time) a letter at a time, its colour
 /// shifting between a lighter and a deeper tint as a wave passes.
 pub(crate) fn og_text(text: &str, font: egui::FontId, wave: Option<f64>) -> egui::text::LayoutJob {
