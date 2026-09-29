@@ -32,8 +32,9 @@ pub struct ArtistPage {
 impl ArtistPage {
     pub fn show(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: &Arc<Catalog>, id: Uuid, player: &PlayerView) {
         let ctx = ui.ctx().clone();
-        // Ctrl+M: merge into another artist (again: close it). In a text field too.
-        if !shell.palette_open && ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::M)) {
+        // Ctrl+M: merge into another artist (again: close it). In a text field too. With
+        // tracks marked, it merges those instead (the list takes it).
+        if !shell.palette_open && !self.list.takes_ctrl_m(shell) && ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::M)) {
             if !shell.edit_mode {
                 shell.playlists.notice = Some(("Merging is in edit mode: e, then Ctrl+M.".into(), std::time::Instant::now()));
             } else if self.merge.is_some() {

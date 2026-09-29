@@ -73,6 +73,7 @@ pub const GROUPS: &[(&str, &[Binding])] = &[
             ("Ctrl+A", "mark everything shown"),
             ("Esc", "clear the marks"),
             ("Ctrl+E", "change the marked tracks (a popup; none marked: the selected one)"),
+            ("Ctrl+M", "two marked: merge them (a popup, the merge keys below)"),
             ("status:demo date:2020 disc:2 …", "in the popup: set it at once (several too), Enter"),
             ("a word, then Enter", "in the popup: find what to change (spaces don't matter)"),
             ("/", "in the popup: back to “What to change”"),
@@ -110,7 +111,7 @@ pub const GROUPS: &[(&str, &[Binding])] = &[
         ],
     ),
     (
-        "Merging (Ctrl+M on Review)",
+        "Merging (Ctrl+M on Review, or with two tracks marked)",
         &[
             ("↑ ↓  or  j k", "a row (rows that are the same are passed over)"),
             ("← →  or  h l", "take the left or the right one"),

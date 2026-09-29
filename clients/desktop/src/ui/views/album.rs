@@ -44,8 +44,9 @@ pub struct AlbumPage {
 
 impl AlbumPage {
     pub fn show(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: &Arc<Catalog>, id: Uuid, player: &PlayerView) {
-        // Ctrl+M: merge into another album (again: close it). In a text field too.
-        if !shell.palette_open && ui.ctx().input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::M)) {
+        // Ctrl+M: merge into another album (again: close it). In a text field too. With
+        // tracks marked, it merges those instead (the list takes it).
+        if !shell.palette_open && !self.list.takes_ctrl_m(shell) && ui.ctx().input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::M)) {
             if !shell.edit_mode {
                 shell.playlists.notice = Some(("Merging is in edit mode: e, then Ctrl+M.".into(), std::time::Instant::now()));
             } else if self.merge.is_some() {

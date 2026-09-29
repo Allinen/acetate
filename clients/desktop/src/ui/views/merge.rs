@@ -90,6 +90,8 @@ pub struct MergeView {
     /// Both files are being downloaded ahead (for switching between them at once); let
     /// go when the view goes.
     kept_by: Option<(Arc<crate::playback::Controller>, tokio::runtime::Handle)>,
+    /// Shown in a popup, which has its own title (so the view's is left out).
+    in_popup: bool,
 }
 
 impl Drop for MergeView {
@@ -116,7 +118,14 @@ impl MergeView {
             share_answer: Arc::default(),
             file_suggested: false,
             kept_by: None,
+            in_popup: false,
         }
+    }
+
+    /// For showing in a popup (`ui::modal`): the popup gives the title.
+    pub fn in_popup(mut self) -> MergeView {
+        self.in_popup = true;
+        self
     }
 
     fn swap(&mut self) {
@@ -211,7 +220,9 @@ impl MergeView {
 
         // ---- The two sides ----
         ui.horizontal(|ui| {
-            ui.label(RichText::new("Merge").font(font(20.0, bold())));
+            if !self.in_popup {
+                ui.label(RichText::new("Merge").font(font(20.0, bold())));
+            }
             ui.label(RichText::new("left is kept; right is merged into it").color(P.muted));
             if ui.small_button("Swap sides  (s)").clicked() {
                 self.swap();

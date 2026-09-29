@@ -119,6 +119,9 @@ pub struct FileChange {
     pub old_codec: Option<String>,
     pub old_bitrate: Option<i32>,
     pub old_size_bytes: i64,
+    /// Where the earlier file came from (a snapshot of one of the track's sources).
+    #[serde(default)]
+    pub old_origin: Option<Origin>,
     pub old_trashed_at: Option<String>,
     pub old_purged_at: Option<String>,
 }

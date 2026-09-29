@@ -612,6 +612,11 @@ fn file(ui: &mut egui::Ui, shell: &mut Shell, d: &TrackDetail) {
                 h.old_size_bytes as f64 / 1_000_000.0,
                 day(&h.replaced_at)
             ));
+            if let Some(origin) = &h.old_origin {
+                let id = origin.external_id.as_deref().map(|i| format!(" · {i}")).unwrap_or_default();
+                ui.label(RichText::new(format!("from {}{id}", origin.platform)).color(P.muted).small());
+                links_in(ui, &origin.data);
+            }
             if !h.reason.is_empty() {
                 ui.label(RichText::new(&h.reason).color(P.faint).small());
             }

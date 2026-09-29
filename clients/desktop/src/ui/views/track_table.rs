@@ -18,7 +18,8 @@
 //! which takes the state of the row it starts from (so ranges unmark too); Ctrl+A marks
 //! everything shown; Esc clears. Marks are kept by track, so sorting and filtering don't
 //! lose them (nor leaving edit mode: they're there again when it's back). Ctrl+E (or the
-//! button) opens the change for all of them, in a popup (see `edit::bulk`).
+//! button) opens the change for all of them, in a popup (see `edit::bulk`). Ctrl+M with
+//! two marked compares them side by side, to merge (see `merge`), in a popup too.
 
 use std::collections::HashSet;
 use std::time::Duration;
@@ -183,6 +184,8 @@ pub struct TrackTable {
     /// The popup is for this one track (the selected one, nothing marked: a quick fix,
     /// in listen mode too).
     quick: Option<Uuid>,
+    /// The two marked tracks side by side, to merge (Ctrl+M, edit mode), in a popup.
+    merge: Option<super::merge::MergeView>,
 }
 
 /// In the rows' own order.
@@ -208,7 +211,14 @@ impl TrackTable {
             bulk: Default::default(),
             bulk_open: false,
             quick: None,
+            merge: None,
         }
+    }
+
+    /// Ctrl+M is the table's (merging the marked tracks) rather than the page's (merging
+    /// the album or artist itself): in edit mode, with tracks marked or the popup open.
+    pub fn takes_ctrl_m(&self, shell: &Shell) -> bool {
+        shell.edit_mode && (!self.marked.is_empty() || self.merge.is_some())
     }
 
     /// How many rows are shown (after the filter).
@@ -309,6 +319,33 @@ impl TrackTable {
         if !marking && self.quick.is_none() {
             self.bulk_open = false;
         }
+        if !marking {
+            self.merge = None;
+        }
+        // Ctrl+M: the two marked tracks side by side, to merge (again: close). In a text
+        // field too, as on the track page.
+        if marking
+            && !self.bulk_open
+            && !shell.palette_open
+            && self.takes_ctrl_m(shell)
+            && ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::M))
+        {
+            if self.merge.is_some() {
+                self.merge = None;
+            } else {
+                match self.marked(catalog, rows)[..] {
+                    // The first one shown is kept (s swaps).
+                    [left, right] => self.merge = Some(super::merge::MergeView::new(left, right).in_popup()),
+                    ref marked => {
+                        let text = format!("Merging is for two marked tracks ({} marked).", thousands(marked.len()));
+                        shell.playlists.notice = Some((text, std::time::Instant::now()));
+                    }
+                }
+            }
+        }
+        if self.merge.is_some() {
+            self.merge_popup(&ctx, shell, player);
+        }
         // The change for all of them, in a popup (drawn first: it takes Esc and Ctrl+Enter
         // before the table sees them).
         if self.bulk_open {
@@ -337,9 +374,10 @@ impl TrackTable {
             }
         }
         let typing = ctx.egui_wants_keyboard_input();
+        let popup = self.bulk_open || self.merge.is_some();
         // Ctrl+E with nothing marked (or outside edit mode): the popup for the selected
         // track alone, a quick fix.
-        if !self.bulk_open && !typing && !shell.palette_open && (!marking || self.marked.is_empty()) && shell.account.can("edit_metadata") {
+        if !popup && !typing && !shell.palette_open && (!marking || self.marked.is_empty()) && shell.account.can("edit_metadata") {
             let id = self.id_at(catalog, rows, self.selected);
             if id.is_some() && ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::E)) {
                 self.quick = id;
@@ -347,7 +385,7 @@ impl TrackTable {
                 self.bulk.opened();
             }
         }
-        if marking && !self.bulk_open && !typing && !shell.palette_open {
+        if marking && !popup && !typing && !shell.palette_open {
             let (toggle, all, clear, open) = ctx.input_mut(|i| {
                 (
                     i.key_pressed(egui::Key::X) && i.modifiers.is_none(),
@@ -384,6 +422,10 @@ impl TrackTable {
                     self.bulk_open = true;
                     self.bulk.opened();
                 }
+                if self.marked.len() == 2 && ui.button("Merge the two…  (Ctrl+M)").clicked() {
+                    let marked = self.marked(catalog, rows);
+                    self.merge = Some(super::merge::MergeView::new(marked[0], marked[1]).in_popup());
+                }
                 ui.label(RichText::new("the box or x (un)marks · Shift+↑/↓ or Shift+click a range · Ctrl+A all shown · Esc clear").color(P.faint).small());
             });
             ui.add_space(4.0);
@@ -393,7 +435,7 @@ impl TrackTable {
         let visible = ((ui.available_height() / ROW) as usize).max(1);
         let before = self.selected;
         // (The popup takes the keys while it's open.)
-        let len = if self.bulk_open { 0 } else { self.order.len() };
+        let len = if popup { 0 } else { self.order.len() };
         let moved = widgets::move_selection(&ctx, &mut self.selected, len, 1, visible);
         if moved.moved {
             self.scroll_to = Some(self.selected);
@@ -639,6 +681,41 @@ impl TrackTable {
         Shown {
             selected: self.order.get(self.selected).copied(),
             in_own_order: self.sort == TrackSort::Natural && !self.descending && self.filter.trim().is_empty(),
+        }
+    }
+
+    /// The merge popup, while it's open; closes it when the merge view is done. A merged
+    /// track leaves the marks (it's gone), and the lists catch up.
+    fn merge_popup(&mut self, ctx: &egui::Context, shell: &mut Shell, player: &PlayerView) {
+        use super::merge::Outcome;
+        let Some(catalog) = shell.catalog.value.clone() else { return };
+        let Some(view) = self.merge.as_mut() else { return };
+        shell.modal_open = true;
+        let pair = (view.left, view.right);
+        let mut outcome = None;
+        let closed = crate::ui::modal::show(ctx, "merge-tracks", "Merge two tracks", Vec2::new(1180.0, 760.0), |ui| {
+            egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| outcome = view.show(ui, shell, &catalog, player));
+        });
+        match outcome {
+            Some(Outcome::Merged { kept, gone }) => {
+                self.marked.clear();
+                self.anchor = None;
+                shell.track_details.refresh(kept);
+                shell.track_forms.remove(&gone);
+                shell.flags.refresh(&shell.api, shell.runtime.handle(), &shell.ctx);
+                shell.act(Action::RefreshLibrary);
+                shell.playlists.notice = Some(("Merged.".into(), std::time::Instant::now()));
+            }
+            Some(Outcome::Shared) => {
+                shell.track_details.refresh(pair.0);
+                shell.track_details.refresh(pair.1);
+                shell.flags.refresh(&shell.api, shell.runtime.handle(), &shell.ctx);
+                shell.act(Action::RefreshLibrary);
+            }
+            Some(Outcome::NotSame | Outcome::Closed) | None => {}
+        }
+        if outcome.is_some() || closed {
+            self.merge = None;
         }
     }
 
