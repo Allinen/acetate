@@ -1,9 +1,11 @@
 //! Serving stored blobs: audio files (with range requests, for seeking) and cover images.
 //!
-//! Files are served exactly as stored: no transcoding, no tag injection.
+//! Files are served exactly as stored: no transcoding, no tag injection. Cover images may
+//! also be asked for smaller (`?size=small|standard`: copies, see `storage::images`); the
+//! original is never changed.
 
 use axum::body::Body;
-use axum::extract::{Path, Request, State};
+use axum::extract::{Path, Query, Request, State};
 use axum::response::{IntoResponse, Response};
 use tower::ServiceExt;
 use tower_http::services::ServeFile;
@@ -100,24 +102,49 @@ pub async fn cover(
     serve_blob(state.store.path_for(&cover.blob_sha256).await, &mime, request).await
 }
 
+#[derive(Debug, serde::Deserialize)]
+pub struct ImageQuery {
+    /// `small` (200 px on the longest side) or `standard` (640 px). Without it: the
+    /// original.
+    size: Option<String>,
+}
+
 /// `GET /api/images/{hash}`: a cover image by its content: its SHA-256, or the start of
 /// it (16+ hex digits, as the catalog's `cover_key`). Visible if a cover the user can see
 /// uses it. The same image under many covers is one URL, and it never changes: clients
-/// may keep it forever.
+/// may keep it forever. `?size=small|standard`: a smaller copy (a JPEG), or the original
+/// if it's that small already.
 pub async fn image(
     State(state): State<AppState>,
     user: CurrentUser,
     Path(hash): Path<String>,
+    Query(query): Query<ImageQuery>,
     request: Request,
 ) -> Result<Response, AppError> {
+    use crate::storage::images::{Scaled, Size};
+
+    let size = match query.size.as_deref() {
+        None => None,
+        Some(text) => Some(Size::parse(text).ok_or_else(|| AppError::BadRequest("size is `small` or `standard` (or left out, for the original)".into()))?),
+    };
     let mut tx = state.db(&user).await?;
     let image = crate::db::covers::image_by_hash(&mut tx, &hash).await?;
     drop(tx);
     let Some(image) = image else {
         return Err(AppError::NotFound);
     };
-    let mime = image.mime.and_then(|m| m.parse().ok()).unwrap_or(mime::APPLICATION_OCTET_STREAM);
-    let mut response = serve_blob(state.store.path_for(&image.blob_sha256).await, &mime, request).await?;
+    let original = state.store.path_for(&image.blob_sha256).await;
+    let scaled = match size {
+        Some(size) => state.images.sized(&original, &image.blob_sha256, size).await?,
+        None => Scaled::Original,
+    };
+    let mut response = match scaled {
+        Scaled::Resized(path) => serve_blob(path, &mime::IMAGE_JPEG, request).await?,
+        Scaled::Original => {
+            let mime = image.mime.and_then(|m| m.parse().ok()).unwrap_or(mime::APPLICATION_OCTET_STREAM);
+            serve_blob(original, &mime, request).await?
+        }
+    };
     // `private`: one user's view (shared caches mustn't keep it); `immutable`: the same
     // hash is always the same bytes.
     response.headers_mut().insert(

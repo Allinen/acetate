@@ -217,10 +217,11 @@ impl AlbumForm {
             }
         }
         let ctx = ui.ctx().clone();
-        if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Enter)) {
+        // (A popup over the page, a track list's, takes Ctrl+Enter and Esc itself.)
+        if !shell.modal_was_open && ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Enter)) {
             self.save(shell);
         }
-        if !shell.palette_open && !ctx.egui_wants_keyboard_input() && ctx.input(|i| i.key_pressed(Key::Escape)) && self.dirty() {
+        if !shell.palette_open && !shell.modal_was_open && !ctx.egui_wants_keyboard_input() && ctx.input(|i| i.key_pressed(Key::Escape)) && self.dirty() {
             if self.confirm_discard {
                 self.discard();
             } else {

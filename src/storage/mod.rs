@@ -10,6 +10,8 @@
 //! 2. `BlobStore::commit(pending, volume)` moves it into place. Dropping a `PendingBlob`
 //!    instead deletes the temp file (used when the file turns out to be a duplicate).
 
+pub mod images;
+
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;

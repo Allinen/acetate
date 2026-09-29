@@ -36,6 +36,7 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell, player: &PlayerView, spectrum:
             .as_shape(cover_rect, 18),
     );
     shell.cover_crossfade(ui, "now-playing", item.cover, item.track_id, cover_rect, 16, 1.0);
+    shell.original_on_click(ui, item.cover, cover_rect);
 
     let left = cover_rect.right() + 40.0;
     let width = area.right() - left;

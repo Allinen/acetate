@@ -201,10 +201,33 @@ pub struct Variant {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Lyrics {
+    pub id: Uuid,
     pub is_official: bool,
     pub is_synced: bool,
     pub language: Option<String>,
+    /// Where it came from: "embedded" (in the file), "manual"…
+    #[serde(default)]
+    pub source: String,
     pub body: String,
+    /// Its latest revision: the base for editing it.
+    pub revision_id: Uuid,
+    /// Newest first (only for users who may see history).
+    #[serde(default)]
+    pub revisions: Option<Vec<LyricsRevision>>,
+}
+
+/// A revision of a lyrics entry: its data (`body`, `is_official`, `language`) then.
+#[derive(Debug, Clone, Deserialize)]
+pub struct LyricsRevision {
+    pub id: Uuid,
+    pub created_at: String,
+    pub author: Option<String>,
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub reason: String,
+    #[serde(default)]
+    pub data: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Deserialize)]

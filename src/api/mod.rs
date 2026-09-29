@@ -65,6 +65,8 @@ pub struct AppState {
     /// Rate limits for logins and share links. `Arc`: shared by all clones of the state,
     /// i.e. all requests, instead of each clone getting its own copy.
     pub rate_limits: Arc<RateLimits>,
+    /// Smaller copies of cover images (`GET /api/images/{hash}?size=`).
+    pub images: Arc<crate::storage::images::ImageCache>,
 }
 
 impl AppState {

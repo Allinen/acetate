@@ -98,6 +98,11 @@ impl PlayerView {
     }
 }
 
+/// The track playing now, as the queue has it.
+fn q_current(state: &State) -> Option<Uuid> {
+    state.queue.current.as_ref().map(|c| c.item.track_id)
+}
+
 /// The queue, and what the controller keeps about handing its tracks to the audio thread.
 #[derive(Default)]
 struct State {
@@ -504,6 +509,7 @@ impl Controller {
             // near it (or it's taking too long to tell).
             let (position, at) = {
                 let mut pending = self.pending_seek.lock().unwrap();
+                let shown = self.view.lock().unwrap().clone();
                 match *pending {
                     Some((target, asked)) => {
                         let expected = if status.paused { target } else { target + asked.elapsed() };
@@ -515,7 +521,21 @@ impl Controller {
                             (target, asked)
                         }
                     }
-                    None => (status.position, Instant::now()),
+                    // Never a step back while it plays on: the position played is told in
+                    // chunks, so a report can be a little behind what the UI already
+                    // counted on to (a lyrics line lit would go back to the one before it
+                    // for a moment). A real jump back (a seek, another track) still shows.
+                    None => {
+                        let counted = shown.position_now();
+                        let same_track = shown.current.as_ref().map(|c| c.track_id) == q_current(&state);
+                        let behind = counted.saturating_sub(status.position);
+                        let playing_on = status.playing && !status.paused && shown.playing && !shown.paused;
+                        if same_track && playing_on && status.position < counted && behind < Duration::from_millis(250) {
+                            (counted, Instant::now())
+                        } else {
+                            (status.position, Instant::now())
+                        }
+                    }
                 }
             };
             // Read into a local first: a lock taken inside the struct below would be held

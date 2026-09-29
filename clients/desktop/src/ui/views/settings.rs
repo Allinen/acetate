@@ -14,20 +14,24 @@ pub struct SettingsPage {
     /// The sound outputs there are, listed in the background when the page opens (it can
     /// take a moment).
     outputs: Arc<Mutex<Option<Vec<String>>>>,
-    /// The size of the kept covers, measured in the background.
-    covers_size: Arc<Mutex<Option<(usize, u64)>>>,
+    /// The size of the kept covers (small, standard, and an earlier version's no longer
+    /// used), measured in the background: (files, bytes) each.
+    covers_size: Arc<Mutex<Option<[(usize, u64); 3]>>>,
 }
 
 impl SettingsPage {
     pub fn opened(&mut self, shell: &Shell) {
         let outputs = self.outputs.clone();
         shell.runtime.spawn_blocking(move || *outputs.lock().unwrap() = Some(crate::playback::engine::outputs()));
-        let (size, dir) = (self.covers_size.clone(), shell.cache_dir.join("covers"));
+        let (size, dir) = (self.covers_size.clone(), shell.cache_dir.clone());
         shell.runtime.spawn_blocking(move || {
-            let files: Vec<u64> = std::fs::read_dir(dir)
-                .map(|entries| entries.filter_map(|e| e.ok()?.metadata().ok()).map(|m| m.len()).collect())
-                .unwrap_or_default();
-            *size.lock().unwrap() = Some((files.len(), files.iter().sum()));
+            let measure = |name: &str| {
+                let files: Vec<u64> = std::fs::read_dir(dir.join(name))
+                    .map(|entries| entries.filter_map(|e| e.ok()?.metadata().ok()).filter(|m| m.is_file()).map(|m| m.len()).collect())
+                    .unwrap_or_default();
+                (files.len(), files.iter().sum())
+            };
+            *size.lock().unwrap() = Some([measure("covers-small"), measure("covers-standard"), measure("covers")]);
         });
     }
 
@@ -112,11 +116,32 @@ impl SettingsPage {
                 ui.label(shell.library_status());
                 ui.end_row();
                 ui.label(RichText::new("Covers kept").color(P.muted));
-                match *self.covers_size.lock().unwrap() {
-                    Some((count, bytes)) => ui.label(format!("{} images · {:.1} MB", thousands(count), bytes as f64 / 1_000_000.0)),
+                let measured = *self.covers_size.lock().unwrap();
+                let mb = |bytes: u64| format!("{:.1} MB", bytes as f64 / 1_000_000.0);
+                match measured {
+                    Some([small, standard, _]) => ui.label(format!(
+                        "{} small ({}) · {} standard ({})",
+                        thousands(small.0),
+                        mb(small.1),
+                        thousands(standard.0),
+                        mb(standard.1)
+                    )),
                     None => ui.label(RichText::new("Measuring…").color(P.faint)),
                 };
                 ui.end_row();
+                // Copies an earlier version made (one size, scaled here), no longer used.
+                if let Some([_, _, (count, bytes)]) = measured
+                    && count > 0
+                {
+                    ui.label(RichText::new("No longer used").color(P.muted));
+                    ui.label(format!(
+                        "{} covers from an earlier version ({}), in {}: safe to delete",
+                        thousands(count),
+                        mb(bytes),
+                        shell.cache_dir.join("covers").display()
+                    ));
+                    ui.end_row();
+                }
                 ui.label(RichText::new("Where").color(P.muted));
                 ui.vertical(|ui| {
                     ui.add(egui::Label::new(RichText::new(shell.data_dir.display().to_string()).monospace().small()).selectable(true));

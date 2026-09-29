@@ -20,7 +20,7 @@ pub struct MediaKeys {
     /// What the system was last told: (track, playing, paused), so it's only told changes.
     told: Mutex<Option<(Option<Uuid>, bool, bool)>>,
     told_volume: Mutex<Option<f32>>,
-    /// Where covers are kept on disk (the system shows them from there).
+    /// The cache folder, where covers are kept on disk (the system shows them from there).
     covers: PathBuf,
 }
 
@@ -98,8 +98,13 @@ impl MediaKeys {
         if track_changed {
             let cover = current
                 .and_then(|c| c.cover)
-                .map(|c| crate::ui::covers::path(&self.covers, c.key))
-                .filter(|path| path.exists())
+                .and_then(|c| {
+                    // The bigger copy if it's there (it is once "now playing" was shown).
+                    [crate::ui::covers::CoverSize::Standard, crate::ui::covers::CoverSize::Small]
+                        .into_iter()
+                        .map(|size| crate::ui::covers::path(&self.covers, c.key, size))
+                        .find(|path| path.exists())
+                })
                 .map(|path| format!("file://{}", path.display()));
             let _ = controls.set_metadata(MediaMetadata {
                 title: current.map(|c| c.title.as_str()),

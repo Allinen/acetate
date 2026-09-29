@@ -11,6 +11,8 @@ pub mod artist_form;
 pub mod bulk;
 pub mod credits;
 pub mod inline_search;
+pub mod lyrics;
+pub mod lyrics_sync;
 pub mod sources;
 pub mod track_form;
 pub mod versions;

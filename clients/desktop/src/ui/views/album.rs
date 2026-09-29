@@ -65,7 +65,7 @@ impl AlbumPage {
         // Header: a big cover, and what the album is.
         let header = ui.allocate_exact_size(Vec2::new(ui.available_width(), 232.0), Sense::hover()).0;
         let cover_rect = Rect::from_min_size(header.min, Vec2::splat(220.0));
-        shell.cover(ui, album.cover(), album.id, cover_rect, 12, 0.6);
+        shell.cover_with_original(ui, album.cover(), album.id, cover_rect, 12, 0.6);
         let left = cover_rect.right() + 28.0;
         let painter = ui.painter();
         painter.text(Pos2::new(left, cover_rect.top() + 70.0), Align2::LEFT_BOTTOM, album.kind.to_uppercase(), font(11.0, semibold()), P.accent);
@@ -159,13 +159,18 @@ impl AlbumPage {
                     ui.label(RichText::new(format!("Covers ({})", d.covers.len())).font(font(14.0, semibold())));
                     ui.horizontal_wrapped(|ui| {
                         for c in &d.covers {
-                            let (rect, response) = ui.allocate_exact_size(Vec2::splat(110.0), Sense::hover());
+                            let (rect, response) = ui.allocate_exact_size(Vec2::splat(110.0), Sense::click());
                             shell.cover(ui, c.cover(), c.id, rect, 6, 0.1);
                             let size = match (c.width, c.height) {
                                 (Some(w), Some(h)) => format!("{w}×{h} · {}", c.source),
                                 _ => c.source.clone(),
                             };
-                            response.on_hover_text(size);
+                            let response = response.on_hover_cursor(egui::CursorIcon::ZoomIn).on_hover_text(format!("{size} · click: the original"));
+                            if response.clicked()
+                                && let Some(cover) = c.cover()
+                            {
+                                shell.open_original(ui.ctx(), cover);
+                            }
                         }
                     });
                     ui.add_space(8.0);

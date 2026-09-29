@@ -143,12 +143,17 @@ pub struct Shell {
     pub page_takes_space: bool,
     /// A popup is open (see `modal`): the app's keys wait. Set by the page each frame.
     pub modal_open: bool,
+    /// A popup was open last frame. A page's forms are drawn before the popup (a track
+    /// list's, below them), so they leave Ctrl+Enter and Esc to it by this.
+    pub modal_was_open: bool,
     /// The palette is open (it takes Esc, before the page's form could).
     pub palette_open: bool,
     pub runtime: Runtime,
     pub api: Api,
     pub controller: Arc<Controller>,
     pub covers: Covers,
+    /// A cover's original, shown on its own in a popup (a click on a big cover).
+    pub original: Option<covers::Original>,
     pub catalog: Cached<Catalog>,
     /// Counts catalog replacements: a page's lists are rebuilt when it changes.
     pub generation: u64,
@@ -244,7 +249,8 @@ impl Shell {
             }
             .as_shape(rect, radius),
         );
-        let loaded = cover.and_then(|c| self.covers.get(ui.ctx(), c));
+        let size = covers::CoverSize::for_rect(ui.ctx(), rect);
+        let loaded = cover.and_then(|c| self.covers.get(ui.ctx(), c, size));
         let fade = loaded.as_ref().map(|(_, f)| *f).unwrap_or(0.0);
         if fade < 1.0 {
             widgets::placeholder(ui.painter(), rect, radius, seed);
@@ -254,6 +260,62 @@ impl Shell {
                 .corner_radius(radius)
                 .tint(egui::Color32::from_white_alpha((fade * 255.0) as u8))
                 .paint_at(ui, rect);
+        }
+    }
+
+    /// A big cover: like `cover`, and a click shows its original (see `open_original`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn cover_with_original(&mut self, ui: &egui::Ui, cover: Option<Cover>, seed: Uuid, rect: egui::Rect, radius: u8, lift: f32) {
+        self.cover(ui, cover, seed, rect, radius, lift);
+        self.original_on_click(ui, cover, rect);
+    }
+
+    /// A click on `rect` (where `cover` is drawn) shows its original.
+    pub fn original_on_click(&mut self, ui: &egui::Ui, cover: Option<Cover>, rect: egui::Rect) {
+        let Some(cover) = cover else { return };
+        let response = ui.interact(rect, ui.id().with(("original", cover.key.0)), egui::Sense::click());
+        if response.on_hover_cursor(egui::CursorIcon::ZoomIn).on_hover_text("Click: the original").clicked() {
+            self.open_original(ui.ctx(), cover);
+        }
+    }
+
+    /// Shows a cover's original (unchanged, full size) in a popup. It's fetched now, and
+    /// let go when the popup closes.
+    pub fn open_original(&mut self, ctx: &egui::Context, cover: Cover) {
+        self.original = Some(covers::Original::open(&self.api, self.runtime.handle(), ctx, cover.key));
+    }
+
+    /// The original's popup, while one is open: as big as fits (never bigger than it is),
+    /// with its size in pixels and bytes.
+    fn show_original(&mut self, ctx: &egui::Context) {
+        let Some(original) = self.original.as_mut() else { return };
+        self.modal_open = true;
+        original.poll(ctx);
+        let title = match &original.loaded {
+            Some(Ok((_, [w, h], bytes))) => format!("Original · {w}×{h} · {:.1} MB", *bytes as f64 / 1_000_000.0),
+            _ => "Original".to_string(),
+        };
+        let screen = ctx.content_rect().size();
+        let closed = modal::show(ctx, "original-cover", &title, screen - egui::Vec2::splat(48.0), |ui| match &original.loaded {
+            None => {
+                ui.label(egui::RichText::new("Loading the original…").color(P.muted));
+            }
+            Some(Err(err)) => {
+                ui.label(egui::RichText::new(format!("Couldn't load it: {err}")).color(P.danger));
+            }
+            Some(Ok((texture, [w, h], _))) => {
+                let room = ui.available_size();
+                // Pixels on the screen: 1:1 at most (bigger would only blur it).
+                let ppp = ui.ctx().pixels_per_point();
+                let scale = (room.x / *w as f32).min(room.y / *h as f32).min(1.0 / ppp);
+                let size = egui::vec2(*w as f32, *h as f32) * scale;
+                ui.centered_and_justified(|ui| {
+                    ui.add(egui::Image::from_texture(texture).fit_to_exact_size(size));
+                });
+            }
+        });
+        if closed {
+            self.original = None;
         }
     }
 
@@ -306,10 +368,11 @@ impl Shell {
             state.since = f64::INFINITY;
         }
         let state = *state;
-        let new = cover.and_then(|c| self.covers.get(ui.ctx(), c));
-        let old = state.previous.and_then(|(c, _)| self.covers.get(ui.ctx(), c));
+        let size = covers::CoverSize::for_rect(ui.ctx(), rect);
+        let new = cover.and_then(|c| self.covers.get(ui.ctx(), c, size));
+        let old = state.previous.and_then(|(c, _)| self.covers.get(ui.ctx(), c, size));
         // No cover (or one that couldn't be loaded) is there at once: the placeholder.
-        let none = cover.is_none_or(|c| self.covers.failed(c.key));
+        let none = cover.is_none_or(|c| self.covers.failed(c.key, size));
         let ready = new.is_some() || none;
         if ready && state.since.is_infinite() {
             self.cover_slots.get_mut(slot).unwrap().since = now;
@@ -502,7 +565,7 @@ impl App {
         let api = Api::new(data_dir.clone());
         let controller = runtime.block_on(async { Controller::new(api.clone(), cc.egui_ctx.clone()) });
         runtime.spawn(controller.clone().monitor());
-        controller.attach_media_keys(runtime.handle().clone(), cache_dir.join("covers"));
+        controller.attach_media_keys(runtime.handle().clone(), cache_dir.clone());
         let covers = Covers::new(api.clone(), runtime.handle().clone(), cache_dir.clone());
         let playlists = crate::playlists::Playlists::new(api.clone(), runtime.handle().clone(), cc.egui_ctx.clone());
         let details = |kind| (kind, api.clone(), runtime.handle().clone(), cc.egui_ctx.clone());
@@ -526,11 +589,13 @@ impl App {
             form_dirty: false,
             page_takes_space: false,
             modal_open: false,
+            modal_was_open: false,
             palette_open: false,
             runtime,
             api,
             controller,
             covers,
+            original: None,
             catalog: Cached::default(),
             generation: 0,
             actions: Vec::new(),
@@ -910,9 +975,11 @@ impl eframe::App for App {
         let player = self.shell.controller.view.lock().unwrap().clone();
         self.shell.resume_queue(&player);
         self.keep_settings(&player);
-        // The next track's cover, loaded ahead, so it can fade in the moment it plays.
+        // The next track's cover, loaded ahead, so it can fade in the moment it plays
+        // (in the player bar, and on "now playing").
         if let Some(next) = player.next().and_then(|i| i.cover) {
-            self.shell.covers.get(&ctx, next);
+            self.shell.covers.get(&ctx, next, covers::CoverSize::Small);
+            self.shell.covers.get(&ctx, next, covers::CoverSize::Standard);
         }
 
         egui::Panel::bottom("player")
@@ -945,11 +1012,13 @@ impl eframe::App for App {
                 // Set again by a form with changes, if one is shown.
                 self.shell.form_dirty = false;
                 self.shell.page_takes_space = false;
+                self.shell.modal_was_open = self.shell.modal_open;
                 self.shell.modal_open = false;
                 self.shell.palette_open = self.pages.palette.is_open();
                 self.pages.show(ui, &mut self.shell, self.page, &player, &mut self.spectrum, dt);
             });
         self.pages.palette.show(&ctx, &mut self.shell);
+        self.shell.show_original(&ctx);
         keymap::overlay(&ctx, &mut self.keys_open);
         self.apply(&ctx);
     }

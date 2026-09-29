@@ -504,6 +504,7 @@ async fn serve(config: Config, owner_pool: sqlx::PgPool, store: BlobStore) -> an
         secure_cookies: config.secure_cookies,
         trust_proxy: config.trust_proxy,
         rate_limits: std::sync::Arc::new(api::RateLimits::new()),
+        images: std::sync::Arc::new(storage::images::ImageCache::new(config.cache_dir.clone())),
     });
     let listener = tokio::net::TcpListener::bind(&config.bind)
         .await

@@ -368,6 +368,13 @@ impl TrackForm {
     /// Follows the details: a form without changes shows the newest; one with changes
     /// keeps them (and, if "Load theirs" was asked, is rebased now).
     fn follow(&mut self, d: &TrackDetail, catalog: Option<&Catalog>) {
+        // An alias renamed on its artist's page: its new name (no revision of the track
+        // says so, so the rest below wouldn't see it).
+        for row in self.meta.credits.iter_mut().chain(self.meta_was.credits.iter_mut()) {
+            if let Some(known) = d.credits.iter().find(|c| c.alias_id.is_some() && c.alias_id == row.alias_id) {
+                row.alias.clone_from(&known.alias);
+            }
+        }
         let Some(fresh) = TrackForm::for_variant(d, catalog, Some(self.variant)) else { return };
         if fresh.seen == self.seen || self.saving() {
             return;
@@ -608,10 +615,11 @@ impl TrackForm {
         if !shell.palette_open {
             self.take_cover(&ctx);
         }
-        if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Enter)) {
+        // (A popup over the page, a track list's, takes Ctrl+Enter and Esc itself.)
+        if !shell.modal_was_open && ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Enter)) {
             self.save(shell);
         }
-        if !shell.palette_open && !ctx.egui_wants_keyboard_input() && ctx.input(|i| i.key_pressed(Key::Escape)) && self.dirty() {
+        if !shell.palette_open && !shell.modal_was_open && !ctx.egui_wants_keyboard_input() && ctx.input(|i| i.key_pressed(Key::Escape)) && self.dirty() {
             if self.confirm_discard {
                 self.discard();
             } else {

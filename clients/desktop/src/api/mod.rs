@@ -233,9 +233,14 @@ impl Api {
         Ok(CatalogResponse::Changed { body: body.to_vec(), etag })
     }
 
-    /// A cover image's bytes, by its content (`hash`: its SHA-256 or the start of it).
-    pub async fn image(&self, hash: &str) -> Result<Vec<u8>, ApiError> {
-        let (request, server) = self.request(reqwest::Method::GET, &format!("/api/images/{hash}"))?;
+    /// A cover image's bytes, by its content (`hash`: its SHA-256 or the start of it): at
+    /// `size` ("small", "standard"), or the original (None).
+    pub async fn image(&self, hash: &str, size: Option<&str>) -> Result<Vec<u8>, ApiError> {
+        let path = match size {
+            Some(size) => format!("/api/images/{hash}?size={size}"),
+            None => format!("/api/images/{hash}"),
+        };
+        let (request, server) = self.request(reqwest::Method::GET, &path)?;
         let response = self.go(request, &server).await?;
         Ok(response.bytes().await.map_err(|err| unreachable(&err, &server))?.to_vec())
     }

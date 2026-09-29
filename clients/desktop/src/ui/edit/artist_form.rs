@@ -92,6 +92,9 @@ pub struct ArtistForm {
     /// Aliases asked about (×): None while asking; Some(uses) once known (kept: used).
     uses: HashMap<Uuid, Option<Result<Uses, String>>>,
     uses_answer: Arc<Mutex<Vec<(Uuid, Result<Uses, String>)>>>,
+    /// The library (`Shell::generation`) the uses were asked with: when it changes (a
+    /// credit changed somewhere, say one of those listed), they're asked again.
+    uses_generation: u64,
     confirm_discard: bool,
     rebase_asked: bool,
     notice: Option<String>,
@@ -116,6 +119,7 @@ impl ArtistForm {
             answer: Arc::default(),
             uses: HashMap::new(),
             uses_answer: Arc::default(),
+            uses_generation: 0,
             confirm_discard: false,
             rebase_asked: false,
             notice: None,
@@ -245,6 +249,7 @@ impl ArtistForm {
 
     /// × on an existing alias: where is it credited?
     fn ask_uses(&mut self, shell: &Shell, alias: Uuid) {
+        self.uses_generation = shell.generation;
         self.uses.insert(alias, None);
         let (api, answer, ctx, artist) = (shell.api.clone(), self.uses_answer.clone(), shell.ctx.clone(), self.artist);
         shell.runtime.spawn(async move {
@@ -256,13 +261,23 @@ impl ArtistForm {
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui, shell: &mut Shell, d: &ArtistDetail) {
+        // The library changed since the uses were listed: asked again (the credits listed
+        // may have been changed; an alias used nowhere now goes, as its × asked).
+        if self.uses_generation != shell.generation {
+            self.uses_generation = shell.generation;
+            let listed: Vec<Uuid> = self.uses.iter().filter(|(_, u)| matches!(u, Some(Ok(_)))).map(|(id, _)| *id).collect();
+            for alias in listed {
+                self.ask_uses(shell, alias);
+            }
+        }
         self.poll(shell);
         self.follow(d);
         let ctx = ui.ctx().clone();
-        if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Enter)) {
+        // (A popup over the page, a track list's, takes Ctrl+Enter and Esc itself.)
+        if !shell.modal_was_open && ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Enter)) {
             self.save(shell);
         }
-        if !shell.palette_open && !ctx.egui_wants_keyboard_input() && ctx.input(|i| i.key_pressed(Key::Escape)) && self.dirty() {
+        if !shell.palette_open && !shell.modal_was_open && !ctx.egui_wants_keyboard_input() && ctx.input(|i| i.key_pressed(Key::Escape)) && self.dirty() {
             if self.confirm_discard {
                 self.discard();
             } else {

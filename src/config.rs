@@ -10,6 +10,10 @@ pub struct Config {
     /// only records the names, so each machine says here where they are. Without it, one
     /// volume `main` in `ACETATE_DATA_DIR` (default `./data`).
     pub volumes: Vec<(String, PathBuf)>,
+    /// Where smaller copies of cover images are kept, made on first request (see
+    /// `storage::images`). From `ACETATE_CACHE_DIR`; default `cache` in the first volume's
+    /// folder. Only ever derived from the originals: it can be emptied at any time.
+    pub cache_dir: PathBuf,
     /// Address the HTTP server listens on, e.g. `127.0.0.1:3000`.
     pub bind: String,
     /// Directory with the web UI's static files.
@@ -35,9 +39,14 @@ impl Config {
             Ok(text) if !text.trim().is_empty() => parse_volumes(&text)?,
             _ => vec![("main".to_string(), data_dir.clone())],
         };
+        let cache_dir = match std::env::var("ACETATE_CACHE_DIR") {
+            Ok(dir) if !dir.trim().is_empty() => PathBuf::from(dir),
+            _ => volumes[0].1.join("cache"),
+        };
         Ok(Config {
             database_url: std::env::var("DATABASE_URL").context("DATABASE_URL must be set")?,
             volumes,
+            cache_dir,
             bind: std::env::var("ACETATE_BIND").unwrap_or_else(|_| "127.0.0.1:3000".to_string()),
             web_dir: std::env::var("ACETATE_WEB_DIR")
                 .unwrap_or_else(|_| "./web".to_string())

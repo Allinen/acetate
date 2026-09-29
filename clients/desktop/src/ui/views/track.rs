@@ -30,6 +30,8 @@ pub struct TrackPage {
     origin: crate::ui::edit::sources::OriginPicker,
     /// Which version the form edits, and making, renaming and showing versions.
     versions: crate::ui::edit::versions::VersionsBar,
+    /// Its lyrics entries, one open in a form (edit mode).
+    lyrics_editor: crate::ui::edit::lyrics::LyricsEditor,
     /// This track and another side by side, to merge (edit mode).
     merge: Option<super::merge::MergeView>,
     /// "Merge with another track…" asked the palette for the other one.
@@ -82,7 +84,7 @@ impl TrackPage {
             let header = ui.allocate_exact_size(Vec2::new(ui.available_width(), 232.0), Sense::hover()).0;
             let cover_rect = Rect::from_min_size(header.min, Vec2::splat(220.0));
             let cover = track.and_then(|t| t.cover()).or_else(|| detail.as_ref().and_then(|d| d.covers.first().and_then(|c| c.cover())));
-            shell.cover(ui, cover, id, cover_rect, 12, 0.6);
+            shell.cover_with_original(ui, cover, id, cover_rect, 12, 0.6);
             let left = cover_rect.right() + 28.0;
             let width = header.right() - left;
             let title = track.map(|t| t.title.clone()).or_else(|| detail.as_ref().map(|d| d.title.clone())).unwrap_or_default();
@@ -161,6 +163,8 @@ impl TrackPage {
                 return;
             }
             if shell.edit_mode {
+                // Ctrl+Enter in the lyrics saves them, not the track's form (shown first).
+                self.lyrics_editor.take_keys(ui.ctx());
                 // Two columns on a wide window: editing on the left, what's for looking at
                 // (lyrics, the file, sources, history…) on the right.
                 let full = ui.available_width();
@@ -172,6 +176,7 @@ impl TrackPage {
                         ui.allocate_ui_with_layout(Vec2::new(left_width, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
                             ui.set_width(left_width);
                             section(ui, "Edit", true, |ui| edit(ui, shell, catalog, &d, &mut self.versions));
+                            self.edit_lyrics(ui, shell, catalog, &d, player);
                             self.edit_sources(ui, shell, &d);
                         });
                         ui.add_space(gap);
@@ -182,6 +187,7 @@ impl TrackPage {
                     });
                 } else {
                     section(ui, "Edit", true, |ui| edit(ui, shell, catalog, &d, &mut self.versions));
+                    self.edit_lyrics(ui, shell, catalog, &d, player);
                     self.edit_sources(ui, shell, &d);
                     self.view_sections(ui, shell, catalog, &d, is_playing, player);
                 }
@@ -190,6 +196,12 @@ impl TrackPage {
             }
             ui.add_space(24.0);
         });
+    }
+
+    /// Edit mode: its lyrics entries, one open in a form.
+    fn edit_lyrics(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: &Catalog, d: &TrackDetail, player: &PlayerView) {
+        let open = self.lyrics_editor.dirty() || d.lyrics.is_empty();
+        section(ui, &format!("Edit lyrics ({})", d.lyrics.len()), open, |ui| self.lyrics_editor.show(ui, shell, catalog, d, player));
     }
 
     /// Edit mode: its sources, and which one its file came from.
@@ -238,13 +250,18 @@ impl TrackPage {
             section(ui, &format!("Covers ({})", d.covers.len()), false, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     for c in &d.covers {
-                        let (rect, response) = ui.allocate_exact_size(Vec2::splat(140.0), Sense::hover());
+                        let (rect, response) = ui.allocate_exact_size(Vec2::splat(140.0), Sense::click());
                         shell.cover(ui, c.cover(), c.id, rect, 8, 0.2);
                         let size = match (c.width, c.height) {
                             (Some(w), Some(h)) => format!("{w}×{h} · {}", c.source),
                             _ => c.source.clone(),
                         };
-                        response.on_hover_text(size);
+                        let response = response.on_hover_cursor(egui::CursorIcon::ZoomIn).on_hover_text(format!("{size} · click: the original"));
+                        if response.clicked()
+                            && let Some(cover) = c.cover()
+                        {
+                            shell.open_original(ui.ctx(), cover);
+                        }
                     }
                 });
             });
@@ -436,7 +453,7 @@ pub fn lyrics_lines(
 ) {
     let lines = if entry.is_synced { lyrics::parse(&entry.body) } else { Vec::new() };
     if lines.is_empty() {
-        ui.add(egui::Label::new(RichText::new(&entry.body).font(font(size, medium())).color(P.text)).wrap());
+        ui.add(egui::Label::new(RichText::new(lyrics::plain(&entry.body)).font(font(size, medium())).color(P.text)).wrap());
         return;
     }
     let current = if is_playing { lyrics::current(&lines, player.position_now()) } else { None };
@@ -473,8 +490,7 @@ fn section(ui: &mut egui::Ui, title: &str, open: bool, add: impl FnOnce(&mut egu
 }
 
 /// The track's form (edit mode), under the bar choosing which version it edits. Kept in
-/// the shell per track, so changes not saved yet
-/// are still there after looking elsewhere.
+/// the shell per track, so changes not saved yet are still there after looking elsewhere.
 fn edit(ui: &mut egui::Ui, shell: &mut Shell, catalog: &Arc<Catalog>, d: &TrackDetail, versions: &mut crate::ui::edit::versions::VersionsBar) {
     let cover = catalog.track_index(d.id).and_then(|i| catalog.tracks[i as usize].cover());
     // Taken out of the shell while it's shown (showing it needs the shell too: Rust
