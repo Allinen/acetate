@@ -28,6 +28,8 @@ pub struct TrackPage {
     /// Its sources, and which one its file came from (edit mode).
     sources: crate::ui::edit::sources::SourcesEditor,
     origin: crate::ui::edit::sources::OriginPicker,
+    /// Its covers: order, trash, copies (edit mode).
+    covers: crate::ui::edit::cover_list::CoverList,
     /// Which version the form edits, and making, renaming and showing versions.
     versions: crate::ui::edit::versions::VersionsBar,
     /// Its lyrics entries, one open in a form (edit mode).
@@ -165,6 +167,8 @@ impl TrackPage {
             if shell.edit_mode {
                 // Ctrl+Enter in the lyrics saves them, not the track's form (shown first).
                 self.lyrics_editor.take_keys(ui.ctx());
+                // A track or album picked to copy a cover from (before the form takes it).
+                self.covers.take_pick(shell);
                 // Two columns on a wide window: editing on the left, what's for looking at
                 // (lyrics, the file, sources, history…) on the right.
                 let full = ui.available_width();
@@ -177,6 +181,7 @@ impl TrackPage {
                             ui.set_width(left_width);
                             section(ui, "Edit", true, |ui| edit(ui, shell, catalog, &d, &mut self.versions));
                             self.edit_lyrics(ui, shell, catalog, &d, player);
+                            self.edit_covers(ui, shell, &d);
                             self.edit_sources(ui, shell, &d);
                         });
                         ui.add_space(gap);
@@ -188,6 +193,7 @@ impl TrackPage {
                 } else {
                     section(ui, "Edit", true, |ui| edit(ui, shell, catalog, &d, &mut self.versions));
                     self.edit_lyrics(ui, shell, catalog, &d, player);
+                    self.edit_covers(ui, shell, &d);
                     self.edit_sources(ui, shell, &d);
                     self.view_sections(ui, shell, catalog, &d, is_playing, player);
                 }
@@ -202,6 +208,12 @@ impl TrackPage {
     fn edit_lyrics(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: &Catalog, d: &TrackDetail, player: &PlayerView) {
         let open = self.lyrics_editor.dirty() || d.lyrics.is_empty();
         section(ui, &format!("Edit lyrics ({})", d.lyrics.len()), open, |ui| self.lyrics_editor.show(ui, shell, catalog, d, player));
+    }
+
+    /// Edit mode: its covers (a pasted or dropped image is added at once).
+    fn edit_covers(&mut self, ui: &mut egui::Ui, shell: &mut Shell, d: &TrackDetail) {
+        let owner = crate::ui::edit::cover_list::Owner::Track(d.id);
+        section(ui, &format!("Edit covers ({})", d.covers.len()), d.covers.is_empty(), |ui| self.covers.show(ui, shell, owner, &d.covers, true));
     }
 
     /// Edit mode: its sources, and which one its file came from.
@@ -550,7 +562,6 @@ fn section(ui: &mut egui::Ui, title: &str, open: bool, add: impl FnOnce(&mut egu
 /// The track's form (edit mode), under the bar choosing which version it edits. Kept in
 /// the shell per track, so changes not saved yet are still there after looking elsewhere.
 fn edit(ui: &mut egui::Ui, shell: &mut Shell, catalog: &Arc<Catalog>, d: &TrackDetail, versions: &mut crate::ui::edit::versions::VersionsBar) {
-    let cover = catalog.track_index(d.id).and_then(|i| catalog.tracks[i as usize].cover());
     // Taken out of the shell while it's shown (showing it needs the shell too: Rust
     // allows only one mutable borrow of it at a time), then put back.
     let Some(mut form) = shell.track_forms.remove(&d.id).or_else(|| TrackForm::from_detail(d, Some(catalog))) else {
@@ -558,7 +569,7 @@ fn edit(ui: &mut egui::Ui, shell: &mut Shell, catalog: &Arc<Catalog>, d: &TrackD
         return;
     };
     versions.show(ui, shell, catalog, d, &mut form);
-    form.show(ui, shell, Some(catalog), d, cover);
+    form.show(ui, shell, Some(catalog), d);
     shell.track_forms.insert(d.id, form);
 }
 

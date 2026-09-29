@@ -108,7 +108,7 @@ pub const GROUPS: &[(&str, &[Binding])] = &[
             ("Ctrl+M", "compare with its possible duplicate, to merge (again: close)"),
             ("a", "ambiguous artist: credit the next candidate"),
             ("Enter in Artists", "credit the match (Shift+Enter: as featured)"),
-            ("Ctrl+V", "paste an image as the cover"),
+            ("Ctrl+V", "paste an image: a new cover (added at once)"),
         ],
     ),
     (

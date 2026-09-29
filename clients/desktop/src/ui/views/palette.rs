@@ -50,6 +50,7 @@ const COMMANDS: &[Command] = &[
     Command { name: "Go to Liked songs", keys: "", action: || Action::Go(Page::Liked) },
     Command { name: "New playlist…", keys: "", action: || Action::NewPlaylist },
     Command { name: "Settings", keys: "Ctrl+,", action: || Action::Go(Page::Settings) },
+    Command { name: "Trash (take things back out, clean up old files)", keys: "", action: || Action::Go(Page::Trash) },
     Command { name: "Edit mode on / off", keys: "e", action: || Action::ToggleEditMode },
     Command { name: "Show every key", keys: "?", action: || Action::ShowKeys },
     Command { name: "Mute / unmute", keys: "m", action: || Action::ToggleMute },

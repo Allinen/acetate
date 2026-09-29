@@ -22,6 +22,7 @@ mod sources;
 mod tracks;
 mod trash;
 mod upload;
+pub mod upload_limits;
 mod ingest;
 mod library;
 mod users;
@@ -67,6 +68,8 @@ pub struct AppState {
     pub rate_limits: Arc<RateLimits>,
     /// Smaller copies of cover images (`GET /api/images/{hash}?size=`).
     pub images: Arc<crate::storage::images::ImageCache>,
+    /// How much may be uploaded per request and per day (see `upload_limits`).
+    pub upload_limits: Arc<upload_limits::UploadLimits>,
 }
 
 impl AppState {
@@ -76,8 +79,6 @@ impl AppState {
         db::begin(&self.pool, user.id()).await
     }
 }
-
-const UPLOAD_LIMIT: usize = 4 * 1024 * 1024 * 1024;
 
 pub fn router(state: AppState) -> Router {
     // Only the auth routes go without `require`: everyone, guests included, can use them.
@@ -164,14 +165,14 @@ pub fn router(state: AppState) -> Router {
             "/api/tracks/{id}/covers",
             require(
                 &[EditMetadata],
-                post(covers::upload_to_track).layer(DefaultBodyLimit::max(covers::MAX_COVER_BYTES + 64 * 1024)),
+                post(covers::upload_to_track).layer(DefaultBodyLimit::max(covers::MAX_COVER_BYTES + 64 * 1024)).layer(middleware::from_fn_with_state(state.clone(), upload_limits::limit)),
             ),
         )
         .route(
             "/api/albums/{id}/covers",
             require(
                 &[EditMetadata],
-                post(covers::upload_to_album).layer(DefaultBodyLimit::max(covers::MAX_COVER_BYTES + 64 * 1024)),
+                post(covers::upload_to_album).layer(DefaultBodyLimit::max(covers::MAX_COVER_BYTES + 64 * 1024)).layer(middleware::from_fn_with_state(state.clone(), upload_limits::limit)),
             ),
         )
         .route("/api/tracks/{id}/covers/copy", require(&[EditMetadata], post(covers::copy_to_track)))
@@ -243,20 +244,21 @@ pub fn router(state: AppState) -> Router {
         .route("/api/artists/{id}/aliases/{alias_id}/uses", require(&[Browse], get(catalog::alias_uses)))
         .route("/api/artists/{id}/merge", require(&[EditMetadata], post(catalog::merge_artist)))
         .route("/api/artists/{id}/sources", require(&[EditSources], post(sources::add_artist_source)))
-        // Uploads are streamed to disk, so a large limit doesn't mean large memory use.
+        // Uploads are streamed to disk, so a large body doesn't mean large memory use. The
+        // limits (per request, per day) are `upload_limits`'s, not axum's.
         .route(
             "/api/upload",
-            require(&[Upload], post(upload::upload).layer(DefaultBodyLimit::max(UPLOAD_LIMIT))),
+            require(&[Upload], post(upload::upload).layer(DefaultBodyLimit::disable()).layer(middleware::from_fn_with_state(state.clone(), upload_limits::limit))),
         )
         .route(
             "/api/ingest",
-            require(&[Upload], post(ingest::ingest).layer(DefaultBodyLimit::max(UPLOAD_LIMIT))),
+            require(&[Upload], post(ingest::ingest).layer(DefaultBodyLimit::disable()).layer(middleware::from_fn_with_state(state.clone(), upload_limits::limit))),
         )
         .route(
             "/api/tracks/{id}/file",
             require(
                 &[ReplaceFile],
-                post(upload::replace_file).layer(DefaultBodyLimit::max(UPLOAD_LIMIT)),
+                post(upload::replace_file).layer(DefaultBodyLimit::disable()).layer(middleware::from_fn_with_state(state.clone(), upload_limits::limit)),
             ),
         )
         // `route_layer`: only for the routes above, so unknown paths are still a plain 404.
@@ -297,6 +299,10 @@ pub enum AppError {
     Forbidden(String),
     /// Rate limited: 429, try again after this long.
     TooManyRequests(std::time::Duration),
+    /// An upload over the size allowed per request: 413 (see `upload_limits`).
+    TooLarge(String),
+    /// The day's uploads are used up: 429, until midnight UTC (see `upload_limits`).
+    UploadQuota { message: String, wait: std::time::Duration },
     Conflict(String),
     /// It existed, but is gone for good (e.g. a purged file): 410.
     Gone(String),
@@ -325,6 +331,12 @@ impl IntoResponse for AppError {
                 )
                     .into_response();
             }
+            AppError::UploadQuota { message, wait } => {
+                let secs = wait.as_secs() + 1;
+                let body = json!({ "code": "upload_quota", "message": message, "error": message });
+                return (StatusCode::TOO_MANY_REQUESTS, [(axum::http::header::RETRY_AFTER, secs.to_string())], Json(body)).into_response();
+            }
+            AppError::TooLarge(msg) => (StatusCode::PAYLOAD_TOO_LARGE, "too_large", msg),
             AppError::NotFound => (StatusCode::NOT_FOUND, "not_found", "not found".to_string()),
             AppError::BadRequest(msg) => (StatusCode::BAD_REQUEST, "invalid", msg),
             AppError::Unauthorized(msg) => (StatusCode::UNAUTHORIZED, "unauthorized", msg.to_string()),

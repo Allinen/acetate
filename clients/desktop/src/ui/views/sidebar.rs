@@ -32,7 +32,7 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell, page: Page, username: &str) {
         Page::Queue => Some(4),
         Page::Review => Some(5),
         // Playlists are marked in their own list below.
-        Page::Liked | Page::Playlist(_) | Page::Track(_) | Page::Settings => None,
+        Page::Liked | Page::Playlist(_) | Page::Track(_) | Page::Settings | Page::Trash => None,
     };
     let height = 36.0;
     let top = ui.cursor().top();
@@ -113,6 +113,13 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell, page: Page, username: &str) {
             let settings = RichText::new("Settings").color(if page == Page::Settings { P.text } else { P.muted });
             if ui.add(egui::Button::new(settings).frame(false)).on_hover_text("Ctrl+,").clicked() {
                 shell.act(Action::Go(Page::Settings));
+            }
+            // Only for who can put things in the trash (and so take them back out).
+            if shell.account.can("edit_metadata") || shell.account.can("edit_sources") {
+                let trash = RichText::new("Trash").color(if page == Page::Trash { P.text } else { P.muted });
+                if ui.add(egui::Button::new(trash).frame(false)).clicked() {
+                    shell.act(Action::Go(Page::Trash));
+                }
             }
             if ui.add(egui::Button::new(RichText::new("Keys").color(P.muted)).frame(false)).on_hover_text("?").clicked() {
                 shell.act(Action::ShowKeys);

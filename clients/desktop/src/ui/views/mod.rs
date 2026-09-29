@@ -20,6 +20,7 @@ pub mod review;
 pub mod settings;
 pub mod sidebar;
 pub mod track_table;
+pub mod trash;
 pub mod track;
 pub mod tracks;
 
@@ -47,6 +48,7 @@ pub struct Pages {
     review: review::Review,
     queue: queue::QueuePage,
     pub settings: settings::SettingsPage,
+    pub trash: trash::TrashPage,
 }
 
 impl Pages {
@@ -76,6 +78,10 @@ impl Pages {
             self.settings.show(ui, shell, player);
             return;
         }
+        if page == Page::Trash {
+            self.trash.show(ui, shell);
+            return;
+        }
         let Some(catalog) = shell.catalog.value.clone() else {
             ui.label(RichText::new(shell.library_status()).color(P.muted));
             return;
@@ -90,7 +96,7 @@ impl Pages {
             Page::Playlist(id) => self.playlist.show(ui, shell, &catalog, id, player),
             Page::Track(id) => self.track.show(ui, shell, &catalog, id, player),
             Page::Review => self.review.show(ui, shell, &catalog, player),
-            Page::NowPlaying | Page::Queue | Page::Settings => {}
+            Page::NowPlaying | Page::Queue | Page::Settings | Page::Trash => {}
         }
     }
 }

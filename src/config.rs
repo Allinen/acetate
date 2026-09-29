@@ -14,6 +14,13 @@ pub struct Config {
     /// `storage::images`). From `ACETATE_CACHE_DIR`; default `cache` in the first volume's
     /// folder. Only ever derived from the originals: it can be emptied at any time.
     pub cache_dir: PathBuf,
+    /// Uploads through the API (music, covers, ingest from another machine): at most this
+    /// many bytes per request (`ACETATE_MAX_UPLOAD_MB`, default 100: what Cloudflare lets
+    /// through), and this many a day, all accounts together (`ACETATE_UPLOAD_DAILY_GB`,
+    /// default 20), so a stolen account can't fill the disks. 0: no limit. Imports on the
+    /// server itself (`acetate ingest`, `import`) don't go through the API: no limit.
+    pub max_upload_bytes: u64,
+    pub daily_upload_bytes: u64,
     /// Address the HTTP server listens on, e.g. `127.0.0.1:3000`.
     pub bind: String,
     /// Directory with the web UI's static files.
@@ -43,7 +50,15 @@ impl Config {
             Ok(dir) if !dir.trim().is_empty() => PathBuf::from(dir),
             _ => volumes[0].1.join("cache"),
         };
+        let number = |name: &str, default: u64| -> anyhow::Result<u64> {
+            match std::env::var(name) {
+                Ok(text) if !text.trim().is_empty() => text.trim().parse().with_context(|| format!("{name}: \"{text}\" isn't a whole number")),
+                _ => Ok(default),
+            }
+        };
         Ok(Config {
+            max_upload_bytes: number("ACETATE_MAX_UPLOAD_MB", 100)? * 1_000_000,
+            daily_upload_bytes: number("ACETATE_UPLOAD_DAILY_GB", 20)? * 1_000_000_000,
             database_url: std::env::var("DATABASE_URL").context("DATABASE_URL must be set")?,
             volumes,
             cache_dir,

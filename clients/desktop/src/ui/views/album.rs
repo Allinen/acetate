@@ -40,6 +40,8 @@ pub struct AlbumPage {
     undo: super::album_merge::UndoPanel,
     /// Its sources (edit mode).
     sources: crate::ui::edit::sources::SourcesEditor,
+    /// Its covers: order, trash, copies, pasted ones (edit mode).
+    covers: crate::ui::edit::cover_list::CoverList,
 }
 
 impl AlbumPage {
@@ -190,9 +192,16 @@ impl AlbumPage {
 
         // Edit mode: the album's own data (title, kind, date, artists).
         if shell.edit_mode {
+            // A track or album picked to copy a cover from (before the form takes it).
+            self.covers.take_pick(shell);
             edit_panel(ui, shell, catalog, id);
             ui.add_space(12.0);
             if let Some(d) = shell.album_details.get(id).value.clone() {
+                details_panel(ui, "album-covers", |ui| {
+                    ui.label(RichText::new("Covers").font(font(14.0, semibold())));
+                    self.covers.show(ui, shell, crate::ui::edit::cover_list::Owner::Album(id), &d.covers, true);
+                });
+                ui.add_space(12.0);
                 details_panel(ui, "album-sources", |ui| {
                     ui.label(RichText::new("Sources").font(font(14.0, semibold())));
                     self.sources.show(ui, shell, crate::ui::edit::sources::Owner::Album(id), &d.sources);

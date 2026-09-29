@@ -76,6 +76,8 @@ enum Row {
 
 #[derive(Default)]
 pub struct Review {
+    /// The track's covers (a pasted or dropped image is added at once).
+    covers: crate::ui::edit::cover_list::CoverList,
     group: Group,
     /// Only tracks with a flag of this kind (a chip); None: every track with any.
     only: Option<String>,
@@ -822,7 +824,12 @@ impl Review {
                 }
             }
 
-            form.show(ui, shell, Some(catalog), &d, track.cover());
+            // A track or album picked to copy a cover from (before the form takes it).
+            self.covers.take_pick(shell);
+            form.show(ui, shell, Some(catalog), &d);
+            ui.add_space(14.0);
+            ui.label(RichText::new("Cover").font(font(14.0, semibold())));
+            self.covers.show(ui, shell, crate::ui::edit::cover_list::Owner::Track(id), &d.covers, true);
 
             // A save finished: ambiguous artists fixed in it are settled; and after
             // Ctrl+Enter, on to the next when nothing's left.

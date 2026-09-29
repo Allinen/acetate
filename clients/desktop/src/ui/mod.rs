@@ -55,6 +55,8 @@ pub enum Page {
     Settings,
     /// The workbench: fixing what's flagged or missing.
     Review,
+    /// What's in the trash (to take back out, or purge), and old files to clean up.
+    Trash,
 }
 
 /// Something to do, asked for by a page, a key or a button.
@@ -646,6 +648,9 @@ impl App {
             self.pages.opened(page);
             if page == Page::Settings {
                 self.pages.settings.opened(&self.shell);
+            }
+            if page == Page::Trash {
+                self.pages.trash.opened(&self.shell);
             }
             // Details shown as kept, and fetched again (cache first).
             match page {
