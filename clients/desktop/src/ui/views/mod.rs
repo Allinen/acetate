@@ -8,6 +8,7 @@ pub mod albums;
 pub mod artist;
 pub mod artist_merge;
 pub mod artists;
+pub mod grouping;
 pub mod history;
 pub mod login;
 pub mod now_playing;
@@ -22,6 +23,7 @@ pub mod sidebar;
 pub mod track_table;
 pub mod trash;
 pub mod track;
+pub mod to_collective;
 pub mod tracks;
 
 use eframe::egui::{self, RichText};
@@ -49,6 +51,7 @@ pub struct Pages {
     queue: queue::QueuePage,
     pub settings: settings::SettingsPage,
     pub trash: trash::TrashPage,
+    grouping: grouping::GroupingPage,
 }
 
 impl Pages {
@@ -57,6 +60,7 @@ impl Pages {
         match page {
             Page::Album(_) => self.album = Default::default(),
             Page::Artist(_) => self.artist = Default::default(),
+            Page::Grouping(_) => self.grouping = Default::default(),
             Page::Playlist(_) | Page::Liked => self.playlist = Default::default(),
             Page::Track(_) => self.track = Default::default(),
             Page::Queue => self.queue.opened(),
@@ -96,6 +100,7 @@ impl Pages {
             Page::Playlist(id) => self.playlist.show(ui, shell, &catalog, id, player),
             Page::Track(id) => self.track.show(ui, shell, &catalog, id, player),
             Page::Review => self.review.show(ui, shell, &catalog, player),
+            Page::Grouping(id) => self.grouping.show(ui, shell, &catalog, id, player),
             Page::NowPlaying | Page::Queue | Page::Settings | Page::Trash => {}
         }
     }

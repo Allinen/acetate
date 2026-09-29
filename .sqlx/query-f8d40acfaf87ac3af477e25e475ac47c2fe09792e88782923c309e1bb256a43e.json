@@ -1,0 +1,47 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT c.artist_id, a.name, count(DISTINCT c.track_id) AS \"tracks!\"\n           FROM grouping_tracks gt\n           JOIN tracks t ON t.id = gt.track_id AND t.merged_into IS NULL\n           JOIN track_credits c ON c.track_id = gt.track_id\n           JOIN artists a ON a.id = c.artist_id\n           WHERE gt.grouping_id = $1\n           GROUP BY c.artist_id, a.name\n           ORDER BY 3 DESC, a.name",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "artist_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "track_credits",
+            "name": "artist_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "artists",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "tracks!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "f8d40acfaf87ac3af477e25e475ac47c2fe09792e88782923c309e1bb256a43e"
+}

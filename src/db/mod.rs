@@ -11,6 +11,7 @@ pub mod annotations;
 pub mod blobs;
 pub mod catalog;
 pub mod covers;
+pub mod groupings;
 pub mod groups;
 pub mod ingest;
 pub mod library;
@@ -52,6 +53,8 @@ mod review_tests;
 mod artist_merge_tests;
 #[cfg(test)]
 mod origin_tests;
+#[cfg(test)]
+mod groupings_tests;
 
 use std::time::Duration;
 

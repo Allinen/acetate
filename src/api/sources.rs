@@ -49,6 +49,17 @@ pub async fn add_album_source(
     add(&state, &user, SourceOwner::Album(id), source).await
 }
 
+/// `POST /api/groupings/{id}/sources`, same body as for artists (a grouping's source is an
+/// account, shaped like an artist's).
+pub async fn add_grouping_source(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<Uuid>,
+    Json(source): Json<NewSource>,
+) -> Result<Json<AddedSnapshot>, AppError> {
+    add(&state, &user, SourceOwner::Grouping(id), source).await
+}
+
 /// `POST /api/artists/{id}/sources`, same body as for tracks.
 pub async fn add_artist_source(
     State(state): State<AppState>,

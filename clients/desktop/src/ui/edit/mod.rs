@@ -14,6 +14,7 @@ pub mod credits;
 pub mod inline_search;
 pub mod lyrics;
 pub mod lyrics_sync;
+pub mod part_of;
 pub mod sources;
 pub mod track_form;
 pub mod versions;

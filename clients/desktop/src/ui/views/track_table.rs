@@ -196,6 +196,8 @@ pub struct TrackTable {
     quick: Option<Uuid>,
     /// The two marked tracks side by side, to merge (Ctrl+M, edit mode), in a popup.
     merge: Option<super::merge::MergeView>,
+    /// Marked tracks being put in a grouping: the server's answer (how many, or why not).
+    grouping_answer: std::sync::Arc<std::sync::Mutex<Option<Result<String, String>>>>,
 }
 
 /// In the rows' own order.
@@ -222,6 +224,7 @@ impl TrackTable {
             bulk_open: false,
             quick: None,
             merge: None,
+            grouping_answer: Default::default(),
         }
     }
 
@@ -319,6 +322,17 @@ impl TrackTable {
             self.remake(catalog, rows, version, options);
         }
 
+        // Marked tracks put in a grouping: said so, and the lists catch up.
+        if let Some(result) = self.grouping_answer.lock().unwrap().take() {
+            let text = match result {
+                Ok(done) => {
+                    shell.act(Action::RefreshLibrary);
+                    done
+                }
+                Err(err) => err,
+            };
+            shell.playlists.notice = Some((text, std::time::Instant::now()));
+        }
         // A bulk change just finished (the popup open or not): the lists catch up.
         if self.bulk.take_finished() {
             shell.act(Action::RefreshLibrary);
@@ -432,6 +446,31 @@ impl TrackTable {
                 if ui.button(format!("Change {} tracks…  (Ctrl+E)", thousands(self.marked.len()))).clicked() {
                     self.bulk_open = true;
                     self.bulk.opened();
+                }
+                // Put them all in a grouping (a collective, an era…), in one go.
+                if !catalog.groupings.is_empty() {
+                    let mut chosen = None;
+                    egui::ComboBox::from_id_salt(("put-in-grouping", options.key)).selected_text("Put in a grouping…").show_ui(ui, |ui| {
+                        for g in &catalog.groupings {
+                            if ui.selectable_label(false, format!("{} · {}", g.name, g.kind)).clicked() {
+                                chosen = Some((g.id, g.name.clone()));
+                            }
+                        }
+                    });
+                    if let Some((grouping, name)) = chosen {
+                        let tracks = self.marked(catalog, rows);
+                        let body = serde_json::json!({ "track_ids": tracks });
+                        let (api, answer, ctx) = (shell.api.clone(), self.grouping_answer.clone(), shell.ctx.clone());
+                        shell.runtime.spawn(async move {
+                            let result = api
+                                .send_json::<serde_json::Value>(reqwest::Method::POST, &format!("/api/groupings/{grouping}/add"), Some(body))
+                                .await
+                                .map(|v| format!("Put {} in “{name}” (the others were in it already).", v["added"].as_u64().unwrap_or(0)))
+                                .map_err(|e| format!("Couldn't put them in “{name}”: {}", e.message));
+                            *answer.lock().unwrap() = Some(result);
+                            ctx.request_repaint();
+                        });
+                    }
                 }
                 if self.marked.len() == 2 && ui.button("Merge the two…  (Ctrl+M)").clicked() {
                     let marked = self.marked(catalog, rows);

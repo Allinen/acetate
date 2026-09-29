@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO grouping_tracks (grouping_id, track_id)\n         SELECT grouping_id, $2 FROM grouping_tracks WHERE track_id = $1\n         ON CONFLICT DO NOTHING RETURNING grouping_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "grouping_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "grouping_tracks",
+            "name": "grouping_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "fca35b8090e966306b01319a900f39d6fd4d490d3a5170dcc64300ae05b17fef"
+}

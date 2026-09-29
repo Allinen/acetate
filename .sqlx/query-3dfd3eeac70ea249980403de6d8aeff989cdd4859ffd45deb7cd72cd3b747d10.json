@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO grouping_albums (grouping_id, album_id)\n         SELECT grouping_id, $2 FROM grouping_albums WHERE album_id = $1\n         ON CONFLICT DO NOTHING RETURNING grouping_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "grouping_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "grouping_albums",
+            "name": "grouping_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "3dfd3eeac70ea249980403de6d8aeff989cdd4859ffd45deb7cd72cd3b747d10"
+}

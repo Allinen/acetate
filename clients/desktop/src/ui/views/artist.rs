@@ -29,6 +29,8 @@ pub struct ArtistPage {
     previews: [TrackTable; 3],
     /// One section shown alone, all of it (the rest of the page out of the way).
     expanded: Option<Section>,
+    /// "Turn into a collective…" open (edit mode).
+    to_collective: Option<super::to_collective::ToCollective>,
     /// The details panel is open.
     details: bool,
     /// This artist and another side by side, to merge (edit mode), in place of the rest.
@@ -78,7 +80,7 @@ fn section_heading(ui: &mut egui::Ui, title: &str, count: usize, more: bool) -> 
 }
 
 /// Release cards, in rows as wide as the room (all of `releases`: the caller picks).
-fn release_cards(ui: &mut egui::Ui, shell: &mut Shell, catalog: &Catalog, releases: &[u32]) {
+pub(super) fn release_cards(ui: &mut egui::Ui, shell: &mut Shell, catalog: &Catalog, releases: &[u32]) {
     let ctx = ui.ctx().clone();
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = Vec2::new(CARD_GAP, CARD_GAP);
@@ -139,6 +141,11 @@ impl ArtistPage {
                 self.picking_merge = true;
                 shell.act(Action::Pick { kind: crate::ui::edit::PickKind::Artist, except: Some(id) });
             }
+        }
+        if let Some(popup) = self.to_collective.as_mut()
+            && popup.show(shell)
+        {
+            self.to_collective = None;
         }
         let Some(artist) = catalog.artist(id) else {
             ui.label(RichText::new("This artist isn't in the library (anymore).").color(P.muted));
@@ -254,6 +261,33 @@ impl ArtistPage {
         } else if !artist.aliases.is_empty() {
             ui.label(RichText::new(format!("Also credited as {}", artist.aliases.join(", "))).font(font(14.0, medium())).color(P.muted));
         }
+        // The groupings its tracks are in (collectives it posts under, eras…), most first.
+        let mut in_groupings: Vec<(Uuid, usize)> = Vec::new();
+        for &t in all_tracks {
+            for g in &catalog.tracks[t as usize].groupings {
+                match in_groupings.iter_mut().find(|(id, _)| id == g) {
+                    Some((_, n)) => *n += 1,
+                    None => in_groupings.push((*g, 1)),
+                }
+            }
+        }
+        in_groupings.sort_by_key(|g| std::cmp::Reverse(g.1));
+        if !in_groupings.is_empty() {
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
+                ui.label(RichText::new("In ").font(font(14.0, medium())).color(P.faint));
+                for (n, (g, count)) in in_groupings.iter().enumerate() {
+                    let Some(grouping) = catalog.grouping(*g) else { continue };
+                    if n > 0 {
+                        ui.label(RichText::new(", ").font(font(14.0, medium())).color(P.faint));
+                    }
+                    if widgets::link(ui, &grouping.name, font(14.0, medium()), P.text) {
+                        shell.act(Action::Go(Page::Grouping(*g)));
+                    }
+                    ui.label(RichText::new(format!(" ({}, {count})", grouping.kind)).font(font(14.0, medium())).color(P.faint));
+                }
+            });
+        }
         ui.label(
             RichText::new(format!("{} tracks · {} releases", thousands(own.len()), thousands(releases.len())))
                 .font(font(14.0, medium()))
@@ -280,6 +314,10 @@ impl ArtistPage {
                 if ui.button("Merge into another artist…  (Ctrl+M)").on_hover_text(tip).clicked() {
                     self.picking_merge = true;
                     shell.act(Action::Pick { kind: crate::ui::edit::PickKind::Artist, except: Some(id) });
+                }
+                let tip = "It's really an account several artists post under: make it a grouping (its tracks, albums and sources go there, its credits come off). Shows what it would do first.";
+                if shell.account.can("edit_sources") && ui.button("Turn into a collective…").on_hover_text(tip).clicked() {
+                    self.to_collective = Some(super::to_collective::ToCollective::open(shell, id));
                 }
             }
         });

@@ -200,6 +200,8 @@ pub async fn merge_album(conn: &mut PgConnection, from: Uuid, into: Uuid, reason
 
     // 5. Sources (one with the same platform id joins `into`'s), annotations, shares.
     let sources = super::sources::move_all(conn, SourceOwner::Album(from), SourceOwner::Album(into)).await?;
+    // Its groupings: the kept album joins them.
+    super::groupings::follow_merge(conn, from, into, &reason).await?;
     let annotations = annotations::combine_into(conn, Item::Album(from), Item::Album(into)).await?;
     let shares = sqlx::query_scalar!("UPDATE shares SET album_id = $2 WHERE album_id = $1 RETURNING id", from, into)
         .fetch_all(&mut *conn)

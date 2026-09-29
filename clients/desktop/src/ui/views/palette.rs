@@ -81,6 +81,8 @@ enum Entry {
     Artist(u32),
     Album(u32),
     Track(u32),
+    /// A grouping (collective, era, project…): its place in the catalog's list.
+    Grouping(u32),
     Playlist(Uuid),
     Liked,
     /// Make a playlist named what was typed (or, when naming, use that name).
@@ -315,6 +317,9 @@ impl Palette {
                         entries.push(Entry::Liked);
                     }
                     entries.extend(playlists.iter().filter(|p| matches(&p.1)).take(5).map(|p| Entry::Playlist(p.0)));
+                    if let Some(c) = catalog {
+                        entries.extend(c.groupings.iter().enumerate().filter(|(_, g)| matches(&g.name)).take(4).map(|(i, _)| Entry::Grouping(i as u32)));
+                    }
                 }
                 for (i, command) in COMMANDS.iter().enumerate() {
                     if matches(command.name) {
@@ -403,6 +408,14 @@ impl Palette {
                 };
                 (album.title.clone(), Some(sub), capitalized(&album.kind))
             }
+            (Entry::Grouping(i), Some(c)) => {
+                let grouping = &c.groupings[i as usize];
+                painter.rect_filled(cover_rect.shrink(4.0), 6, P.accent_soft);
+                let initial = grouping.name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default();
+                painter.text(cover_rect.center(), Align2::CENTER_CENTER, initial, font(13.0, medium()), P.text);
+                let sub = format!("{} tracks · {} releases", grouping.track_count, grouping.album_count);
+                (grouping.name.clone(), Some(sub), capitalized(&grouping.kind))
+            }
             (Entry::Track(i), Some(c)) => {
                 let track = &c.tracks[i as usize];
                 shell.cover(ui, track.cover(), track.id, cover_rect, 5, 0.0);
@@ -453,6 +466,17 @@ fn search_result(shell: &mut Shell, catalog: Option<&Catalog>, entry: Entry, shi
         (Entry::Command(i), _) => shell.act((COMMANDS[i].action)()),
         (Entry::Playlist(id), _) => shell.act(Action::Go(Page::Playlist(id))),
         (Entry::Liked, _) => shell.act(Action::Go(Page::Liked)),
+        (Entry::Grouping(i), Some(c)) => {
+            let grouping = &c.groupings[i as usize];
+            if shift {
+                let tracks = c.grouping_tracks(grouping.id).to_vec();
+                if !tracks.is_empty() {
+                    shell.act(Action::Play { tracks, start: 0 });
+                }
+            } else {
+                shell.act(Action::Go(Page::Grouping(grouping.id)));
+            }
+        }
         (Entry::Artist(i), Some(c)) => {
             let artist = &c.artists[i as usize];
             if shift {

@@ -42,6 +42,8 @@ pub struct AlbumPage {
     sources: crate::ui::edit::sources::SourcesEditor,
     /// Its covers: order, trash, copies, pasted ones (edit mode).
     covers: crate::ui::edit::cover_list::CoverList,
+    /// The groupings it's in.
+    part_of: crate::ui::edit::part_of::PartOf,
 }
 
 impl AlbumPage {
@@ -108,7 +110,10 @@ impl AlbumPage {
                 shell.act(Action::Pick { kind: crate::ui::edit::PickKind::Album, except: Some(id) });
             }
         }
-        ui.add_space(22.0);
+        ui.add_space(10.0);
+        let groupings = album.groupings.clone();
+        self.part_of.show(ui, shell, catalog, crate::ui::edit::part_of::Member::Album(id), &groupings);
+        ui.add_space(12.0);
 
         // The other album, picked in the palette (not a new one, not this one).
         if self.picking_merge

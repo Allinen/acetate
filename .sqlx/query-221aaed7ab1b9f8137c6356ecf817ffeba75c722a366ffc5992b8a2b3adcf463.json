@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT COALESCE(json_agg(json_build_array(\n                   g.id, g.kind, g.name,\n                   (SELECT count(*) FROM grouping_tracks gt JOIN tracks t ON t.id = gt.track_id AND t.merged_into IS NULL WHERE gt.grouping_id = g.id),\n                   (SELECT count(*) FROM grouping_albums ga JOIN albums a ON a.id = ga.album_id AND a.merged_into IS NULL WHERE ga.grouping_id = g.id)\n               ) ORDER BY g.name, g.id), '[]'::json)::text AS \"rows!\"\n        FROM groupings g\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "rows!",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "221aaed7ab1b9f8137c6356ecf817ffeba75c722a366ffc5992b8a2b3adcf463"
+}

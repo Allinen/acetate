@@ -199,6 +199,10 @@ pub struct Report {
     /// `ingest::merge_duplicate`), e.g. "on the album \"X\"". Empty: nothing.
     #[serde(default)]
     pub added: Vec<String>,
+    /// Names in the tags that are collectives (one of their platform ids is a grouping's
+    /// account): the track went into those groupings, and no one was credited as them.
+    #[serde(default)]
+    pub collectives: Vec<Resolved>,
 }
 
 impl Report {
@@ -212,6 +216,7 @@ impl Report {
             album_covers_added: 0,
             warnings: Vec::new(),
             added: Vec::new(),
+            collectives: Vec::new(),
         }
     }
 }
@@ -221,12 +226,45 @@ impl Report {
 #[derive(Default)]
 pub struct Resolver {
     artists: Vec<(String, FoundArtist)>,
+    /// Names that are collectives: (name, grouping). See `collective`.
+    pub collectives: Vec<(String, Uuid)>,
+    pub report_collectives: Vec<Resolved>,
     pub report_artists: Vec<Resolved>,
     pub report_album: Option<Resolved>,
     pub warnings: Vec<String>,
 }
 
 impl Resolver {
+    /// The collective a name from the tags is, if it is one: a grouping has one of the
+    /// platform ids the description gives for the name (the account the song was posted
+    /// under). Then it isn't an artist: no one is credited as it, and the track goes in
+    /// the grouping. A name given an Acetate artist id is that artist, whatever else.
+    pub async fn collective(&mut self, conn: &mut PgConnection, hints: &Hints, name: &str) -> anyhow::Result<Option<Uuid>> {
+        if let Some((_, grouping)) = self.collectives.iter().find(|(n, _)| n == name) {
+            return Ok(Some(*grouping));
+        }
+        let Some(hint) = hints
+            .artists
+            .iter()
+            .find(|h| h.name == name)
+            .or_else(|| hints.artists.iter().find(|h| h.name.to_lowercase() == name.to_lowercase()))
+        else {
+            return Ok(None);
+        };
+        if hint.id.is_some() {
+            return Ok(None);
+        }
+        for source in &hint.sources {
+            let Some(external_id) = &source.external_id else { continue };
+            if let Some(&grouping) = db::groupings::with_platform_id(conn, &source.platform, external_id).await?.first() {
+                self.collectives.push((name.to_string(), grouping));
+                self.report_collectives.push(Resolved { name: name.to_string(), id: Some(grouping), matched_by: MatchedBy::PlatformId });
+                return Ok(Some(grouping));
+            }
+        }
+        Ok(None)
+    }
+
     /// The artist a name from the tags means. Runs as the system (inside ingest).
     pub async fn artist(
         &mut self,
@@ -356,7 +394,8 @@ impl Resolver {
     pub fn check_unused_hints(&mut self, hints: &Hints) {
         for hint in &hints.artists {
             // Ignoring case, like `artist` finds a hint.
-            if !self.artists.iter().any(|(name, _)| name.to_lowercase() == hint.name.to_lowercase()) {
+            let used = |name: &String| name.to_lowercase() == hint.name.to_lowercase();
+            if !self.artists.iter().any(|(name, _)| used(name)) && !self.collectives.iter().any(|(name, _)| used(name)) {
                 self.warnings.push(format!(
                     "\"{}\" isn't in the file's ARTIST or ALBUM ARTIST tags, so what was given \
                      about it wasn't used",

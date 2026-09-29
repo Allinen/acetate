@@ -57,6 +57,8 @@ pub enum Page {
     Review,
     /// What's in the trash (to take back out, or purge), and old files to clean up.
     Trash,
+    /// A collective, an era, a project…: its tracks and releases.
+    Grouping(Uuid),
 }
 
 /// Something to do, asked for by a page, a key or a button.
@@ -190,6 +192,7 @@ pub struct Shell {
     pub track_details: crate::details::Details<crate::details::TrackDetail>,
     pub album_details: crate::details::Details<crate::details::AlbumDetail>,
     pub artist_details: crate::details::Details<crate::details::ArtistDetail>,
+    pub grouping_details: crate::details::Details<crate::details::GroupingDetail>,
     updates: (mpsc::Sender<Update>, mpsc::Receiver<Update>),
     store: Option<Arc<Store>>,
     /// When the catalog being loaded was asked for.
@@ -450,7 +453,8 @@ impl Shell {
         let details = self.data_dir.join(format!("details-{}", store::key(&session)));
         self.track_details.reset(Some(details.clone()));
         self.album_details.reset(Some(details.clone()));
-        self.artist_details.reset(Some(details));
+        self.artist_details.reset(Some(details.clone()));
+        self.grouping_details.reset(Some(details));
         self.catalog = Cached { refreshing: true, ..Cached::default() };
         self.refresh_asked = Some(Instant::now());
         self.account.fetch(&self.api, self.runtime.handle(), ctx);
@@ -599,6 +603,8 @@ impl App {
         let album_details = crate::details::Details::new(k, a, r, c);
         let (k, a, r, c) = details("artists");
         let artist_details = crate::details::Details::new(k, a, r, c);
+        let (k, a, r, c) = details("groupings");
+        let grouping_details = crate::details::Details::new(k, a, r, c);
         let mut shell = Shell {
             ctx: cc.egui_ctx.clone(),
             logo: widgets::logo_texture(&cc.egui_ctx),
@@ -635,6 +641,7 @@ impl App {
             track_details,
             album_details,
             artist_details,
+            grouping_details,
             updates: mpsc::channel(),
             store: None,
             refresh_asked: None,
@@ -769,6 +776,7 @@ impl App {
                 Page::Track(id) => self.shell.track_details.open(id),
                 Page::Album(id) => self.shell.album_details.open(id),
                 Page::Artist(id) => self.shell.artist_details.open(id),
+                Page::Grouping(id) => self.shell.grouping_details.open(id),
                 _ => {}
             }
         }
@@ -922,6 +930,7 @@ impl App {
                     self.shell.track_details.reset(None);
                     self.shell.album_details.reset(None);
                     self.shell.artist_details.reset(None);
+                    self.shell.grouping_details.reset(None);
                     self.shell.track_forms.clear();
                     self.shell.album_forms.clear();
                     self.shell.artist_forms.clear();
@@ -1114,6 +1123,7 @@ impl eframe::App for App {
         self.shell.track_details.poll();
         self.shell.album_details.poll();
         self.shell.artist_details.poll();
+        self.shell.grouping_details.poll();
         if let Some(id) = self.shell.playlists.created.take() {
             self.shell.act(Action::Go(Page::Playlist(id)));
         }

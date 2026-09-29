@@ -30,6 +30,8 @@ pub struct TrackPage {
     origin: crate::ui::edit::sources::OriginPicker,
     /// Its covers: order, trash, copies (edit mode).
     covers: crate::ui::edit::cover_list::CoverList,
+    /// The groupings it's in.
+    part_of: crate::ui::edit::part_of::PartOf,
     /// Which version the form edits, and making, renaming and showing versions.
     versions: crate::ui::edit::versions::VersionsBar,
     /// Its lyrics entries, one open in a form (edit mode).
@@ -151,7 +153,12 @@ impl TrackPage {
             marks(&mut marks_ui, shell, Kind::Track, id);
             marks_ui.add_space(8.0);
             widgets::share_chip(&mut marks_ui, shell, crate::links::Target::Track(id));
-            ui.add_space(20.0);
+            ui.add_space(10.0);
+            if let Some(t) = track {
+                let groupings = t.groupings.clone();
+                self.part_of.show(ui, shell, catalog, crate::ui::edit::part_of::Member::Track(id), &groupings);
+            }
+            ui.add_space(10.0);
 
             let Some(d) = detail else {
                 let text = error.map(|e| format!("Couldn't load the details: {e}")).unwrap_or_else(|| "Loading the details…".into());

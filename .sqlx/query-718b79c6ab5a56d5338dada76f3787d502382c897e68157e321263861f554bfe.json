@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT gt.track_id FROM grouping_tracks gt JOIN tracks t ON t.id = gt.track_id\n         WHERE gt.grouping_id = $1 AND t.merged_into IS NULL ORDER BY gt.added_at, gt.track_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "track_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "grouping_tracks",
+            "name": "track_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "718b79c6ab5a56d5338dada76f3787d502382c897e68157e321263861f554bfe"
+}

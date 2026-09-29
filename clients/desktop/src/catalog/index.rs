@@ -10,7 +10,7 @@ use std::collections::HashMap;
 
 use uuid::Uuid;
 
-use super::model::{self, Album, Annotation, Artist, Playlist, Track};
+use super::model::{self, Album, Annotation, Artist, Grouping, Playlist, Track};
 
 pub struct Catalog {
     /// Its version, for asking the server what changed since (None: an older server).
@@ -23,8 +23,14 @@ pub struct Catalog {
     /// Each track's open review flags: (flag id, kind), in the order to show them. Only
     /// tracks with any.
     pub issues: HashMap<Uuid, Vec<(Uuid, String)>>,
+    /// Collectives, eras, projects…, by name.
+    pub groupings: Vec<Grouping>,
 
     track_by_id: HashMap<Uuid, u32>,
+    grouping_by_id: HashMap<Uuid, u32>,
+    /// Each grouping's tracks (newest release first) and albums (newest first).
+    grouping_tracks: HashMap<Uuid, Vec<u32>>,
+    grouping_albums: HashMap<Uuid, Vec<u32>>,
     album_by_id: HashMap<Uuid, u32>,
     artist_by_id: HashMap<Uuid, u32>,
     /// Each album's tracks, by disc and track number.
@@ -106,6 +112,28 @@ impl Catalog {
                 b.year.cmp(&a.year).then_with(|| b.id.cmp(&a.id))
             });
         }
+        // Each grouping's tracks and albums, in the same orders as an artist's.
+        let mut grouping_tracks: HashMap<Uuid, Vec<u32>> = HashMap::new();
+        for (i, track) in tracks.iter().enumerate() {
+            for grouping in &track.groupings {
+                grouping_tracks.entry(*grouping).or_default().push(i as u32);
+            }
+        }
+        for list in grouping_tracks.values_mut() {
+            list.sort_by(|a, b| newest_first(&tracks[*a as usize], &tracks[*b as usize]));
+        }
+        let mut grouping_albums: HashMap<Uuid, Vec<u32>> = HashMap::new();
+        for (i, album) in albums.iter().enumerate() {
+            for grouping in &album.groupings {
+                grouping_albums.entry(*grouping).or_default().push(i as u32);
+            }
+        }
+        for list in grouping_albums.values_mut() {
+            list.sort_by(|a, b| {
+                let (a, b) = (&albums[*a as usize], &albums[*b as usize]);
+                b.year.cmp(&a.year).then_with(|| b.id.cmp(&a.id))
+            });
+        }
 
         let album_title = |id: Uuid| album_by_id.get(&id).map(|&i| albums[i as usize].title.as_str()).unwrap_or("");
         let track_text = tracks
@@ -143,6 +171,10 @@ impl Catalog {
             artist_name_key: artists.iter().map(|a| sort_key(&a.name)).collect(),
             annotations: raw.annotations.rows.into_iter().map(|a| (a.id, a)).collect(),
             issues: raw.issues.rows.into_iter().filter(|i| !i.1.is_empty()).map(|i| (i.0, i.1)).collect(),
+            grouping_by_id: raw.groupings.rows.iter().enumerate().map(|(i, g)| (g.id, i as u32)).collect(),
+            grouping_tracks,
+            grouping_albums,
+            groupings: raw.groupings.rows,
             playlists: raw.playlists,
             tracks,
             albums,
@@ -179,6 +211,7 @@ impl Catalog {
             artists: model::Part { columns: Vec::new(), rows: self.artists.clone() },
             annotations: model::Part { columns: Vec::new(), rows: self.annotations.values().cloned().collect() },
             issues: model::Part { columns: Vec::new(), rows: self.issues.iter().map(|(t, f)| model::Issues(*t, f.clone())).collect() },
+            groupings: model::Part { columns: Vec::new(), rows: self.groupings.clone() },
             playlists: self.playlists.clone(),
         }
     }
@@ -207,6 +240,19 @@ impl Catalog {
 
     pub fn artist_albums(&self, artist: Uuid) -> &[u32] {
         self.artist_albums.get(&artist).map(Vec::as_slice).unwrap_or(&[])
+    }
+
+    pub fn grouping(&self, id: Uuid) -> Option<&Grouping> {
+        self.grouping_by_id.get(&id).map(|&i| &self.groupings[i as usize])
+    }
+
+    /// A grouping's tracks (newest release first) and albums (newest first).
+    pub fn grouping_tracks(&self, grouping: Uuid) -> &[u32] {
+        self.grouping_tracks.get(&grouping).map(Vec::as_slice).unwrap_or(&[])
+    }
+
+    pub fn grouping_albums(&self, grouping: Uuid) -> &[u32] {
+        self.grouping_albums.get(&grouping).map(Vec::as_slice).unwrap_or(&[])
     }
 
     /// The track's main album, if it's on one.
@@ -447,6 +493,8 @@ pub fn merge_raw(base: model::Raw, delta: model::Raw) -> model::Raw {
         artists: model::Part { columns: Vec::new(), rows: artists },
         annotations: model::Part { columns: Vec::new(), rows: annotations.into_values().collect() },
         issues: model::Part { columns: Vec::new(), rows: issues.into_iter().map(|(t, f)| model::Issues(t, f)).collect() },
+        // Sent whole with every delta.
+        groupings: delta.groupings,
         playlists: delta.playlists,
     }
 }
@@ -466,9 +514,9 @@ mod tests {
     fn catalog() -> Catalog {
         // Two albums; track 3 is on both, first on "B" (its main one).
         let body = serde_json::json!({
-            "format": 1,
+            "format": 2,
             "tracks": {"columns": ["id", "title", "artist_display", "credits", "albums", "duration_ms", "file_id", "cover_id", "cover_key",
-                                    "release_date", "year", "status", "genres", "created_at", "is_restricted", "codec"],
+                                    "release_date", "year", "status", "genres", "created_at", "is_restricted", "codec", "groupings"],
                        "rows": [
                 ["00000000-0000-7000-8000-000000000001", "Second", "Ann", [["00000000-0000-7000-8000-0000000000a1", "primary", null]],
                  [["00000000-0000-7000-8000-0000000000b1", 1, 2]], 1000, "00000000-0000-7000-8000-0000000000f1", null, null, "2020", 2020, "released", [], "", false, "flac"],
@@ -478,7 +526,7 @@ mod tests {
                 ["00000000-0000-7000-8000-000000000003", "The Third", "Bo", [["00000000-0000-7000-8000-0000000000a2", "primary", null]],
                  [["00000000-0000-7000-8000-0000000000b2", null, 1], ["00000000-0000-7000-8000-0000000000b1", 1, 3]], 500, "00000000-0000-7000-8000-0000000000f3", null, null, null, null, "released", [], "", false, "mp3"]
             ]},
-            "albums": {"columns": ["id", "title", "kind", "artist_display", "credits", "release_date", "year", "cover_id", "cover_key", "created_at", "track_count", "duration_ms"],
+            "albums": {"columns": ["id", "title", "kind", "artist_display", "credits", "release_date", "year", "cover_id", "cover_key", "created_at", "track_count", "duration_ms", "groupings"],
                        "rows": [
                 ["00000000-0000-7000-8000-0000000000b1", "A", "album", "Ann", [["00000000-0000-7000-8000-0000000000a1", "primary", null]], "2021", 2021, null, null, "", 3, 3500],
                 ["00000000-0000-7000-8000-0000000000b2", "B", "single", "Bo", [["00000000-0000-7000-8000-0000000000a2", "primary", null]], null, null, null, null, "", 1, 500]
@@ -494,6 +542,7 @@ mod tests {
                 ["00000000-0000-7000-8000-000000000001", [["00000000-0000-7000-8000-0000000000e1", "fix_later"], ["00000000-0000-7000-8000-0000000000e2", "missing_cover"]]],
                 ["00000000-0000-7000-8000-000000000002", [["00000000-0000-7000-8000-0000000000e3", "missing_cover"]]]
             ]},
+            "groupings": {"columns": ["id", "kind", "name", "track_count", "album_count"], "rows": []},
             "playlists": []
         });
         Catalog::build(model::parse(body.to_string().as_bytes()).unwrap())
@@ -545,7 +594,7 @@ mod tests {
             serde_json::json!([t(n), title, "Ann", [], album, 1000, "00000000-0000-7000-8000-0000000000f9", null, null, null, null, "released", [], "", false, "flac"])
         };
         let delta = serde_json::json!({
-            "format": 1, "delta": true, "version": "10:20:",
+            "format": 2, "delta": true, "version": "10:20:",
             "tracks": {"columns": [], "rows": [track(1, "Second (edited)"), track(4, "Fourth")]},
             "albums": {"columns": [], "rows": []},
             "artists": {"columns": [], "rows": []},
@@ -557,6 +606,7 @@ mod tests {
                 [t(2), []],
                 [t(4), [["00000000-0000-7000-8000-0000000000e4", "missing_cover"]]]
             ]},
+            "groupings": {"columns": ["id", "kind", "name", "track_count", "album_count"], "rows": []},
             "playlists": [],
             "removed": {"tracks": [t(3)]}
         });
@@ -582,7 +632,7 @@ mod tests {
 
     #[test]
     fn unknown_columns_ask_for_an_update() {
-        let body = br#"{"format": 2}"#;
+        let body = br#"{"format": 3}"#;
         let err = model::parse(body).err().unwrap().to_string();
         assert!(err.contains("update the app"), "{err}");
     }
@@ -625,7 +675,7 @@ mod bench {
         let mut changed = c.tracks[5000].clone();
         changed.title.push_str(" (edited)");
         let delta = model::Raw {
-            format: 1,
+            format: model::FORMAT,
             version: Some("1:2:".into()),
             delta: true,
             removed: model::Removed::default(),
@@ -634,6 +684,7 @@ mod bench {
             artists: model::Part { columns: Vec::new(), rows: Vec::new() },
             annotations: model::Part { columns: Vec::new(), rows: Vec::new() },
             issues: model::Part { columns: Vec::new(), rows: Vec::new() },
+            groupings: model::Part { columns: Vec::new(), rows: Vec::new() },
             playlists: Vec::new(),
         };
         let t = Instant::now();

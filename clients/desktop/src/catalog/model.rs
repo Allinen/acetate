@@ -9,7 +9,7 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 /// The catalog format this client reads (the server's `FORMAT`).
-pub const FORMAT: u32 = 1;
+pub const FORMAT: u32 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -78,11 +78,15 @@ pub struct Track {
     pub created_at: String,
     pub is_restricted: bool,
     pub codec: Option<String>,
+    /// The groupings it's in (collectives, eras, projects…).
+    #[serde(default)]
+    pub groupings: Vec<Uuid>,
 }
 
 const TRACK_COLUMNS: &[&str] = &[
     "id", "title", "artist_display", "credits", "albums", "duration_ms", "file_id", "cover_id",
     "cover_key", "release_date", "year", "status", "genres", "created_at", "is_restricted", "codec",
+    "groupings",
 ];
 
 // Every column is read (rows are arrays in column order); not all are shown yet.
@@ -101,12 +105,28 @@ pub struct Album {
     pub created_at: String,
     pub track_count: i64,
     pub duration_ms: i64,
+    /// The groupings it's in.
+    #[serde(default)]
+    pub groupings: Vec<Uuid>,
 }
 
 const ALBUM_COLUMNS: &[&str] = &[
     "id", "title", "kind", "artist_display", "credits", "release_date", "year", "cover_id",
-    "cover_key", "created_at", "track_count", "duration_ms",
+    "cover_key", "created_at", "track_count", "duration_ms", "groupings",
 ];
+
+/// A grouping: a collective (an account several artists post under), an era, a
+/// project… `track_count`/`album_count`: of those the user can see.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Grouping {
+    pub id: Uuid,
+    pub kind: String,
+    pub name: String,
+    pub track_count: i64,
+    pub album_count: i64,
+}
+
+const GROUPING_COLUMNS: &[&str] = &["id", "kind", "name", "track_count", "album_count"];
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Artist {
@@ -185,6 +205,8 @@ pub struct Raw {
     pub annotations: Part<Annotation>,
     /// Tracks' open review flags.
     pub issues: Part<Issues>,
+    /// Every grouping (a delta has them all too: there are few).
+    pub groupings: Part<Grouping>,
     pub playlists: Vec<Playlist>,
 }
 
@@ -229,6 +251,7 @@ pub fn parse(body: &[u8]) -> anyhow::Result<Raw> {
     check_columns("artists", &raw.artists.columns, ARTIST_COLUMNS)?;
     check_columns("annotations", &raw.annotations.columns, ANNOTATION_COLUMNS)?;
     check_columns("issues", &raw.issues.columns, ISSUE_COLUMNS)?;
+    check_columns("groupings", &raw.groupings.columns, GROUPING_COLUMNS)?;
     Ok(raw)
 }
 

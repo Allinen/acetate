@@ -21,15 +21,19 @@ use uuid::Uuid;
 pub const TRACK_COLUMNS: &[&str] = &[
     "id", "title", "artist_display", "credits", "albums", "duration_ms",
     "file_id", "cover_id", "cover_key", "release_date", "year", "status", "genres", "created_at",
-    "is_restricted", "codec",
+    "is_restricted", "codec", "groupings",
 ];
 
 /// `credits` as for tracks; `artist_display` with aliases as credited.
 /// `cover_id`: its own first cover, else its first track's; `cover_key` as for tracks.
 pub const ALBUM_COLUMNS: &[&str] = &[
     "id", "title", "kind", "artist_display", "credits", "release_date", "year", "cover_id", "cover_key",
-    "created_at", "track_count", "duration_ms",
+    "created_at", "track_count", "duration_ms", "groupings",
 ];
+
+/// Every grouping (collective, era, project…), sent whole with the catalog and every
+/// delta (there are few). `track_count`/`album_count`: of those the user can see.
+pub const GROUPING_COLUMNS: &[&str] = &["id", "kind", "name", "track_count", "album_count"];
 
 pub const ARTIST_COLUMNS: &[&str] = &["id", "name", "disambiguation", "aliases", "track_count", "album_count"];
 
@@ -84,6 +88,11 @@ pub async fn tracks_json(conn: &mut PgConnection, ids: Option<&[Uuid]>) -> sqlx:
             JOIN albums a ON a.id = at.album_id AND a.merged_into IS NULL
             WHERE $1::uuid[] IS NULL OR at.track_id = ANY($1)
             GROUP BY at.track_id
+        ), in_groupings AS (
+            SELECT gt.track_id, json_agg(gt.grouping_id ORDER BY gt.grouping_id) AS groupings
+            FROM grouping_tracks gt
+            WHERE $1::uuid[] IS NULL OR gt.track_id = ANY($1)
+            GROUP BY gt.track_id
         ), track_cover AS (
             SELECT DISTINCT ON (c.track_id) c.track_id, c.id, left(c.blob_sha256, 16) AS key
             FROM covers c
@@ -101,11 +110,12 @@ pub async fn tracks_json(conn: &mut PgConnection, ids: Option<&[Uuid]>) -> sqlx:
                    COALESCE(m.albums, '[]'::json), f.duration_ms,
                    t.file_id, COALESCE(tc.id, ac.id), CASE WHEN tc.id IS NOT NULL THEN tc.key ELSE ac.key END,
                    t.release_date, t.release_year, t.status,
-                   t.genres, t.created_at, t.is_restricted, f.codec
+                   t.genres, t.created_at, t.is_restricted, f.codec, COALESCE(g.groupings, '[]'::json)
                ) ORDER BY t.id), '[]'::json)::text AS "rows!"
         FROM tracks t
         JOIN files f ON f.id = t.file_id
         LEFT JOIN credits cr ON cr.track_id = t.id
+        LEFT JOIN in_groupings g ON g.track_id = t.id
         LEFT JOIN memberships m ON m.track_id = t.id
         LEFT JOIN track_cover tc ON tc.track_id = t.id
         LEFT JOIN album_cover ac ON ac.album_id = m.main_album
@@ -142,6 +152,11 @@ pub async fn albums_json(conn: &mut PgConnection, ids: Option<&[Uuid]>) -> sqlx:
             JOIN covers c ON c.track_id = at.track_id AND c.trashed_at IS NULL
             WHERE $1::uuid[] IS NULL OR at.album_id = ANY($1)
             ORDER BY at.album_id, at.disc_number NULLS FIRST, at.track_number NULLS LAST, c.position, c.id
+        ), in_groupings AS (
+            SELECT ga.album_id, json_agg(ga.grouping_id ORDER BY ga.grouping_id) AS groupings
+            FROM grouping_albums ga
+            WHERE $1::uuid[] IS NULL OR ga.album_id = ANY($1)
+            GROUP BY ga.album_id
         ), counts AS (
             SELECT at.album_id, count(*) AS tracks, COALESCE(sum(f.duration_ms), 0) AS duration_ms
             FROM album_tracks at
@@ -156,16 +171,33 @@ pub async fn albums_json(conn: &mut PgConnection, ids: Option<&[Uuid]>) -> sqlx:
                    CASE WHEN a.release_date ~ '^\d{4}' THEN substr(a.release_date, 1, 4)::int END,
                    COALESCE(oc.id, tc.id), CASE WHEN oc.id IS NOT NULL THEN oc.key ELSE tc.key END,
                    a.created_at,
-                   COALESCE(n.tracks, 0), COALESCE(n.duration_ms, 0)
+                   COALESCE(n.tracks, 0), COALESCE(n.duration_ms, 0), COALESCE(g.groupings, '[]'::json)
                ) ORDER BY a.id), '[]'::json)::text AS "rows!"
         FROM albums a
         LEFT JOIN credits cr ON cr.album_id = a.id
+        LEFT JOIN in_groupings g ON g.album_id = a.id
         LEFT JOIN own_cover oc ON oc.album_id = a.id
         LEFT JOIN track_cover tc ON tc.album_id = a.id
         LEFT JOIN counts n ON n.album_id = a.id
         WHERE a.merged_into IS NULL AND ($1::uuid[] IS NULL OR a.id = ANY($1))
         "#,
         ids as Option<&[Uuid]>
+    )
+    .fetch_one(conn)
+    .await
+}
+
+/// Every grouping the user can see, see `GROUPING_COLUMNS`.
+pub async fn groupings_json(conn: &mut PgConnection) -> sqlx::Result<String> {
+    sqlx::query_scalar!(
+        r#"
+        SELECT COALESCE(json_agg(json_build_array(
+                   g.id, g.kind, g.name,
+                   (SELECT count(*) FROM grouping_tracks gt JOIN tracks t ON t.id = gt.track_id AND t.merged_into IS NULL WHERE gt.grouping_id = g.id),
+                   (SELECT count(*) FROM grouping_albums ga JOIN albums a ON a.id = ga.album_id AND a.merged_into IS NULL WHERE ga.grouping_id = g.id)
+               ) ORDER BY g.name, g.id), '[]'::json)::text AS "rows!"
+        FROM groupings g
+        "#
     )
     .fetch_one(conn)
     .await
@@ -252,11 +284,13 @@ pub struct Changes {
     pub artists: Vec<Uuid>,
     /// Things the user's own plays, stars or ratings changed on.
     pub annotations: Vec<Uuid>,
+    /// A grouping changed (its name, what's in it): the list is sent again.
+    pub groupings: bool,
 }
 
 impl Changes {
     pub fn is_empty(&self) -> bool {
-        !self.everything && self.tracks.is_empty() && self.albums.is_empty() && self.artists.is_empty() && self.annotations.is_empty()
+        !self.everything && self.tracks.is_empty() && self.albums.is_empty() && self.artists.is_empty() && self.annotations.is_empty() && !self.groupings
     }
 }
 
@@ -304,6 +338,7 @@ pub async fn changes_since(conn: &mut PgConnection, since: &str) -> anyhow::Resu
             "album" => changes.albums.push(id),
             "artist" => changes.artists.push(id),
             "annotation" => changes.annotations.push(id),
+            "grouping" => changes.groupings = true,
             _ => {}
         }
     }

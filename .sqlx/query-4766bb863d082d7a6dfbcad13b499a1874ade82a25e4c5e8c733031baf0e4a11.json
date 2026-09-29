@@ -1,0 +1,31 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT id FROM sources\n            WHERE id = $1\n              AND (track_id = $2 OR album_id = $2 OR artist_id = $2 OR grouping_id = $2)\n              AND platform = $3\n              AND external_id IS NOT DISTINCT FROM $4\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "sources",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "4766bb863d082d7a6dfbcad13b499a1874ade82a25e4c5e8c733031baf0e4a11"
+}

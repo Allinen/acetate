@@ -9,12 +9,13 @@ use uuid::Uuid;
 
 use crate::model::sources::{InvalidSource, SourceOwner, ValidSource};
 
-/// (track_id, album_id, artist_id): exactly one is set.
-fn owner_columns(owner: SourceOwner) -> (Option<Uuid>, Option<Uuid>, Option<Uuid>) {
+/// (track_id, album_id, artist_id, grouping_id): exactly one is set.
+fn owner_columns(owner: SourceOwner) -> (Option<Uuid>, Option<Uuid>, Option<Uuid>, Option<Uuid>) {
     match owner {
-        SourceOwner::Track(id) => (Some(id), None, None),
-        SourceOwner::Album(id) => (None, Some(id), None),
-        SourceOwner::Artist(id) => (None, None, Some(id)),
+        SourceOwner::Track(id) => (Some(id), None, None, None),
+        SourceOwner::Album(id) => (None, Some(id), None, None),
+        SourceOwner::Artist(id) => (None, None, Some(id), None),
+        SourceOwner::Grouping(id) => (None, None, None, Some(id)),
     }
 }
 
@@ -44,7 +45,7 @@ pub async fn add_snapshot(
             r#"
             SELECT id FROM sources
             WHERE id = $1
-              AND (track_id = $2 OR album_id = $2 OR artist_id = $2)
+              AND (track_id = $2 OR album_id = $2 OR artist_id = $2 OR grouping_id = $2)
               AND platform = $3
               AND external_id IS NOT DISTINCT FROM $4
             "#,
@@ -66,7 +67,7 @@ pub async fn add_snapshot(
         sqlx::query_scalar!(
             r#"
             SELECT id FROM sources
-            WHERE (track_id = $1 OR album_id = $1 OR artist_id = $1)
+            WHERE (track_id = $1 OR album_id = $1 OR artist_id = $1 OR grouping_id = $1)
               AND platform = $2 AND external_id = $3
             "#,
             owner_id,
@@ -112,16 +113,17 @@ pub async fn add_snapshot(
             id
         }
         None => {
-            let (track_id, album_id, artist_id) = owner_columns(owner);
+            let (track_id, album_id, artist_id, grouping_id) = owner_columns(owner);
             sqlx::query_scalar!(
                 r#"
-                INSERT INTO sources (track_id, album_id, artist_id, platform, external_id)
-                VALUES ($1, $2, $3, $4, $5)
+                INSERT INTO sources (track_id, album_id, artist_id, grouping_id, platform, external_id)
+                VALUES ($1, $2, $3, $4, $5, $6)
                 RETURNING id
                 "#,
                 track_id,
                 album_id,
                 artist_id,
+                grouping_id,
                 source.platform,
                 source.external_id,
             )
@@ -182,13 +184,13 @@ pub async fn move_all(conn: &mut PgConnection, from: SourceOwner, into: SourceOw
     let sources = sqlx::query!(
         r#"
         SELECT id, platform, external_id, created_at, created_by, trashed_at, trashed_by
-        FROM sources WHERE (track_id = $1 OR album_id = $1 OR artist_id = $1)
+        FROM sources WHERE (track_id = $1 OR album_id = $1 OR artist_id = $1 OR grouping_id = $1)
         "#,
         from.id()
     )
     .fetch_all(&mut *conn)
     .await?;
-    let (track_id, album_id, artist_id) = owner_columns(into);
+    let (track_id, album_id, artist_id, grouping_id) = owner_columns(into);
     let mut result = MovedSources::default();
     for src in sources {
         let same = match &src.external_id {
@@ -196,7 +198,7 @@ pub async fn move_all(conn: &mut PgConnection, from: SourceOwner, into: SourceOw
                 sqlx::query_scalar!(
                     r#"
                     SELECT id FROM sources
-                    WHERE (track_id = $1 OR album_id = $1 OR artist_id = $1) AND platform = $2 AND external_id = $3
+                    WHERE (track_id = $1 OR album_id = $1 OR artist_id = $1 OR grouping_id = $1) AND platform = $2 AND external_id = $3
                     "#,
                     into.id(),
                     src.platform,
@@ -233,11 +235,12 @@ pub async fn move_all(conn: &mut PgConnection, from: SourceOwner, into: SourceOw
             }
             None => {
                 sqlx::query!(
-                    "UPDATE sources SET track_id = $2, album_id = $3, artist_id = $4 WHERE id = $1",
+                    "UPDATE sources SET track_id = $2, album_id = $3, artist_id = $4, grouping_id = $5 WHERE id = $1",
                     src.id,
                     track_id,
                     album_id,
-                    artist_id
+                    artist_id,
+                    grouping_id
                 )
                 .execute(&mut *conn)
                 .await?;
@@ -279,26 +282,27 @@ pub async fn unmove_all(
     from: SourceOwner,
     into: SourceOwner,
 ) -> sqlx::Result<()> {
-    let (track_id, album_id, artist_id) = owner_columns(from);
+    let (track_id, album_id, artist_id, grouping_id) = owner_columns(from);
     sqlx::query!(
         r#"
-        UPDATE sources SET track_id = $2, album_id = $3, artist_id = $4
-        WHERE id = ANY($1) AND (track_id = $5 OR album_id = $5 OR artist_id = $5)
+        UPDATE sources SET track_id = $2, album_id = $3, artist_id = $4, grouping_id = $6
+        WHERE id = ANY($1) AND (track_id = $5 OR album_id = $5 OR artist_id = $5 OR grouping_id = $5)
         "#,
         &moved.moved,
         track_id,
         album_id,
         artist_id,
-        into.id()
+        into.id(),
+        grouping_id
     )
     .execute(&mut *conn)
     .await?;
     for source in &moved.joined {
         sqlx::query!(
             r#"
-            INSERT INTO sources (id, track_id, album_id, artist_id, platform, external_id,
+            INSERT INTO sources (id, track_id, album_id, artist_id, grouping_id, platform, external_id,
                                  created_at, created_by, trashed_at, trashed_by)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            VALUES ($1, $2, $3, $4, $11, $5, $6, $7, $8, $9, $10)
             "#,
             source.id,
             track_id,
@@ -309,7 +313,8 @@ pub async fn unmove_all(
             source.created_at,
             source.created_by,
             source.trashed_at,
-            source.trashed_by
+            source.trashed_by,
+            grouping_id,
         )
         .execute(&mut *conn)
         .await?;
@@ -394,7 +399,7 @@ pub async fn list_for(conn: &mut PgConnection, owner_id: Uuid) -> sqlx::Result<V
     let sources = sqlx::query!(
         r#"
         SELECT id, platform, external_id FROM sources
-        WHERE (track_id = $1 OR album_id = $1 OR artist_id = $1) AND trashed_at IS NULL
+        WHERE (track_id = $1 OR album_id = $1 OR artist_id = $1 OR grouping_id = $1) AND trashed_at IS NULL
         ORDER BY platform, id
         "#,
         owner_id
@@ -498,6 +503,11 @@ pub async fn owner_exists(conn: &mut PgConnection, owner: SourceOwner) -> sqlx::
         }
         SourceOwner::Artist(id) => {
             sqlx::query_scalar!(r#"SELECT EXISTS (SELECT 1 FROM artists WHERE id = $1) AS "e!""#, id)
+                .fetch_one(&mut *conn)
+                .await?
+        }
+        SourceOwner::Grouping(id) => {
+            sqlx::query_scalar!(r#"SELECT EXISTS (SELECT 1 FROM groupings WHERE id = $1) AS "e!""#, id)
                 .fetch_one(&mut *conn)
                 .await?
         }

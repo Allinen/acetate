@@ -302,6 +302,41 @@ pub struct ArtistDetail {
     pub sources: Vec<Source>,
 }
 
+/// A grouping (a collective, an era, a project…), as its page shows it
+/// (`GET /api/groupings/{id}`). Its tracks and albums are in the catalog too.
+#[derive(Debug, Clone, Deserialize)]
+pub struct GroupingDetail {
+    #[serde(default)]
+    pub description: String,
+    /// The artists credited on its tracks, most tracks first.
+    #[serde(default)]
+    pub members: Vec<GroupingMember>,
+    #[serde(default)]
+    pub sources: Vec<Source>,
+    /// Every change, newest first.
+    #[serde(default)]
+    pub changes: Vec<GroupingChange>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct GroupingMember {
+    pub artist_id: Uuid,
+    pub name: String,
+    pub tracks: i64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct GroupingChange {
+    pub at: String,
+    pub by: Option<String>,
+    /// created, edited, added, removed, from_artist.
+    pub action: String,
+    pub track_id: Option<Uuid>,
+    pub album_id: Option<Uuid>,
+    #[serde(default)]
+    pub reason: String,
+}
+
 impl Cover {
     /// As the pages draw covers.
     pub fn cover(&self) -> Option<crate::catalog::model::Cover> {

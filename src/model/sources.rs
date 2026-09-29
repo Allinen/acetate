@@ -20,6 +20,9 @@ pub enum SourceOwner {
     Track(Uuid),
     Album(Uuid),
     Artist(Uuid),
+    /// A grouping (a collective: the platform accounts it is). Its sources have the
+    /// shapes of an artist's: an account is one.
+    Grouping(Uuid),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,7 +35,7 @@ pub enum Kind {
 impl SourceOwner {
     pub fn id(&self) -> Uuid {
         match self {
-            SourceOwner::Track(id) | SourceOwner::Album(id) | SourceOwner::Artist(id) => *id,
+            SourceOwner::Track(id) | SourceOwner::Album(id) | SourceOwner::Artist(id) | SourceOwner::Grouping(id) => *id,
         }
     }
 
@@ -40,7 +43,7 @@ impl SourceOwner {
         match self {
             SourceOwner::Track(_) => Kind::Track,
             SourceOwner::Album(_) => Kind::Album,
-            SourceOwner::Artist(_) => Kind::Artist,
+            SourceOwner::Artist(_) | SourceOwner::Grouping(_) => Kind::Artist,
         }
     }
 }

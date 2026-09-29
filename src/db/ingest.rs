@@ -390,7 +390,7 @@ pub async fn platform_ids_of(
     sqlx::query_scalar!(
         r#"
         SELECT external_id AS "external_id!" FROM sources
-        WHERE (track_id = $1 OR album_id = $1 OR artist_id = $1)
+        WHERE (track_id = $1 OR album_id = $1 OR artist_id = $1 OR grouping_id = $1)
           AND platform = $2 AND external_id IS NOT NULL
           AND (trashed_at IS NOT NULL) = $3
         ORDER BY external_id

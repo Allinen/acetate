@@ -89,15 +89,17 @@ pub async fn list(conn: &mut PgConnection) -> sqlx::Result<Vec<TrashItem>> {
             WHERE c.trashed_at IS NOT NULL
             UNION ALL
             SELECT 'source', s.id, s.platform || COALESCE(' ' || s.external_id, ''),
-                   COALESCE(s.track_id, s.album_id, s.artist_id),
+                   COALESCE(s.track_id, s.album_id, s.artist_id, s.grouping_id),
                    CASE WHEN s.track_id IS NOT NULL THEN 'track'
-                        WHEN s.album_id IS NOT NULL THEN 'album' ELSE 'artist' END,
-                   COALESCE(t.title, al.title, ar.name),
+                        WHEN s.album_id IS NOT NULL THEN 'album'
+                        WHEN s.artist_id IS NOT NULL THEN 'artist' ELSE 'grouping' END,
+                   COALESCE(t.title, al.title, ar.name, g.name),
                    NULL, NULL, s.trashed_at, s.trashed_by
             FROM sources s
             LEFT JOIN tracks t ON t.id = s.track_id
             LEFT JOIN albums al ON al.id = s.album_id
             LEFT JOIN artists ar ON ar.id = s.artist_id
+            LEFT JOIN groupings g ON g.id = s.grouping_id
             WHERE s.trashed_at IS NOT NULL
             UNION ALL
             SELECT 'file', f.id, COALESCE(f.original_filename, f.uploaded_filename), h.track_id, 'track', t.title,

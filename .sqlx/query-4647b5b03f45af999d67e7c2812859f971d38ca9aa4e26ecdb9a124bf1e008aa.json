@@ -1,0 +1,52 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT r.track_id, r.variant_id AS \"variant_id!\", r.data\n        FROM track_revisions r\n        JOIN tracks t ON t.id = r.track_id AND t.merged_into IS NULL\n        WHERE r.data @> $1\n          AND r.id = (SELECT r2.id FROM track_revisions r2 WHERE r2.variant_id = r.variant_id ORDER BY r2.id DESC LIMIT 1)\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "track_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "track_revisions",
+            "name": "track_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "variant_id!",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "track_revisions",
+            "name": "variant_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "data",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "track_revisions",
+            "name": "data"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Jsonb"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "4647b5b03f45af999d67e7c2812859f971d38ca9aa4e26ecdb9a124bf1e008aa"
+}

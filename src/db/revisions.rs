@@ -1141,6 +1141,8 @@ pub async fn merge_tracks(
 
     // 7. Sources (same platform id: joined).
     let sources = super::sources::move_all(conn, SourceOwner::Track(from), SourceOwner::Track(into)).await?;
+    // Its groupings: the kept track joins them.
+    super::groupings::follow_merge(conn, from, into, &reason).await?;
 
     // Playlists: entries of the duplicate play the kept track now (anyone's playlists,
     // private ones too: this runs as the system).

@@ -11,6 +11,7 @@ mod auth;
 mod covers;
 mod lyrics;
 mod catalog;
+mod groupings;
 mod groups;
 mod media;
 mod playlists;
@@ -244,6 +245,16 @@ pub fn router(state: AppState) -> Router {
         .route("/api/artists/{id}/aliases/{alias_id}/uses", require(&[Browse], get(catalog::alias_uses)))
         .route("/api/artists/{id}/merge", require(&[EditMetadata], post(catalog::merge_artist)))
         .route("/api/artists/{id}/sources", require(&[EditSources], post(sources::add_artist_source)))
+        // Groupings (collectives, eras, projects).
+        .route("/api/groupings", require(&[EditMetadata], post(groupings::create)))
+        .route("/api/groupings/{id}", require(&[Browse], get(groupings::get)).merge(require(&[EditMetadata], put(groupings::edit))))
+        .route("/api/groupings/{id}/add", require(&[EditMetadata], post(groupings::add)))
+        .route("/api/groupings/{id}/remove", require(&[EditMetadata], post(groupings::remove)))
+        .route("/api/groupings/{id}/sources", require(&[EditSources], post(sources::add_grouping_source)))
+        .route(
+            "/api/artists/{id}/collective",
+            require(&[EditMetadata], get(groupings::collective_preview)).merge(require(&[EditMetadata, EditSources], post(groupings::turn_into_collective))),
+        )
         // Uploads are streamed to disk, so a large body doesn't mean large memory use. The
         // limits (per request, per day) are `upload_limits`'s, not axum's.
         .route(

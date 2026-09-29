@@ -521,6 +521,7 @@ async fn merge_duplicate(
         album_covers_added: created.album_covers_added,
         warnings: created.warnings,
         added,
+        collectives: created.collectives,
     }))
 }
 
@@ -1077,6 +1078,10 @@ async fn create_track_rows(
     let mut credits: Vec<Credit> = Vec::new();
     let mut ambiguous = Vec::new();
     for name in &tags.artists {
+        // A collective (its account): the track goes in its grouping, no credit.
+        if resolver.collective(conn, hints, name).await?.is_some() {
+            continue;
+        }
         let artist = resolver.artist(conn, hints, name).await?;
         // The same artist twice in the tag would be a duplicate credit.
         if credits.iter().any(|c| c.artist_id == artist.id) {
@@ -1103,6 +1108,9 @@ async fn create_track_rows(
     // self-produced track) is credited again as producer, since that's also true.
     let composers: &[String] = if hints.no_composers { &[] } else { &tags.composers };
     for name in composers {
+        if resolver.collective(conn, hints, name).await?.is_some() {
+            continue;
+        }
         let artist = resolver.artist(conn, hints, name).await?;
         if credits.iter().any(|c| c.artist_id == artist.id && c.role == "producer") {
             continue;
@@ -1128,11 +1136,25 @@ async fn create_track_rows(
 
     // Album. Its artists come from the ALBUM ARTIST tag, falling back to the track's.
     let mut albums = Vec::new();
+    let mut album_groupings: Vec<Uuid> = Vec::new();
     let mut album_id = None;
     if let Some(album_title) = &tags.album {
         let mut album_artists = Vec::new();
         for name in album_artist_names {
-            album_artists.push(resolver.artist(conn, hints, name).await?);
+            // A collective's album: in its grouping (below), not credited to it.
+            match resolver.collective(conn, hints, name).await? {
+                Some(grouping) => album_groupings.push(grouping),
+                None => album_artists.push(resolver.artist(conn, hints, name).await?),
+            }
+        }
+        // Only collectives: the album's artists are the track's primary ones.
+        if album_artists.is_empty() {
+            album_artists = metadata
+                .credits
+                .iter()
+                .filter(|c| c.role == "primary")
+                .map(|c| db::ingest::FoundArtist { id: c.artist_id, alias_id: c.alias_id, ambiguous: Vec::new() })
+                .collect();
         }
         // The album's own date if the description has one, else the track's.
         let album_date = hints.album.as_ref().and_then(|a| a.release_date.as_deref()).or(tags.date.as_deref());
@@ -1172,6 +1194,14 @@ async fn create_track_rows(
         file.revision_reason,
     )
     .await?;
+
+    // Into the collectives' groupings (the names that were their accounts).
+    let collectives: Vec<Uuid> = resolver.collectives.iter().map(|(_, g)| *g).collect();
+    for grouping in collectives {
+        let reason = "imported: posted under the collective's account";
+        let album: Vec<Uuid> = album_id.filter(|_| album_groupings.contains(&grouping)).into_iter().collect();
+        db::groupings::add(conn, grouping, &[track_id], &album, reason).await?;
+    }
 
     for (position, (cover_sha, mime, source)) in covers.iter().enumerate() {
         db::ingest::insert_track_cover(
@@ -1290,6 +1320,7 @@ async fn create_track_rows(
             album_covers_added,
             warnings: resolver.warnings,
             added: Vec::new(),
+            collectives: resolver.report_collectives,
         });
     }
     for (name, chosen, artists) in &ambiguous {
@@ -1320,6 +1351,7 @@ async fn create_track_rows(
         album_covers_added,
         warnings: resolver.warnings,
         added: Vec::new(),
+        collectives: resolver.report_collectives,
     })
 }
 

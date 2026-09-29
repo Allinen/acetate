@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT ga.album_id FROM grouping_albums ga JOIN albums a ON a.id = ga.album_id\n         WHERE ga.grouping_id = $1 AND a.merged_into IS NULL ORDER BY ga.added_at, ga.album_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "album_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "grouping_albums",
+            "name": "album_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "0d454ba5d74c38d48c17d2ba0968ef1cb793ebf27c6c077abf4ee7e8a8dd9cc7"
+}

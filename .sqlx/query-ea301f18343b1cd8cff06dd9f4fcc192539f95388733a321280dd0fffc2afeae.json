@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT id, platform, external_id, created_at, created_by, trashed_at, trashed_by\n        FROM sources WHERE (track_id = $1 OR album_id = $1 OR artist_id = $1)\n        ",
+  "query": "\n        SELECT id, platform, external_id, created_at, created_by, trashed_at, trashed_by\n        FROM sources WHERE (track_id = $1 OR album_id = $1 OR artist_id = $1 OR grouping_id = $1)\n        ",
   "describe": {
     "columns": [
       {
@@ -96,5 +96,5 @@
       true
     ]
   },
-  "hash": "77228228347cb24ce2ce10eb1f556d34d837708ee566ca1a287ce4b2d495488d"
+  "hash": "ea301f18343b1cd8cff06dd9f4fcc192539f95388733a321280dd0fffc2afeae"
 }

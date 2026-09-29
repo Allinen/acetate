@@ -31,6 +31,8 @@ pub enum Owner {
     Track(Uuid),
     Album(Uuid),
     Artist(Uuid),
+    /// A grouping (a collective's accounts: shaped like an artist's).
+    Grouping(Uuid),
 }
 
 impl Owner {
@@ -38,7 +40,7 @@ impl Owner {
         match self {
             Owner::Track(_) => "track",
             Owner::Album(_) => "album",
-            Owner::Artist(_) => "artist",
+            Owner::Artist(_) | Owner::Grouping(_) => "artist",
         }
     }
 
@@ -47,6 +49,7 @@ impl Owner {
             Owner::Track(id) => format!("/api/tracks/{id}/sources"),
             Owner::Album(id) => format!("/api/albums/{id}/sources"),
             Owner::Artist(id) => format!("/api/artists/{id}/sources"),
+            Owner::Grouping(id) => format!("/api/groupings/{id}/sources"),
         }
     }
 
@@ -56,6 +59,7 @@ impl Owner {
             Owner::Track(id) => shell.track_details.refresh(id),
             Owner::Album(id) => shell.album_details.refresh(id),
             Owner::Artist(id) => shell.artist_details.refresh(id),
+            Owner::Grouping(id) => shell.grouping_details.refresh(id),
         }
     }
 }

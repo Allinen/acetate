@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n                INSERT INTO sources (track_id, album_id, artist_id, platform, external_id)\n                VALUES ($1, $2, $3, $4, $5)\n                RETURNING id\n                ",
+  "query": "\n                INSERT INTO sources (track_id, album_id, artist_id, grouping_id, platform, external_id)\n                VALUES ($1, $2, $3, $4, $5, $6)\n                RETURNING id\n                ",
   "describe": {
     "columns": [
       {
@@ -20,6 +20,7 @@
         "Uuid",
         "Uuid",
         "Uuid",
+        "Uuid",
         "Text",
         "Text"
       ]
@@ -28,5 +29,5 @@
       false
     ]
   },
-  "hash": "fa527eedffa3f073c31c581ebff9dc31a5b89f244b4d1c1d999d75aa1fe747c7"
+  "hash": "7c4c0cc64778dee573e2cc32f9874b73984b5fd465c097b69ac5388c49c40166"
 }
