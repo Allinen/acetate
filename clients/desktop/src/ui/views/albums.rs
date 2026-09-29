@@ -151,6 +151,10 @@ impl Albums {
                             None => album.artist_display.clone(),
                         };
                         widgets::text_in(ui.painter(), Rect::from_min_size(Pos2::new(rect.left(), text_top + 19.0), Vec2::new(card, 16.0)), &sub, font(12.0, medium()), P.muted);
+                        widgets::share_menu(&response, shell, crate::links::Target::Album(album.id));
+                        if n == self.selected {
+                            shell.list_target = Some(crate::links::Target::Album(album.id));
+                        }
                         if response.clicked() {
                             self.selected = n;
                             if over_button {

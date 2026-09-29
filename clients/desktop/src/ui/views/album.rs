@@ -217,7 +217,7 @@ impl AlbumPage {
             return;
         }
         let rows = TrackRows { tracks: Some(tracks), added: None };
-        let options = Options { key: "album", columns: ALBUM_COLUMNS, added: None, filter_hint: None, album: Some((id, &album.artist_display)) };
+        let options = Options { key: "album", columns: ALBUM_COLUMNS, added: None, filter_hint: None, album: Some((id, &album.artist_display)), keys: true, scroll: true };
         self.list.show(ui, shell, catalog, &rows, shell.generation, player, &options);
     }
 }

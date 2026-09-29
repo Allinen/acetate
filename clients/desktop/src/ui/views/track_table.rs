@@ -35,7 +35,7 @@ use crate::playback::PlayerView;
 use crate::ui::theme::{font, medium, semibold, PALETTE as P};
 use crate::ui::{playing_track, thousands, widgets, Action, Shell};
 
-const ROW: f32 = 36.0;
+pub const ROW: f32 = 36.0;
 
 /// A column a list can have.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -143,6 +143,14 @@ pub struct Options<'a> {
     /// An album's list: the album and its artists (for numbers, discs, and the artist
     /// column showing only other ones).
     pub album: Option<(Uuid, &'a str)>,
+    /// It takes the keys (arrows, Enter, marking…): on a page with several tables, only
+    /// the one in use does.
+    pub keys: bool,
+    /// It scrolls on its own (in the room it's given). Off: it's as tall as its rows, for
+    /// a page that scrolls as a whole (a table scrolling inside a scrolling page catches
+    /// the wheel, and the page can't be scrolled past it). Only the rows on screen are
+    /// drawn either way.
+    pub scroll: bool,
 }
 
 /// What the table reports back.
@@ -151,6 +159,8 @@ pub struct Shown {
     pub selected: Option<usize>,
     /// The rows are shown in their own order, unfiltered (moving one makes sense).
     pub in_own_order: bool,
+    /// A row was clicked (on a page with several tables, it becomes the one in use).
+    pub clicked: bool,
 }
 
 /// A row of the table: a track (its place in `order`), or a disc's name before its
@@ -325,6 +335,7 @@ impl TrackTable {
         // Ctrl+M: the two marked tracks side by side, to merge (again: close). In a text
         // field too, as on the track page.
         if marking
+            && options.keys
             && !self.bulk_open
             && !shell.palette_open
             && self.takes_ctrl_m(shell)
@@ -377,7 +388,7 @@ impl TrackTable {
         let popup = self.bulk_open || self.merge.is_some();
         // Ctrl+E with nothing marked (or outside edit mode): the popup for the selected
         // track alone, a quick fix.
-        if !popup && !typing && !shell.palette_open && (!marking || self.marked.is_empty()) && shell.account.can("edit_metadata") {
+        if options.keys && !popup && !typing && !shell.palette_open && (!marking || self.marked.is_empty()) && shell.account.can("edit_metadata") {
             let id = self.id_at(catalog, rows, self.selected);
             if id.is_some() && ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::E)) {
                 self.quick = id;
@@ -385,7 +396,7 @@ impl TrackTable {
                 self.bulk.opened();
             }
         }
-        if marking && !popup && !typing && !shell.palette_open {
+        if marking && options.keys && !popup && !typing && !shell.palette_open {
             let (toggle, all, clear, open) = ctx.input_mut(|i| {
                 (
                     i.key_pressed(egui::Key::X) && i.modifiers.is_none(),
@@ -432,10 +443,11 @@ impl TrackTable {
         }
 
         // ---- Keys for the row under the cursor ----
-        let visible = ((ui.available_height() / ROW) as usize).max(1);
+        // (At most a window's worth: in a page that scrolls, the room below is endless.)
+        let visible = ((ui.available_height().min(ctx.content_rect().height()) / ROW) as usize).max(1);
         let before = self.selected;
         // (The popup takes the keys while it's open.)
-        let len = if popup { 0 } else { self.order.len() };
+        let len = if popup || !options.keys { 0 } else { self.order.len() };
         let moved = widgets::move_selection(&ctx, &mut self.selected, len, 1, visible);
         if moved.moved {
             self.scroll_to = Some(self.selected);
@@ -471,7 +483,12 @@ impl TrackTable {
         let playing = playing_track(player);
         // On an album: numbers as disc-track when any track is on another disc.
         let numbers = options.album.map(|(album, _)| AlbumNumbers::new(catalog, rows, album));
-        let mut builder = TableBuilder::new(ui).sense(Sense::click()).animate_scrolling(false);
+        // Its own id (by the kind of list): tables side by side don't share a scroll.
+        let mut builder = TableBuilder::new(ui).id_salt(options.key).sense(Sense::click()).animate_scrolling(false).vscroll(options.scroll);
+        if !options.scroll {
+            // All of it: its height isn't capped (the page around it scrolls).
+            builder = builder.max_scroll_height(f32::INFINITY);
+        }
         if marking {
             builder = builder.column(Width::exact(26.0));
         }
@@ -629,6 +646,7 @@ impl TrackTable {
                         });
                     }
                     let response = row.response();
+                    widgets::share_menu(&response, shell, crate::links::Target::Track(catalog.tracks[rows.track(self.order[n]) as usize].id));
                     if response.double_clicked() {
                         double = Some(n);
                     } else if response.clicked() {
@@ -678,9 +696,16 @@ impl TrackTable {
         if self.order.is_empty() {
             ui.label(RichText::new(if self.filter.is_empty() { "No tracks" } else { "Nothing matches the filter" }).color(P.muted));
         }
+        // Ctrl+L on a list: the selected track's link.
+        if options.keys
+            && let Some(&row) = self.order.get(self.selected)
+        {
+            shell.list_target = Some(crate::links::Target::Track(catalog.tracks[rows.track(row) as usize].id));
+        }
         Shown {
             selected: self.order.get(self.selected).copied(),
             in_own_order: self.sort == TrackSort::Natural && !self.descending && self.filter.trim().is_empty(),
+            clicked: clicked.is_some() || double.is_some() || boxed.is_some(),
         }
     }
 

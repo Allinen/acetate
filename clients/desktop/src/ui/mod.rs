@@ -152,8 +152,14 @@ pub struct Shell {
     /// The page uses Space itself (a merge view: Space plays the left file), so it
     /// doesn't pause. Set by the page each frame.
     pub page_takes_space: bool,
+    /// The page uses Esc and Backspace itself (an artist's section shown alone: they go
+    /// back to the whole page), so they don't leave it. Set by the page each frame.
+    pub page_takes_back: bool,
     /// A popup is open (see `modal`): the app's keys wait. Set by the page each frame.
     pub modal_open: bool,
+    /// What Ctrl+L links to on a list page (not a track's, album's or artist's): the
+    /// selected track or album, as the list said last frame.
+    pub list_target: Option<crate::links::Target>,
     /// A popup was open last frame. A page's forms are drawn before the popup (a track
     /// list's, below them), so they leave Ctrl+Enter and Esc to it by this.
     pub modal_was_open: bool,
@@ -608,6 +614,8 @@ impl App {
             page_takes_space: false,
             modal_open: false,
             modal_was_open: false,
+            page_takes_back: false,
+            list_target: None,
             palette_open: false,
             runtime,
             api,
@@ -658,13 +666,14 @@ impl App {
         }
     }
 
-    /// The target of the page shown, if it has one (a track's, album's or artist's).
+    /// What Ctrl+L links to: a track's, album's or artist's page itself; on a list, the
+    /// track or album selected in it.
     fn page_target(&self) -> Option<crate::links::Target> {
         match self.page {
             Page::Track(id) => Some(crate::links::Target::Track(id)),
             Page::Album(id) => Some(crate::links::Target::Album(id)),
             Page::Artist(id) => Some(crate::links::Target::Artist(id)),
-            _ => None,
+            _ => self.shell.list_target,
         }
     }
 
@@ -872,12 +881,12 @@ impl App {
                 Action::CopyShareLink(target) => self.make_share(target),
                 Action::CopyPageShareLink => match self.page_target() {
                     Some(target) => self.make_share(target),
-                    None => self.shell.playlists.notice = Some(("Share links are to a track or an album: open one, then Ctrl+Shift+L.".into(), Instant::now())),
+                    None => self.shell.playlists.notice = Some(("Share links are to a track or an album: open or select one, then Ctrl+Shift+L.".into(), Instant::now())),
                 },
                 Action::CopyPageLink => {
                     match self.page_target() {
                         Some(target) => self.shell.act(Action::CopyLink(target)),
-                        None => self.shell.playlists.notice = Some(("Links are to a track, album or artist: open one, then Ctrl+L.".into(), Instant::now())),
+                        None => self.shell.playlists.notice = Some(("Links are to a track, album or artist: open or select one, then Ctrl+L.".into(), Instant::now())),
                     }
                 }
                 Action::CopyLink(target) => {
@@ -1037,7 +1046,7 @@ impl App {
                 self.shell.act(Action::Go(page));
             }
         }
-        if (key(Key::Escape) || key(Key::Backspace)) && !self.shell.form_dirty {
+        if (key(Key::Escape) || key(Key::Backspace)) && !self.shell.form_dirty && !self.shell.page_takes_back {
             self.shell.act(Action::Back);
         } else if key(Key::Space) && self.page != Page::Review && !self.shell.page_takes_space {
             // (On the Review page, Space plays the track being fixed: the page does it.)
@@ -1148,7 +1157,9 @@ impl eframe::App for App {
                 // Set again by a form with changes, if one is shown.
                 self.shell.form_dirty = false;
                 self.shell.page_takes_space = false;
+                self.shell.page_takes_back = false;
                 self.shell.modal_was_open = self.shell.modal_open;
+                self.shell.list_target = None;
                 self.shell.modal_open = false;
                 self.shell.palette_open = self.pages.palette.is_open();
                 self.pages.show(ui, &mut self.shell, self.page, &player, &mut self.spectrum, dt);

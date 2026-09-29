@@ -275,6 +275,19 @@ pub fn share_chip(ui: &mut egui::Ui, shell: &mut crate::ui::Shell, target: crate
     }
 }
 
+/// A right-click menu on a track row or an album tile with "Share" in it: a click copies
+/// the link, Shift+click makes a share link (as the pages' "Share").
+pub fn share_menu(response: &egui::Response, shell: &mut crate::ui::Shell, target: crate::links::Target) {
+    response.context_menu(|ui| {
+        let item = ui.button("Share").on_hover_text("Copies a link, for someone with an account (Ctrl+L). Shift+click: a share link anyone can open (Ctrl+Shift+L).");
+        if item.clicked() {
+            let shift = ui.input(|i| i.modifiers.shift);
+            shell.act(if shift { crate::ui::Action::CopyShareLink(target) } else { crate::ui::Action::CopyLink(target) });
+            ui.close();
+        }
+    });
+}
+
 /// A small pill button with text; `active` fills it with the accent's soft color.
 pub fn chip(ui: &mut egui::Ui, text: &str, active: bool) -> bool {
     let font = super::theme::font(12.5, super::theme::medium());

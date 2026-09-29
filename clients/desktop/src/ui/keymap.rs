@@ -19,6 +19,7 @@ pub const GROUPS: &[(&str, &[Binding])] = &[
             ("Ctrl+,", "settings"),
             ("Ctrl+L", "copy a link to the track, album or artist shown (for someone with an account)"),
             ("Ctrl+Shift+L", "make a share link to the track or album shown (anyone can open it)"),
+            ("right-click a track or album", "Share (Shift+click: a share link)"),
             ("?  or  F1", "these keys"),
             ("Alt+← / Alt+→", "back / forward"),
             ("Esc  or  Backspace", "back (a text field: leave it)"),
