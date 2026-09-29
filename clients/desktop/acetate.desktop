@@ -7,3 +7,5 @@ Icon=acetate
 StartupWMClass=acetate
 Categories=AudioVideo;Audio;Player;
 Terminal=false
+# Links to tracks, albums and artists (acetate://open/…) open in the app.
+MimeType=x-scheme-handler/acetate;

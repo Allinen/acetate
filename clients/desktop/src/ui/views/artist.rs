@@ -27,6 +27,30 @@ pub struct ArtistPage {
     picking_merge: bool,
     /// Its sources (edit mode).
     sources: crate::ui::edit::sources::SourcesEditor,
+    /// Only what's credited under this name: None, everything; Some(None), its own
+    /// name; Some(Some(alias)), that alias.
+    credited_as: Option<Option<String>>,
+}
+
+/// The names `artist` is credited under in `credits` (None: its own name).
+fn names_in(credits: &[crate::catalog::model::Credit], artist: Uuid) -> impl Iterator<Item = Option<&str>> {
+    credits.iter().filter(move |c| c.0 == artist).map(|c| c.2.as_deref())
+}
+
+/// Every name the artist is credited under on these tracks, with how many: its own name
+/// first, then the others, most used first.
+fn credited_names(catalog: &Catalog, tracks: &[u32], artist: Uuid) -> Vec<(Option<String>, usize)> {
+    let mut counts: std::collections::HashMap<Option<String>, usize> = Default::default();
+    for &t in tracks {
+        let mut names: Vec<Option<&str>> = names_in(&catalog.tracks[t as usize].credits, artist).collect();
+        names.dedup();
+        for name in names {
+            *counts.entry(name.map(str::to_string)).or_default() += 1;
+        }
+    }
+    let mut names: Vec<(Option<String>, usize)> = counts.into_iter().collect();
+    names.sort_by(|a, b| a.0.is_some().cmp(&b.0.is_some()).then(b.1.cmp(&a.1)).then(a.0.cmp(&b.0)));
+    names
 }
 
 impl ArtistPage {
@@ -48,13 +72,45 @@ impl ArtistPage {
             ui.label(RichText::new("This artist isn't in the library (anymore).").color(P.muted));
             return;
         };
-        let tracks = catalog.artist_tracks(id);
-        let albums = catalog.artist_albums(id);
+        let all_tracks = catalog.artist_tracks(id);
+        let all_albums = catalog.artist_albums(id);
+        // Only what's credited under the name chosen (if one is).
+        let names = credited_names(catalog, all_tracks, id);
+        if names.len() < 2 {
+            self.credited_as = None;
+        }
+        let chosen = self.credited_as.clone();
+        let (tracks, albums): (Vec<u32>, Vec<u32>) = match &chosen {
+            None => (all_tracks.to_vec(), all_albums.to_vec()),
+            Some(name) => {
+                let name = name.as_deref();
+                (
+                    all_tracks.iter().copied().filter(|&t| names_in(&catalog.tracks[t as usize].credits, id).any(|n| n == name)).collect(),
+                    all_albums.iter().copied().filter(|&a| names_in(&catalog.albums[a as usize].credits, id).any(|n| n == name)).collect(),
+                )
+            }
+        };
+        let (tracks, albums) = (&tracks[..], &albums[..]);
 
         ui.label(RichText::new("ARTIST").font(font(11.0, semibold())).color(P.accent));
         let name = if artist.disambiguation.is_empty() { artist.name.clone() } else { format!("{} ({})", artist.name, artist.disambiguation) };
         ui.label(RichText::new(name).font(font(40.0, bold())));
-        if !artist.aliases.is_empty() {
+        if names.len() >= 2 {
+            // Credited under several names: one chip each, to see only that name's.
+            ui.add_space(4.0);
+            ui.horizontal_wrapped(|ui| {
+                if widgets::chip(ui, &format!("All  {}", thousands(all_tracks.len())), chosen.is_none()) {
+                    self.credited_as = None;
+                }
+                for (name, count) in &names {
+                    let shown = name.as_deref().unwrap_or(&artist.name);
+                    if widgets::chip(ui, &format!("as {shown}  {}", thousands(*count)), chosen.as_ref() == Some(name)) {
+                        self.credited_as = Some(name.clone());
+                    }
+                }
+            });
+            ui.add_space(4.0);
+        } else if !artist.aliases.is_empty() {
             ui.label(RichText::new(format!("Also credited as {}", artist.aliases.join(", "))).font(font(14.0, medium())).color(P.muted));
         }
         ui.label(
@@ -74,6 +130,7 @@ impl ArtistPage {
             if widgets::chip(ui, "Details", self.details) {
                 self.details = !self.details;
             }
+            widgets::share_chip(ui, shell, crate::links::Target::Artist(id));
             if shell.edit_mode && self.merge.is_none() {
                 ui.add_space(8.0);
                 let tip = "The same artist twice: choose the other one, then see both before merging";
@@ -179,7 +236,14 @@ impl ArtistPage {
         // Newest release first (the artist's own order).
         let rows = TrackRows { tracks: Some(tracks), added: None };
         let options = Options { key: "artist", columns: super::tracks::LIBRARY_COLUMNS, added: None, filter_hint: Some("Filter: words, or album:… year:… status:…"), album: None };
-        self.list.show(ui, shell, catalog, &rows, shell.generation, player, &options);
+        // A new name chosen is new rows (the version tells the table to remake them).
+        let version = {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            (shell.generation, &chosen).hash(&mut hasher);
+            hasher.finish()
+        };
+        self.list.show(ui, shell, catalog, &rows, version, player, &options);
     }
 }
 

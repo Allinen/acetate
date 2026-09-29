@@ -265,6 +265,16 @@ pub fn link(ui: &mut egui::Ui, text: &str, font: egui::FontId, color: Color32) -
     response.clicked()
 }
 
+/// The "Share" chip on a track's, album's or artist's page: a click copies the link (for
+/// someone with an account), Shift+click makes a share link (for anyone).
+pub fn share_chip(ui: &mut egui::Ui, shell: &mut crate::ui::Shell, target: crate::links::Target) {
+    let clicked = chip(ui, "Share", false);
+    if clicked {
+        let shift = ui.input(|i| i.modifiers.shift);
+        shell.act(if shift { crate::ui::Action::CopyShareLink(target) } else { crate::ui::Action::CopyLink(target) });
+    }
+}
+
 /// A small pill button with text; `active` fills it with the accent's soft color.
 pub fn chip(ui: &mut egui::Ui, text: &str, active: bool) -> bool {
     let font = super::theme::font(12.5, super::theme::medium());

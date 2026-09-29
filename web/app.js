@@ -2403,10 +2403,11 @@ async function startShare(token) {
   const meResponse = await fetch("/api/auth/me");
   const user = meResponse.ok ? await meResponse.json() : null;
   if (user?.username) {
-    // Can we see it the normal way? Then go there instead.
+    // Can we see it the normal way? Then it's a link like any other: the desktop app gets
+    // it (or the web UI's page, if the app doesn't take it; see open.html).
     const normal = await fetch(`/api/${share.kind}s/${share.id}`);
     if (normal.ok) {
-      location.replace(`/#/${share.kind}/${share.id}`);
+      location.replace(`/open/${share.kind}/${share.id}`);
       return;
     }
   }

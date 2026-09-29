@@ -17,6 +17,8 @@ pub const GROUPS: &[(&str, &[Binding])] = &[
             ("Ctrl+1 … 6", "albums, artists, tracks, now playing, queue, review"),
             ("1 … 6", "the same, outside a text field"),
             ("Ctrl+,", "settings"),
+            ("Ctrl+L", "copy a link to the track, album or artist shown (for someone with an account)"),
+            ("Ctrl+Shift+L", "make a share link to the track or album shown (anyone can open it)"),
             ("?  or  F1", "these keys"),
             ("Alt+← / Alt+→", "back / forward"),
             ("Esc  or  Backspace", "back (a text field: leave it)"),

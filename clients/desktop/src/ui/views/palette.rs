@@ -50,6 +50,8 @@ const COMMANDS: &[Command] = &[
     Command { name: "Go to Liked songs", keys: "", action: || Action::Go(Page::Liked) },
     Command { name: "New playlist…", keys: "", action: || Action::NewPlaylist },
     Command { name: "Settings", keys: "Ctrl+,", action: || Action::Go(Page::Settings) },
+    Command { name: "Copy a link to this page (to send)", keys: "Ctrl+L", action: || Action::CopyPageLink },
+    Command { name: "Make a share link to this page (anyone can open it)", keys: "Ctrl+Shift+L", action: || Action::CopyPageShareLink },
     Command { name: "Trash (take things back out, clean up old files)", keys: "", action: || Action::Go(Page::Trash) },
     Command { name: "Edit mode on / off", keys: "e", action: || Action::ToggleEditMode },
     Command { name: "Show every key", keys: "?", action: || Action::ShowKeys },

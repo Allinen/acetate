@@ -98,6 +98,8 @@ impl AlbumPage {
         if widgets::chip(&mut marks_ui, "Details", self.details) {
             self.details = !self.details;
         }
+        marks_ui.add_space(4.0);
+        widgets::share_chip(&mut marks_ui, shell, crate::links::Target::Album(id));
         if shell.edit_mode && self.merge.is_none() {
             marks_ui.add_space(8.0);
             let tip = "The same album twice: choose the other one, then see both before merging";

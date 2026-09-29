@@ -5,6 +5,7 @@
 //! - `api`: talking to the server; `account`: who's logged in, what they may do.
 //! - `catalog`: the library kept locally, and its lookups.
 //! - `details`: everything about one track, album or artist, for their pages.
+//! - `links`: links to share, and opening the app from one (`acetate://`).
 //! - `lyrics`: synced lyrics (LRC).
 //! - `playback`: the queue and the audio.
 //! - `playlists`: playlists, kept locally like the catalog.
@@ -20,6 +21,7 @@ mod account;
 mod api;
 mod catalog;
 mod details;
+mod links;
 mod lyrics;
 mod playback;
 mod playlists;
@@ -29,6 +31,14 @@ mod settings;
 mod ui;
 
 fn main() -> eframe::Result {
+    // Started for a link (`acetate://…`, see `links`): the app that's running already
+    // opens it, if there is one; else this start does, once it's up.
+    let link = std::env::args().skip(1).find(|a| a.starts_with("acetate://"));
+    if let Some(link) = &link
+        && links::hand_over(link)
+    {
+        return Ok(());
+    }
     // The simple logo (the full one is for the README, used sparingly).
     let icon = eframe::icon_data::from_png_bytes(include_bytes!("../../../assets/brand/acetate-simple.png")).expect("the app icon");
     let options = eframe::NativeOptions {
@@ -40,5 +50,5 @@ fn main() -> eframe::Result {
             .with_min_inner_size([900.0, 560.0]),
         ..Default::default()
     };
-    eframe::run_native("Acetate", options, Box::new(|cc| Ok(Box::new(ui::App::new(cc)))))
+    eframe::run_native("Acetate", options, Box::new(move |cc| Ok(Box::new(ui::App::new(cc, link)))))
 }

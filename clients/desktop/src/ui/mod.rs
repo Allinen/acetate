@@ -108,6 +108,15 @@ pub enum Action {
     ToggleEditMode,
     /// Show every key (the `?` overlay).
     ShowKeys,
+    /// Copy a link to this track, album or artist (to send to someone with an account).
+    CopyLink(crate::links::Target),
+    /// Copy a link to the page shown (if it's a track's, album's or artist's).
+    CopyPageLink,
+    /// Make a share link (a guest can open it, without an account) to this track or
+    /// album, and copy it. Someone logged in who opens it gets the app, as for a link.
+    CopyShareLink(crate::links::Target),
+    /// Like `CopyShareLink`, for the page shown.
+    CopyPageShareLink,
     /// Choose an artist, album or track for the form that asked (the palette; the
     /// choice arrives through `Shell::picker`).
     Pick { kind: edit::PickKind, except: Option<Uuid> },
@@ -556,10 +565,17 @@ pub struct App {
     back: Vec<Page>,
     forward: Vec<Page>,
     page_since: f64,
+    /// Links handed over by later starts of the app (see `links`), and one waiting to be
+    /// opened (once logged in and the library is here).
+    links: Option<mpsc::Receiver<String>>,
+    pending_link: Option<crate::links::Link>,
+    /// A share link being made: the server's answer (the link, or why not).
+    share_answer: Arc<Mutex<Option<Result<String, String>>>>,
 }
 
 impl App {
-    pub fn new(cc: &eframe::CreationContext) -> App {
+    /// `link`: the `acetate://` link the app was started for, if any.
+    pub fn new(cc: &eframe::CreationContext, link: Option<String>) -> App {
         theme::apply(&cc.egui_ctx);
         let runtime = Runtime::new().expect("a tokio runtime");
         let data_dir = app_dir(dirs::data_dir());
@@ -636,7 +652,94 @@ impl App {
             back: Vec::new(),
             forward: Vec::new(),
             page_since: 0.0,
+            links: crate::links::listen(cc.egui_ctx.clone()),
+            pending_link: link.as_deref().and_then(crate::links::parse),
+            share_answer: Arc::default(),
         }
+    }
+
+    /// The target of the page shown, if it has one (a track's, album's or artist's).
+    fn page_target(&self) -> Option<crate::links::Target> {
+        match self.page {
+            Page::Track(id) => Some(crate::links::Target::Track(id)),
+            Page::Album(id) => Some(crate::links::Target::Album(id)),
+            Page::Artist(id) => Some(crate::links::Target::Artist(id)),
+            _ => None,
+        }
+    }
+
+    /// Makes a share link (`POST /api/shares`) to a track or album; it's copied when the
+    /// server answers (`take_share`).
+    fn make_share(&mut self, target: crate::links::Target) {
+        use crate::links::Target;
+        let body = match target {
+            Target::Track(id) => serde_json::json!({ "track_id": id }),
+            Target::Album(id) => serde_json::json!({ "album_id": id }),
+            Target::Artist(_) => {
+                self.shell.playlists.notice = Some(("Share links are to a track or an album (an artist has its plain link: Ctrl+L).".into(), Instant::now()));
+                return;
+            }
+        };
+        if !self.shell.account.can("share") {
+            self.shell.playlists.notice = Some(("Making share links needs the share permission (the plain link, Ctrl+L, works for anyone with an account).".into(), Instant::now()));
+            return;
+        }
+        let Some(session) = self.shell.api.session() else { return };
+        #[derive(serde::Deserialize)]
+        struct Created {
+            token: String,
+        }
+        let (api, answer, ctx) = (self.shell.api.clone(), self.share_answer.clone(), self.shell.ctx.clone());
+        self.shell.runtime.spawn(async move {
+            let result = api
+                .send_json::<Created>(reqwest::Method::POST, "/api/shares", Some(body))
+                .await
+                .map(|c| format!("{}/s/{}", session.server.trim_end_matches('/'), c.token))
+                .map_err(|err| err.message);
+            *answer.lock().unwrap() = Some(result);
+            ctx.request_repaint();
+        });
+    }
+
+    /// A share link made: copied, and said so.
+    fn take_share(&mut self, ctx: &egui::Context) {
+        let Some(result) = self.share_answer.lock().unwrap().take() else { return };
+        let text = match result {
+            Ok(link) => {
+                ctx.copy_text(link.clone());
+                format!("Share link copied (anyone can open it; revoke it in the web UI's Shares): {link}")
+            }
+            Err(err) => format!("Couldn't make a share link: {err}"),
+        };
+        self.shell.playlists.notice = Some((text, Instant::now()));
+    }
+
+    /// Opens the link waiting (one handed over, or the one the app started for), once
+    /// there's a library to open it in. A link to another server says so instead.
+    fn open_links(&mut self) {
+        if let Some(links) = &self.links {
+            while let Ok(text) = links.try_recv() {
+                match crate::links::parse(&text) {
+                    Some(link) => self.pending_link = Some(link),
+                    None => self.shell.playlists.notice = Some((format!("That isn't a link this app opens: {text}"), Instant::now())),
+                }
+            }
+        }
+        let (Some(session), Some(_)) = (self.shell.api.session(), self.shell.catalog.value.as_ref()) else { return };
+        let Some(link) = self.pending_link.take() else { return };
+        if let Some(server) = link.server.as_deref()
+            && !crate::links::same_server(server, &session.server)
+        {
+            let text = format!("That link is to another server ({server}); you're logged in to {}.", session.server);
+            self.shell.playlists.notice = Some((text, Instant::now()));
+            return;
+        }
+        let page = match link.target {
+            crate::links::Target::Track(id) => Page::Track(id),
+            crate::links::Target::Album(id) => Page::Album(id),
+            crate::links::Target::Artist(id) => Page::Artist(id),
+        };
+        self.shell.act(Action::Go(page));
     }
 
     fn go(&mut self, page: Page, now: f64) {
@@ -766,6 +869,24 @@ impl App {
                 Action::RenamePlaylist(id) => self.pages.palette.open(ctx, views::palette::Mode::Name(Some(id))),
                 Action::RefreshLibrary => self.shell.refresh_library(ctx),
                 Action::ShowKeys => self.keys_open = true,
+                Action::CopyShareLink(target) => self.make_share(target),
+                Action::CopyPageShareLink => match self.page_target() {
+                    Some(target) => self.make_share(target),
+                    None => self.shell.playlists.notice = Some(("Share links are to a track or an album: open one, then Ctrl+Shift+L.".into(), Instant::now())),
+                },
+                Action::CopyPageLink => {
+                    match self.page_target() {
+                        Some(target) => self.shell.act(Action::CopyLink(target)),
+                        None => self.shell.playlists.notice = Some(("Links are to a track, album or artist: open one, then Ctrl+L.".into(), Instant::now())),
+                    }
+                }
+                Action::CopyLink(target) => {
+                    if let Some(session) = self.shell.api.session() {
+                        let link = crate::links::web(&session.server, target);
+                        ctx.copy_text(link.clone());
+                        self.shell.playlists.notice = Some((format!("Link copied: {link}"), Instant::now()));
+                    }
+                }
                 Action::Pick { kind, except } => self.pages.palette.open(ctx, views::palette::Mode::Pick(kind, except)),
                 Action::ToggleEditMode => {
                     if self.shell.account.can("edit_metadata") {
@@ -864,6 +985,14 @@ impl App {
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, Key::Comma)) {
             self.shell.act(Action::Go(Page::Settings));
         }
+        // Ctrl+L: a link to what's shown (a track, album or artist), to send to someone
+        // with an account; Ctrl+Shift+L: a share link, for anyone. (Shift first: a key
+        // asked for without it matches with it too.)
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND | egui::Modifiers::SHIFT, Key::L)) {
+            self.shell.act(Action::CopyPageShareLink);
+        } else if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, Key::L)) {
+            self.shell.act(Action::CopyPageLink);
+        }
         if m.alt && key(Key::ArrowLeft) {
             self.shell.act(Action::Back);
         } else if m.alt && key(Key::ArrowRight) {
@@ -961,6 +1090,8 @@ impl eframe::App for App {
             return;
         };
         self.keys(&ctx);
+        self.open_links();
+        self.take_share(&ctx);
         self.shell.take_mark_answers();
         self.shell.playlists.poll();
         self.shell.account.poll();

@@ -146,9 +146,11 @@ impl TrackPage {
                     }
                 }
             }
-            let marks_rect = Rect::from_min_size(Pos2::new(play_rect.right() + 18.0, play_rect.top()), Vec2::new(260.0, play_rect.height()));
+            let marks_rect = Rect::from_min_size(Pos2::new(play_rect.right() + 18.0, play_rect.top()), Vec2::new(380.0, play_rect.height()));
             let mut marks_ui = ui.new_child(egui::UiBuilder::new().max_rect(marks_rect).layout(layout));
             marks(&mut marks_ui, shell, Kind::Track, id);
+            marks_ui.add_space(8.0);
+            widgets::share_chip(&mut marks_ui, shell, crate::links::Target::Track(id));
             ui.add_space(20.0);
 
             let Some(d) = detail else {

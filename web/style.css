@@ -140,3 +140,16 @@ form.stack textarea { width: 100%; font-family: inherit; }
 /* Trash */
 table.trash { border-collapse: collapse; width: 100%; }
 table.trash td, table.trash th { padding: 3px 6px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+
+/* The page for a link to a track, album or artist (open.html). */
+.open-link { max-width: 560px; margin: 12vh auto; padding: 0 16px; }
+a.button {
+  display: inline-block;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 5px 8px;
+  text-decoration: none;
+}
+a.button:hover { border-color: var(--accent); }

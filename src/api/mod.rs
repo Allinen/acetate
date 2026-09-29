@@ -275,7 +275,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/auth/login", post(auth::login))
         .merge(share_links)
         // The web UI's page for a share link; the page itself reads the token from the URL.
-        .route_service("/s/{token}", ServeFile::new(state.web_dir.join("index.html")));
+        .route_service("/s/{token}", ServeFile::new(state.web_dir.join("index.html")))
+        // A link to a track, album or artist, for someone with an account: the page hands
+        // it to the desktop app (or the web UI) itself.
+        .route_service("/open/{kind}/{id}", ServeFile::new(state.web_dir.join("open.html")));
 
     Router::new()
         .merge(public)
