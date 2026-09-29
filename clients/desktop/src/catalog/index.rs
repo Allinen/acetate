@@ -229,6 +229,11 @@ impl Catalog {
         self.artist_by_id.get(&id).map(|&i| &self.artists[i as usize])
     }
 
+    /// An artist's name with its disambiguation ("Kai (UK producer)"), as it is now.
+    pub fn artist_label(&self, id: Uuid) -> Option<String> {
+        self.artist(id).map(Artist::label)
+    }
+
     /// The album's tracks in order (positions in `tracks`).
     pub fn album_tracks(&self, album: Uuid) -> &[u32] {
         self.album_tracks.get(&album).map(Vec::as_slice).unwrap_or(&[])
@@ -514,9 +519,9 @@ mod tests {
     fn catalog() -> Catalog {
         // Two albums; track 3 is on both, first on "B" (its main one).
         let body = serde_json::json!({
-            "format": 4,
+            "format": 5,
             "tracks": {"columns": ["id", "title", "artist_display", "credits", "albums", "duration_ms", "file_id", "cover_id", "cover_key",
-                                    "release_date", "year", "status", "genres", "created_at", "is_restricted", "codec", "groupings", "platforms"],
+                                    "release_date", "year", "status", "genres", "created_at", "is_restricted", "codec", "groupings", "platforms", "original_filename"],
                        "rows": [
                 ["00000000-0000-7000-8000-000000000001", "Second", "Ann", [["00000000-0000-7000-8000-0000000000a1", "primary", null]],
                  [["00000000-0000-7000-8000-0000000000b1", 1, 2]], 1000, "00000000-0000-7000-8000-0000000000f1", null, null, "2020", 2020, "released", [], "", false, "flac"],
@@ -594,7 +599,7 @@ mod tests {
             serde_json::json!([t(n), title, "Ann", [], album, 1000, "00000000-0000-7000-8000-0000000000f9", null, null, null, null, "released", [], "", false, "flac"])
         };
         let delta = serde_json::json!({
-            "format": 4, "delta": true, "version": "10:20:",
+            "format": 5, "delta": true, "version": "10:20:",
             "tracks": {"columns": [], "rows": [track(1, "Second (edited)"), track(4, "Fourth")]},
             "albums": {"columns": [], "rows": []},
             "artists": {"columns": [], "rows": []},
@@ -632,7 +637,7 @@ mod tests {
 
     #[test]
     fn unknown_columns_ask_for_an_update() {
-        let body = br#"{"format": 5}"#;
+        let body = br#"{"format": 6}"#;
         let err = model::parse(body).err().unwrap().to_string();
         assert!(err.contains("update the app"), "{err}");
     }

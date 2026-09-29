@@ -649,8 +649,17 @@ impl TrackTable {
                                 ui.label(RichText::new(text).font(font(12.5, medium())).color(P.faint));
                             }
                             Column::Cover => {
-                                let (rect, _) = ui.allocate_exact_size(Vec2::splat(28.0), Sense::hover());
+                                // Centred in the whole cell (not at its top left, where the
+                                // cell's edge and the table's top cut it off).
+                                let cell = ui.max_rect();
+                                ui.allocate_rect(cell, Sense::hover());
+                                let rect = egui::Rect::from_center_size(cell.center(), Vec2::splat(28.0));
                                 shell.cover(ui, t.cover(), t.id, rect, 4, 0.0);
+                                // An original file's track: an amber edge (inside the cover,
+                                // so nothing clips it).
+                                if t.original_filename.is_some() {
+                                    ui.painter().rect_stroke(rect, 4, egui::Stroke::new(1.5, P.accent), egui::StrokeKind::Inside);
+                                }
                             }
                             Column::Title => {
                                 // The star on the title's line, not above it.
@@ -659,7 +668,11 @@ impl TrackTable {
                                         let (rect, _) = ui.allocate_exact_size(Vec2::new(14.0, 14.0), Sense::hover());
                                         widgets::draw_star(ui.painter(), rect.center(), 5.5, P.accent);
                                     }
-                                    if widgets::link(ui, &t.title, font(13.5, medium()), color) {
+                                    let clicked = match &t.original_filename {
+                                        Some(name) => widgets::og_link(ui, &t.title, font(13.5, medium()), name),
+                                        None => widgets::link(ui, &t.title, font(13.5, medium()), color),
+                                    };
+                                    if clicked {
                                         shell.act(Action::Go(crate::ui::Page::Track(t.id)));
                                     }
                                 });

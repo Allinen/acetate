@@ -398,7 +398,7 @@ impl Palette {
                 let initial = artist.name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default();
                 painter.text(cover_rect.center(), Align2::CENTER_CENTER, initial, font(13.0, medium()), P.text);
                 let aliases = (!artist.aliases.is_empty()).then(|| format!("also {}", artist.aliases.join(", ")));
-                (artist.name.clone(), aliases, "Artist".into())
+                (artist.label(), aliases, "Artist".into())
             }
             (Entry::Album(i), Some(c)) => {
                 let album = &c.albums[i as usize];

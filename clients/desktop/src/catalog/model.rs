@@ -9,7 +9,7 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 /// The catalog format this client reads (the server's `FORMAT`).
-pub const FORMAT: u32 = 4;
+pub const FORMAT: u32 = 5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -84,12 +84,16 @@ pub struct Track {
     /// Where its sources are ("youtube", "soundcloud"…), sorted, each once.
     #[serde(default)]
     pub platforms: Vec<String>,
+    /// Set only when its file is an original file (an "og file"): the name the artist
+    /// gave it.
+    #[serde(default)]
+    pub original_filename: Option<String>,
 }
 
 const TRACK_COLUMNS: &[&str] = &[
     "id", "title", "artist_display", "credits", "albums", "duration_ms", "file_id", "cover_id",
     "cover_key", "release_date", "year", "status", "genres", "created_at", "is_restricted", "codec",
-    "groupings", "platforms",
+    "groupings", "platforms", "original_filename",
 ];
 
 // Every column is read (rows are arrays in column order); not all are shown yet.
@@ -141,6 +145,13 @@ pub struct Artist {
     pub aliases: Vec<String>,
     pub track_count: i64,
     pub album_count: i64,
+}
+
+impl Artist {
+    /// Its name with its disambiguation, if it has one: "Kai (UK producer)".
+    pub fn label(&self) -> String {
+        if self.disambiguation.is_empty() { self.name.clone() } else { format!("{} ({})", self.name, self.disambiguation) }
+    }
 }
 
 const ARTIST_COLUMNS: &[&str] = &["id", "name", "disambiguation", "aliases", "track_count", "album_count"];

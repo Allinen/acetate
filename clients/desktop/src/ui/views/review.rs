@@ -438,16 +438,20 @@ impl Review {
         ui.horizontal_wrapped(|ui| {
             for (id, artist) in candidates(flag) {
                 let size = catalog.artist(id).map(|a| format!(" · {} tracks", a.track_count)).unwrap_or_default();
-                let dis = flag
-                    .related_artists
-                    .as_array()
-                    .and_then(|a| a.iter().find(|x| x.get("id").and_then(|v| v.as_str()) == Some(id.to_string().as_str())))
-                    .and_then(|x| x.get("disambiguation")?.as_str())
-                    .filter(|d| !d.is_empty())
-                    .map(|d| format!(" ({d})"))
-                    .unwrap_or_default();
+                // As the artist is now (the flag's copy is from when the flags were fetched).
+                let label = catalog.artist_label(id).unwrap_or_else(|| {
+                    let dis = flag
+                        .related_artists
+                        .as_array()
+                        .and_then(|a| a.iter().find(|x| x.get("id").and_then(|v| v.as_str()) == Some(id.to_string().as_str())))
+                        .and_then(|x| x.get("disambiguation")?.as_str())
+                        .filter(|d| !d.is_empty())
+                        .map(|d| format!(" ({d})"))
+                        .unwrap_or_default();
+                    format!("{artist}{dis}")
+                });
                 let on = credited.contains(&id);
-                if widgets::chip(ui, &format!("{artist}{dis}{size}"), on) {
+                if widgets::chip(ui, &format!("{label}{size}"), on) {
                     chosen = Some((id, artist.clone(), on));
                 }
                 if widgets::link(ui, "page", font(11.5, medium()), P.faint) {
@@ -955,7 +959,8 @@ fn related(ui: &mut egui::Ui, shell: &mut Shell, flag: &Flag) {
                 continue;
             };
             let dis = a.get("disambiguation").and_then(|v| v.as_str()).filter(|d| !d.is_empty()).map(|d| format!(" ({d})")).unwrap_or_default();
-            if widgets::link(ui, &format!("{name}{dis}"), font(13.0, medium()), P.text) {
+            let label = shell.catalog.value.as_ref().and_then(|c| c.artist_label(id)).unwrap_or_else(|| format!("{name}{dis}"));
+            if widgets::link(ui, &label, font(13.0, medium()), P.text) {
                 shell.act(Action::Go(crate::ui::Page::Artist(id)));
             }
         }

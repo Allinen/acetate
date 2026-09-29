@@ -117,7 +117,7 @@ impl Artists {
                 let left = rect.left() + 52.0;
                 let width = rect.width() - 52.0 - 200.0;
                 let aliases = if artist.aliases.is_empty() { None } else { Some(format!("also {}", artist.aliases.join(", "))) };
-                let name = if artist.disambiguation.is_empty() { artist.name.clone() } else { format!("{} ({})", artist.name, artist.disambiguation) };
+                let name = artist.label();
                 let y = if aliases.is_some() { -8.0 } else { 0.0 };
                 widgets::text_in(ui.painter(), Rect::from_min_size(Pos2::new(left, rect.center().y + y - 9.0), Vec2::new(width, 18.0)), &name, font(14.0, medium()), P.text);
                 if let Some(aliases) = aliases {

@@ -305,9 +305,10 @@ impl ReviewBulk {
 
 /// A candidate as listed: its name, disambiguation and how many tracks it has.
 fn label(catalog: &Catalog, (id, name, dis): &(Uuid, String, String)) -> String {
-    let dis = if dis.is_empty() { String::new() } else { format!(" ({dis})") };
     let size = catalog.artist(*id).map(|a| format!(" · {} tracks", thousands(a.track_count as usize))).unwrap_or_default();
-    format!("{name}{dis}{size}")
+    // As the artist is now (the flag's copy is from when the flags were fetched).
+    let label = catalog.artist_label(*id).unwrap_or_else(|| if dis.is_empty() { name.clone() } else { format!("{name} ({dis})") });
+    format!("{label}{size}")
 }
 
 /// The ambiguous-artist `flags` by name (most flags first), from the details `list` has;

@@ -265,6 +265,53 @@ pub fn link(ui: &mut egui::Ui, text: &str, font: egui::FontId, color: Color32) -
     response.clicked()
 }
 
+/// A link for an original file's track (an "og file"): its title in the accent colour,
+/// and while hovered, lighter and deeper tints of it rolling across the letters like a
+/// wave; the file's own name shows on hover. Returns true when clicked.
+pub fn og_link(ui: &mut egui::Ui, text: &str, font: egui::FontId, original_filename: &str) -> bool {
+    // Hovered last frame (the text is laid out before its response is known).
+    let key = ui.id().with(("og-hovered", text));
+    let hovered = ui.ctx().data(|d| d.get_temp::<bool>(key)).unwrap_or(false);
+    let time = ui.input(|i| i.time);
+    let job = og_text(text, font, hovered.then_some(time));
+    let label = egui::Label::new(job).sense(Sense::click()).truncate();
+    let response = ui.add(label).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(format!("Original file · {original_filename}"));
+    if response.hovered() {
+        ui.painter().hline(response.rect.x_range(), response.rect.bottom(), Stroke::new(1.0, P.accent.gamma_multiply(0.7)));
+        ui.ctx().request_repaint();
+    }
+    if response.hovered() != hovered {
+        ui.ctx().data_mut(|d| d.insert_temp(key, response.hovered()));
+        ui.ctx().request_repaint();
+    }
+    response.clicked()
+}
+
+/// An og file's title: all accent, or (`wave`: the time) a letter at a time, its colour
+/// shifting between a lighter and a deeper tint as a wave passes.
+pub(crate) fn og_text(text: &str, font: egui::FontId, wave: Option<f64>) -> egui::text::LayoutJob {
+    let format = |color| egui::TextFormat { font_id: font.clone(), color, ..Default::default() };
+    let Some(time) = wave else {
+        return egui::text::LayoutJob::single_section(text.to_string(), format(P.accent));
+    };
+    let (light, deep) = (Color32::from_rgb(0xff, 0xe0, 0xb0), Color32::from_rgb(0xe0, 0x78, 0x3c));
+    let mut job = egui::text::LayoutJob::default();
+    for (n, c) in text.chars().enumerate() {
+        // A wave about 12 letters long, crossing 6 letters a second.
+        let phase = (n as f64 / 12.0 - time * 0.5) * std::f64::consts::TAU;
+        let t = phase.sin() as f32;
+        let color = if t >= 0.0 { lerp_color(P.accent, light, t) } else { lerp_color(P.accent, deep, -t) };
+        let mut buf = [0u8; 4];
+        job.append(c.encode_utf8(&mut buf), 0.0, format(color));
+    }
+    job
+}
+
+fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
+    let mix = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
+    Color32::from_rgb(mix(a.r(), b.r()), mix(a.g(), b.g()), mix(a.b(), b.b()))
+}
+
 /// The "Share" chip on a track's, album's or artist's page: a click copies the link (for
 /// someone with an account), Shift+click makes a share link (for anyone).
 pub fn share_chip(ui: &mut egui::Ui, shell: &mut crate::ui::Shell, target: crate::links::Target) {
@@ -374,4 +421,21 @@ pub fn rating(ui: &mut egui::Ui, value: i16, size: f32) -> Option<i16> {
         ui.ctx().data_mut(|d| d.insert_temp(clicked_id, true));
     }
     new.filter(|&new| new != value)
+}
+
+#[cfg(test)]
+mod og_tests {
+    use super::*;
+
+    #[test]
+    fn an_og_title_waves_only_while_hovered() {
+        let font = egui::FontId::proportional(13.0);
+        let still = og_text("Glass Harbor", font.clone(), None);
+        assert_eq!(still.sections.len(), 1);
+        assert_eq!(still.sections[0].format.color, P.accent);
+        let wave = og_text("Glass Harbor", font, Some(0.3));
+        assert_eq!(wave.sections.len(), "Glass Harbor".chars().count(), "a colour per letter");
+        let colors: std::collections::HashSet<Color32> = wave.sections.iter().map(|s| s.format.color).collect();
+        assert!(colors.len() > 4, "the colours shift along the title");
+    }
 }

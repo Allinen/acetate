@@ -82,7 +82,7 @@ impl ArtistMergeView {
                 egui::Frame::NONE.fill(P.surface).corner_radius(10).inner_margin(egui::Margin::same(10)).show(ui, |ui| {
                     ui.set_width(width);
                     ui.label(RichText::new(label).font(font(12.0, semibold())).color(color));
-                    let name = if artist.disambiguation.is_empty() { artist.name.clone() } else { format!("{} ({})", artist.name, artist.disambiguation) };
+                    let name = artist.label();
                     ui.label(RichText::new(name).font(font(16.0, semibold())));
                     if !artist.aliases.is_empty() {
                         ui.label(RichText::new(format!("also {}", artist.aliases.join(", "))).color(P.muted));

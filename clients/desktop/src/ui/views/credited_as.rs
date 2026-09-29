@@ -405,7 +405,7 @@ fn rows(catalog: &Catalog, tracks: &[Uuid]) -> Vec<Row> {
         .map(|(artist, (tracks, now))| {
             let mut now: Vec<(Option<String>, usize)> = now.into_iter().collect();
             now.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-            let name = catalog.artist(artist).map(|a| a.name.clone()).unwrap_or_else(|| "(unknown)".into());
+            let name = catalog.artist_label(artist).unwrap_or_else(|| "(unknown)".into());
             Row { artist, name, tracks, now }
         })
         .collect();

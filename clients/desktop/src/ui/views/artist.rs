@@ -252,7 +252,7 @@ impl ArtistPage {
         }
 
         ui.label(RichText::new("ARTIST").font(font(11.0, semibold())).color(P.accent));
-        let name = if artist.disambiguation.is_empty() { artist.name.clone() } else { format!("{} ({})", artist.name, artist.disambiguation) };
+        let name = artist.label();
         ui.label(RichText::new(name).font(font(40.0, bold())));
         if names.len() >= 2 {
             ui.add_space(4.0);
