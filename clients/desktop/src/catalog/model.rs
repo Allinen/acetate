@@ -9,7 +9,7 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 /// The catalog format this client reads (the server's `FORMAT`).
-pub const FORMAT: u32 = 3;
+pub const FORMAT: u32 = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -81,12 +81,15 @@ pub struct Track {
     /// The groupings it's in (collectives, eras, projects…).
     #[serde(default)]
     pub groupings: Vec<Uuid>,
+    /// Where its sources are ("youtube", "soundcloud"…), sorted, each once.
+    #[serde(default)]
+    pub platforms: Vec<String>,
 }
 
 const TRACK_COLUMNS: &[&str] = &[
     "id", "title", "artist_display", "credits", "albums", "duration_ms", "file_id", "cover_id",
     "cover_key", "release_date", "year", "status", "genres", "created_at", "is_restricted", "codec",
-    "groupings",
+    "groupings", "platforms",
 ];
 
 // Every column is read (rows are arrays in column order); not all are shown yet.

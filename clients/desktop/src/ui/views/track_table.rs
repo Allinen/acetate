@@ -196,6 +196,8 @@ pub struct TrackTable {
     quick: Option<Uuid>,
     /// The two marked tracks side by side, to merge (Ctrl+M, edit mode), in a popup.
     merge: Option<super::merge::MergeView>,
+    /// The marked tracks' "credited as" (an artist's name on them and their albums).
+    credited_as: Option<super::credited_as::CreditedAs>,
     /// Marked tracks being put in a grouping: the server's answer (how many, or why not).
     grouping_answer: std::sync::Arc<std::sync::Mutex<Option<Result<String, String>>>>,
 }
@@ -224,6 +226,7 @@ impl TrackTable {
             bulk_open: false,
             quick: None,
             merge: None,
+            credited_as: None,
             grouping_answer: Default::default(),
         }
     }
@@ -345,6 +348,7 @@ impl TrackTable {
         }
         if !marking {
             self.merge = None;
+            self.credited_as = None;
         }
         // Ctrl+M: the two marked tracks side by side, to merge (again: close). In a text
         // field too, as on the track page.
@@ -370,6 +374,11 @@ impl TrackTable {
         }
         if self.merge.is_some() {
             self.merge_popup(&ctx, shell, player);
+        }
+        if let Some(popup) = &mut self.credited_as
+            && popup.show(shell)
+        {
+            self.credited_as = None;
         }
         // The change for all of them, in a popup (drawn first: it takes Esc and Ctrl+Enter
         // before the table sees them).
@@ -399,7 +408,7 @@ impl TrackTable {
             }
         }
         let typing = ctx.egui_wants_keyboard_input();
-        let popup = self.bulk_open || self.merge.is_some();
+        let popup = self.bulk_open || self.merge.is_some() || self.credited_as.is_some();
         // Ctrl+E with nothing marked (or outside edit mode): the popup for the selected
         // track alone, a quick fix.
         if options.keys && !popup && !typing && !shell.palette_open && (!marking || self.marked.is_empty()) && shell.account.can("edit_metadata") {
@@ -475,6 +484,9 @@ impl TrackTable {
                             ctx.request_repaint();
                         });
                     }
+                }
+                if ui.button("Credited as…").on_hover_text("An artist's name on these tracks and their albums (an alias, or its own name)").clicked() {
+                    self.credited_as = Some(super::credited_as::CreditedAs::open(self.marked(catalog, rows)));
                 }
                 if self.marked.len() == 2 && ui.button("Merge the two…  (Ctrl+M)").clicked() {
                     let marked = self.marked(catalog, rows);

@@ -266,6 +266,56 @@ pub async fn merge_artist(
     Ok(Json(merged))
 }
 
+#[derive(Debug, Deserialize)]
+pub struct CreditAs {
+    track_ids: Vec<Uuid>,
+    /// Only its credits under this alias, or (`only_own_name`) under its own name.
+    only_alias_id: Option<Uuid>,
+    #[serde(default)]
+    only_own_name: bool,
+    /// Credited to this artist instead (absent: the same one).
+    to_artist_id: Option<Uuid>,
+    /// Under this alias of it; null: its own name.
+    alias_id: Option<Uuid>,
+    #[serde(default)]
+    reason: String,
+    /// Only say what would change (nothing is kept).
+    #[serde(default)]
+    preview: bool,
+}
+
+/// `POST /api/artists/{id}/credited-as`, JSON `{"track_ids": [...], "only_alias_id": ...,
+/// "only_own_name": false, "to_artist_id": ..., "alias_id": ..., "reason": ...,
+/// "preview": true}`: the artist's credits (all, or those under one name) on these tracks
+/// and the albums they're on become `to_artist_id`'s (or stay its own) under `alias_id`'s
+/// name (a revision each that changes). `preview`: the same, answered and not kept. See
+/// `db::credited_as`.
+pub async fn credit_as(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<Uuid>,
+    Json(body): Json<CreditAs>,
+) -> Result<Json<db::credited_as::CreditedAs>, AppError> {
+    if body.track_ids.len() > 10_000 {
+        return Err(AppError::BadRequest("at most 10000 tracks at once".into()));
+    }
+    let mut tx = state.db(&user).await?;
+    use db::credited_as::{Only, Target};
+    let only = match (body.only_alias_id, body.only_own_name) {
+        (Some(alias), _) => Only::Alias(alias),
+        (None, true) => Only::OwnName,
+        (None, false) => Only::All,
+    };
+    let to = Target { artist: body.to_artist_id.unwrap_or(id), alias: body.alias_id };
+    let done = db::credited_as::credit_as(&mut tx, &body.track_ids, id, only, to, &body.reason).await?;
+    if body.preview {
+        tx.rollback().await?;
+    } else {
+        tx.commit().await?;
+    }
+    Ok(Json(done))
+}
+
 // ---- Albums ----
 
 /// `GET /api/albums?q=...`

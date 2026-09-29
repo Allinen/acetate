@@ -250,6 +250,20 @@ pub async fn resolve(conn: &mut PgConnection, id: Uuid, resolution: &str) -> sql
     Ok(result.rows_affected() > 0)
 }
 
+/// Marks many flags resolved, with one `resolution` (the Review page's bulk tools). Only
+/// open ones the user can see. Returns how many were.
+pub async fn resolve_many(conn: &mut PgConnection, ids: &[Uuid], resolution: &str) -> sqlx::Result<u64> {
+    let result = sqlx::query!(
+        "UPDATE review_flags SET resolved_at = now(), resolved_by = current_app_user(), resolution = $2
+         WHERE id = ANY($1) AND resolved_at IS NULL",
+        ids,
+        resolution
+    )
+    .execute(conn)
+    .await?;
+    Ok(result.rows_affected())
+}
+
 /// Settles the "possible duplicate" question between two tracks only, e.g. after they
 /// were made to share a file: they're not the same track, and that's decided. Flags about
 /// other tracks stay as they are.

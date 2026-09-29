@@ -71,3 +71,83 @@ pub async fn resolve(
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
 }
+
+/// How many flags or tracks one bulk request may name (the client sends more in turns).
+const BULK_LIMIT: usize = 10_000;
+
+fn check_size(ids: &[Uuid]) -> Result<(), AppError> {
+    if ids.len() > BULK_LIMIT {
+        return Err(AppError::BadRequest(format!("at most {BULK_LIMIT} at once")));
+    }
+    Ok(())
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ResolveMany {
+    flag_ids: Vec<Uuid>,
+    #[serde(default)]
+    resolution: String,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct Resolved {
+    resolved: u64,
+}
+
+/// `POST /api/review/resolve`, JSON `{"flag_ids": [...], "resolution": "..."}`: resolves
+/// many flags at once (the open ones among them the user can see). Answers how many were.
+pub async fn resolve_many(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Json(body): Json<ResolveMany>,
+) -> Result<Json<Resolved>, AppError> {
+    check_size(&body.flag_ids)?;
+    let mut tx = state.db(&user).await?;
+    let resolved = db::review::resolve_many(&mut tx, &body.flag_ids, &body.resolution).await?;
+    tx.commit().await?;
+    Ok(Json(Resolved { resolved }))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Ambiguous {
+    flag_ids: Vec<Uuid>,
+    artist_id: Uuid,
+    #[serde(default)]
+    reason: String,
+}
+
+/// `POST /api/review/ambiguous`, JSON `{"flag_ids": [...], "artist_id": ..., "reason": ...}`:
+/// ambiguous artist names settled on one artist, credited on each track (a revision each).
+/// See `db::review_bulk::settle_ambiguous`.
+pub async fn settle_ambiguous(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Json(body): Json<Ambiguous>,
+) -> Result<Json<db::review_bulk::Settled>, AppError> {
+    check_size(&body.flag_ids)?;
+    let mut tx = state.db(&user).await?;
+    let settled = db::review_bulk::settle_ambiguous(&mut tx, &body.flag_ids, body.artist_id, &body.reason).await?;
+    tx.commit().await?;
+    Ok(Json(settled))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Singles {
+    track_ids: Vec<Uuid>,
+    #[serde(default)]
+    reason: String,
+}
+
+/// `POST /api/tracks/singles`, JSON `{"track_ids": [...], "reason": ...}`: each track on no
+/// album gets a single of its own. See `db::review_bulk::make_singles`.
+pub async fn make_singles(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Json(body): Json<Singles>,
+) -> Result<Json<db::review_bulk::Singles>, AppError> {
+    check_size(&body.track_ids)?;
+    let mut tx = state.db(&user).await?;
+    let made = db::review_bulk::make_singles(&mut tx, &body.track_ids, &body.reason).await?;
+    tx.commit().await?;
+    Ok(Json(made))
+}

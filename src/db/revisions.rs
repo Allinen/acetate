@@ -491,7 +491,7 @@ async fn insert_external(
     .await?)
 }
 
-async fn latest_external(
+pub(crate) async fn latest_external(
     conn: &mut PgConnection,
     track_id: Uuid,
 ) -> sqlx::Result<Option<(Uuid, serde_json::Value)>> {
@@ -761,7 +761,7 @@ pub async fn primary_metadata(conn: &mut PgConnection, track_id: Uuid) -> anyhow
     Ok(latest_internal(conn, track_id, variant).await?.map(|(_, data)| data))
 }
 
-async fn latest_internal(
+pub(crate) async fn latest_internal(
     conn: &mut PgConnection,
     track_id: Uuid,
     variant_id: Uuid,

@@ -17,11 +17,12 @@ use uuid::Uuid;
 /// album before a single, then the oldest). `cover_id`: its own first cover, else its main
 /// album's. `cover_key`: the start of that image's SHA-256, the same for the same image
 /// under different covers (every track of an album often has its own copy): clients can
-/// keep one copy per image.
+/// keep one copy per image. `platforms`: where its sources are (`["youtube", …]`, sorted,
+/// each once; trashed ones left out).
 pub const TRACK_COLUMNS: &[&str] = &[
     "id", "title", "artist_display", "credits", "albums", "duration_ms",
     "file_id", "cover_id", "cover_key", "release_date", "year", "status", "genres", "created_at",
-    "is_restricted", "codec", "groupings",
+    "is_restricted", "codec", "groupings", "platforms",
 ];
 
 /// `credits` as for tracks; `artist_display` with aliases as credited.
@@ -36,6 +37,7 @@ pub const ALBUM_COLUMNS: &[&str] = &[
 /// `artists`: its members (said by hand), by id.
 pub const GROUPING_COLUMNS: &[&str] = &["id", "kind", "name", "track_count", "album_count", "artists"];
 
+/// `aliases`: the names it's listed as credited under (hidden ones, taken off it, aren't).
 pub const ARTIST_COLUMNS: &[&str] = &["id", "name", "disambiguation", "aliases", "track_count", "album_count"];
 
 /// Each track's open review flags: `[[flag id, kind], ...]` (kinds in `review_kinds`
@@ -94,6 +96,12 @@ pub async fn tracks_json(conn: &mut PgConnection, ids: Option<&[Uuid]>) -> sqlx:
             FROM grouping_tracks gt
             WHERE $1::uuid[] IS NULL OR gt.track_id = ANY($1)
             GROUP BY gt.track_id
+        ), platforms AS (
+            SELECT s.track_id, json_agg(DISTINCT s.platform ORDER BY s.platform) AS platforms
+            FROM sources s
+            WHERE s.track_id IS NOT NULL AND s.trashed_at IS NULL
+              AND ($1::uuid[] IS NULL OR s.track_id = ANY($1))
+            GROUP BY s.track_id
         ), track_cover AS (
             SELECT DISTINCT ON (c.track_id) c.track_id, c.id, left(c.blob_sha256, 16) AS key
             FROM covers c
@@ -111,12 +119,14 @@ pub async fn tracks_json(conn: &mut PgConnection, ids: Option<&[Uuid]>) -> sqlx:
                    COALESCE(m.albums, '[]'::json), f.duration_ms,
                    t.file_id, COALESCE(tc.id, ac.id), CASE WHEN tc.id IS NOT NULL THEN tc.key ELSE ac.key END,
                    t.release_date, t.release_year, t.status,
-                   t.genres, t.created_at, t.is_restricted, f.codec, COALESCE(g.groupings, '[]'::json)
+                   t.genres, t.created_at, t.is_restricted, f.codec, COALESCE(g.groupings, '[]'::json),
+                   COALESCE(p.platforms, '[]'::json)
                ) ORDER BY t.id), '[]'::json)::text AS "rows!"
         FROM tracks t
         JOIN files f ON f.id = t.file_id
         LEFT JOIN credits cr ON cr.track_id = t.id
         LEFT JOIN in_groupings g ON g.track_id = t.id
+        LEFT JOIN platforms p ON p.track_id = t.id
         LEFT JOIN memberships m ON m.track_id = t.id
         LEFT JOIN track_cover tc ON tc.track_id = t.id
         LEFT JOIN album_cover ac ON ac.album_id = m.main_album
@@ -211,7 +221,7 @@ pub async fn artists_json(conn: &mut PgConnection, ids: Option<&[Uuid]>) -> sqlx
         WITH aliases AS (
             SELECT artist_id, json_agg(alias ORDER BY lower(alias), alias) AS aliases
             FROM artist_aliases
-            WHERE merged_into IS NULL AND ($1::uuid[] IS NULL OR artist_id = ANY($1))
+            WHERE merged_into IS NULL AND listed AND ($1::uuid[] IS NULL OR artist_id = ANY($1))
             GROUP BY artist_id
         ), track_counts AS (
             SELECT c.artist_id, count(DISTINCT c.track_id) AS n

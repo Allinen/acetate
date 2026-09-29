@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        WITH aliases AS (\n            SELECT artist_id, json_agg(alias ORDER BY lower(alias), alias) AS aliases\n            FROM artist_aliases\n            WHERE merged_into IS NULL AND listed AND ($1::uuid[] IS NULL OR artist_id = ANY($1))\n            GROUP BY artist_id\n        ), track_counts AS (\n            SELECT c.artist_id, count(DISTINCT c.track_id) AS n\n            FROM track_credits c\n            JOIN tracks t ON t.id = c.track_id AND t.merged_into IS NULL\n            WHERE $1::uuid[] IS NULL OR c.artist_id = ANY($1)\n            GROUP BY c.artist_id\n        ), album_counts AS (\n            SELECT c.artist_id, count(DISTINCT c.album_id) AS n\n            FROM album_credits c\n            JOIN albums a ON a.id = c.album_id AND a.merged_into IS NULL\n            WHERE $1::uuid[] IS NULL OR c.artist_id = ANY($1)\n            GROUP BY c.artist_id\n        )\n        SELECT COALESCE(json_agg(json_build_array(\n                   a.id, a.name, a.disambiguation, COALESCE(al.aliases, '[]'::json),\n                   COALESCE(tn.n, 0), COALESCE(an.n, 0)\n               ) ORDER BY a.id), '[]'::json)::text AS \"rows!\"\n        FROM artists a\n        LEFT JOIN aliases al ON al.artist_id = a.id\n        LEFT JOIN track_counts tn ON tn.artist_id = a.id\n        LEFT JOIN album_counts an ON an.artist_id = a.id\n        WHERE a.merged_into IS NULL AND ($1::uuid[] IS NULL OR a.id = ANY($1))\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "rows!",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "UuidArray"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "7bb3bfdbaf2301450ef1ce76a43f752cb142ff276b11bc469d702bc44bddbefb"
+}

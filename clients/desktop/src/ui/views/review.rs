@@ -16,7 +16,8 @@
 //! later" is marked done and the next track comes. Ctrl+↓/↑ next/previous (anywhere);
 //! outside text fields also j/k or ↓/↑, Space plays the track (or pauses it), u skips, d
 //! marks its flags done (of the chip's kind, if one's chosen). Ctrl+M compares a possible
-//! duplicate side by side (to merge), and closes it again.
+//! duplicate side by side (to merge), and closes it again. b (or "Bulk…"), with a chip
+//! chosen: the bulk tools for what's shown (`review_bulk`).
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -122,6 +123,8 @@ pub struct Review {
     /// Ambiguous-artist flags settled by the form's next save: flag → (track, what was
     /// done).
     settle_on_save: HashMap<Uuid, (Uuid, String)>,
+    /// The bulk tools, open.
+    bulk: Option<super::review_bulk::ReviewBulk>,
 }
 
 impl Review {
@@ -148,6 +151,12 @@ impl Review {
         }
         self.after_save(shell, catalog);
         self.build(shell, catalog);
+        // The bulk popup first: while it's open, the page's keys wait.
+        if let Some(bulk) = &mut self.bulk
+            && bulk.show(shell, catalog)
+        {
+            self.bulk = None;
+        }
         self.keys(ui.ctx(), shell, catalog, player);
         // A key may have marked a flag done: the rows follow at once.
         self.build(shell, catalog);
@@ -202,7 +211,13 @@ impl Review {
         if self.done > 0 {
             status = format!("{} done this session · {status}", self.done);
         }
-        ui.label(RichText::new(status).color(P.faint).small());
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(status).color(P.faint).small());
+            let tip = if self.only.is_some() { "The bulk tools for what's shown (b)" } else { "Choose a kind of flag first (a chip)" };
+            if ui.add_enabled(self.only.is_some() && !self.entries.is_empty(), egui::Button::new("Bulk…").small()).on_hover_text(tip).on_disabled_hover_text(tip).clicked() {
+                self.open_bulk(shell, catalog);
+            }
+        });
         ui.add_space(6.0);
 
         // ---- The list, and the selected track ----
@@ -506,8 +521,15 @@ impl Review {
         }
     }
 
+    /// The bulk tools, for the chosen chip's kind and the tracks shown.
+    fn open_bulk(&mut self, shell: &Shell, catalog: &Catalog) {
+        let Some(kind) = self.only.clone() else { return };
+        let tracks: Vec<u32> = self.entries.iter().map(|e| e.track).collect();
+        self.bulk = Some(super::review_bulk::ReviewBulk::open(shell, catalog, &kind, tracks, &self.filter));
+    }
+
     fn keys(&mut self, ctx: &egui::Context, shell: &mut Shell, catalog: &Catalog, player: &PlayerView) {
-        if shell.palette_open {
+        if shell.palette_open || shell.modal_open {
             return;
         }
         let (next, previous, merge) = ctx.input_mut(|i| {
@@ -571,6 +593,8 @@ impl Review {
             self.mark_done(shell, catalog, id, "done", false);
         } else if key(Key::A) {
             self.cycle_ambiguous = true;
+        } else if key(Key::B) && self.only.is_some() && !self.entries.is_empty() {
+            self.open_bulk(shell, catalog);
         } else if key(Key::Space)
             && let Some(id) = self.selected
         {

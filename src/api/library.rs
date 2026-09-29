@@ -29,7 +29,7 @@ use crate::db;
 use crate::db::library::{ALBUM_COLUMNS, ANNOTATION_COLUMNS, ARTIST_COLUMNS, GROUPING_COLUMNS, ISSUE_COLUMNS, TRACK_COLUMNS};
 
 /// Bumped when the format changes in a way old clients can't read.
-const FORMAT: u32 = 3;
+const FORMAT: u32 = 4;
 
 #[derive(Debug, Deserialize)]
 pub struct CatalogParams {

@@ -17,6 +17,8 @@ pub mod ingest;
 pub mod library;
 pub mod playlists;
 pub mod review;
+pub mod review_bulk;
+pub mod credited_as;
 pub mod revisions;
 pub mod shares;
 pub mod sources;
@@ -55,6 +57,10 @@ mod artist_merge_tests;
 mod origin_tests;
 #[cfg(test)]
 mod groupings_tests;
+#[cfg(test)]
+mod review_bulk_tests;
+#[cfg(test)]
+mod credited_as_tests;
 
 use std::time::Duration;
 

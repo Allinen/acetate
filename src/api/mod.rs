@@ -146,6 +146,9 @@ pub fn router(state: AppState) -> Router {
         .route("/api/tracks/{id}/played", require(&[Browse], post(annotations::played)))
         .route("/api/review", require(&[EditMetadata], get(review::list)))
         .route("/api/review/{id}/resolve", require(&[EditMetadata], post(review::resolve)))
+        .route("/api/review/resolve", require(&[EditMetadata], post(review::resolve_many)))
+        .route("/api/review/ambiguous", require(&[EditMetadata], post(review::settle_ambiguous)))
+        .route("/api/tracks/singles", require(&[EditMetadata], post(review::make_singles)))
         // Files that didn't import: whoever uploaded them (admins: all).
         .route("/api/ingest-problems", require(&[Upload], get(problems::list)))
         .route("/api/ingest-problems/{id}/resolve", require(&[Upload], post(problems::resolve)))
@@ -244,6 +247,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/playlists/{id}/log/{change}/undo", require(&[Browse], post(playlists::undo)))
         .route("/api/artists/{id}/aliases/{alias_id}/uses", require(&[Browse], get(catalog::alias_uses)))
         .route("/api/artists/{id}/merge", require(&[EditMetadata], post(catalog::merge_artist)))
+        .route("/api/artists/{id}/credited-as", require(&[EditMetadata], post(catalog::credit_as)))
         .route("/api/artists/{id}/sources", require(&[EditSources], post(sources::add_artist_source)))
         // Groupings (collectives, eras, projects).
         .route("/api/groupings", require(&[EditMetadata], post(groupings::create)))

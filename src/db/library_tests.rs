@@ -185,3 +185,44 @@ async fn annotations_are_only_the_users_and_alias_renames_resend_tracks(
     assert!(c.artists.contains(&lib.both));
     Ok(())
 }
+
+/// A name taken off an artist is hidden (credits still point at it), not deleted: the
+/// catalog's aliases, like the artist's page, list only the names it's listed under, and
+/// the change comes in the next delta.
+#[sqlx::test]
+async fn a_name_taken_off_an_artist_leaves_the_catalog(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
+    use crate::db::revisions::Source;
+    use crate::model::{Alias, ArtistData};
+    let lib = setup(connect).await?;
+    let aliases_in_catalog = || async {
+        let mut tx = db::begin(&lib.app, Some(lib.carol)).await?;
+        let rows: Vec<Vec<Value>> = serde_json::from_str(&db::library::artists_json(&mut tx, Some(&[lib.both])).await?)?;
+        anyhow::Ok(rows[0][3].clone())
+    };
+    let mut tx = db::begin(&lib.owner, None).await?;
+    let data = ArtistData {
+        name: "Both".into(),
+        aliases: vec![Alias { id: None, name: "B0th".into() }, Alias { id: None, name: "Bothe".into() }],
+        ..Default::default()
+    };
+    db::revisions::write_artist(&mut tx, lib.both, None, &data, Source::Edit, "").await?;
+    tx.commit().await?;
+    assert_eq!(aliases_in_catalog().await?, serde_json::json!(["B0th", "Bothe"]));
+
+    let since = version(&lib).await?;
+    let mut tx = db::begin(&lib.owner, None).await?;
+    let kept: Vec<Alias> = sqlx::query_as::<_, (Uuid, String)>("SELECT id, alias FROM artist_aliases WHERE artist_id = $1 AND alias = 'B0th'")
+        .bind(lib.both)
+        .fetch_all(&mut *tx)
+        .await?
+        .into_iter()
+        .map(|(id, name)| Alias { id: Some(id), name })
+        .collect();
+    db::revisions::write_artist(&mut tx, lib.both, None, &ArtistData { aliases: kept, ..data }, Source::Edit, "").await?;
+    tx.commit().await?;
+    assert_eq!(aliases_in_catalog().await?, serde_json::json!(["B0th"]), "Bothe is hidden now");
+    assert!(changes(&lib, lib.carol, since).await?.artists.contains(&lib.both));
+    let hidden: i64 = sqlx::query_scalar("SELECT count(*) FROM artist_aliases WHERE alias = 'Bothe' AND NOT listed").fetch_one(&lib.owner).await?;
+    assert_eq!(hidden, 1, "hidden, not deleted");
+    Ok(())
+}

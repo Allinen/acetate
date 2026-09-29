@@ -1,7 +1,8 @@
 //! What's typed in a search or filter: plain words (matched anywhere, as before) and
 //! `key:value` parts, the same everywhere: `artist:qlvarn`, `album:…`, `title:…`,
 //! `year:2019`, `genre:…`, `status:demo`, `format:flac`, `flag:cover`, `kind:ep`,
-//! `disc:2`, `track:5` (its number), `group:` (a collective, era, project it's in). A value
+//! `disc:2`, `track:5` (its number), `group:` (a collective, era, project it's in),
+//! `source:youtube` (where it came from: a platform it has a source on). A value
 //! runs until the next key, so `artist:lil quill year:2017` needs no quotes. A key can be
 //! shortened to any start of it (`art:`, `yr` isn't one: the aliases are listed below),
 //! and a word with a colon that isn't a key is a plain word.
@@ -32,6 +33,8 @@ pub enum Key {
     Number,
     /// A grouping it's in (a collective, era, project…), by name.
     Group,
+    /// A platform it has a source on (youtube, soundcloud…).
+    Source,
 }
 
 /// Every key's names: the first is its own, the rest are other names for it. A typed key
@@ -50,6 +53,7 @@ const KEYS: &[(Key, &[&str])] = &[
     (Key::Disc, &["disc", "disk", "cd"]),
     (Key::Number, &["track", "number", "numbers", "no", "renumber"]),
     (Key::Group, &["group", "grouping", "collective"]),
+    (Key::Source, &["source", "sources", "platform", "from"]),
 ];
 
 impl Key {
@@ -155,6 +159,7 @@ fn track_has(catalog: &Catalog, t: &Track, key: Key, value: &str) -> bool {
             let named = |id: &uuid::Uuid| catalog.grouping(*id).is_some_and(|g| has(&g.name));
             t.groupings.iter().any(named) || t.albums.iter().any(|m| catalog.album(m.0).is_some_and(|a| a.groupings.iter().any(named)))
         }
+        Key::Source => t.platforms.iter().any(|p| p.starts_with(value)),
     }
 }
 
@@ -185,6 +190,7 @@ mod tests {
         assert_eq!(Query::parse("feat:bo").fields, [(Key::Featured, "bo".into())]);
         assert_eq!(Query::parse("no:5").fields, [(Key::Number, "5".into())]);
         assert_eq!(Query::parse("group:tide crew").fields, [(Key::Group, "tide crew".into())]);
+        assert_eq!(Query::parse("source:youtube").fields, [(Key::Source, "youtube".into())]);
         assert_eq!(Query::parse("track:5").fields, [(Key::Number, "5".into())], "track: is its number, everywhere");
         let q = Query::parse("re:zero");
         assert_eq!((q.words.len(), q.fields.len()), (0, 1), "re: is the start of released");
