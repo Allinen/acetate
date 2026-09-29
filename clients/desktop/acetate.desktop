@@ -1,7 +1,7 @@
 [Desktop Entry]
 Type=Application
 Name=Acetate
-Comment=Your music library
+Comment=The ultimate music player
 Exec=acetate-desktop
 Icon=acetate
 StartupWMClass=acetate

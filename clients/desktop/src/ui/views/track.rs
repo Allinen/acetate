@@ -451,16 +451,30 @@ pub fn lyrics_lines(
     followed: &mut Option<usize>,
     size: f32,
 ) {
-    let lines = if entry.is_synced { lyrics::parse(&entry.body) } else { Vec::new() };
+    let (lines, sections) = if entry.is_synced { lyrics::parse_with_sections(&entry.body) } else { Default::default() };
     if lines.is_empty() {
-        ui.add(egui::Label::new(RichText::new(lyrics::plain(&entry.body)).font(font(size, medium())).color(P.text)).wrap());
+        for block in lyrics::blocks(&entry.body) {
+            match block {
+                lyrics::Block::Heading(section) => lyrics_heading(ui, shell, &section, false, size),
+                lyrics::Block::Text(text) => {
+                    ui.add(egui::Label::new(RichText::new(text).font(font(size, medium())).color(P.text)).wrap());
+                }
+            }
+        }
         return;
     }
     let current = if is_playing { lyrics::current(&lines, player.position_now()) } else { None };
     if is_playing && !player.paused {
         ui.ctx().request_repaint_after(Duration::from_millis(100));
     }
+    let current_section = current.and_then(|c| lines[c].section);
     for (n, line) in lines.iter().enumerate() {
+        // A new part of the song: its heading first.
+        if let Some(index) = line.section
+            && (n == 0 || lines[n - 1].section != line.section)
+        {
+            lyrics_heading(ui, shell, &sections[index], current_section == Some(index), size);
+        }
         let now = current == Some(n);
         let color = if now { P.accent } else if current.is_some_and(|c| n < c) { P.faint } else { P.muted };
         let text = if line.text.is_empty() { "♪" } else { &line.text };
@@ -474,6 +488,50 @@ pub fn lyrics_lines(
             shell.act(Action::SeekTo(line.at));
         }
     }
+}
+
+/// A part of the song's heading in the lyrics ("VERSE 1 · Wrenfield"), lit while it's sung;
+/// who sings it as links, where the name is one artist in the library.
+fn lyrics_heading(ui: &mut egui::Ui, shell: &mut Shell, section: &lyrics::Section, lit: bool, size: f32) {
+    ui.add_space(size * 0.7);
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        let small = font(size * 0.75, semibold());
+        ui.label(RichText::new(section.label.to_uppercase()).font(small.clone()).color(if lit { P.accent } else { P.faint }));
+        for (i, name) in section.artists.iter().enumerate() {
+            ui.label(RichText::new(if i == 0 { "  ·  " } else { ", " }).font(small.clone()).color(P.faint));
+            match artist_named(ui.ctx(), shell, name) {
+                Some(id) => {
+                    if widgets::link(ui, name, small.clone(), P.muted) {
+                        shell.act(Action::Go(Page::Artist(id)));
+                    }
+                }
+                None => {
+                    ui.label(RichText::new(name).font(small.clone()).color(P.muted));
+                }
+            }
+        }
+    });
+    ui.add_space(2.0);
+}
+
+/// The artist in the library with this name (any case), if there's exactly one. Looked
+/// up once per name and library (kept in egui's memory).
+fn artist_named(ctx: &egui::Context, shell: &Shell, name: &str) -> Option<Uuid> {
+    type Found = std::collections::HashMap<String, Option<Uuid>>;
+    let key = egui::Id::new(("lyrics-artist-names", shell.generation));
+    let name = name.to_lowercase();
+    if let Some(found) = ctx.memory_mut(|m| m.data.get_temp_mut_or_default::<Found>(key).get(&name).copied()) {
+        return found;
+    }
+    let catalog = shell.catalog.value.clone()?;
+    let mut matches = catalog.artists.iter().filter(|a| a.name.to_lowercase() == name);
+    let found = match (matches.next(), matches.next()) {
+        (Some(one), None) => Some(one.id),
+        _ => None,
+    };
+    ctx.memory_mut(|m| m.data.get_temp_mut_or_default::<Found>(key).insert(name, found));
+    found
 }
 
 /// A section with a heading; closed ones open on a click.

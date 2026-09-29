@@ -5,8 +5,12 @@
 //! before it, ↑/↓ (or j/k) choose a line, a click on a time plays from there, Space pauses,
 //! Shift+←/→ seek. The line being sung is lit, to check the timing.
 //!
+//! Parts of the song: `h` adds a heading before the chosen line (`Verse 1: Wrenfield`,
+//! written `[Verse 1: Wrenfield]`, see `crate::lyrics`); it needs no time (Enter's tapping
+//! along passes over headings) and lasts until the next one.
+//!
 //! The words can be changed here too, without going back to the text: F2 (or a double
-//! click) edits a line's, `o` adds a line after it, Shift+Delete removes it (the marked
+//! click) edits a line's (a heading's label), `o` adds a line after it, Shift+Delete removes it (the marked
 //! ones, if any). Ctrl+Z takes back the last change made here.
 //!
 //! Languages per line (opt in: "A language per line", on by itself when a line has one):
@@ -54,13 +58,15 @@ struct Line {
     text: String,
     /// A tag line (`[ar:…]`, `[offset:…]`): kept, not timed.
     tag: bool,
+    /// A heading (`[Verse 1: Wrenfield]`): `text` is what's in its brackets.
+    heading: bool,
     /// The line as it was written, until it's changed.
     original: Option<String>,
 }
 
 impl Line {
     fn read(raw: &str) -> Line {
-        let mut line = Line { at: None, more: Vec::new(), language: None, text: String::new(), tag: false, original: Some(raw.to_string()) };
+        let mut line = Line { at: None, more: Vec::new(), language: None, text: String::new(), tag: false, heading: false, original: Some(raw.to_string()) };
         let mut rest = raw.trim_start();
         while let Some(end) = rest.strip_prefix('[').and_then(|r| r.find(']')) {
             let tag = &rest[1..=end];
@@ -71,6 +77,11 @@ impl Line {
                 }
             } else if let Some(language) = tag.strip_prefix("lang:") {
                 line.language = Some(language.trim().to_string()).filter(|l| !l.is_empty());
+            } else if rest[end + 2..].trim().is_empty() && line.language.is_none() && line.more.is_empty() && lyrics::section(tag).is_some() {
+                // A heading, alone on its line (a time before it allowed).
+                line.heading = true;
+                line.text = tag.to_string();
+                return line;
             } else {
                 // Another tag: a whole line of it is metadata; else it's part of the words.
                 line.tag = line.at.is_none() && rest[end + 2..].trim().is_empty() && tag.contains(':');
@@ -88,6 +99,10 @@ impl Line {
         }
         let mut out = self.at.map(stamp).unwrap_or_default();
         out.extend(self.more.iter().cloned());
+        if self.heading {
+            out.push_str(&format!("[{}]", self.text.trim()));
+            return out;
+        }
         if let Some(language) = &self.language {
             out.push_str(&format!("[lang:{language}]"));
         }
@@ -187,12 +202,13 @@ impl Sync {
     /// Sets the language of lines `lines` (empty: the lyrics' own). True if one changed.
     fn set_language(&mut self, lines: &[usize], language: &str) -> bool {
         let language = Some(language.trim().to_string()).filter(|l| !l.is_empty());
-        if !lines.iter().any(|&n| self.lines.get(n).is_some_and(|l| !l.tag && l.language != language)) {
+        let takes = |l: &Line| !l.tag && !l.heading && l.language != language;
+        if !lines.iter().any(|&n| self.lines.get(n).is_some_and(takes)) {
             return false;
         }
         self.remember();
         for &n in lines {
-            if let Some(line) = self.lines.get_mut(n).filter(|l| !l.tag && l.language != language) {
+            if let Some(line) = self.lines.get_mut(n).filter(|l| takes(l)) {
                 line.language.clone_from(&language);
                 line.original = None;
             }
@@ -216,10 +232,25 @@ impl Sync {
     fn insert_after(&mut self, n: Option<usize>) {
         self.remember();
         let at = n.map_or(0, |n| n + 1).min(self.lines.len());
-        self.lines.insert(at, Line { at: None, more: Vec::new(), language: None, text: String::new(), tag: false, original: None });
+        self.lines.insert(at, Line { at: None, more: Vec::new(), language: None, text: String::new(), tag: false, heading: false, original: None });
         self.cursor = at;
         self.marked.clear();
         self.anchor = None;
+    }
+
+    /// Adds an empty heading before line `n`; it becomes the chosen one.
+    fn insert_heading_before(&mut self, n: usize) {
+        self.remember();
+        let at = n.min(self.lines.len());
+        self.lines.insert(at, Line { at: None, more: Vec::new(), language: None, text: String::new(), tag: false, heading: true, original: None });
+        self.cursor = at;
+        self.marked.clear();
+        self.anchor = None;
+    }
+
+    /// The next line after `n` that Enter's tapping along times (not a heading).
+    fn next_sung(&self, n: usize) -> Option<usize> {
+        (n + 1..self.lines.len()).find(|&i| !self.lines[i].tag && !self.lines[i].heading)
     }
 
     /// Removes the marked lines, or else the chosen one.
@@ -316,6 +347,11 @@ impl Sync {
             if pressed(Modifiers::NONE, Key::F2) {
                 self.start_text(&ctx, self.cursor);
             }
+            if pressed(Modifiers::NONE, Key::H) {
+                self.insert_heading_before(self.cursor);
+                self.start_text(&ctx, self.cursor);
+                changed = true;
+            }
             if pressed(Modifiers::NONE, Key::O) {
                 self.insert_after((!self.lines.is_empty()).then_some(self.cursor));
                 self.start_text(&ctx, self.cursor);
@@ -336,13 +372,17 @@ impl Sync {
                 self.cursor = self.previous(self.cursor).unwrap_or(self.cursor);
                 self.scroll_to_cursor = true;
             }
-            if pressed(Modifiers::NONE, Key::Enter)
-                && let Some(position) = position
-            {
-                self.set(self.cursor, Some(position.as_millis() as i64 + self.offset_ms));
-                changed = true;
-                self.cursor = self.next(self.cursor).unwrap_or(self.cursor);
-                self.scroll_to_cursor = true;
+            if pressed(Modifiers::NONE, Key::Enter) {
+                // On a heading: on to its first line (a heading needs no time).
+                if self.lines.get(self.cursor).is_some_and(|l| l.heading) {
+                    self.cursor = self.next_sung(self.cursor).unwrap_or(self.cursor);
+                    self.scroll_to_cursor = true;
+                } else if let Some(position) = position {
+                    self.set(self.cursor, Some(position.as_millis() as i64 + self.offset_ms));
+                    changed = true;
+                    self.cursor = self.next_sung(self.cursor).unwrap_or(self.cursor);
+                    self.scroll_to_cursor = true;
+                }
             }
             if let Some(at) = self.lines.get(self.cursor).and_then(|l| l.at) {
                 if pressed(Modifiers::NONE, Key::ArrowLeft) {
@@ -404,7 +444,7 @@ impl Sync {
             });
         });
         let mut keys = String::from(
-            "Enter: this line starts now (then the next) · ←/→ 0.1 s earlier/later · Delete: no time · g: from just before it · ↑/↓ or j/k: another line · Space: pause · Shift+←/→: 5 s back/on · F2 or double click: its words · o: a line after it · Shift+Delete: remove it · x, Shift+↑/↓: mark · Ctrl+Z: undo",
+            "Enter: this line starts now (then the next) · ←/→ 0.1 s earlier/later · Delete: no time · g: from just before it · ↑/↓ or j/k: another line · Space: pause · Shift+←/→: 5 s back/on · F2 or double click: its words · o: a line after it · h: a heading before it (Verse 1: Wrenfield) · Shift+Delete: remove it · x, Shift+↑/↓: mark · Ctrl+Z: undo",
         );
         if self.languages {
             keys.push_str(" · l: its language (the marked lines')");
@@ -426,7 +466,7 @@ impl Sync {
         // The line sung now: the last one started (as the lyrics view lights it).
         let sung = position.and_then(|p| {
             let p = p.as_millis() as i64;
-            self.lines.iter().enumerate().filter_map(|(n, l)| self.shows_at(l).filter(|at| *at <= p).map(|at| (at, n))).max().map(|(_, n)| n)
+            self.lines.iter().enumerate().filter(|(_, l)| !l.heading).filter_map(|(n, l)| self.shows_at(l).filter(|at| *at <= p).map(|at| (at, n))).max().map(|(_, n)| n)
         });
         let mut clicked_line = None;
         let mut double_clicked = None;
@@ -460,6 +500,33 @@ impl Sync {
                         ui.horizontal(|ui| {
                             if line.tag {
                                 ui.label(RichText::new(&line.text).monospace().color(P.faint));
+                                return;
+                            }
+                            if line.heading {
+                                if let Some((editing, typed)) = editing_text.as_mut()
+                                    && *editing == n
+                                {
+                                    let field = egui::TextEdit::singleline(typed)
+                                        .id(egui::Id::new(TEXT_ID))
+                                        .hint_text("Verse 1: Wrenfield  (a part, then who sings it)")
+                                        .font(font(15.0, semibold()))
+                                        .desired_width(f32::INFINITY);
+                                    if ui.add(field).lost_focus() {
+                                        let cancelled = ui.input(|i| i.key_pressed(Key::Escape));
+                                        text_done = Some((n, (!cancelled).then(|| typed.clone())));
+                                    }
+                                    return;
+                                }
+                                let time = line.at.map(clock).unwrap_or_default();
+                                ui.label(RichText::new(format!("{time:<8}")).font(font(15.0, medium())).monospace().color(P.faint));
+                                let (label, artists) = match lyrics::section(&line.text) {
+                                    Some(section) => (section.label.to_uppercase(), section.artists.join(", ")),
+                                    None => ("(an empty heading: F2 names it)".to_string(), String::new()),
+                                };
+                                ui.label(RichText::new(label).font(font(15.0, semibold())).color(P.accent));
+                                if !artists.is_empty() {
+                                    ui.label(RichText::new(format!("·  {artists}")).font(font(15.0, medium())).color(P.muted));
+                                }
                                 return;
                             }
                             let time = match line.at {
@@ -636,6 +703,20 @@ mod tests {
     }
 
     #[test]
+    fn headings_are_kept_added_and_passed_over() {
+        let body = "[Verse 1: Wrenfield]\n[00:01.00]one\n[00:30.00][Chorus]\ntwo";
+        let mut sync = Sync::new(body);
+        assert_eq!(sync.text(), body);
+        assert!(sync.lines[0].heading && sync.lines[2].heading && sync.lines[2].at == Some(30_000));
+        assert_eq!(sync.next_sung(1), Some(3), "tapping along passes over the heading");
+        assert!(!sync.set_language(&[0], "ja"), "a heading has no language");
+
+        sync.insert_heading_before(3);
+        sync.set_text(3, "Bridge: A & B");
+        assert_eq!(sync.text(), "[Verse 1: Wrenfield]\n[00:01.00]one\n[00:30.00][Chorus]\n[Bridge: A & B]\ntwo");
+    }
+
+        #[test]
     fn a_line_gets_its_own_language_and_back() {
         let mut sync = Sync::new("[00:01.00]hello\nこんにちは");
         assert!(!sync.languages, "opt in");

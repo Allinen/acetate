@@ -137,7 +137,7 @@ pub const GROUPS: &[(&str, &[Binding])] = &[
     (
         "Timing lyrics (Sync… in the lyrics, edit mode: a popup)",
         &[
-            ("Enter", "this line starts now (then the next line)"),
+            ("Enter", "this line starts now (then the next; headings are passed over)"),
             ("← / →", "its time 0.1 s earlier / later"),
             ("Delete", "no time for it"),
             ("g", "play from just before it"),
@@ -146,6 +146,7 @@ pub const GROUPS: &[(&str, &[Binding])] = &[
             ("Shift+← / →", "5 s back / on"),
             ("F2  or  double click", "edit its words (Enter keeps them, Esc doesn't)"),
             ("o", "a new line after it"),
+            ("h", "a heading before it: Verse 1: Wrenfield (no time needed)"),
             ("Shift+Delete", "remove it (the marked lines, if any)"),
             ("x, Ctrl+click", "mark it or not"),
             ("Shift+↑ ↓  or  Shift+click", "mark a range"),
