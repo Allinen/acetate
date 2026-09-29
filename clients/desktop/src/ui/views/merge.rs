@@ -13,10 +13,11 @@
 //! a setting, shared with album merges). The server checks again, counting tracks the
 //! user can't see.
 //!
-//! Keys: ↑/↓ (or j/k) a row, ←/→ (or h/l) its side, s swaps the sides, Space plays the
-//! left file and Shift+Space the right (from the middle; switching goes on from the same
-//! moment, to hear the difference), a merges the singles along or not, Ctrl+Enter
-//! merges, n says they're not the same, Esc closes it.
+//! Keys: ↑/↓ (or j/k) a row (passing over rows where both are the same), ←/→ (or h/l)
+//! its side, s swaps the sides, Space plays the left file and Shift+Space the right (from
+//! the middle; switching goes on from the same moment, to hear the difference), a merges
+//! the singles along or not, Ctrl+Enter merges, n says they're not the same, Esc closes
+//! it.
 
 use std::sync::{Arc, Mutex};
 
@@ -156,11 +157,15 @@ impl MergeView {
             self.kept_by = Some((shell.controller.clone(), shell.runtime.handle().clone()));
         }
         let singles = lone_singles(catalog, self.left, self.right);
+        // Rows where both are the same: nothing to pick, so ↑/↓ pass over them.
+        let same: Vec<bool> = FIELDS.iter().map(|(field, _)| value(&l, catalog, field) == value(&r, catalog, field)).collect();
         if !self.file_suggested {
             self.file_suggested = true;
             if quality(&r) > quality(&l) {
                 self.picks[FILE] = Side::Right;
             }
+            // Starting on the first row with something to pick.
+            self.row = same.iter().position(|s| !s).unwrap_or(0);
         }
 
         // ---- Keys ----
@@ -175,9 +180,9 @@ impl MergeView {
                 let shift_space = ctx.input(|i| i.key_pressed(Key::Space) && i.modifiers.shift);
                 let mut acted = true;
                 if key(Key::ArrowDown) || key(Key::J) {
-                    self.row = (self.row + 1).min(FIELDS.len() - 1);
+                    self.row = (self.row + 1..FIELDS.len()).find(|&n| !same[n]).unwrap_or(self.row);
                 } else if key(Key::ArrowUp) || key(Key::K) {
-                    self.row = self.row.saturating_sub(1);
+                    self.row = (0..self.row).rev().find(|&n| !same[n]).unwrap_or(self.row);
                 } else if key(Key::ArrowLeft) || key(Key::H) {
                     self.picks[self.row] = Side::Left;
                 } else if key(Key::ArrowRight) || key(Key::L) {

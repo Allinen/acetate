@@ -26,6 +26,10 @@ pub struct PlaylistPage {
     history: bool,
     /// The trash button was clicked once: the next click moves it there.
     confirm_trash: bool,
+    /// Liked songs: every track shown since the page was opened, with when it was starred.
+    /// One unstarred meanwhile stays where it was (unstarred), so starring it again is one
+    /// key away; it's gone the next time the page opens.
+    liked_seen: std::collections::HashMap<Uuid, String>,
 }
 
 /// A playlist's columns: its own order first (and which show to start with).
@@ -44,14 +48,31 @@ const PLAYLIST_COLUMNS: &[(Column, bool)] = &[
 
 impl Default for PlaylistPage {
     fn default() -> Self {
-        PlaylistPage { table: TrackTable::new(TrackSort::Natural), history: false, confirm_trash: false }
+        PlaylistPage { table: TrackTable::new(TrackSort::Natural), history: false, confirm_trash: false, liked_seen: Default::default() }
     }
 }
 
 impl PlaylistPage {
     pub fn show_liked(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: &Arc<Catalog>, player: &PlayerView) {
-        let (tracks, starred) = liked(shell, catalog);
-        header(ui, "LIKED SONGS", "Liked songs", &format!("{} · star a track to add it here (s)", count_and_length(catalog, tracks.iter().copied())));
+        let (mut tracks, mut starred) = liked(shell, catalog);
+        let facts = format!("{} · star a track to add it here (s)", count_and_length(catalog, tracks.iter().copied()));
+        // Unstarred since the page opened: still here, in their place.
+        for (&t, at) in tracks.iter().zip(&starred) {
+            self.liked_seen.insert(catalog.tracks[t as usize].id, at.clone());
+        }
+        let kept: Vec<(u32, String)> = self
+            .liked_seen
+            .iter()
+            .filter_map(|(id, at)| Some((catalog.track_index(*id)?, at.clone())))
+            .filter(|(t, _)| !tracks.contains(t))
+            .collect();
+        if !kept.is_empty() {
+            let mut all: Vec<(u32, String)> = tracks.into_iter().zip(starred).chain(kept).collect();
+            // (Stable: the order among those starred at the same time stays.)
+            all.sort_by(|a, b| b.1.cmp(&a.1));
+            (tracks, starred) = all.into_iter().unzip();
+        }
+        header(ui, "LIKED SONGS", "Liked songs", &facts);
         let rows = TrackRows { tracks: Some(&tracks), added: Some(&starred) };
         let (play_rect, _) = ui.allocate_exact_size(Vec2::new(116.0, 42.0), Sense::hover());
         if play_button(ui, "liked-play", play_rect) && !tracks.is_empty() {

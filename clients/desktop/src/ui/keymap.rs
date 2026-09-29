@@ -112,7 +112,7 @@ pub const GROUPS: &[(&str, &[Binding])] = &[
     (
         "Merging (Ctrl+M on Review)",
         &[
-            ("↑ ↓  or  j k", "a row"),
+            ("↑ ↓  or  j k", "a row (rows that are the same are passed over)"),
             ("← →  or  h l", "take the left or the right one"),
             ("s", "swap sides (left is kept)"),
             ("Space / Shift+Space", "play the left / right file: from the middle, the other from the same moment"),
