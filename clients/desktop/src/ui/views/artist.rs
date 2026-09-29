@@ -25,6 +25,8 @@ pub struct ArtistPage {
     merge: Option<super::artist_merge::ArtistMergeView>,
     /// "Merge into another artist…" asked the palette for the other one.
     picking_merge: bool,
+    /// Its sources (edit mode).
+    sources: crate::ui::edit::sources::SourcesEditor,
 }
 
 impl ArtistPage {
@@ -133,6 +135,13 @@ impl ArtistPage {
         if shell.edit_mode {
             edit_panel(ui, shell, id);
             ui.add_space(12.0);
+            if let Some(d) = shell.artist_details.get(id).value.clone() {
+                super::album::details_panel(ui, "artist-sources", |ui| {
+                    ui.label(RichText::new("Sources").font(font(14.0, semibold())));
+                    self.sources.show(ui, shell, crate::ui::edit::sources::Owner::Artist(id), &d.sources);
+                });
+                ui.add_space(12.0);
+            }
         }
 
         if !albums.is_empty() {

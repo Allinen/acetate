@@ -1,0 +1,184 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT c.id, c.changed_at, u.username AS \"changed_by?\", c.reason,\n               os.id AS \"old_snapshot?\", os.source_id AS \"old_source?\", o.platform AS \"old_platform?\",\n               o.external_id AS old_external_id, os.captured_at AS \"old_captured?\",\n               ns.id AS \"new_snapshot?\", ns.source_id AS \"new_source?\", n.platform AS \"new_platform?\",\n               n.external_id AS new_external_id, ns.captured_at AS \"new_captured?\"\n        FROM file_origin_changes c\n        LEFT JOIN users u ON u.id = c.changed_by\n        LEFT JOIN source_snapshots os ON os.id = c.old_snapshot_id\n        LEFT JOIN sources o ON o.id = os.source_id\n        LEFT JOIN source_snapshots ns ON ns.id = c.new_snapshot_id\n        LEFT JOIN sources n ON n.id = ns.source_id\n        WHERE c.file_id = $1\n        ORDER BY c.id DESC\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "file_origin_changes",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "changed_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "file_origin_changes",
+            "name": "changed_at"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "changed_by?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "username"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "reason",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "file_origin_changes",
+            "name": "reason"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "old_snapshot?",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "source_snapshots",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "old_source?",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "source_snapshots",
+            "name": "source_id"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "old_platform?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "sources",
+            "name": "platform"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "old_external_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "sources",
+            "name": "external_id"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "old_captured?",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "source_snapshots",
+            "name": "captured_at"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "new_snapshot?",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "source_snapshots",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "new_source?",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "source_snapshots",
+            "name": "source_id"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "new_platform?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "sources",
+            "name": "platform"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "new_external_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "sources",
+            "name": "external_id"
+          }
+        }
+      },
+      {
+        "ordinal": 13,
+        "name": "new_captured?",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "source_snapshots",
+            "name": "captured_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "94d8aeaf4b2b7f69205d5638dc004ef32c464683a0e8a12287bda022fca4bc1e"
+}

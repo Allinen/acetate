@@ -75,6 +75,39 @@ async fn add(
     Ok(Json(added))
 }
 
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetOrigin {
+    /// Its newest snapshot…
+    #[serde(default)]
+    source_id: Option<Uuid>,
+    /// …or this snapshot (e.g. the one before a change, to undo it).
+    #[serde(default)]
+    snapshot_id: Option<Uuid>,
+    #[serde(default)]
+    reason: String,
+}
+
+/// `PUT /api/files/{id}/origin`, JSON `{"source_id": "…"}` or `{"snapshot_id": "…"}` (plus
+/// an optional `reason`): the file came from there (see `db::sources::set_file_origin`).
+/// Returns the change's id (null: it came from there already).
+pub async fn set_origin(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<Uuid>,
+    Json(body): Json<SetOrigin>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let to = match (body.source_id, body.snapshot_id) {
+        (Some(source), None) => db::sources::OriginTarget::Source(source),
+        (None, Some(snapshot)) => db::sources::OriginTarget::Snapshot(snapshot),
+        _ => return Err(AppError::BadRequest("give either `source_id` or `snapshot_id`".into())),
+    };
+    let mut tx = state.db(&user).await?;
+    let change = db::sources::set_file_origin(&mut tx, id, to, &body.reason).await?;
+    tx.commit().await?;
+    Ok(Json(serde_json::json!({ "change_id": change })))
+}
+
 /// `GET /api/source-shapes`: every supported platform/kind and its fields, so clients
 /// (like the web UI) can build forms without hard-coding them.
 pub async fn shapes() -> Json<serde_json::Value> {

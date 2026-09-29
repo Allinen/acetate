@@ -504,3 +504,167 @@ pub async fn owner_exists(conn: &mut PgConnection, owner: SourceOwner) -> sqlx::
     };
     Ok(exists)
 }
+
+/// What a file's origin is pointed at: a source (its newest snapshot) or one snapshot.
+#[derive(Debug, Clone, Copy)]
+pub enum OriginTarget {
+    Source(Uuid),
+    Snapshot(Uuid),
+}
+
+/// Points a file's origin at another snapshot of a source of its track (a track playing
+/// it now, or one it was replaced on or by: the same rule as at import, so a file's origin
+/// is always one of its track's sources). The source must not be in the trash. The change
+/// is kept in `file_origin_changes`, with `reason`. Returns the change's id; None if the
+/// file already comes from there.
+pub async fn set_file_origin(conn: &mut PgConnection, file_id: Uuid, to: OriginTarget, reason: &str) -> anyhow::Result<Option<Uuid>> {
+    use super::revisions::EditRejected;
+    let Some(current) = sqlx::query_scalar!("SELECT origin_snapshot_id FROM files WHERE id = $1 FOR UPDATE", file_id)
+        .fetch_optional(&mut *conn)
+        .await?
+    else {
+        return Err(EditRejected::NotFound("file").into());
+    };
+    // The snapshot, its source's track and whether it's in the trash (through row-level
+    // security: a source the user can't see isn't found).
+    let target = match to {
+        OriginTarget::Snapshot(id) => {
+            sqlx::query!(
+                r#"
+                SELECT ss.id, s.track_id, s.trashed_at IS NOT NULL AS "trashed!"
+                FROM source_snapshots ss JOIN sources s ON s.id = ss.source_id
+                WHERE ss.id = $1
+                "#,
+                id
+            )
+            .fetch_optional(&mut *conn)
+            .await?
+            .map(|r| (r.id, r.track_id, r.trashed))
+        }
+        OriginTarget::Source(id) => {
+            sqlx::query!(
+                r#"
+                SELECT ss.id, s.track_id, s.trashed_at IS NOT NULL AS "trashed!"
+                FROM source_snapshots ss JOIN sources s ON s.id = ss.source_id
+                WHERE s.id = $1
+                ORDER BY ss.captured_at DESC, ss.id DESC
+                LIMIT 1
+                "#,
+                id
+            )
+            .fetch_optional(&mut *conn)
+            .await?
+            .map(|r| (r.id, r.track_id, r.trashed))
+        }
+    };
+    let Some((snapshot, track, trashed)) = target else {
+        return Err(EditRejected::NotFound("source").into());
+    };
+    if trashed {
+        return Err(EditRejected::Invalid("that source is in the trash: take it back out first".into()).into());
+    }
+    let of_its_track = match track {
+        Some(track) => sqlx::query_scalar!(
+            r#"
+            SELECT EXISTS (SELECT 1 FROM tracks WHERE id = $1 AND file_id = $2)
+                OR EXISTS (SELECT 1 FROM track_file_history
+                           WHERE track_id = $1 AND (old_file_id = $2 OR new_file_id = $2)) AS "e!"
+            "#,
+            track,
+            file_id
+        )
+        .fetch_one(&mut *conn)
+        .await?,
+        None => false,
+    };
+    if !of_its_track {
+        return Err(EditRejected::Invalid("a file can only come from a source of its own track".into()).into());
+    }
+    if snapshot == current {
+        return Ok(None);
+    }
+    sqlx::query!("UPDATE files SET origin_snapshot_id = $2 WHERE id = $1", file_id, snapshot)
+        .execute(&mut *conn)
+        .await?;
+    let id = sqlx::query_scalar!(
+        r#"
+        INSERT INTO file_origin_changes (file_id, old_snapshot_id, new_snapshot_id, reason)
+        VALUES ($1, $2, $3, $4)
+        RETURNING id
+        "#,
+        file_id,
+        current,
+        snapshot,
+        reason
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    Ok(Some(id))
+}
+
+/// A change of a file's origin, newest first (see `set_file_origin`).
+#[derive(Debug, Serialize)]
+pub struct OriginChange {
+    pub id: Uuid,
+    pub changed_at: DateTime<Utc>,
+    pub changed_by: Option<String>,
+    pub reason: String,
+    /// None: purged since (with its source).
+    pub old: Option<OriginRef>,
+    pub new: Option<OriginRef>,
+}
+
+/// A snapshot a file came from, named.
+#[derive(Debug, Serialize)]
+pub struct OriginRef {
+    pub snapshot_id: Uuid,
+    pub source_id: Uuid,
+    pub platform: String,
+    pub external_id: Option<String>,
+    pub captured_at: DateTime<Utc>,
+}
+
+/// The changes of a file's origin, newest first.
+pub async fn origin_changes(conn: &mut PgConnection, file_id: Uuid) -> sqlx::Result<Vec<OriginChange>> {
+    let rows = sqlx::query!(
+        r#"
+        SELECT c.id, c.changed_at, u.username AS "changed_by?", c.reason,
+               os.id AS "old_snapshot?", os.source_id AS "old_source?", o.platform AS "old_platform?",
+               o.external_id AS old_external_id, os.captured_at AS "old_captured?",
+               ns.id AS "new_snapshot?", ns.source_id AS "new_source?", n.platform AS "new_platform?",
+               n.external_id AS new_external_id, ns.captured_at AS "new_captured?"
+        FROM file_origin_changes c
+        LEFT JOIN users u ON u.id = c.changed_by
+        LEFT JOIN source_snapshots os ON os.id = c.old_snapshot_id
+        LEFT JOIN sources o ON o.id = os.source_id
+        LEFT JOIN source_snapshots ns ON ns.id = c.new_snapshot_id
+        LEFT JOIN sources n ON n.id = ns.source_id
+        WHERE c.file_id = $1
+        ORDER BY c.id DESC
+        "#,
+        file_id
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|r| OriginChange {
+            id: r.id,
+            changed_at: r.changed_at,
+            changed_by: r.changed_by,
+            reason: r.reason,
+            old: match (r.old_snapshot, r.old_source, r.old_platform, r.old_captured) {
+                (Some(snapshot_id), Some(source_id), Some(platform), Some(captured_at)) => {
+                    Some(OriginRef { snapshot_id, source_id, platform, external_id: r.old_external_id, captured_at })
+                }
+                _ => None,
+            },
+            new: match (r.new_snapshot, r.new_source, r.new_platform, r.new_captured) {
+                (Some(snapshot_id), Some(source_id), Some(platform), Some(captured_at)) => {
+                    Some(OriginRef { snapshot_id, source_id, platform, external_id: r.new_external_id, captured_at })
+                }
+                _ => None,
+            },
+        })
+        .collect())
+}

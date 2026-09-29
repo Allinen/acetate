@@ -25,6 +25,9 @@ use crate::ui::{playing_track, widgets, Action, Page, Shell};
 pub struct TrackPage {
     /// The history section's state (restoring asks first).
     history: super::history::History,
+    /// Its sources, and which one its file came from (edit mode).
+    sources: crate::ui::edit::sources::SourcesEditor,
+    origin: crate::ui::edit::sources::OriginPicker,
     /// This track and another side by side, to merge (edit mode).
     merge: Option<super::merge::MergeView>,
     /// "Merge with another track…" asked the palette for the other one.
@@ -167,6 +170,7 @@ impl TrackPage {
                         ui.allocate_ui_with_layout(Vec2::new(left_width, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
                             ui.set_width(left_width);
                             section(ui, "Edit", true, |ui| edit(ui, shell, catalog, &d));
+                            self.edit_sources(ui, shell, &d);
                         });
                         ui.add_space(gap);
                         ui.allocate_ui_with_layout(Vec2::new(right_width, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
@@ -176,12 +180,23 @@ impl TrackPage {
                     });
                 } else {
                     section(ui, "Edit", true, |ui| edit(ui, shell, catalog, &d));
+                    self.edit_sources(ui, shell, &d);
                     self.view_sections(ui, shell, catalog, &d, is_playing, player);
                 }
             } else {
                 self.view_sections(ui, shell, catalog, &d, is_playing, player);
             }
             ui.add_space(24.0);
+        });
+    }
+
+    /// Edit mode: its sources, and which one its file came from.
+    fn edit_sources(&mut self, ui: &mut egui::Ui, shell: &mut Shell, d: &TrackDetail) {
+        let title = format!("Sources ({})", d.sources.len());
+        section(ui, &title, true, |ui| {
+            self.sources.show(ui, shell, crate::ui::edit::sources::Owner::Track(d.id), &d.sources);
+            ui.add_space(8.0);
+            self.origin.show(ui, shell, d);
         });
     }
 

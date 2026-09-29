@@ -11,6 +11,7 @@ pub mod artist_form;
 pub mod bulk;
 pub mod credits;
 pub mod inline_search;
+pub mod sources;
 pub mod track_form;
 
 use std::sync::{Arc, Mutex};

@@ -33,6 +33,9 @@ pub struct TrackDetail {
     pub file_shared_with: Vec<Shared>,
     /// Only for users who may see history.
     pub file_history: Option<Vec<FileChange>>,
+    /// Changes of the file's origin, newest first (only for users who may see history).
+    #[serde(default)]
+    pub origin_changes: Option<Vec<OriginChange>>,
     #[serde(default)]
     pub sources: Vec<Source>,
     #[serde(default)]
@@ -73,6 +76,7 @@ pub struct Revision {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct FileInfo {
+    pub id: Uuid,
     pub sha256: String,
     /// Set only for original files (as the artist named them).
     pub original_filename: Option<String>,
@@ -91,6 +95,8 @@ pub struct FileInfo {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Origin {
+    pub snapshot_id: Uuid,
+    pub source_id: Uuid,
     pub platform: String,
     pub external_id: Option<String>,
     #[serde(default)]
@@ -117,8 +123,28 @@ pub struct FileChange {
     pub old_purged_at: Option<String>,
 }
 
+/// A change of where a file came from (`PUT /api/files/{id}/origin`).
+#[derive(Debug, Clone, Deserialize)]
+pub struct OriginChange {
+    pub changed_at: String,
+    pub changed_by: Option<String>,
+    #[serde(default)]
+    pub reason: String,
+    /// None: purged since.
+    pub old: Option<OriginRef>,
+    pub new: Option<OriginRef>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct OriginRef {
+    pub snapshot_id: Uuid,
+    pub platform: String,
+    pub external_id: Option<String>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Source {
+    pub id: Uuid,
     pub platform: String,
     pub external_id: Option<String>,
     /// Newest first.

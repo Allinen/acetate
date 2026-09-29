@@ -38,6 +38,8 @@ pub struct AlbumPage {
     picking_merge: bool,
     /// Undoing merges into this album (in the details).
     undo: super::album_merge::UndoPanel,
+    /// Its sources (edit mode).
+    sources: crate::ui::edit::sources::SourcesEditor,
 }
 
 impl AlbumPage {
@@ -184,6 +186,13 @@ impl AlbumPage {
         if shell.edit_mode {
             edit_panel(ui, shell, catalog, id);
             ui.add_space(12.0);
+            if let Some(d) = shell.album_details.get(id).value.clone() {
+                details_panel(ui, "album-sources", |ui| {
+                    ui.label(RichText::new("Sources").font(font(14.0, semibold())));
+                    self.sources.show(ui, shell, crate::ui::edit::sources::Owner::Album(id), &d.sources);
+                });
+                ui.add_space(12.0);
+            }
         }
 
         if tracks.is_empty() {

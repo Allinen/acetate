@@ -986,7 +986,7 @@ mod tests {
         serde_json::from_value(serde_json::json!({
             "id": Uuid::from_u128(1), "title": title, "artist_display": "", "status": status,
             "primary_variant_id": variant, "external_revision_id": facts_revision,
-            "file": { "sha256": "", "uploaded_filename": "", "size_bytes": 0, "uploaded_at": "" },
+            "file": { "id": Uuid::from_u128(3), "sha256": "", "uploaded_filename": "", "size_bytes": 0, "uploaded_at": "" },
             "variants": [{ "id": variant, "label": "", "revision_id": variant_revision,
                            "data": { "title": title, "genres": genres } }],
         }))

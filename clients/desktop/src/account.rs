@@ -1,6 +1,6 @@
 //! Who's logged in and what they may do (`GET /api/auth/me`), and the server's fixed
-//! lists (`GET /api/vocab`: statuses, credit roles, album kinds, relation kinds), which
-//! edit forms choose from. Fetched after logging in (and at start), in the background.
+//! lists (`GET /api/vocab`: statuses, credit roles, album kinds, relation kinds; and
+//! `GET /api/source-shapes`), which edit forms choose from. Fetched after logging in (and at start), in the background.
 
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
@@ -31,6 +31,28 @@ pub struct Vocab {
     pub relation_kinds: Vec<RelationKind>,
     /// The kinds of review flag, in the order to show them.
     pub review_kinds: Vec<ReviewKind>,
+    /// What each platform's sources hold (`GET /api/source-shapes`, fetched with it).
+    #[serde(skip)]
+    pub source_shapes: Vec<SourceShape>,
+}
+
+/// A platform's sources of one kind (track, album, artist) and their fields.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SourceShape {
+    pub platform: String,
+    pub kind: String,
+    /// The field with the platform's id: sources with the same id are one source.
+    pub id_field: Option<String>,
+    pub fields: Vec<ShapeField>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ShapeField {
+    pub name: String,
+    /// "int", "str" or "strs" (a list of strings).
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub required: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -76,7 +98,10 @@ impl Account {
         let (api, arrived, ctx) = (api.clone(), self.arrived.clone(), ctx.clone());
         runtime.spawn(async move {
             let me = api.send_json::<Me>(reqwest::Method::GET, "/api/auth/me", None).await.ok();
-            let vocab = api.send_json::<Vocab>(reqwest::Method::GET, "/api/vocab", None).await.ok();
+            let mut vocab = api.send_json::<Vocab>(reqwest::Method::GET, "/api/vocab", None).await.ok();
+            if let Some(vocab) = vocab.as_mut() {
+                vocab.source_shapes = api.send_json(reqwest::Method::GET, "/api/source-shapes", None).await.unwrap_or_default();
+            }
             *arrived.lock().unwrap() = Some((me, vocab));
             ctx.request_repaint();
         });

@@ -49,6 +49,8 @@ mod library_tests;
 mod review_tests;
 #[cfg(test)]
 mod artist_merge_tests;
+#[cfg(test)]
+mod origin_tests;
 
 use std::time::Duration;
 
