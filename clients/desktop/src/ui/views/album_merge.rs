@@ -5,9 +5,12 @@
 //! (`s` swaps). What happens is said before anything does: the left one's tracks (each
 //! with a revision, their disc and track numbers kept), covers, sources and share links
 //! move to the right one, which keeps its own title, kind, date and credits; the left one
-//! then only redirects. Tracks with the same title on both are pointed out: the album
-//! will have both copies, to merge afterwards. Ctrl+Enter merges
-//! (`POST /api/albums/{left}/merge {into: right}`).
+//! then only redirects. If the tracklists are the same (the same numbers, and the same title
+//! at each: see `matching_tracks`), the tracks merge too, pair by pair, the right album's
+//! track kept with the better file (unless the "along" box is off, `a`; a setting shared
+//! with track merges). Otherwise tracks with the same title on both are pointed out: the
+//! album will have both copies, to merge afterwards. Ctrl+Enter merges
+//! (`POST /api/albums/{left}/merge {into: right, merge_tracks}`).
 //!
 //! Undoing: the server's preview first (`GET /api/album-merges/{id}/undo`, which changes
 //! nothing), all of it: what goes back, what stays and why, what's in the way. Only then
@@ -59,16 +62,23 @@ impl AlbumMergeView {
             return ui.button("Close").clicked().then_some(Outcome::Closed);
         };
 
+        // The tracks, if they merge along (only with the permission to change their files).
+        let pairs = if shell.account.can("replace_file") { matching_tracks(catalog, from.id, into.id) } else { Vec::new() };
+
         // ---- Keys ----
         if !shell.palette_open {
             let ctx = ui.ctx().clone();
             if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Enter)) {
-                self.merge(shell);
+                self.merge(shell, !pairs.is_empty());
             }
             if !ctx.egui_wants_keyboard_input() {
                 let key = |k: Key| ctx.input(|i| i.key_pressed(k) && i.modifiers.is_none());
                 if key(Key::S) {
                     std::mem::swap(&mut self.from, &mut self.into);
+                    ctx.input_mut(|i| i.events.retain(|e| !matches!(e, egui::Event::Text(_))));
+                } else if key(Key::A) && !pairs.is_empty() {
+                    shell.settings.merge_along = !shell.settings.merge_along;
+                    shell.settings.save(&shell.data_dir);
                     ctx.input_mut(|i| i.events.retain(|e| !matches!(e, egui::Event::Text(_))));
                 } else if key(Key::Escape) {
                     return Some(Outcome::Closed);
@@ -123,6 +133,41 @@ impl AlbumMergeView {
             ))
             .color(P.text),
         );
+        if !pairs.is_empty() {
+            let text = format!(
+                "Merge the tracks too: the tracklists are the same (numbers and titles), so each of “{}”'s tracks merges into the one in its place on “{}”  (a)",
+                from.title, into.title
+            );
+            if ui.checkbox(&mut shell.settings.merge_along, text).changed() {
+                shell.settings.save(&shell.data_dir);
+            }
+            if shell.settings.merge_along {
+                let number = |i: u32, album: Uuid| {
+                    let m = catalog.tracks[i as usize].albums.iter().find(|m| m.0 == album);
+                    match m.map(|m| (m.1, m.2)) {
+                        Some((Some(disc), Some(n))) if disc > 1 => format!("{disc}-{n}"),
+                        Some((_, Some(n))) => n.to_string(),
+                        _ => "1".into(),
+                    }
+                };
+                for &(a, b) in &pairs {
+                    let (ta, tb) = (&catalog.tracks[a as usize], &catalog.tracks[b as usize]);
+                    let codec = |t: &crate::catalog::model::Track| t.codec.clone().unwrap_or_else(|| "?".into());
+                    ui.label(RichText::new(format!("  {}. {} — {} + {}", number(b, into.id), tb.title, codec(tb), codec(ta))).color(P.muted));
+                }
+                ui.label(
+                    RichText::new(format!(
+                        "Each kept track is “{}”'s, with its title, artists and the rest; the better file of the two is kept (lossless first, then sample rate, bit depth, bitrate, size), the other stays a previous file. Each is a track merge of its own, undone on the kept track's page (after undoing the album merge).",
+                        into.title
+                    ))
+                    .color(P.faint)
+                    .small(),
+                );
+            }
+            ui.add_space(8.0);
+            ui.add(egui::TextEdit::singleline(&mut self.reason).hint_text("Why (optional)").desired_width(420.0));
+            return self.buttons(ui, shell, true);
+        }
         // Same titles on both: those will be possible duplicates, to merge afterwards.
         let staying: Vec<String> = catalog.album_tracks(into.id).iter().map(|&i| catalog.tracks[i as usize].title.to_lowercase()).collect();
         let doubled: Vec<&str> = catalog
@@ -143,10 +188,15 @@ impl AlbumMergeView {
 
         ui.add_space(8.0);
         ui.add(egui::TextEdit::singleline(&mut self.reason).hint_text("Why (optional)").desired_width(420.0));
+        self.buttons(ui, shell, false)
+    }
+
+    /// Merge and Close, and how it went. `pairs`: the tracks can merge along.
+    fn buttons(&mut self, ui: &mut egui::Ui, shell: &mut Shell, pairs: bool) -> Option<Outcome> {
         let mut outcome = None;
         ui.horizontal(|ui| {
             if ui.add_enabled(!self.merging, egui::Button::new("Merge  (Ctrl+Enter)")).clicked() {
-                self.merge(shell);
+                self.merge(shell, pairs);
             }
             if ui.button("Close  (Esc)").clicked() {
                 outcome = Some(Outcome::Closed);
@@ -161,14 +211,16 @@ impl AlbumMergeView {
         outcome
     }
 
-    fn merge(&mut self, shell: &Shell) {
+    /// `pairs`: the tracklists are the same (merged along if the setting says so).
+    fn merge(&mut self, shell: &Shell, pairs: bool) {
         if self.merging {
             return;
         }
         self.merging = true;
         self.error = None;
         let (api, answer, ctx) = (shell.api.clone(), self.answer.clone(), shell.ctx.clone());
-        let (from, body) = (self.from, serde_json::json!({ "into": self.into, "reason": self.reason.trim() }));
+        let merge_tracks = pairs && shell.settings.merge_along;
+        let (from, body) = (self.from, serde_json::json!({ "into": self.into, "reason": self.reason.trim(), "merge_tracks": merge_tracks }));
         shell.runtime.spawn(async move {
             let result = api
                 .send_json::<serde_json::Value>(reqwest::Method::POST, &format!("/api/albums/{from}/merge"), Some(body))
@@ -179,6 +231,53 @@ impl AlbumMergeView {
             ctx.request_repaint();
         });
     }
+}
+
+/// The tracks of albums `from` and `into` in pairs (from's, into's: places in the
+/// catalog), if the tracklists are the same, as the server decides it
+/// (`db::album_merges::pair_tracklists`): the same places (disc and track number; no disc
+/// is disc 1; the one track of a one-track album is track 1 without a number), one track
+/// in each, the same title in each place (letter case and spaces around aside). Empty
+/// otherwise. Tracks the user can't see aren't known here: the server checks again.
+pub fn matching_tracks(catalog: &Catalog, from: Uuid, into: Uuid) -> Vec<(u32, u32)> {
+    use std::collections::BTreeMap;
+    let places = |album: Uuid| -> Option<BTreeMap<(i16, i16), u32>> {
+        let tracks = catalog.album_tracks(album);
+        let mut places = BTreeMap::new();
+        for &i in tracks {
+            let m = catalog.tracks[i as usize].albums.iter().find(|m| m.0 == album)?;
+            let number = match (m.2, tracks.len()) {
+                (Some(n), _) => n,
+                (None, 1) => 1,
+                (None, _) => return None,
+            };
+            if places.insert((m.1.unwrap_or(1), number), i).is_some() {
+                return None;
+            }
+        }
+        Some(places)
+    };
+    let (Some(a), Some(b)) = (places(from), places(into)) else { return Vec::new() };
+    if a.is_empty() || a.len() != b.len() {
+        return Vec::new();
+    }
+    let title = |i: u32| catalog.tracks[i as usize].title.trim().to_lowercase();
+    let mut pairs = Vec::new();
+    for (place, &ta) in &a {
+        let Some(&tb) = b.get(place) else { return Vec::new() };
+        if title(ta) != title(tb) {
+            return Vec::new();
+        }
+        if ta != tb {
+            pairs.push((ta, tb));
+        }
+    }
+    // A track on both, in different places: not the same tracklist after all.
+    let on_both = |i: u32| a.values().any(|&x| x == i) && b.values().any(|&x| x == i);
+    if pairs.iter().any(|&(x, y)| on_both(x) || on_both(y)) {
+        return Vec::new();
+    }
+    pairs
 }
 
 /// What undoing an album merge would do (or did), as the server says it.
@@ -381,5 +480,48 @@ mod against_a_server {
             let back: serde_json::Value = api.send_json(reqwest::Method::GET, &format!("/api/albums/{from}"), None).await.unwrap();
             assert_eq!(back["id"].as_str().unwrap(), from, "answers as itself again");
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::catalog::model;
+
+    /// Albums A and B with the same tracklist (B's titles in other letter case, B's only
+    /// disc named), C with another title in place 2.
+    fn catalog() -> Catalog {
+        let (a, b, c) = ("00000000-0000-7000-8000-0000000000a1", "00000000-0000-7000-8000-0000000000a2", "00000000-0000-7000-8000-0000000000a3");
+        let track = |n: u8, title: &str, album: &str, disc: Option<i16>, number: i16| {
+            serde_json::json!([format!("00000000-0000-7000-8000-0000000001{n:02}"), title, "Ann", [], [[album, disc, number]], 1000,
+                "00000000-0000-7000-8000-000000000f01", null, null, null, null, "released", [], "", false, null])
+        };
+        let album = |id: &str| serde_json::json!([id, "EP", "ep", "Ann", [], null, null, null, null, "", 2, 1]);
+        let body = serde_json::json!({
+            "format": 1,
+            "tracks": {"columns": ["id", "title", "artist_display", "credits", "albums", "duration_ms", "file_id", "cover_id", "cover_key",
+                                    "release_date", "year", "status", "genres", "created_at", "is_restricted", "codec"],
+                       "rows": [track(1, "One", a, None, 1), track(2, "Two", a, None, 2),
+                                track(3, "two ", b, Some(1), 2), track(4, "ONE", b, Some(1), 1),
+                                track(5, "One", c, None, 1), track(6, "Three", c, None, 2)]},
+            "albums": {"columns": ["id", "title", "kind", "artist_display", "credits", "release_date", "year", "cover_id", "cover_key", "created_at", "track_count", "duration_ms"],
+                       "rows": [album(a), album(b), album(c)]},
+            "artists": {"columns": ["id", "name", "disambiguation", "aliases", "track_count", "album_count"], "rows": []},
+            "annotations": {"columns": ["kind", "id", "play_count", "last_played_at", "rating", "starred_at"], "rows": []},
+            "issues": {"columns": ["track_id", "flags"], "rows": []},
+            "playlists": []
+        });
+        Catalog::build(model::parse(body.to_string().as_bytes()).unwrap())
+    }
+
+    #[test]
+    fn same_tracklists_pair_up_by_place() {
+        let c = catalog();
+        let id = |s: &str| s.parse::<Uuid>().unwrap();
+        let title = |i: u32| c.tracks[i as usize].title.clone();
+        let pairs = matching_tracks(&c, id("00000000-0000-7000-8000-0000000000a1"), id("00000000-0000-7000-8000-0000000000a2"));
+        let named: Vec<(String, String)> = pairs.iter().map(|&(x, y)| (title(x), title(y))).collect();
+        assert_eq!(named, [("One".to_string(), "ONE".to_string()), ("Two".to_string(), "two ".to_string())]);
+        assert!(matching_tracks(&c, id("00000000-0000-7000-8000-0000000000a1"), id("00000000-0000-7000-8000-0000000000a3")).is_empty());
     }
 }

@@ -181,14 +181,15 @@ impl Head {
 
 /// One stream (mono, stereo) or several (more channels).
 enum Decoder {
-    One(OpusDecoder),
+    /// (Boxed: it's large, and the other is a list of them.)
+    One(Box<OpusDecoder>),
     Several(OpusMSDecoder),
 }
 
 impl Decoder {
     fn new(head: &Head) -> Result<Decoder, String> {
         let decoder = match head.family {
-            0 => OpusDecoder::new(RATE as i32, head.channels).map(Decoder::One),
+            0 => OpusDecoder::new(RATE as i32, head.channels).map(|d| Decoder::One(Box::new(d))),
             _ => OpusMSDecoder::new(RATE as i32, head.channels, head.family.into()).map(Decoder::Several),
         };
         decoder.map_err(|err| format!("Opus: {err}"))

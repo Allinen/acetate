@@ -252,6 +252,10 @@ pub struct Merge {
     pick: MergePicks,
     #[serde(default)]
     reason: String,
+    /// Also merge the singles the two are each alone on (see
+    /// `db::album_merges::merge_tracks_and_singles`). Needs `edit_metadata` too.
+    #[serde(default)]
+    merge_singles: bool,
 }
 
 /// The primary variants' latest revisions the choice was made from (409 if one changed).
@@ -277,8 +281,11 @@ pub async fn merge(
                 .to_string(),
         ));
     }
+    if body.merge_singles && !user.has(Permission::EditMetadata) {
+        return Err(AppError::Forbidden("merging the singles along needs the `edit_metadata` permission".to_string()));
+    }
     let mut tx = state.db(&user).await?;
-    let merged = revisions::merge_tracks(
+    let merged = crate::db::album_merges::merge_tracks_and_singles(
         &mut tx,
         id,
         body.from,
@@ -286,6 +293,7 @@ pub async fn merge(
         body.base.into_revision_id,
         body.base.from_revision_id,
         &body.reason,
+        body.merge_singles,
     )
     .await?;
     tx.commit().await?;

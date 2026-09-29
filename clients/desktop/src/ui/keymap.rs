@@ -62,6 +62,7 @@ pub const GROUPS: &[(&str, &[Binding])] = &[
             ("p", "add to a playlist"),
             ("q", "queue it (at the end of the queue)"),
             ("Shift+Q", "queue it first"),
+            ("Ctrl+E", "change this track (a quick fix, the popup below; any mode)"),
         ],
     ),
     (
@@ -71,7 +72,7 @@ pub const GROUPS: &[(&str, &[Binding])] = &[
             ("Shift+↑/↓  or  Shift+click", "a range, as the row it starts from (marked or not)"),
             ("Ctrl+A", "mark everything shown"),
             ("Esc", "clear the marks"),
-            ("Ctrl+E", "change the marked tracks (a popup)"),
+            ("Ctrl+E", "change the marked tracks (a popup; none marked: the selected one)"),
             ("status:demo date:2020 disc:2 …", "in the popup: set it at once (several too), Enter"),
             ("a word, then Enter", "in the popup: find what to change (spaces don't matter)"),
             ("/", "in the popup: back to “What to change”"),
@@ -115,6 +116,7 @@ pub const GROUPS: &[(&str, &[Binding])] = &[
             ("← →  or  h l", "take the left or the right one"),
             ("s", "swap sides (left is kept)"),
             ("Space / Shift+Space", "play the left / right file: from the middle, the other from the same moment"),
+            ("a", "merge their singles along or not (each alone on one)"),
             ("Ctrl+Enter", "merge"),
             ("n", "not the same"),
             ("Esc", "close"),
@@ -125,6 +127,7 @@ pub const GROUPS: &[(&str, &[Binding])] = &[
         &[
             ("Ctrl+M", "choose the other one to merge with (again: close)"),
             ("s", "swap which one stays"),
+            ("a", "merge along or not: singles with their track, tracks of the same tracklist"),
             ("Ctrl+Enter", "merge"),
             ("Esc", "close"),
         ],

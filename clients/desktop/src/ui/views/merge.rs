@@ -8,10 +8,15 @@
 //! with both tracks' revisions as the base: a change meanwhile is refused, not undone).
 //! Undoing is on the kept track's page.
 //!
+//! Two tracks each alone on a single (of kind single, nothing else on it): the singles are
+//! merged along, the right one's into the left one's, unless the "along" box is off (it's
+//! a setting, shared with album merges). The server checks again, counting tracks the
+//! user can't see.
+//!
 //! Keys: ↑/↓ (or j/k) a row, ←/→ (or h/l) its side, s swaps the sides, Space plays the
 //! left file and Shift+Space the right (from the middle; switching goes on from the same
-//! moment, to hear the difference), Ctrl+Enter merges, n says they're not the same, Esc
-//! closes it.
+//! moment, to hear the difference), a merges the singles along or not, Ctrl+Enter
+//! merges, n says they're not the same, Esc closes it.
 
 use std::sync::{Arc, Mutex};
 
@@ -150,6 +155,7 @@ impl MergeView {
             shell.runtime.spawn(async move { controller.prepare(files).await });
             self.kept_by = Some((shell.controller.clone(), shell.runtime.handle().clone()));
         }
+        let singles = lone_singles(catalog, self.left, self.right);
         if !self.file_suggested {
             self.file_suggested = true;
             if quality(&r) > quality(&l) {
@@ -162,7 +168,7 @@ impl MergeView {
             let ctx = ui.ctx().clone();
             let merge = ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Enter));
             if merge {
-                self.merge(shell, &l, &r);
+                self.merge(shell, &l, &r, singles.is_some());
             }
             if !ctx.egui_wants_keyboard_input() {
                 let key = |k: Key| ctx.input(|i| i.key_pressed(k) && i.modifiers.is_none());
@@ -178,6 +184,9 @@ impl MergeView {
                     self.picks[self.row] = Side::Right;
                 } else if key(Key::S) {
                     self.swap();
+                } else if key(Key::A) && singles.is_some() {
+                    shell.settings.merge_along = !shell.settings.merge_along;
+                    shell.settings.save(&shell.data_dir);
                 } else if key(Key::N) {
                     return Some(Outcome::NotSame);
                 } else if key(Key::Escape) {
@@ -269,7 +278,14 @@ impl MergeView {
         if !listed.is_empty() {
             ui.label(RichText::new(format!("Combined: {}.", listed.join(", "))).color(P.muted));
         }
-        ui.label(RichText::new("The right file stays as a previous file of the kept track. Undo is on the kept track's page.").color(P.faint).small());
+        if let Some((from, into)) = singles {
+            let title = |id: Uuid| catalog.album(id).map(|a| a.title.clone()).unwrap_or_default();
+            let text = format!("Merge their singles too: “{}” into “{}” (each has only this track)  (a)", title(from), title(into));
+            if ui.checkbox(&mut shell.settings.merge_along, text).changed() {
+                shell.settings.save(&shell.data_dir);
+            }
+        }
+        ui.label(RichText::new("The right file stays as a previous file of the kept track. Undo is on the kept track's page (the singles' merge, if any, first: on the single's page).").color(P.faint).small());
 
         ui.add_space(8.0);
         ui.add(egui::TextEdit::singleline(&mut self.reason).hint_text("Why (optional)").desired_width(420.0));
@@ -277,7 +293,7 @@ impl MergeView {
         ui.horizontal(|ui| {
             let can = shell.account.can("replace_file");
             if ui.add_enabled(can && !self.merging, egui::Button::new("Merge  (Ctrl+Enter)")).clicked() {
-                self.merge(shell, &l, &r);
+                self.merge(shell, &l, &r, singles.is_some());
             }
             if ui.button("Not the same  (n)").clicked() {
                 outcome = Some(Outcome::NotSame);
@@ -311,12 +327,13 @@ impl MergeView {
         if let Some(err) = &self.error {
             ui.label(RichText::new(err).color(P.danger));
         }
-        ui.label(RichText::new("↑/↓ row · ←/→ side · s swap · Space / Shift+Space play left / right · n not the same · Esc close").color(P.faint).small());
+        ui.label(RichText::new("↑/↓ row · ←/→ side · s swap · Space / Shift+Space play left / right · a singles along · n not the same · Esc close").color(P.faint).small());
         outcome
     }
 
     /// The request: the picks, and both tracks' latest revisions as the base.
-    fn body(&self, l: &TrackDetail, r: &TrackDetail) -> serde_json::Value {
+    /// `merge_singles`: their singles too (see `lone_singles`).
+    fn body(&self, l: &TrackDetail, r: &TrackDetail, merge_singles: bool) -> serde_json::Value {
         let base = |d: &TrackDetail| d.primary_variant_id.and_then(|id| d.variants.iter().find(|v| v.id == id)).map(|v| v.revision_id);
         let mut pick = serde_json::Map::new();
         for (n, (field, _)) in FIELDS.iter().enumerate() {
@@ -327,6 +344,7 @@ impl MergeView {
             "base": { "into_revision_id": base(l), "from_revision_id": base(r) },
             "pick": pick,
             "reason": self.reason.trim(),
+            "merge_singles": merge_singles,
         })
     }
 
@@ -343,11 +361,12 @@ impl MergeView {
         });
     }
 
-    fn merge(&mut self, shell: &Shell, l: &TrackDetail, r: &TrackDetail) {
+    /// `singles`: they're each alone on a single (merged along if the setting says so).
+    fn merge(&mut self, shell: &Shell, l: &TrackDetail, r: &TrackDetail, singles: bool) {
         if self.merging || !shell.account.can("replace_file") {
             return;
         }
-        let body = self.body(l, r);
+        let body = self.body(l, r, singles && shell.settings.merge_along);
         self.merging = true;
         self.error = None;
         let (api, answer, ctx, into) = (shell.api.clone(), self.answer.clone(), shell.ctx.clone(), self.left);
@@ -357,6 +376,24 @@ impl MergeView {
             ctx.request_repaint();
         });
     }
+}
+
+/// The singles the two tracks are each alone on (of kind single, no other track on it),
+/// if both are on exactly one: (right's, left's). As far as the library kept here knows:
+/// the server checks again, tracks the user can't see counted.
+pub fn lone_singles(catalog: &Catalog, left: Uuid, right: Uuid) -> Option<(Uuid, Uuid)> {
+    let alone_on = |track: Uuid| -> Option<Uuid> {
+        let t = &catalog.tracks[catalog.track_index(track)? as usize];
+        let mut singles = t.albums.iter().map(|m| m.0).filter(|&album| {
+            catalog.album(album).is_some_and(|a| a.kind == "single") && catalog.album_tracks(album).len() == 1
+        });
+        match (singles.next(), singles.next()) {
+            (Some(album), None) => Some(album),
+            _ => None,
+        }
+    };
+    let (from, into) = (alone_on(right)?, alone_on(left)?);
+    (from != into).then_some((from, into))
 }
 
 fn can_share(shell: &Shell) -> bool {
@@ -466,7 +503,7 @@ mod against_a_server {
             view.file_suggested = true;
             view.reason = "merge test".into();
             let merged: serde_json::Value =
-                api.send_json(reqwest::Method::POST, &format!("/api/tracks/{}/merge", l.id), Some(view.body(&l, &r))).await.unwrap();
+                api.send_json(reqwest::Method::POST, &format!("/api/tracks/{}/merge", l.id), Some(view.body(&l, &r, false))).await.unwrap();
             assert_eq!(merged["track_id"].as_str().unwrap(), l.id.to_string());
 
             // The duplicate now answers as the kept track, with the FLAC as its file.

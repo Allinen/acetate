@@ -355,19 +355,28 @@ pub struct MergeAlbum {
     into: Uuid,
     #[serde(default)]
     reason: String,
+    /// If the tracklists are the same, merge the tracks too, pair by pair (see
+    /// `db::album_merges::merge_album_and_tracks`). Needs `replace_file` too.
+    #[serde(default)]
+    merge_tracks: bool,
 }
 
-/// `POST /api/albums/{id}/merge`, JSON `{"into": "..."}`: this album is the same as
-/// `into`. Its tracks (each with a revision), covers, sources and shares move there; this
-/// album then redirects to `into`.
+/// `POST /api/albums/{id}/merge`, JSON `{"into": "...", "merge_tracks": true}`: this album
+/// is the same as `into`. Its tracks (each with a revision), covers, sources and shares
+/// move there; this album then redirects to `into`.
 pub async fn merge_album(
     State(state): State<AppState>,
     user: CurrentUser,
     Path(id): Path<Uuid>,
     Json(body): Json<MergeAlbum>,
 ) -> Result<Json<db::album_merges::MergedAlbum>, AppError> {
+    if body.merge_tracks && !user.has(Permission::ReplaceFile) {
+        return Err(AppError::Forbidden(
+            "merging the tracks along changes which file a track plays, which needs the `replace_file` permission".to_string(),
+        ));
+    }
     let mut tx = state.db(&user).await?;
-    let merged = db::album_merges::merge_album(&mut tx, id, body.into, &body.reason).await?;
+    let merged = db::album_merges::merge_album_and_tracks(&mut tx, id, body.into, &body.reason, body.merge_tracks).await?;
     tx.commit().await?;
     Ok(Json(merged))
 }

@@ -890,6 +890,9 @@ pub struct MergedTracks {
     pub merge_id: Uuid,
     pub variants_moved: usize,
     pub lyrics_moved: usize,
+    /// The singles the two were each alone on, merged along (see
+    /// `album_merges::merge_tracks_and_singles`).
+    pub singles_merged: Option<super::album_merges::MergedAlbum>,
 }
 
 /// Merges track `from` (the duplicate, "right") into `into` (kept, "left"): the same song
@@ -1239,6 +1242,7 @@ pub async fn merge_tracks(
         merge_id,
         variants_moved: record.variants.len(),
         lyrics_moved: lyrics.len(),
+        singles_merged: None,
     })
 }
 
@@ -1410,7 +1414,22 @@ pub async fn merge_undo_blockers(conn: &mut PgConnection, merge_id: Uuid) -> any
     {
         blockers.push("its metadata (or primary variant) was changed after the merge".to_string());
     }
-    if latest_external(conn, kept).await?.map(|(_, data)| data)
+    // An album merge since that moved it (e.g. the singles merged along with this merge).
+    let album_merged = sqlx::query_scalar!(
+        r#"
+        SELECT a.title FROM album_merges m JOIN albums a ON a.id = m.into_album_id
+        WHERE m.id > $2 AND m.undone_at IS NULL
+          AND m.moved->'tracks' @> jsonb_build_array(jsonb_build_object('track_id', $1::uuid))
+        ORDER BY m.id DESC LIMIT 1
+        "#,
+        kept,
+        merge_id
+    )
+    .fetch_optional(&mut *conn)
+    .await?;
+    if let Some(album) = album_merged {
+        blockers.push(format!("an album it's on was merged into \"{album}\" since (undo that first, on \"{album}\"'s page)"));
+    } else if latest_external(conn, kept).await?.map(|(_, data)| data)
         != Some(revision_data(conn, record.kept_external_after).await?)
     {
         blockers.push("its status, albums or relations changed after the merge".to_string());

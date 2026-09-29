@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT a.title FROM album_merges m JOIN albums a ON a.id = m.into_album_id\n        WHERE m.id > $2 AND m.undone_at IS NULL\n          AND m.moved->'tracks' @> jsonb_build_array(jsonb_build_object('track_id', $1::uuid))\n        ORDER BY m.id DESC LIMIT 1\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "title",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "albums",
+            "name": "title"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "76b094e155bc9e9fd01ff8b24964fd4adc9966922426c7211492f39e2966d087"
+}

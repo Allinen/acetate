@@ -17,11 +17,15 @@ pub struct Settings {
     /// The columns shown in each kind of track list ("album", "playlist"…), when changed
     /// from the list's own (right-click a column's name).
     pub table_columns: std::collections::HashMap<String, Vec<String>>,
+    /// Merging two tracks each alone on a single merges the singles too; merging two
+    /// albums with the same tracklist merges their tracks too (the merge views' "along"
+    /// box, `a`).
+    pub merge_along: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { volume: 0.8, muted: false, output: None, table_columns: Default::default() }
+        Settings { volume: 0.8, muted: false, output: None, table_columns: Default::default(), merge_along: true }
     }
 }
 

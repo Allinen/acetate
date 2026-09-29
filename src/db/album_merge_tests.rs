@@ -13,7 +13,7 @@ use crate::db;
 use crate::db::covers::{CoverOwner, NewCover};
 use crate::db::revisions::Source;
 use crate::model::sources::{self, Kind, NewSource, SourceOwner};
-use crate::model::{AlbumData, AlbumMembership, Credit, Relation, TrackFacts};
+use crate::model::{AlbumData, AlbumMembership, Credit, Relation, TrackFacts, TrackMetadata};
 
 fn on(album_id: Uuid, track_number: Option<i16>) -> AlbumMembership {
     AlbumMembership { album_id, disc_number: None, track_number }
@@ -593,5 +593,128 @@ async fn covers_older_track_merges_trashed_come_back_after_the_kept_ones(_: PgPo
     .fetch_all(&lib.owner)
     .await?;
     assert_eq!(v_covers, vec![(y, false), (x, false), (z, true)]);
+    Ok(())
+}
+
+/// A new album of `kind` with the given tracks (title, track number), made as ingest does.
+async fn album_with(lib: &Library, title: &str, kind: &str, tracks: &[(&str, Option<i16>)]) -> anyhow::Result<(Uuid, Vec<Uuid>)> {
+    let mut tx = db::begin(&lib.owner, None).await?;
+    let data = AlbumData { title: title.into(), kind: kind.into(), ..Default::default() };
+    let album = db::revisions::create_album(&mut tx, &data, Source::Import, "").await?;
+    let mut ids = Vec::new();
+    for (track, number) in tracks {
+        // (Named apart first: its fake file's bytes are made from the name, and two files
+        // can't be the same. Then its title.)
+        let (id, _) = super::rls_tests::make_track(&mut tx, &format!("{track} {}", Uuid::now_v7()), &[lib.both], None).await?;
+        let variant: Uuid = sqlx::query_scalar("SELECT primary_variant_id FROM tracks WHERE id = $1").bind(id).fetch_one(&mut *tx).await?;
+        let meta = TrackMetadata {
+            title: track.to_string(),
+            credits: vec![Credit { artist_id: lib.both, role: "primary".into(), alias_id: None }],
+            ..Default::default()
+        };
+        db::revisions::write_internal(&mut tx, id, variant, None, &meta, Source::Edit, "", false).await?;
+        let facts = TrackFacts { albums: vec![on(album, *number)], ..Default::default() };
+        db::revisions::write_external(&mut tx, id, None, &facts, Source::Edit, "").await?;
+        ids.push(id);
+    }
+    tx.commit().await?;
+    Ok((album, ids))
+}
+
+async fn track_merged_into(lib: &Library, track: Uuid) -> anyhow::Result<Option<Uuid>> {
+    Ok(sqlx::query_scalar("SELECT merged_into FROM tracks WHERE id = $1").bind(track).fetch_one(&lib.owner).await?)
+}
+
+#[sqlx::test]
+async fn merging_two_tracks_merges_their_singles(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
+    let lib = setup(connect).await?;
+    let (kept_single, kept) = album_with(&lib, "Song", "single", &[("Song", None)]).await?;
+    let (dupe_single, dupe) = album_with(&lib, "Song", "single", &[("Song", Some(1))]).await?;
+
+    let mut tx = db::begin(&lib.app, Some(lib.carol)).await?;
+    let merged =
+        db::album_merges::merge_tracks_and_singles(&mut tx, kept[0], dupe[0], &Default::default(), None, None, "", true).await?;
+    tx.commit().await?;
+    assert!(merged.singles_merged.is_some());
+    assert_eq!(merged_into(&lib, dupe_single).await?, Some(kept_single));
+    assert_eq!(tracks_on(&lib, kept_single).await?, vec![(kept[0], None)]);
+
+    // Undoing goes newest first: the singles' merge, then the tracks'.
+    let mut tx = db::begin(&lib.app, Some(lib.carol)).await?;
+    let blockers = db::revisions::merge_undo_blockers(&mut tx, merged.merge_id).await?;
+    assert_eq!(blockers, vec!["an album it's on was merged into \"Song\" since (undo that first, on \"Song\"'s page)"]);
+    let album_merge = merged.singles_merged.unwrap().merge_id;
+    db::album_merges::undo_album_merge(&mut tx, album_merge, "", true).await?;
+    assert_eq!(db::revisions::merge_undo_blockers(&mut tx, merged.merge_id).await?, Vec::<String>::new());
+    db::revisions::undo_track_merge(&mut tx, merged.merge_id, "").await?;
+    tx.commit().await?;
+    assert_eq!(tracks_on(&lib, dupe_single).await?, vec![(dupe[0], Some(1))]);
+    Ok(())
+}
+
+#[sqlx::test]
+async fn singles_with_more_on_them_stay(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
+    let lib = setup(connect).await?;
+    let (_, kept) = album_with(&lib, "Song", "single", &[("Song", None)]).await?;
+    let (dupe_single, dupe) = album_with(&lib, "Song", "single", &[("Song", Some(1))]).await?;
+    // H is on the duplicate's single too; carol can't see it, but it counts.
+    let mut tx = db::begin(&lib.owner, None).await?;
+    let facts = TrackFacts { albums: vec![on(lib.album, None), on(dupe_single, Some(2))], ..Default::default() };
+    db::revisions::write_external(&mut tx, lib.h, None, &facts, Source::Edit, "").await?;
+    tx.commit().await?;
+
+    let mut tx = db::begin(&lib.app, Some(lib.carol)).await?;
+    let merged =
+        db::album_merges::merge_tracks_and_singles(&mut tx, kept[0], dupe[0], &Default::default(), None, None, "", true).await?;
+    tx.commit().await?;
+    assert!(merged.singles_merged.is_none());
+    assert_eq!(merged_into(&lib, dupe_single).await?, None);
+
+    // Nor an album of another kind, nor with the option off.
+    let (_, kept) = album_with(&lib, "Other", "album", &[("Other", Some(1))]).await?;
+    let (_, dupe) = album_with(&lib, "Other", "single", &[("Other", Some(1))]).await?;
+    let (_, kept2) = album_with(&lib, "Third", "single", &[("Third", Some(1))]).await?;
+    let (_, dupe2) = album_with(&lib, "Third", "single", &[("Third", Some(1))]).await?;
+    let mut tx = db::begin(&lib.app, Some(lib.carol)).await?;
+    let one = db::album_merges::merge_tracks_and_singles(&mut tx, kept[0], dupe[0], &Default::default(), None, None, "", true).await?;
+    let two = db::album_merges::merge_tracks_and_singles(&mut tx, kept2[0], dupe2[0], &Default::default(), None, None, "", false).await?;
+    assert!(one.singles_merged.is_none() && two.singles_merged.is_none());
+    Ok(())
+}
+
+#[sqlx::test]
+async fn merging_albums_with_the_same_tracklist_merges_the_tracks(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
+    let lib = setup(connect).await?;
+    let (from, from_tracks) = album_with(&lib, "EP", "ep", &[("One", Some(1)), ("Two", Some(2))]).await?;
+    let (into, into_tracks) = album_with(&lib, "EP", "ep", &[("one", Some(1)), ("Two ", Some(2))]).await?;
+    // The merged one's second track has the better file.
+    sqlx::query("UPDATE files SET codec = 'flac' WHERE id = (SELECT file_id FROM tracks WHERE id = $1)")
+        .bind(from_tracks[1])
+        .execute(&lib.owner)
+        .await?;
+    let better: Uuid = sqlx::query_scalar("SELECT file_id FROM tracks WHERE id = $1").bind(from_tracks[1]).fetch_one(&lib.owner).await?;
+
+    let mut tx = db::begin(&lib.app, Some(lib.carol)).await?;
+    let merged = db::album_merges::merge_album_and_tracks(&mut tx, from, into, "", true).await?;
+    tx.commit().await?;
+    assert_eq!(merged.tracks_merged, 2);
+    for (a, b) in from_tracks.iter().zip(&into_tracks) {
+        assert_eq!(track_merged_into(&lib, *a).await?, Some(*b));
+    }
+    assert_eq!(tracks_on(&lib, into).await?.len(), 2);
+    // Each kept track keeps its own title; the better file is kept.
+    let (title, file): (String, Uuid) =
+        sqlx::query_as("SELECT title, file_id FROM tracks WHERE id = $1").bind(into_tracks[1]).fetch_one(&lib.owner).await?;
+    assert_eq!((title.as_str(), file), ("Two ", better));
+
+    // Different tracklists: only the albums merge.
+    let (from, from_tracks) = album_with(&lib, "LP", "album", &[("One", Some(1)), ("Two", Some(2))]).await?;
+    let (into, _) = album_with(&lib, "LP", "album", &[("One", Some(1)), ("Three", Some(2))]).await?;
+    let mut tx = db::begin(&lib.app, Some(lib.carol)).await?;
+    let merged = db::album_merges::merge_album_and_tracks(&mut tx, from, into, "", true).await?;
+    tx.commit().await?;
+    assert_eq!(merged.tracks_merged, 0);
+    assert_eq!(track_merged_into(&lib, from_tracks[0]).await?, None);
+    assert_eq!(tracks_on(&lib, into).await?.len(), 4);
     Ok(())
 }

@@ -32,6 +32,9 @@ pub struct MergedAlbum {
     pub tracks: usize,
     /// Covers that moved over.
     pub covers: usize,
+    /// Pairs of tracks merged along, the tracklists being the same (see
+    /// `merge_album_and_tracks`).
+    pub tracks_merged: usize,
 }
 
 /// What a merge moved, stored with it for the undo.
@@ -235,6 +238,7 @@ pub async fn merge_album(conn: &mut PgConnection, from: Uuid, into: Uuid, reason
         merge_id,
         tracks: visible.tracks as usize,
         covers: visible.covers as usize,
+        tracks_merged: 0,
     })
 }
 
@@ -532,7 +536,7 @@ pub async fn undo_album_merge(conn: &mut PgConnection, merge_id: Uuid, reason: &
         .map(|r| Place { disc_number: r.disc_number, track_number: r.track_number });
         let left_by_merge = moved.on_into_before.unwrap_or(moved.on_from);
         let (goes_back, detail) = if track.merged_into.is_some() {
-            (false, "was merged into another track since; its albums went with that track".to_string())
+            (false, "was merged into another track since; its albums went with that track (undo that merge first, on the kept track's page, for it to go back)".to_string())
         } else {
             match now {
                 None => (false, format!("was taken off {a} since, so it stays where it is now")),
@@ -767,4 +771,233 @@ pub async fn undo_album_merge(conn: &mut PgConnection, merge_id: Uuid, reason: &
         }
     }
     Ok(report)
+}
+
+// ============================================================================
+// Merging along: singles with their only track, and tracks with their album
+// ============================================================================
+//
+// Two tracks merged that are each alone on a single: the singles are the same too, and
+// merge (`lone_singles`, then `merge_album`). Two albums merged whose tracklists are the
+// same (numbers and titles): their tracks are the same too, and merge pair by pair
+// (`matching_tracks`, then `merge_pairs`). Each merge is its own, with its own record
+// and undo; undoing goes newest first (the one done along is undone before the other).
+
+/// `revisions::merge_tracks`, and then (with `singles`) the singles the two tracks were
+/// each alone on, `from`'s into `into`'s (see `lone_singles`).
+#[allow(clippy::too_many_arguments)]
+pub async fn merge_tracks_and_singles(
+    conn: &mut PgConnection,
+    into: Uuid,
+    from: Uuid,
+    picks: &revisions::MergePicks,
+    into_base: Option<Uuid>,
+    from_base: Option<Uuid>,
+    reason: &str,
+    singles: bool,
+) -> anyhow::Result<revisions::MergedTracks> {
+    // Before the merge: after it, the duplicate is on no album.
+    let lone = if singles { lone_singles(conn, into, from).await? } else { None };
+    let mut merged = revisions::merge_tracks(conn, into, from, picks, into_base, from_base, reason).await?;
+    if let Some((from_single, into_single)) = lone {
+        let reason = if reason.trim().is_empty() { "merged along with its only track" } else { reason };
+        merged.singles_merged = Some(merge_album(conn, from_single, into_single, reason).await?);
+    }
+    Ok(merged)
+}
+
+/// `merge_album`, and then (with `tracks`) its tracks into the other album's, pair by
+/// pair, if the tracklists are the same (see `matching_tracks`, `merge_pairs`).
+pub async fn merge_album_and_tracks(conn: &mut PgConnection, from: Uuid, into: Uuid, reason: &str, tracks: bool) -> anyhow::Result<MergedAlbum> {
+    // Before the merge: after it, `from` has no tracks.
+    let pairs = if tracks { matching_tracks(conn, from, into).await? } else { Vec::new() };
+    let mut merged = merge_album(conn, from, into, reason).await?;
+    let reason = if reason.trim().is_empty() { "merged along with its album" } else { reason };
+    merged.tracks_merged = merge_pairs(conn, &pairs, reason).await?;
+    Ok(merged)
+}
+
+/// A track on an album, as the tracklists are compared.
+#[derive(Debug, Clone)]
+pub struct Listed {
+    pub track_id: Uuid,
+    pub disc_number: Option<i16>,
+    pub track_number: Option<i16>,
+    pub title: String,
+}
+
+/// Before merging track `from` into `into`: the single each is alone on (of kind
+/// `single`, no other track on it, hidden ones counted), if each is alone on exactly one
+/// and the user can see both: (from's, into's).
+pub async fn lone_singles(conn: &mut PgConnection, into: Uuid, from: Uuid) -> anyhow::Result<Option<(Uuid, Uuid)>> {
+    let system = super::as_system(conn).await?;
+    let rows = sqlx::query!(
+        r#"
+        SELECT at.track_id, at.album_id FROM album_tracks at
+        JOIN albums a ON a.id = at.album_id
+        WHERE at.track_id = ANY($1) AND a.kind = 'single' AND a.merged_into IS NULL
+          AND NOT EXISTS (SELECT 1 FROM album_tracks o WHERE o.album_id = at.album_id AND o.track_id <> at.track_id)
+        "#,
+        &[into, from][..]
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    system.end(conn).await?;
+    let alone_on = |track: Uuid| -> Option<Uuid> {
+        let mut albums = rows.iter().filter(|r| r.track_id == track).map(|r| r.album_id);
+        match (albums.next(), albums.next()) {
+            (Some(album), None) => Some(album),
+            _ => None,
+        }
+    };
+    let (Some(from_single), Some(into_single)) = (alone_on(from), alone_on(into)) else { return Ok(None) };
+    if from_single == into_single {
+        return Ok(None);
+    }
+    let visible = sqlx::query_scalar!(r#"SELECT count(*) AS "n!" FROM albums WHERE id = ANY($1)"#, &[from_single, into_single][..])
+        .fetch_one(&mut *conn)
+        .await?;
+    Ok((visible == 2).then_some((from_single, into_single)))
+}
+
+/// Before merging album `from` into `into`: their tracks in pairs (from's, into's), if the
+/// tracklists are the same (see `pair_tracklists`), all of them tracks the user can see.
+/// Empty otherwise.
+pub async fn matching_tracks(conn: &mut PgConnection, from: Uuid, into: Uuid) -> anyhow::Result<Vec<(Uuid, Uuid)>> {
+    let system = super::as_system(conn).await?;
+    let rows = sqlx::query!(
+        r#"
+        SELECT at.album_id, at.track_id, at.disc_number, at.track_number, t.title
+        FROM album_tracks at JOIN tracks t ON t.id = at.track_id
+        WHERE at.album_id = ANY($1)
+        "#,
+        &[from, into][..]
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    system.end(conn).await?;
+    let list = |album: Uuid| -> Vec<Listed> {
+        rows.iter()
+            .filter(|r| r.album_id == album)
+            .map(|r| Listed { track_id: r.track_id, disc_number: r.disc_number, track_number: r.track_number, title: r.title.clone() })
+            .collect()
+    };
+    let pairs = pair_tracklists(&list(from), &list(into));
+    let ids: Vec<Uuid> = pairs.iter().flat_map(|&(a, b)| [a, b]).collect();
+    let visible = sqlx::query_scalar!(r#"SELECT count(*) AS "n!" FROM tracks WHERE id = ANY($1)"#, &ids)
+        .fetch_one(&mut *conn)
+        .await?;
+    Ok(if visible as usize == ids.len() { pairs } else { Vec::new() })
+}
+
+/// Two tracklists are the same when they have the same places (disc and track number; no
+/// disc is disc 1; the one track of a one-track album is track 1 if it has no number),
+/// one track in each place, and the same title in each place (letter case and spaces
+/// around aside). Then: the pairs (a's, b's) of different tracks, in order; else none.
+/// A track on both albums can't be paired with another.
+pub fn pair_tracklists(a: &[Listed], b: &[Listed]) -> Vec<(Uuid, Uuid)> {
+    fn places(list: &[Listed]) -> Option<std::collections::BTreeMap<(i16, i16), &Listed>> {
+        let mut places = std::collections::BTreeMap::new();
+        for t in list {
+            let number = match (t.track_number, list.len()) {
+                (Some(n), _) => n,
+                (None, 1) => 1,
+                (None, _) => return None,
+            };
+            if places.insert((t.disc_number.unwrap_or(1), number), t).is_some() {
+                return None;
+            }
+        }
+        Some(places)
+    }
+    let (Some(pa), Some(pb)) = (places(a), places(b)) else { return Vec::new() };
+    if a.is_empty() || pa.len() != pb.len() {
+        return Vec::new();
+    }
+    let same_title = |x: &str, y: &str| x.trim().to_lowercase() == y.trim().to_lowercase();
+    let mut pairs = Vec::new();
+    for (place, ta) in &pa {
+        let Some(tb) = pb.get(place) else { return Vec::new() };
+        if !same_title(&ta.title, &tb.title) {
+            return Vec::new();
+        }
+        if ta.track_id != tb.track_id {
+            pairs.push((ta.track_id, tb.track_id));
+        }
+    }
+    // A track on both, in different places: not the same tracklist after all.
+    let on_both = |id: Uuid| a.iter().any(|t| t.track_id == id) && b.iter().any(|t| t.track_id == id);
+    if pairs.iter().any(|&(x, y)| on_both(x) || on_both(y)) {
+        return Vec::new();
+    }
+    pairs
+}
+
+/// Merges each pair (the first track into the second), the second keeping everything of
+/// its own but the file: the better of the two files stays (see `better_file`), the other
+/// becomes a previous file. Returns how many were merged.
+pub async fn merge_pairs(conn: &mut PgConnection, pairs: &[(Uuid, Uuid)], reason: &str) -> anyhow::Result<usize> {
+    for &(from, into) in pairs {
+        let picks = revisions::MergePicks { file: better_file(conn, into, from).await?, ..Default::default() };
+        revisions::merge_tracks(conn, into, from, &picks, None, None, reason).await?;
+    }
+    Ok(pairs.len())
+}
+
+/// Which track's file is better, `left`'s or `right`'s: lossless first, then sample rate
+/// and bit depth, then bitrate, then size (as the merge view suggests it). Left if equal.
+async fn better_file(conn: &mut PgConnection, left: Uuid, right: Uuid) -> anyhow::Result<revisions::Side> {
+    let rows = sqlx::query!(
+        r#"
+        SELECT t.id AS "track_id!", f.codec, f.sample_rate, f.bit_depth, f.bitrate, f.size_bytes
+        FROM tracks t JOIN files f ON f.id = t.file_id
+        WHERE t.id = ANY($1)
+        "#,
+        &[left, right][..]
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    let quality = |track: Uuid| {
+        rows.iter().find(|r| r.track_id == track).map(|f| {
+            let codec = f.codec.as_deref().unwrap_or("").to_lowercase();
+            let lossless = matches!(codec.as_str(), "flac" | "alac" | "wav" | "aiff" | "ape" | "wavpack") || codec.starts_with("pcm");
+            (lossless, f.sample_rate.unwrap_or(0), f.bit_depth.unwrap_or(0), f.bitrate.unwrap_or(0), f.size_bytes)
+        })
+    };
+    Ok(if quality(right) > quality(left) { revisions::Side::Right } else { revisions::Side::Left })
+}
+
+#[cfg(test)]
+mod pairing {
+    use super::*;
+
+    fn listed(id: u128, disc: Option<i16>, number: Option<i16>, title: &str) -> Listed {
+        Listed { track_id: Uuid::from_u128(id), disc_number: disc, track_number: number, title: title.into() }
+    }
+
+    #[test]
+    fn same_tracklists_pair_up() {
+        let a = [listed(1, None, Some(1), "One"), listed(2, Some(2), Some(1), "Two ")];
+        let b = [listed(12, Some(2), Some(1), "two"), listed(11, Some(1), Some(1), "one")];
+        assert_eq!(pair_tracklists(&a, &b), [(Uuid::from_u128(1), Uuid::from_u128(11)), (Uuid::from_u128(2), Uuid::from_u128(12))]);
+        // Singles: one track each, no numbers needed.
+        assert_eq!(pair_tracklists(&[listed(1, None, None, "Song")], &[listed(2, None, Some(1), "SONG")]).len(), 1);
+    }
+
+    #[test]
+    fn different_tracklists_dont() {
+        let a = [listed(1, None, Some(1), "One"), listed(2, None, Some(2), "Two")];
+        // A title differs, a number differs, one more track, no numbers.
+        assert!(pair_tracklists(&a, &[listed(11, None, Some(1), "One"), listed(12, None, Some(2), "Two (remix)")]).is_empty());
+        assert!(pair_tracklists(&a, &[listed(11, None, Some(1), "One"), listed(12, None, Some(3), "Two")]).is_empty());
+        assert!(pair_tracklists(&a[..1], &a).is_empty());
+        assert!(pair_tracklists(&[listed(1, None, None, "A"), listed(2, None, None, "B")], &[listed(3, None, None, "A"), listed(4, None, None, "B")]).is_empty());
+        // Two tracks in one place.
+        assert!(pair_tracklists(&[listed(1, None, Some(1), "A"), listed(2, None, Some(1), "A")], &a).is_empty());
+        // A track on both, in another place.
+        let b = [listed(2, None, Some(1), "One"), listed(1, None, Some(2), "Two")];
+        let a = [listed(1, None, Some(1), "One"), listed(2, None, Some(2), "Two")];
+        assert!(pair_tracklists(&a, &b).is_empty());
+        assert!(pair_tracklists(&[], &[]).is_empty());
+    }
 }
