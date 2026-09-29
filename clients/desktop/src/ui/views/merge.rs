@@ -459,7 +459,7 @@ fn value(d: &TrackDetail, catalog: &Catalog, field: &str) -> String {
             let f = &d.file;
             let mut parts = vec![f.codec.clone().unwrap_or_else(|| "?".into())];
             if let Some(b) = f.bitrate {
-                parts.push(format!("{} kbps", b / 1000));
+                parts.push(format!("{b} kbps"));
             }
             if let Some(s) = f.sample_rate {
                 parts.push(format!("{:.1} kHz", s as f32 / 1000.0));

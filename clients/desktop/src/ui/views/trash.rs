@@ -46,6 +46,7 @@ pub struct OldFile {
     pub original_filename: Option<String>,
     pub uploaded_filename: String,
     pub codec: Option<String>,
+    /// In kbps.
     pub bitrate: Option<i32>,
     pub size_bytes: i64,
     pub replaced_at: String,
@@ -394,7 +395,7 @@ impl TrashPage {
                                 shell.act(Action::Go(Page::Track(f.track_id)));
                             }
                         });
-                        let quality = [f.codec.clone(), f.bitrate.map(|b| format!("{} kbps", b / 1000))].into_iter().flatten().collect::<Vec<_>>().join(" · ");
+                        let quality = [f.codec.clone(), f.bitrate.map(|b| format!("{b} kbps"))].into_iter().flatten().collect::<Vec<_>>().join(" · ");
                         ui.label(RichText::new(format!("{} · {quality} · replaced {}", size(f.size_bytes), day(&f.replaced_at))).color(P.faint).small());
                     });
                 });

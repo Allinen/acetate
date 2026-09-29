@@ -643,7 +643,7 @@ fn file(ui: &mut egui::Ui, shell: &mut Shell, d: &TrackDetail) {
         quality.push(format!("{depth}-bit"));
     }
     if let Some(bitrate) = f.bitrate {
-        quality.push(format!("{} kbps", bitrate / 1000));
+        quality.push(format!("{bitrate} kbps"));
     }
     match f.channels {
         Some(1) => quality.push("mono".into()),
@@ -695,7 +695,7 @@ fn file(ui: &mut egui::Ui, shell: &mut Shell, d: &TrackDetail) {
                 ""
             };
             let codec = h.old_codec.clone().unwrap_or_default().to_uppercase();
-            let bitrate = h.old_bitrate.map(|b| format!(" {} kbps", b / 1000)).unwrap_or_default();
+            let bitrate = h.old_bitrate.map(|b| format!(" {b} kbps")).unwrap_or_default();
             ui.label(format!(
                 "{name} · {codec}{bitrate} · {:.1} MB · replaced {}{state}",
                 h.old_size_bytes as f64 / 1_000_000.0,

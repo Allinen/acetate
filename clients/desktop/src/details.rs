@@ -83,6 +83,7 @@ pub struct FileInfo {
     pub uploaded_filename: String,
     pub size_bytes: i64,
     pub codec: Option<String>,
+    /// In kbps (as the server stores it).
     pub bitrate: Option<i32>,
     pub sample_rate: Option<i32>,
     pub channels: Option<i16>,
@@ -117,6 +118,7 @@ pub struct FileChange {
     pub old_original_filename: Option<String>,
     pub old_uploaded_filename: String,
     pub old_codec: Option<String>,
+    /// In kbps.
     pub old_bitrate: Option<i32>,
     pub old_size_bytes: i64,
     /// Where the earlier file came from (a snapshot of one of the track's sources).

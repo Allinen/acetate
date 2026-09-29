@@ -9,8 +9,9 @@
 //! drops what it had half written, as for any broken upload). The answer is then 413 (too
 //! large) or 429 (the day's amount is used up, with when it starts again).
 //!
-//! The day's count is kept in memory (a restart starts it again) and starts over at
-//! midnight UTC.
+//! The day's count starts over at midnight UTC. It's counted in memory, and kept in the
+//! database after each upload (`db::state`, under `uploads`), so a restart carries on
+//! from it.
 
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
@@ -21,6 +22,8 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use chrono::{NaiveDate, Utc};
 use futures_util::StreamExt;
+use serde::{Deserialize, Serialize};
+use sqlx::PgPool;
 
 use super::{AppError, AppState};
 
@@ -38,9 +41,48 @@ const FINE: u8 = 0;
 const TOO_LARGE: u8 = 1;
 const DAY_USED_UP: u8 = 2;
 
+/// What's kept in the database: the day, and what came in on it.
+#[derive(Debug, Serialize, Deserialize)]
+struct Kept {
+    day: NaiveDate,
+    bytes: u64,
+}
+
+/// The name it's kept under (`db::state`).
+const KEPT_AS: &str = "uploads";
+
 impl UploadLimits {
     pub fn new(per_request: u64, per_day: u64) -> UploadLimits {
         UploadLimits { per_request, per_day, today: Mutex::new((Utc::now().date_naive(), 0)) }
+    }
+
+    /// Like `new`, carrying on from today's count as the database has it.
+    pub async fn load(pool: &PgPool, per_request: u64, per_day: u64) -> anyhow::Result<UploadLimits> {
+        let limits = UploadLimits::new(per_request, per_day);
+        let mut tx = crate::db::begin(pool, None).await?;
+        if let Some(kept) = crate::db::state::get::<Kept>(&mut tx, KEPT_AS).await?
+            && kept.day == Utc::now().date_naive()
+        {
+            limits.today.lock().unwrap().1 = kept.bytes;
+        }
+        Ok(limits)
+    }
+
+    /// Keeps today's count in the database (in the background: the answer doesn't wait).
+    fn keep(&self, pool: &PgPool) {
+        let (day, bytes) = *self.today.lock().unwrap();
+        let pool = pool.clone();
+        tokio::spawn(async move {
+            let result = async {
+                let mut tx = crate::db::begin(&pool, None).await?;
+                crate::db::state::set(&mut tx, KEPT_AS, &Kept { day, bytes }).await?;
+                tx.commit().await
+            }
+            .await;
+            if let Err(err) = result {
+                tracing::warn!("couldn't keep today's upload count ({bytes} bytes): {err:#}");
+            }
+        });
     }
 
     /// Bytes left today (None: no daily limit).
@@ -142,6 +184,9 @@ pub async fn limit(State(state): State<AppState>, request: Request, next: Next) 
         Err(axum::Error::new(std::io::Error::other("upload limit reached")))
     });
     let response = next.run(Request::from_parts(parts, Body::from_stream(stream))).await;
+    if limits.per_day > 0 {
+        limits.keep(&state.pool);
+    }
     // The handler saw a broken upload; say why it broke instead.
     Ok(match stopped.load(Ordering::Relaxed) {
         TOO_LARGE => limits.too_large(None).into_response(),

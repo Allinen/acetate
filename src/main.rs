@@ -497,6 +497,8 @@ async fn serve(config: Config, owner_pool: sqlx::PgPool, store: BlobStore) -> an
     db::check_row_level_security(&owner_pool).await?;
     owner_pool.close().await;
     let pool = db::connect_app(&config.database_url).await?;
+    // Today's upload count, carried on from before a restart.
+    let upload_limits = api::upload_limits::UploadLimits::load(&pool, config.max_upload_bytes, config.daily_upload_bytes).await?;
     let app = api::router(api::AppState {
         pool,
         store,
@@ -505,7 +507,7 @@ async fn serve(config: Config, owner_pool: sqlx::PgPool, store: BlobStore) -> an
         trust_proxy: config.trust_proxy,
         rate_limits: std::sync::Arc::new(api::RateLimits::new()),
         images: std::sync::Arc::new(storage::images::ImageCache::new(config.cache_dir.clone())),
-        upload_limits: std::sync::Arc::new(api::upload_limits::UploadLimits::new(config.max_upload_bytes, config.daily_upload_bytes)),
+        upload_limits: std::sync::Arc::new(upload_limits),
     });
     let listener = tokio::net::TcpListener::bind(&config.bind)
         .await

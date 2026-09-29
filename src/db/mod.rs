@@ -19,6 +19,7 @@ pub mod review;
 pub mod revisions;
 pub mod shares;
 pub mod sources;
+pub mod state;
 pub mod track_files;
 pub mod tracks;
 pub mod problems;
@@ -76,6 +77,8 @@ const TABLES_WITHOUT_RLS: &[&str] = &[
     "_sqlx_migrations",
     // One row: how far the change log was trimmed (see migration 0029).
     "library_changes_trimmed",
+    // What the server keeps between runs (see `state`): nothing about what users see.
+    "server_state",
     "users",
     "groups",
     "user_groups",
