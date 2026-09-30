@@ -39,6 +39,27 @@ impl Link {
     }
 }
 
+/// What's said about an extra besides its name and kind: a description, and where it came
+/// from (a link, or in words).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct About {
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub source: String,
+}
+
+impl About {
+    fn checked(&self) -> anyhow::Result<About> {
+        let description = self.description.trim().to_string();
+        let source = self.source.trim().to_string();
+        if description.len() > 100_000 || source.len() > 2_000 {
+            return Err(EditRejected::Invalid("that description or source is too long".into()).into());
+        }
+        Ok(About { description, source })
+    }
+}
+
 /// Who sees an extra: everyone, or (restricted) admins and these groups.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Access {
@@ -83,6 +104,10 @@ pub struct Extra {
     pub id: Uuid,
     pub name: String,
     pub kind: String,
+    pub description: String,
+    pub source: String,
+    /// Made from this track (hidden while it's an extra; `back_to_track` undoes it).
+    pub from_track: Option<Uuid>,
     pub is_restricted: bool,
     /// Who sees it when restricted (besides admins).
     pub groups: Vec<Group>,
@@ -150,9 +175,10 @@ pub async fn access_of_track(conn: &mut PgConnection, track: Uuid) -> anyhow::Re
 /// A new extra, linked to `links` (each must be there and not merged away). `access`: who
 /// sees it; None: like the first linked track (everyone, without one). Returns its id and
 /// the access it got.
-pub async fn create(conn: &mut PgConnection, name: &str, kind: &str, links: &[Link], access: Option<Access>, reason: &str) -> anyhow::Result<(Uuid, Access)> {
+pub async fn create(conn: &mut PgConnection, name: &str, kind: &str, about: &About, links: &[Link], access: Option<Access>, reason: &str) -> anyhow::Result<(Uuid, Access)> {
     let name = checked_name(name)?;
     let kind = checked_kind(kind);
+    let about = about.checked()?;
     let access = match access {
         Some(access) => access,
         None => match links.iter().find_map(|l| if let Link::Track(t) = l { Some(*t) } else { None }) {
@@ -163,8 +189,16 @@ pub async fn create(conn: &mut PgConnection, name: &str, kind: &str, links: &[Li
     // Made open, its groups added, then restricted (in this transaction: nobody sees it in
     // between). Restricted from the start, the visibility check would refuse the new row
     // (no group sees it yet).
-    let id = sqlx::query_scalar!("INSERT INTO extras (name, kind) VALUES ($1, $2) RETURNING id", name, kind).fetch_one(&mut *conn).await?;
-    log(conn, id, "made", json!({ "name": name, "kind": kind, "access": access }), reason).await?;
+    let id = sqlx::query_scalar!(
+        "INSERT INTO extras (name, kind, description, source) VALUES ($1, $2, $3, $4) RETURNING id",
+        name,
+        kind,
+        about.description,
+        about.source
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    log(conn, id, "made", json!({ "name": name, "kind": kind, "about": about, "access": access }), reason).await?;
     for link in links {
         self::link(conn, id, *link, reason).await?;
     }
@@ -235,18 +269,29 @@ async fn set_restricted(conn: &mut PgConnection, extra: Uuid, restricted: bool) 
     Ok(())
 }
 
-/// Its name and kind.
-pub async fn edit(conn: &mut PgConnection, extra: Uuid, name: &str, kind: &str, reason: &str) -> anyhow::Result<bool> {
-    let (name, kind) = (checked_name(name)?, checked_kind(kind));
-    let now = sqlx::query!("SELECT name, kind FROM extras WHERE id = $1 FOR UPDATE", extra)
+/// Its name, kind, description and source.
+pub async fn edit(conn: &mut PgConnection, extra: Uuid, name: &str, kind: &str, about: &About, reason: &str) -> anyhow::Result<bool> {
+    let (name, kind, about) = (checked_name(name)?, checked_kind(kind), about.checked()?);
+    let now = sqlx::query!("SELECT name, kind, description, source FROM extras WHERE id = $1 FOR UPDATE", extra)
         .fetch_optional(&mut *conn)
         .await?
         .ok_or(EditRejected::NotFound("extra"))?;
-    if now.name == name && now.kind == kind {
+    if now.name == name && now.kind == kind && now.description == about.description && now.source == about.source {
         return Ok(false);
     }
-    sqlx::query!("UPDATE extras SET name = $2, kind = $3 WHERE id = $1", extra, name, kind).execute(&mut *conn).await?;
-    log(conn, extra, "edited", json!({ "from": { "name": now.name, "kind": now.kind }, "to": { "name": name, "kind": kind } }), reason).await?;
+    sqlx::query!(
+        "UPDATE extras SET name = $2, kind = $3, description = $4, source = $5 WHERE id = $1",
+        extra,
+        name,
+        kind,
+        about.description,
+        about.source
+    )
+    .execute(&mut *conn)
+    .await?;
+    let from = json!({ "name": now.name, "kind": now.kind, "description": now.description, "source": now.source });
+    let to = json!({ "name": name, "kind": kind, "description": about.description, "source": about.source });
+    log(conn, extra, "edited", json!({ "from": from, "to": to }), reason).await?;
     Ok(true)
 }
 
@@ -359,7 +404,8 @@ pub async fn file_blob(conn: &mut PgConnection, file: Uuid) -> sqlx::Result<Opti
 /// One extra.
 pub async fn get(conn: &mut PgConnection, id: Uuid) -> sqlx::Result<Option<Extra>> {
     let Some(row) = sqlx::query!(
-        r#"SELECT e.id, e.name, e.kind, e.is_restricted, e.hidden_at IS NOT NULL AS "hidden!", e.created_at, u.username AS "created_by?"
+        r#"SELECT e.id, e.name, e.kind, e.description, e.source, e.from_track_id, e.is_restricted,
+                  e.hidden_at IS NOT NULL AS "hidden!", e.created_at, u.username AS "created_by?"
            FROM extras e LEFT JOIN users u ON u.id = e.created_by WHERE e.id = $1"#,
         id
     )
@@ -372,6 +418,9 @@ pub async fn get(conn: &mut PgConnection, id: Uuid) -> sqlx::Result<Option<Extra
         id: row.id,
         name: row.name,
         kind: row.kind,
+        description: row.description,
+        source: row.source,
+        from_track: row.from_track_id,
         is_restricted: row.is_restricted,
         groups: groups(conn, id).await?,
         hidden: row.hidden,
@@ -450,4 +499,116 @@ async fn links(conn: &mut PgConnection, extra: Uuid) -> sqlx::Result<Vec<Linked>
     )
     .fetch_all(conn)
     .await
+}
+
+// ---- A track becoming an extra, and back ----
+
+/// An album a track was on, and whether it had no other track (then it's hidden with it).
+#[derive(Debug, Serialize, PartialEq)]
+pub struct AlbumLeft {
+    pub id: Uuid,
+    pub title: String,
+    pub alone: bool,
+}
+
+/// What turning a track into an extra does (or, previewed, would).
+#[derive(Debug, Serialize)]
+pub struct FromTrack {
+    pub extra_id: Uuid,
+    pub name: String,
+    pub kind: String,
+    pub source: String,
+    /// The file it takes (the track's, the same bytes).
+    pub file: String,
+    pub links: Vec<Linked>,
+    pub access: Access,
+    pub albums: Vec<AlbumLeft>,
+}
+
+/// Turns a track into an extra: an extra named after it (or `name`), of `kind`, with its
+/// file (the same bytes), seen by those who see the track, linked to `belongs_to` (the song
+/// it's part of, if said) and to the track's primary artists, its source said in words
+/// (unless `about` says one). The track stays, with everything on it, but nobody sees it
+/// anymore (see migration 0042); `back_to_track` undoes it.
+pub async fn track_to_extra(conn: &mut PgConnection, track: Uuid, kind: &str, name: Option<&str>, about: &About, belongs_to: Option<Uuid>, reason: &str) -> anyhow::Result<FromTrack> {
+    let row = sqlx::query!(
+        r#"SELECT t.title, f.sha256, COALESCE(f.original_filename, f.uploaded_filename) AS "file_name!", f.size_bytes,
+                  f.container, f.codec, f.sample_rate, f.channels, f.bit_depth, f.duration_ms,
+                  src.platform AS "platform?", src.external_id AS "external_id?"
+           FROM tracks t
+           JOIN files f ON f.id = t.file_id
+           LEFT JOIN source_snapshots ss ON ss.id = f.origin_snapshot_id
+           LEFT JOIN sources src ON src.id = ss.source_id
+           WHERE t.id = $1 AND t.merged_into IS NULL"#,
+        track
+    )
+    .fetch_optional(&mut *conn)
+    .await?
+    .ok_or(EditRejected::NotFound("track"))?;
+    if belongs_to == Some(track) {
+        return Err(EditRejected::Invalid("it can't belong to itself: choose the song it's part of".into()).into());
+    }
+    let artists = sqlx::query_scalar!("SELECT artist_id FROM track_credits WHERE track_id = $1 AND role = 'primary' ORDER BY position", track)
+        .fetch_all(&mut *conn)
+        .await?;
+    let albums = sqlx::query_as!(
+        AlbumLeft,
+        r#"SELECT a.id, a.title,
+                  NOT EXISTS (SELECT 1 FROM album_tracks x JOIN tracks o ON o.id = x.track_id
+                              WHERE x.album_id = a.id AND x.track_id <> $1) AS "alone!"
+           FROM album_tracks at JOIN albums a ON a.id = at.album_id AND a.merged_into IS NULL
+           WHERE at.track_id = $1 ORDER BY a.title"#,
+        track
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+
+    let mut about = about.clone();
+    if about.source.trim().is_empty()
+        && let Some(platform) = &row.platform
+    {
+        about.source = match &row.external_id {
+            Some(id) => format!("{platform} {id} (the track's source)"),
+            None => format!("{platform} (the track's source)"),
+        };
+    }
+    let mut links: Vec<Link> = belongs_to.map(Link::Track).into_iter().collect();
+    links.extend(artists.into_iter().map(Link::Artist));
+    let access = access_of_track(conn, track).await?;
+    let name = name.map(str::trim).filter(|n| !n.is_empty()).unwrap_or(&row.title).to_string();
+    let (extra, access) = create(conn, &name, kind, &about, &links, Some(access), reason).await?;
+    let facts = FileFacts {
+        container: row.container,
+        codec: row.codec,
+        sample_rate: row.sample_rate,
+        channels: row.channels,
+        bit_depth: row.bit_depth,
+        duration_ms: row.duration_ms,
+    };
+    add_file(conn, extra, &row.sha256, &row.file_name, row.size_bytes, &facts, reason).await?;
+    log(conn, extra, "made from a track", json!({ "track": track, "title": row.title }), reason).await?;
+    sqlx::query!("SELECT track_became_extra($1, $2)", track, extra).execute(&mut *conn).await?;
+    let made = get(conn, extra).await?.ok_or(EditRejected::NotFound("extra"))?;
+    Ok(FromTrack {
+        extra_id: extra,
+        name: made.name,
+        kind: made.kind,
+        source: made.source,
+        file: row.file_name,
+        links: made.links,
+        access,
+        albums,
+    })
+}
+
+/// Undoes `track_to_extra`: the track is seen again (and its albums), the extra taken off
+/// (kept). Returns the track.
+pub async fn back_to_track(conn: &mut PgConnection, extra: Uuid, reason: &str) -> anyhow::Result<Uuid> {
+    // Logged first: it's there to write to either way.
+    log(conn, extra, "made a track again", json!({}), reason).await?;
+    match sqlx::query_scalar!(r#"SELECT extra_back_to_track($1) AS "track!""#, extra).fetch_one(&mut *conn).await {
+        Ok(track) => Ok(track),
+        Err(sqlx::Error::Database(err)) if err.code().as_deref() == Some("P0002") => Err(EditRejected::NotFound("extra made from a track").into()),
+        Err(err) => Err(err.into()),
+    }
 }

@@ -44,7 +44,12 @@ pub struct ExtraPage {
     /// The form: name and kind (filled from what's loaded).
     name: String,
     kind: String,
+    description: String,
+    source: String,
     filled: bool,
+    /// "Make it a track again" was clicked: asking to be sure.
+    asked_back: bool,
+    back: Slot<Uuid>,
     /// Who sees it, being changed (`manage_access`): restricted, and the groups.
     access: Option<(bool, Vec<Uuid>)>,
     groups: Option<Result<Vec<Group>, String>>,
@@ -83,6 +88,8 @@ impl ExtraPage {
             {
                 self.name = e.name.clone();
                 self.kind = e.kind.clone();
+                self.description = e.description.clone();
+                self.source = e.source.clone();
                 self.filled = true;
             }
             self.loaded = Some(result);
@@ -94,6 +101,20 @@ impl ExtraPage {
         let history_arrived_taken = self.history_arrived.lock().unwrap().take();
         if let Some(history) = history_arrived_taken {
             self.history = Some(history);
+        }
+        // Made a track again: its page.
+        let back_taken = self.back.lock().unwrap().take();
+        match back_taken {
+            Some(Ok(track)) => {
+                shell.act(Action::RefreshLibrary);
+                shell.act(Action::Go(Page::Track(track)));
+                return;
+            }
+            Some(Err(err)) => {
+                self.sending = false;
+                self.result = Some(Err(err));
+            }
+            None => {}
         }
         let saved_taken = self.saved.lock().unwrap().take();
         if let Some(saved) = saved_taken {
@@ -139,7 +160,40 @@ impl ExtraPage {
                 facts.push("taken off".into());
             }
             ui.label(RichText::new(facts.join("  ·  ")).color(P.muted));
+            ui.add_space(6.0);
+            crate::ui::edit::extras::about(ui, &extra.description, &extra.source, None);
             ui.add_space(8.0);
+            // Made from a track (hidden while it's this): it can be a track again.
+            if extra.from_track.is_some() {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(RichText::new("Made from a track (hidden while it's an extra: nothing was deleted).").color(P.muted));
+                    if can && !self.asked_back && ui.button("Make it a track again…").clicked() {
+                        self.asked_back = true;
+                    }
+                });
+                if self.asked_back {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(RichText::new("The track comes back as it was (its albums too), and this extra is taken off (kept).").color(P.accent));
+                        if ui.add_enabled(!self.sending, egui::Button::new("Make it a track again")).clicked() {
+                            self.sending = true;
+                            let (api, ctx, into) = (shell.api.clone(), shell.ctx.clone(), self.back.clone());
+                            shell.runtime.spawn(async move {
+                                let result = api
+                                    .send_json::<serde_json::Value>(reqwest::Method::POST, &format!("/api/extras/{id}/back-to-track"), Some(serde_json::json!({})))
+                                    .await
+                                    .map_err(|e| e.message)
+                                    .and_then(|v| v["track_id"].as_str().and_then(|t| t.parse::<Uuid>().ok()).ok_or_else(|| "no track in the answer".to_string()));
+                                *into.lock().unwrap() = Some(result);
+                                ctx.request_repaint();
+                            });
+                        }
+                        if ui.button("Cancel").clicked() {
+                            self.asked_back = false;
+                        }
+                    });
+                }
+                ui.add_space(8.0);
+            }
             // What it belongs to.
             if !extra.links.is_empty() {
                 ui.horizontal_wrapped(|ui| {
@@ -239,9 +293,11 @@ impl ExtraPage {
             }
             ui.add(egui::TextEdit::singleline(&mut self.kind).desired_width(120.0));
         });
-        let changed = self.name.trim() != extra.name || self.kind.trim() != extra.kind;
+        ui.add(egui::TextEdit::multiline(&mut self.description).hint_text("Description (optional)").desired_rows(3).desired_width(f32::INFINITY));
+        ui.add(egui::TextEdit::singleline(&mut self.source).hint_text("Source (optional): a link, or where it came from").desired_width(f32::INFINITY));
+        let changed = self.name.trim() != extra.name || self.kind.trim() != extra.kind || self.description.trim() != extra.description || self.source.trim() != extra.source;
         if ui.add_enabled(changed && !self.sending && !self.name.trim().is_empty(), egui::Button::new("Save")).clicked() {
-            let body = serde_json::json!({ "name": self.name.trim(), "kind": self.kind.trim() });
+            let body = serde_json::json!({ "name": self.name.trim(), "kind": self.kind.trim(), "description": self.description.trim(), "source": self.source.trim() });
             self.send_with(shell, reqwest::Method::PUT, format!("/api/extras/{id}"), body, "Saved.".into());
         }
         ui.add_space(10.0);

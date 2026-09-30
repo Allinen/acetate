@@ -145,6 +145,14 @@ pub struct Extra {
     pub id: Uuid,
     pub name: String,
     pub kind: String,
+    #[serde(default)]
+    pub description: String,
+    /// Where it came from: a link, or in words.
+    #[serde(default)]
+    pub source: String,
+    /// Made from this track (hidden while it's an extra).
+    #[serde(default)]
+    pub from_track: Option<Uuid>,
     pub is_restricted: bool,
     /// Who sees it when restricted (besides admins).
     #[serde(default)]

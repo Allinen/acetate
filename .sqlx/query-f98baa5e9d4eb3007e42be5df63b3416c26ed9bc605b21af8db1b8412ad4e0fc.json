@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "INSERT INTO extras (name, kind) VALUES ($1, $2) RETURNING id",
+  "query": "INSERT INTO extras (name, kind, description, source) VALUES ($1, $2, $3, $4) RETURNING id",
   "describe": {
     "columns": [
       {
@@ -18,6 +18,8 @@
     "parameters": {
       "Left": [
         "Text",
+        "Text",
+        "Text",
         "Text"
       ]
     },
@@ -25,5 +27,5 @@
       false
     ]
   },
-  "hash": "f5f7d5ec71e52efc47fc862e977c430bab56e84e21074734923e6b159ced04f9"
+  "hash": "f98baa5e9d4eb3007e42be5df63b3416c26ed9bc605b21af8db1b8412ad4e0fc"
 }

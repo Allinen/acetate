@@ -442,7 +442,7 @@ impl NotesView {
 }
 
 /// A line of a note, its links clickable (opened in the browser).
-fn text_line(ui: &mut egui::Ui, line: &str) {
+pub fn text_line(ui: &mut egui::Ui, line: &str) {
     if line.trim().is_empty() {
         ui.add_space(6.0);
         return;

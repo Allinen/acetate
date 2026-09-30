@@ -57,6 +57,7 @@ enum Section {
     Tracks,
     Featured,
     Produced,
+    Extras,
 }
 
 impl Section {
@@ -66,12 +67,15 @@ impl Section {
             Section::Tracks => "Tracks",
             Section::Featured => "Featured on",
             Section::Produced => "Produced",
+            Section::Extras => "Extras",
         }
     }
 }
 
 /// Rows a track section's preview shows.
 const PREVIEW_ROWS: usize = 5;
+/// Extras the page shows before "All N".
+const PREVIEW_EXTRAS: usize = 3;
 /// The releases' cards.
 const CARD: f32 = 150.0;
 const CARD_GAP: f32 = 18.0;
@@ -159,6 +163,8 @@ impl ArtistPage {
         };
         let all_tracks = catalog.artist_tracks(id);
         let all_albums = catalog.artist_albums(id);
+        // Its extras (from its details), for the section at the bottom.
+        let extras: Vec<crate::details::Extra> = shell.artist_details.get(id).value.as_ref().map(|d| d.extras.clone()).unwrap_or_default();
         // Only what's credited under the name chosen (if one is).
         let names = credited_names(catalog, all_tracks, id);
         if names.len() < 2 {
@@ -234,13 +240,15 @@ impl ArtistPage {
                 Section::Tracks => &own,
                 Section::Featured => &featured,
                 Section::Produced => &produced,
+                Section::Extras => &[],
             };
+            let count = if section == Section::Extras { extras.iter().filter(|e| !e.hidden).count() } else { rows.len() };
             let mut back = back_key;
             ui.horizontal(|ui| {
                 if ui.button(format!("‹ {}", artist.name)).on_hover_text("Back to the whole page (Esc)").clicked() {
                     back = true;
                 }
-                ui.label(RichText::new(format!("{}  {}", section.title(), thousands(rows.len()))).font(font(22.0, bold())));
+                ui.label(RichText::new(format!("{}  {}", section.title(), thousands(count))).font(font(22.0, bold())));
             });
             if chips_shown {
                 ui.add_space(4.0);
@@ -255,6 +263,11 @@ impl ArtistPage {
                 Section::Releases => {
                     egui::ScrollArea::vertical().id_salt(("artist-releases-all", id)).auto_shrink([false, false]).show(ui, |ui| {
                         release_cards(ui, shell, catalog, rows);
+                    });
+                }
+                Section::Extras => {
+                    egui::ScrollArea::vertical().id_salt(("artist-extras-all", id)).auto_shrink([false, false]).show(ui, |ui| {
+                        self.extras.show(ui, shell, crate::ui::edit::extras::Owner::Artist(id), &extras, false, true);
                     });
                 }
                 _ => {
@@ -442,13 +455,6 @@ impl ArtistPage {
                 self.notes.show(ui, shell, crate::ui::edit::notes::Owner::Artist(id), &d.notes, true, true);
                 ui.add_space(12.0);
             }
-            if let Some(d) = shell.artist_details.get(id).value.clone()
-                && crate::ui::edit::extras::ExtrasView::worth_showing(shell, &d.extras)
-            {
-                ui.label(RichText::new("Extras").font(font(16.0, semibold())));
-                self.extras.show(ui, shell, crate::ui::edit::extras::Owner::Artist(id), &d.extras, false, true);
-                ui.add_space(12.0);
-            }
 
             if releases.is_empty() && own.is_empty() && featured.is_empty() && produced.is_empty() {
                 let text = if chosen.is_some() { "Nothing credited under this name." } else { "This artist has no tracks yet: go add some (Review, or a track's page in edit mode)." };
@@ -491,6 +497,21 @@ impl ArtistPage {
                 }
                 if rows.len() > PREVIEW_ROWS && ui.small_button(format!("All {} ›", thousands(rows.len()))).clicked() {
                     self.expanded = Some(section);
+                }
+                ui.add_space(18.0);
+            }
+
+            // ---- Its extras (vocals, stems…): the first few, at the bottom ----
+            if crate::ui::edit::extras::ExtrasView::worth_showing(shell, &extras) {
+                let shown = extras.iter().filter(|e| !e.hidden).count();
+                if section_heading(ui, "Extras", shown, shown > PREVIEW_EXTRAS) {
+                    self.expanded = Some(Section::Extras);
+                }
+                // The first few shown (and those taken off, for edit mode's "Taken off").
+                let preview: Vec<crate::details::Extra> = extras.iter().filter(|e| !e.hidden).take(PREVIEW_EXTRAS).chain(extras.iter().filter(|e| e.hidden)).cloned().collect();
+                self.extras.show(ui, shell, crate::ui::edit::extras::Owner::Artist(id), &preview, false, true);
+                if shown > PREVIEW_EXTRAS && ui.small_button(format!("All {} ›", thousands(shown))).clicked() {
+                    self.expanded = Some(Section::Extras);
                 }
                 ui.add_space(18.0);
             }

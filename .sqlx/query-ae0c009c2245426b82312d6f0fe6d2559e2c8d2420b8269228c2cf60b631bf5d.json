@@ -1,0 +1,155 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT t.title, f.sha256, COALESCE(f.original_filename, f.uploaded_filename) AS \"file_name!\", f.size_bytes,\n                  f.container, f.codec, f.sample_rate, f.channels, f.bit_depth, f.duration_ms,\n                  src.platform AS \"platform?\", src.external_id AS \"external_id?\"\n           FROM tracks t\n           JOIN files f ON f.id = t.file_id\n           LEFT JOIN source_snapshots ss ON ss.id = f.origin_snapshot_id\n           LEFT JOIN sources src ON src.id = ss.source_id\n           WHERE t.id = $1 AND t.merged_into IS NULL",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "title",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tracks",
+            "name": "title"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "sha256",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "files",
+            "name": "sha256"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "file_name!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "size_bytes",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "files",
+            "name": "size_bytes"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "container",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "files",
+            "name": "container"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "codec",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "files",
+            "name": "codec"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "sample_rate",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "files",
+            "name": "sample_rate"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "channels",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "files",
+            "name": "channels"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "bit_depth",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "files",
+            "name": "bit_depth"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "duration_ms",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "files",
+            "name": "duration_ms"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "platform?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "sources",
+            "name": "platform"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "external_id?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "sources",
+            "name": "external_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      null,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "ae0c009c2245426b82312d6f0fe6d2559e2c8d2420b8269228c2cf60b631bf5d"
+}

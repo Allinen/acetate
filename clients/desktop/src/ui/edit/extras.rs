@@ -128,11 +128,65 @@ pub fn access_text(extra: &Extra) -> String {
     if groups.is_empty() { "restricted: admins only".into() } else { format!("restricted: {}", groups.join(", ")) }
 }
 
+/// Who sees a new extra.
+#[derive(Debug, Clone, PartialEq)]
+enum Seen {
+    /// Like the track it's attached to (the server's default).
+    LikeTrack,
+    Everyone,
+    /// Admins and these groups.
+    Groups(Vec<Uuid>),
+}
+
 /// A new extra being made here.
 struct Attaching {
     name: String,
     kind: String,
+    description: String,
+    source: String,
     files: Vec<PathBuf>,
+    seen: Seen,
+}
+
+/// A group, to choose who sees an extra.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct GroupChoice {
+    pub id: Uuid,
+    pub name: String,
+}
+
+/// The groups (`GET /api/groups`, `manage_access`), asked once.
+pub type Groups = Arc<Mutex<Option<Result<Vec<GroupChoice>, String>>>>;
+
+pub fn ask_groups(shell: &Shell, into: &Groups) {
+    if into.lock().unwrap().is_some() {
+        return;
+    }
+    *into.lock().unwrap() = Some(Ok(Vec::new()));
+    let (api, ctx, into) = (shell.api.clone(), shell.ctx.clone(), into.clone());
+    shell.runtime.spawn(async move {
+        let result = api.send_json::<Vec<GroupChoice>>(reqwest::Method::GET, "/api/groups", None).await.map_err(|e| e.message);
+        *into.lock().unwrap() = Some(result);
+        ctx.request_repaint();
+    });
+}
+
+/// An extra's description and source, as a page shows them (links clickable).
+pub fn about(ui: &mut egui::Ui, description: &str, source: &str, lines: Option<usize>) {
+    if !source.trim().is_empty() {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new("From").color(P.faint).small());
+            crate::ui::edit::notes::text_line(ui, source.trim());
+        });
+    }
+    let all: Vec<&str> = description.lines().collect();
+    let shown = lines.map(|n| n.min(all.len())).unwrap_or(all.len());
+    for line in &all[..shown] {
+        crate::ui::edit::notes::text_line(ui, line);
+    }
+    if shown < all.len() {
+        ui.label(RichText::new("…").color(P.faint));
+    }
 }
 
 #[derive(Default)]
@@ -148,6 +202,7 @@ pub struct ExtrasView {
     progress: Arc<AtomicUsize>,
     uploading: usize,
     answer: Arc<Mutex<Option<Result<String, String>>>>,
+    groups: Groups,
     /// A file saved (or not): said, nothing else happens.
     saved: Arc<Mutex<Option<Result<String, String>>>>,
     result: Option<Result<String, String>>,
@@ -218,6 +273,7 @@ impl ExtrasView {
                         ui.label(RichText::new(format!("🔒 {}", access_text(extra))).color(P.muted).small());
                     }
                 });
+                about(ui, &extra.description, &extra.source, Some(3));
                 let shown: Vec<&ExtraFile> = extra.files.iter().filter(|f| !f.hidden).collect();
                 if shown.is_empty() {
                     ui.label(RichText::new("No files yet.").color(P.faint));
@@ -265,7 +321,14 @@ impl ExtrasView {
         }
         ui.horizontal_wrapped(|ui| {
             if self.attaching.is_none() && ui.button("Attach extra…").on_hover_text("Vocals, stems, a sample…: files that aren't a track").clicked() {
-                self.attaching = Some(Attaching { name: String::new(), kind: "vocals".into(), files: Vec::new() });
+                self.attaching = Some(Attaching {
+                    name: String::new(),
+                    kind: "vocals".into(),
+                    description: String::new(),
+                    source: String::new(),
+                    files: Vec::new(),
+                    seen: Seen::LikeTrack,
+                });
             }
             if self.linking.is_none() && ui.button("Link an existing extra…").clicked() {
                 self.linking = Some(InlineSearch::new(Part::Extras));
@@ -348,8 +411,53 @@ impl ExtrasView {
             if let Some(n) = drop_file {
                 a.files.remove(n);
             }
-            let seen = if restricted { format!("Seen like this {}: restricted to the same groups.", owner.name()) } else { "Seen by everyone (like this track).".to_string() };
-            ui.label(RichText::new(seen).color(P.muted).small());
+            ui.add(egui::TextEdit::multiline(&mut a.description).hint_text("Description (optional)").desired_rows(2).desired_width(f32::INFINITY));
+            ui.add(egui::TextEdit::singleline(&mut a.source).hint_text("Source (optional): a link, or where it came from").desired_width(f32::INFINITY));
+            // Who sees it: decided before it's made (nothing to leak in between).
+            let like = if restricted { format!("like this {} (restricted to its groups)", owner.name()) } else { format!("like this {} (everyone)", owner.name()) };
+            if shell.account.can("manage_access") {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("Seen by");
+                    if widgets::chip(ui, &like, a.seen == Seen::LikeTrack) {
+                        a.seen = Seen::LikeTrack;
+                    }
+                    if widgets::chip(ui, "everyone", a.seen == Seen::Everyone) {
+                        a.seen = Seen::Everyone;
+                    }
+                    if widgets::chip(ui, "only some groups…", matches!(a.seen, Seen::Groups(_))) && !matches!(a.seen, Seen::Groups(_)) {
+                        a.seen = Seen::Groups(Vec::new());
+                        ask_groups(shell, &self.groups);
+                    }
+                });
+                if let Seen::Groups(chosen) = &mut a.seen {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(RichText::new("admins, and").color(P.faint));
+                        match &*self.groups.lock().unwrap() {
+                            Some(Ok(all)) if all.is_empty() => {
+                                ui.label(RichText::new("loading the groups…").color(P.muted));
+                            }
+                            Some(Ok(all)) => {
+                                for g in all.iter().filter(|g| g.name != "admin") {
+                                    let on = chosen.contains(&g.id);
+                                    if widgets::chip(ui, &g.name, on) {
+                                        if on {
+                                            chosen.retain(|x| *x != g.id);
+                                        } else {
+                                            chosen.push(g.id);
+                                        }
+                                    }
+                                }
+                            }
+                            Some(Err(err)) => {
+                                ui.label(RichText::new(err.as_str()).color(P.danger));
+                            }
+                            None => {}
+                        }
+                    });
+                }
+            } else {
+                ui.label(RichText::new(format!("Seen {like}.")).color(P.muted).small());
+            }
             ui.horizontal(|ui| {
                 let name_ok = !a.name.trim().is_empty() || !a.files.is_empty();
                 make = ui.add_enabled(!self.sending && name_ok, egui::Button::new("Attach")).clicked();
@@ -366,7 +474,15 @@ impl ExtrasView {
         }
         if make && let Some(a) = self.attaching.as_ref() {
             let name = if a.name.trim().is_empty() { a.files.first().and_then(|f| f.file_stem()).map(|s| s.to_string_lossy().to_string()).unwrap_or_default() } else { a.name.trim().to_string() };
-            let body = serde_json::json!({ "name": name, "kind": a.kind.trim(), "links": [owner.link()] });
+            let mut body = serde_json::json!({
+                "name": name, "kind": a.kind.trim(), "links": [owner.link()],
+                "description": a.description.trim(), "source": a.source.trim(),
+            });
+            match &a.seen {
+                Seen::LikeTrack => {}
+                Seen::Everyone => body["access"] = serde_json::json!({ "restricted": false }),
+                Seen::Groups(groups) => body["access"] = serde_json::json!({ "restricted": true, "groups": groups }),
+            }
             let files = a.files.clone();
             self.sending = true;
             self.result = None;

@@ -11,7 +11,7 @@ use super::media::serve_blob;
 use super::{AppError, AppState};
 use crate::auth::{CurrentUser, Permission};
 use crate::db;
-use crate::db::extras::{Access, Extra, FileFacts, Link, LogEntry};
+use crate::db::extras::{About, Access, Extra, FileFacts, FromTrack, Link, LogEntry};
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -21,6 +21,10 @@ pub struct NewExtra {
     kind: String,
     #[serde(default)]
     links: Vec<Link>,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    source: String,
     /// Who sees it (needs `manage_access`); absent: like the first linked track.
     access: Option<Access>,
     #[serde(default)]
@@ -35,7 +39,7 @@ pub async fn create(State(state): State<AppState>, user: CurrentUser, Json(body)
         return Err(AppError::Forbidden("choosing who sees an extra needs the manage_access permission (without it, it's seen like its track)".into()));
     }
     let mut tx = state.db(&user).await?;
-    let (id, access) = db::extras::create(&mut tx, &body.name, &body.kind, &body.links, body.access, &body.reason).await?;
+    let (id, access) = db::extras::create(&mut tx, &body.name, &body.kind, &About { description: body.description.clone(), source: body.source.clone() }, &body.links, body.access, &body.reason).await?;
     tx.commit().await?;
     Ok(Json(serde_json::json!({ "id": id, "access": access })))
 }
@@ -59,13 +63,17 @@ pub struct Edit {
     #[serde(default)]
     kind: String,
     #[serde(default)]
+    description: String,
+    #[serde(default)]
+    source: String,
+    #[serde(default)]
     reason: String,
 }
 
-/// `PUT /api/extras/{id}`, JSON `{"name": "…", "kind": "…", "reason": "…"}`.
+/// `PUT /api/extras/{id}`, JSON `{"name", "kind", "description", "source", "reason"}`.
 pub async fn edit(State(state): State<AppState>, user: CurrentUser, Path(id): Path<Uuid>, Json(body): Json<Edit>) -> Result<Json<serde_json::Value>, AppError> {
     let mut tx = state.db(&user).await?;
-    let changed = db::extras::edit(&mut tx, id, &body.name, &body.kind, &body.reason).await?;
+    let changed = db::extras::edit(&mut tx, id, &body.name, &body.kind, &About { description: body.description.clone(), source: body.source.clone() }, &body.reason).await?;
     tx.commit().await?;
     Ok(Json(serde_json::json!({ "changed": changed })))
 }
@@ -233,6 +241,10 @@ pub struct FromProblem {
     #[serde(default)]
     links: Vec<Link>,
     #[serde(default)]
+    description: String,
+    #[serde(default)]
+    source: String,
+    #[serde(default)]
     reason: String,
 }
 
@@ -244,9 +256,53 @@ pub async fn from_problem(State(state): State<AppState>, user: CurrentUser, Path
     let open = db::problems::get_open(&mut tx, problem).await?.ok_or(AppError::NotFound)?;
     let path = state.store.path_for(&open.sha256).await;
     let facts = probe(&path, &open.uploaded_filename).await;
-    let (id, _) = db::extras::create(&mut tx, &body.name, &body.kind, &body.links, None, &body.reason).await?;
+    let (id, _) = db::extras::create(&mut tx, &body.name, &body.kind, &About { description: body.description.clone(), source: body.source.clone() }, &body.links, None, &body.reason).await?;
     db::extras::add_file(&mut tx, id, &open.sha256, &open.uploaded_filename, open.size_bytes, &facts, &body.reason).await?;
     db::problems::resolve(&mut tx, problem, "made an extra").await?;
     tx.commit().await?;
     Ok(Json(serde_json::json!({ "id": id })))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ToExtra {
+    #[serde(default)]
+    kind: String,
+    /// Its name (absent: the track's title).
+    name: Option<String>,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    source: String,
+    /// The song it's part of (it's linked to it).
+    belongs_to: Option<Uuid>,
+    #[serde(default)]
+    reason: String,
+    /// Only say what would happen (nothing is kept).
+    #[serde(default)]
+    preview: bool,
+}
+
+/// `POST /api/tracks/{id}/to-extra`, JSON `{"kind", "name", "description", "source",
+/// "belongs_to", "reason", "preview"}`: the track becomes an extra (its file, the same
+/// bytes); the track stays but nobody sees it (see `db::extras::track_to_extra`).
+pub async fn track_to_extra(State(state): State<AppState>, user: CurrentUser, Path(track): Path<Uuid>, Json(body): Json<ToExtra>) -> Result<Json<FromTrack>, AppError> {
+    let mut tx = state.db(&user).await?;
+    let done = db::extras::track_to_extra(&mut tx, track, &body.kind, body.name.as_deref(), &About { description: body.description.clone(), source: body.source.clone() }, body.belongs_to, &body.reason).await?;
+    if body.preview {
+        tx.rollback().await?;
+    } else {
+        tx.commit().await?;
+    }
+    Ok(Json(done))
+}
+
+/// `POST /api/extras/{id}/back-to-track`, JSON `{"reason"}` (optional): undoes
+/// `to-extra`: the track is seen again, the extra taken off. Answers `{track_id}`.
+pub async fn back_to_track(State(state): State<AppState>, user: CurrentUser, Path(id): Path<Uuid>, body: Option<Json<Hide>>) -> Result<Json<serde_json::Value>, AppError> {
+    let reason = body.map(|Json(b)| b.reason).unwrap_or_default();
+    let mut tx = state.db(&user).await?;
+    let track = db::extras::back_to_track(&mut tx, id, &reason).await?;
+    tx.commit().await?;
+    Ok(Json(serde_json::json!({ "track_id": track })))
 }

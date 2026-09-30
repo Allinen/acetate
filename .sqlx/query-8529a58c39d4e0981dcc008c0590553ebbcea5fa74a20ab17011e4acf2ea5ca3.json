@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT e.id, e.name, e.kind, e.is_restricted, e.hidden_at IS NOT NULL AS \"hidden!\", e.created_at, u.username AS \"created_by?\"\n           FROM extras e LEFT JOIN users u ON u.id = e.created_by WHERE e.id = $1",
+  "query": "SELECT e.id, e.name, e.kind, e.description, e.source, e.from_track_id, e.is_restricted,\n                  e.hidden_at IS NOT NULL AS \"hidden!\", e.created_at, u.username AS \"created_by?\"\n           FROM extras e LEFT JOIN users u ON u.id = e.created_by WHERE e.id = $1",
   "describe": {
     "columns": [
       {
@@ -38,6 +38,39 @@
       },
       {
         "ordinal": 3,
+        "name": "description",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "extras",
+            "name": "description"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "source",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "extras",
+            "name": "source"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "from_track_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "extras",
+            "name": "from_track_id"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
         "name": "is_restricted",
         "type_info": "Bool",
         "origin": {
@@ -48,13 +81,13 @@
         }
       },
       {
-        "ordinal": 4,
+        "ordinal": 7,
         "name": "hidden!",
         "type_info": "Bool",
         "origin": "Expression"
       },
       {
-        "ordinal": 5,
+        "ordinal": 8,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -65,7 +98,7 @@
         }
       },
       {
-        "ordinal": 6,
+        "ordinal": 9,
         "name": "created_by?",
         "type_info": "Text",
         "origin": {
@@ -86,10 +119,13 @@
       false,
       false,
       false,
+      false,
+      true,
+      false,
       null,
       false,
       true
     ]
   },
-  "hash": "f13c542449910ba04bd24957f2498a565add2a1c995af817235f080bce018cb8"
+  "hash": "8529a58c39d4e0981dcc008c0590553ebbcea5fa74a20ab17011e4acf2ea5ca3"
 }

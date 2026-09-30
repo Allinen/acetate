@@ -27,6 +27,8 @@ pub struct TrackPage {
     notes: crate::ui::edit::notes::NotesView,
     /// Its extras (vocals, stems…), and attaching them in edit mode.
     extras: crate::ui::edit::extras::ExtrasView,
+    /// "Turn into an extra…", open.
+    to_extra: Option<super::to_extra::ToExtra>,
     /// The history section's state (restoring asks first).
     history: super::history::History,
     /// Its sources, and which one its file came from (edit mode).
@@ -331,11 +333,22 @@ impl TrackPage {
                 _ => {}
             }
         }
+        if let Some(popup) = &mut self.to_extra
+            && popup.show(shell)
+        {
+            self.to_extra = None;
+        }
         let Some(view) = self.merge.as_mut() else {
-            if ui.button("Merge with another track…  (Ctrl+M)").on_hover_text("The same song twice: choose the other one, then compare them side by side").clicked() {
-                self.picking_merge = true;
-                shell.act(Action::Pick { kind: crate::ui::edit::PickKind::Track, except: Some(d.id) });
-            }
+            ui.horizontal(|ui| {
+                if ui.button("Merge with another track…  (Ctrl+M)").on_hover_text("The same song twice: choose the other one, then compare them side by side").clicked() {
+                    self.picking_merge = true;
+                    shell.act(Action::Pick { kind: crate::ui::edit::PickKind::Track, except: Some(d.id) });
+                }
+                let tip = "Imported as a track but isn't one (vocals, a stem, a clip): an extra of the song it belongs to. Shows what happens first; can be undone";
+                if ui.button("Turn into an extra…").on_hover_text(tip).clicked() {
+                    self.to_extra = Some(super::to_extra::ToExtra::open(d.id, &d.title));
+                }
+            });
             ui.add_space(6.0);
             return false;
         };

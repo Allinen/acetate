@@ -30,6 +30,7 @@ pub mod track_table;
 pub mod trash;
 pub mod track;
 pub mod to_collective;
+pub mod to_extra;
 pub mod tracks;
 
 use eframe::egui::{self, RichText};
