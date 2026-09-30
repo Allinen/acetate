@@ -354,6 +354,26 @@ async fn files_that_dont_import_are_listed_with_their_audio(
 }
 
 #[sqlx::test]
+async fn unknown_groups_are_refused_also_for_a_stored_file(
+    _: PgPoolOptions,
+    connect: PgConnectOptions,
+) -> anyhow::Result<()> {
+    let lib = setup(connect).await?;
+    let dir = tempfile::tempdir()?;
+    let store = BlobStore::open(dir.path())?;
+    let opts = options(None, 1, Hints::default());
+    ingest_file(&lib.owner, &store, "01 - Glass Harbor.flac", &opts, false).await?;
+
+    // The same file again (a duplicate), dry run and for real: a wrong group id is refused.
+    let wrong = IngestOptions { restrict_to: Some(vec![Uuid::now_v7()]), ..opts.clone() };
+    for dry_run in [true, false] {
+        let err = ingest_file(&lib.owner, &store, "01 - Glass Harbor.flac", &wrong, dry_run).await.unwrap_err();
+        assert!(ingest::is_refusal(&err) && err.to_string().contains("unknown group"), "{err:#}");
+    }
+    Ok(())
+}
+
+#[sqlx::test]
 async fn listed_files_resolve_when_they_import(
     _: PgPoolOptions,
     connect: PgConnectOptions,

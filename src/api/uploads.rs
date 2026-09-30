@@ -194,3 +194,91 @@ pub async fn receive(state: &AppState, user: &CurrentUser, mut field: Field<'_>)
     }
     Ok(writer.finish().await?)
 }
+
+#[cfg(test)]
+mod tests {
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use sha2::{Digest, Sha256};
+    use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+    use tower::ServiceExt;
+
+    use crate::api::{self, AppState};
+    use crate::db;
+    use crate::storage::BlobStore;
+
+    /// A user with a session: its token.
+    async fn user(owner: &sqlx::PgPool, name: &str) -> anyhow::Result<String> {
+        let mut tx = db::begin(owner, None).await?;
+        let id = db::users::create_user(&mut tx, name, "not a real hash").await?;
+        db::users::set_groups(&mut tx, id, &["admin".to_string()]).await?.map_err(anyhow::Error::msg)?;
+        tx.commit().await?;
+        let token = crate::auth::new_token();
+        db::users::create_session(owner, id, &crate::auth::token_hash(&token), None, "test").await?;
+        Ok(token)
+    }
+
+    async fn send(app: &axum::Router, method: &str, path: &str, token: &str, body: Body, content_type: Option<&str>) -> (StatusCode, serde_json::Value) {
+        let mut request = Request::builder().method(method).uri(path).header("authorization", format!("Bearer {token}"));
+        if let Some(kind) = content_type {
+            request = request.header("content-type", kind);
+        }
+        let response = app.clone().oneshot(request.body(body).unwrap()).await.unwrap();
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), 1_000_000).await.unwrap();
+        (status, serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null))
+    }
+
+    #[sqlx::test]
+    async fn a_file_in_chunks_is_the_same_file(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
+        let owner = PgPoolOptions::new().connect_with(connect.clone()).await?;
+        let pool = db::app_pool_options().connect_with(connect).await?;
+        let (alice, bob) = (user(&owner, "alice").await?, user(&owner, "bob").await?);
+        let dir = tempfile::tempdir()?;
+        let app = api::router(AppState {
+            uploads: Default::default(),
+            pool,
+            store: BlobStore::open(dir.path())?,
+            web_dir: dir.path().to_path_buf(),
+            secure_cookies: false,
+            trust_proxy: false,
+            rate_limits: std::sync::Arc::new(api::rate_limit::RateLimits::new()),
+            images: std::sync::Arc::new(crate::storage::images::ImageCache::new(dir.path().join("cache"))),
+            upload_limits: std::sync::Arc::new(api::upload_limits::UploadLimits::new(0, 0)),
+        });
+
+        let (status, started) = send(&app, "POST", "/api/uploads", &alice, Body::empty(), None).await;
+        assert_eq!(status, StatusCode::CREATED);
+        let id = started["id"].as_str().unwrap().to_string();
+        let path = |offset: u64| format!("/api/uploads/{id}?offset={offset}");
+        let (_, got) = send(&app, "PUT", &path(0), &alice, Body::from("not an "), None).await;
+        assert_eq!(got["size"], 7);
+        // The same chunk again (say its answer was lost): refused, saying where to go on.
+        let (status, got) = send(&app, "PUT", &path(0), &alice, Body::from("not an "), None).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert!(got["message"].as_str().unwrap().contains("offset=7"), "{got}");
+        let (_, got) = send(&app, "PUT", &path(7), &alice, Body::from("audio file"), None).await;
+        assert_eq!(got["size"], 17);
+        let (_, got) = send(&app, "GET", &format!("/api/uploads/{id}"), &alice, Body::empty(), None).await;
+        assert_eq!(got["size"], 17);
+        // Only for whoever started it.
+        let (status, _) = send(&app, "GET", &format!("/api/uploads/{id}"), &bob, Body::empty(), None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        // Named in a form: it's that file (not audio, so it's listed as not imported, with
+        // the hash of every byte, in order).
+        let form = format!(
+            "--b\r\nContent-Disposition: form-data; name=\"origin\"\r\n\r\n{{\"platform\":\"custom\",\"data\":{{\"label\":\"test\"}}}}\r\n\
+             --b\r\nContent-Disposition: form-data; name=\"file\"; filename=\"x.flac\"\r\nContent-Type: application/vnd.acetate.upload\r\n\r\n{id}\r\n--b--\r\n"
+        );
+        let (status, got) = send(&app, "POST", "/api/upload", &alice, Body::from(form), Some("multipart/form-data; boundary=b")).await;
+        assert_eq!(status, StatusCode::OK, "{got}");
+        assert_eq!(got[0]["status"], "skipped", "{got}");
+        let listed: String = sqlx::query_scalar("SELECT sha256 FROM ingest_problems").fetch_one(&owner).await?;
+        assert_eq!(listed, hex::encode(Sha256::digest(b"not an audio file")));
+        // Used up.
+        let (status, _) = send(&app, "GET", &format!("/api/uploads/{id}"), &alice, Body::empty(), None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        Ok(())
+    }
+}

@@ -415,6 +415,11 @@ pub async fn ingest_in(
     if let Some(described) = &options.hints.described {
         describe::check_described_vocab(conn, described).await?;
     }
+    // The groups to restrict it to exist: refused also for a file that's stored already
+    // (which isn't restricted by this import), so a wrong id never goes unnoticed.
+    if let Some(groups) = &options.restrict_to {
+        db::access::check_groups(conn, groups).await?;
+    }
 
     // 1. Same bytes already stored? What this import says that the track doesn't have yet
     //    (another album, other metadata...) is merged into it (`merge_duplicate`). Else,

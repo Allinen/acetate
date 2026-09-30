@@ -35,6 +35,8 @@ pub mod users;
 #[cfg(test)]
 mod rls_tests;
 #[cfg(test)]
+mod tooling_tests;
+#[cfg(test)]
 mod trash_tests;
 #[cfg(test)]
 mod merge_tests;

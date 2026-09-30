@@ -82,6 +82,16 @@ pub async fn get(conn: &mut PgConnection, track_id: Uuid) -> sqlx::Result<Option
 /// The caller must have checked that the user can see the track (e.g. `get` returned
 /// Some) and may manage access. The write itself runs as the system: restricting a track
 /// to groups you're not in hides it from you, and that's allowed (the UI warns first).
+/// Refuses group ids that don't exist (what `set` would refuse), for checking before
+/// anything else is done.
+pub async fn check_groups(conn: &mut PgConnection, groups: &[Uuid]) -> anyhow::Result<()> {
+    let known = sqlx::query_scalar!("SELECT id FROM groups WHERE id = ANY($1)", groups).fetch_all(&mut *conn).await?;
+    match groups.iter().find(|id| !known.contains(id)) {
+        Some(unknown) => Err(EditRejected::Invalid(format!("unknown group {unknown}")).into()),
+        None => Ok(()),
+    }
+}
+
 pub async fn set(
     conn: &mut PgConnection,
     track_id: Uuid,
