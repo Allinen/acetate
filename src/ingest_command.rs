@@ -273,6 +273,7 @@ pub async fn run(target: Target<'_>, dir: &Path, options: Options) -> anyhow::Re
                 no_duplicate_merge: options.no_duplicate_merge,
                 given: info.given,
                 flag: options.flag.clone(),
+                described: None,
             },
             local_path: Some(path.display().to_string()),
             given: Default::default(),

@@ -151,13 +151,65 @@ async fn a_merge_is_removed_and_a_restricted_track_is_gone_in_the_delta(_: PgPoo
     let c = changes(&lib, lib.carol, since.clone()).await?;
     assert!(!c.everything && c.tracks.contains(&lib.v));
     let mut tx = db::begin(&lib.app, Some(lib.carol)).await?;
-    let (gone, _, _) = db::library::unseen(&mut tx, &c.tracks, &c.albums, &[]).await?;
+    let (gone, _, _) = db::library::unseen(&mut tx, &since, &c.tracks, &c.albums, &[]).await?;
     assert!(gone.contains(&lib.v), "gone for carol");
     drop(tx);
     // Bob (friends) still sees it: not gone for him.
-    let c = changes(&lib, lib.bob, since).await?;
+    let c = changes(&lib, lib.bob, since.clone()).await?;
     let mut tx = db::begin(&lib.app, Some(lib.bob)).await?;
-    assert!(db::library::unseen(&mut tx, &c.tracks, &[], &[]).await?.0.is_empty());
+    assert!(db::library::unseen(&mut tx, &since, &c.tracks, &[], &[]).await?.0.is_empty());
+    Ok(())
+}
+
+/// A delta names as gone only what the user could see: never a hidden track's id (or its
+/// album's) to someone who never saw it (migration 0047).
+#[sqlx::test]
+async fn gone_is_only_said_to_those_who_saw_it(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
+    let lib = setup(connect).await?;
+    let gone = |who: Uuid, since: String| {
+        let app = lib.app.clone();
+        async move {
+            let mut tx = db::begin(&app, Some(who)).await?;
+            let c = db::library::changes_since(&mut tx, &since).await?;
+            assert!(!c.everything);
+            let (tracks, albums, _) = db::library::unseen(&mut tx, &since, &c.tracks, &c.albums, &[]).await?;
+            anyhow::Ok((c.tracks, sorted(tracks), sorted(albums)))
+        }
+    };
+
+    // H (friends only) edited: a change for everyone's delta, but carol never saw H.
+    let since = version(&lib).await?;
+    sqlx::query("UPDATE tracks SET title = 'Hidden (edited)' WHERE id = $1").bind(lib.h).execute(&lib.owner).await?;
+    let (changed, tracks, _) = gone(lib.carol, since).await?;
+    assert!(changed.contains(&lib.h), "logged as a change");
+    assert!(tracks.is_empty(), "but not named to carol as gone");
+
+    // H moved to a group bob isn't in: gone for bob (he saw it), still unnamed for carol.
+    let mut tx = db::begin(&lib.owner, None).await?;
+    let others = db::groups::create(&mut tx, "others", "", &[]).await?;
+    tx.commit().await?;
+    let since = version(&lib).await?;
+    let mut tx = db::begin(&lib.owner, None).await?;
+    db::access::set(&mut tx, lib.h, true, &[others], "test").await?;
+    tx.commit().await?;
+    assert_eq!(gone(lib.bob, since.clone()).await?.1, vec![lib.h], "bob");
+    assert!(gone(lib.carol, since.clone()).await?.1.is_empty(), "carol");
+    assert!(gone(lib.alice, since).await?.1.is_empty(), "alice (admin) still sees it");
+
+    // V restricted too: album A (V and H) is now hidden from carol, who saw both V and A.
+    let since = version(&lib).await?;
+    let mut tx = db::begin(&lib.owner, None).await?;
+    db::access::set(&mut tx, lib.v, true, &[others], "test").await?;
+    tx.commit().await?;
+    let (_, tracks, albums) = gone(lib.carol, since).await?;
+    assert_eq!((tracks, albums), (vec![lib.v], vec![lib.album]));
+
+    // From then on, A's changes are nothing to carol: she can't see it, and didn't.
+    let since = version(&lib).await?;
+    sqlx::query("UPDATE albums SET title = 'Album A (edited)' WHERE id = $1").bind(lib.album).execute(&lib.owner).await?;
+    sqlx::query("UPDATE tracks SET title = 'V (edited)' WHERE id = $1").bind(lib.v).execute(&lib.owner).await?;
+    let (_, tracks, albums) = gone(lib.carol, since).await?;
+    assert!(tracks.is_empty() && albums.is_empty(), "{tracks:?} {albums:?}");
     Ok(())
 }
 

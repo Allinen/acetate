@@ -291,31 +291,40 @@ pub async fn find_album(
     .await
 }
 
-/// Creates an album from a file's tags (with album revision 0), of kind `single` or
-/// `album`. Every album artist is primary, except on a `single`: there only the first is,
-/// and the others are featured (NetEase lists everyone on a single as album artists).
+/// Roles for an album's artists from a file's tags: every album artist is primary, except
+/// on a single: there only the first is, and the others are featured (NetEase lists
+/// everyone on a single as album artists).
+pub fn album_roles_from_tags(album_artists: &[FoundArtist], single: bool) -> Vec<(FoundArtist, String)> {
+    album_artists
+        .iter()
+        .enumerate()
+        .map(|(n, artist)| (artist.clone(), if single && n > 0 { "featured" } else { "primary" }.to_string()))
+        .collect()
+}
+
+/// Creates an album for a file (with album revision 0): of `kind` (`album`, `single`...),
+/// credited to these artists in these roles.
 pub async fn create_album(
     conn: &mut PgConnection,
     title: &str,
-    album_artists: &[FoundArtist],
-    single: bool,
+    album_artists: &[(FoundArtist, String)],
+    kind: &str,
     release_date: Option<&str>,
 ) -> anyhow::Result<Uuid> {
     let mut credits: Vec<Credit> = Vec::new();
-    for artist in album_artists {
-        // The same artist twice in the tag would be a duplicate credit.
+    for (artist, role) in album_artists {
+        // The same artist twice would be a duplicate credit.
         if !credits.iter().any(|c| c.artist_id == artist.id) {
-            let role = if single && !credits.is_empty() { "featured" } else { "primary" };
             credits.push(Credit {
                 artist_id: artist.id,
-                role: role.to_string(),
+                role: role.clone(),
                 alias_id: artist.alias_id,
             });
         }
     }
     let data = AlbumData {
         title: title.to_string(),
-        kind: if single { "single" } else { "album" }.to_string(),
+        kind: kind.to_string(),
         release_date: release_date.map(str::to_string),
         credits,
         ..Default::default()

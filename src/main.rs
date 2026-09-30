@@ -514,13 +514,15 @@ async fn serve(config: Config, owner_pool: sqlx::PgPool, store: BlobStore) -> an
     let pool = db::connect_app(&config.database_url).await?;
     // Today's upload count, carried on from before a restart.
     let upload_limits = api::upload_limits::UploadLimits::load(&pool, config.max_upload_bytes, config.daily_upload_bytes).await?;
+    // Failed logins and share lookups, likewise.
+    let rate_limits = api::RateLimits::load(&pool).await?;
     let app = api::router(api::AppState {
         pool,
         store,
         web_dir: config.web_dir.clone(),
         secure_cookies: config.secure_cookies,
         trust_proxy: config.trust_proxy,
-        rate_limits: std::sync::Arc::new(api::RateLimits::new()),
+        rate_limits: std::sync::Arc::new(rate_limits),
         images: std::sync::Arc::new(storage::images::ImageCache::new(config.cache_dir.clone())),
         upload_limits: std::sync::Arc::new(upload_limits),
     });

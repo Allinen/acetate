@@ -368,6 +368,11 @@ pub async fn ingest_in(
 ) -> anyhow::Result<Report> {
     // Explicit ids have to be ones the uploader can see (checked with their access).
     describe::check_explicit_ids(conn, &options.hints).await?;
+    // Metadata given whole: its roles and album kind are checked before anything, also for
+    // a file that's stored already.
+    if let Some(described) = &options.hints.described {
+        describe::check_described_vocab(conn, described).await?;
+    }
 
     // 1. Same bytes already stored? What this import says that the track doesn't have yet
     //    (another album, other metadata...) is merged into it (`merge_duplicate`). Else,
@@ -419,9 +424,13 @@ async fn merge_duplicate(
     system.end(&mut attempt).await?;
     let created = match new_track(&mut attempt, store, file, options, dry_run, Some(file_id)).await {
         Ok(report) => report,
-        // E.g. tags too poor for a track of its own: then it's a plain duplicate.
-        Err(_) => {
+        // E.g. tags too poor for a track of its own: then it's a plain duplicate. Metadata
+        // given whole that's refused is the description's mistake, though: said as such.
+        Err(err) => {
             attempt.rollback().await?;
+            if options.hints.described.is_some() && is_refusal(&err) {
+                return Err(err);
+            }
             return Ok(None);
         }
     };
@@ -453,6 +462,7 @@ async fn merge_duplicate(
     // own tags are the same bytes as before, so a difference there would only come from
     // how tags are read now, or from edits made since.
     let metadata_from_elsewhere = options.tags_from.is_some()
+        || options.hints.described.is_some()
         || options.given.title.is_some()
         || !options.given.artists.is_empty();
     let mut new_metadata = false;
@@ -554,6 +564,28 @@ async fn new_track(
             ..from_copy
         };
     }
+    // All of the metadata from the description: the file's tags are used for nothing. They
+    // stay in `raw`, kept with the file as always; the audio's own facts are the file's.
+    let described_metadata = options.hints.described.as_ref();
+    if let Some(d) = described_metadata {
+        if options.tags_from.is_some() {
+            return Err(Rejected::Invalid("a tagged copy isn't used with `metadata` (the metadata is given)".to_string()).into());
+        }
+        tags = TagInfo {
+            raw: std::mem::take(&mut tags.raw),
+            bitrate_kbps: tags.bitrate_kbps,
+            duration_ms: tags.duration_ms,
+            title: Some(d.title.clone()),
+            artists: d.credits.iter().filter(|c| c.role == "primary").map(|c| c.name.clone()).collect(),
+            album: d.album.as_ref().map(|a| a.title.clone()),
+            disc_number: d.album.as_ref().and_then(|a| a.disc_number).and_then(|n| u32::try_from(n).ok()),
+            date: d.release_date.clone(),
+            genres: d.genres.clone(),
+            comment: d.comment.clone(),
+            original_filename: options.hints.original_filename.clone(),
+            ..TagInfo::default()
+        };
+    }
     let mut given = Vec::new();
     if let Some(title) = options.given.title.as_ref().filter(|t| !t.trim().is_empty()) {
         tags.title = Some(title.clone());
@@ -645,8 +677,18 @@ async fn new_track(
     //    (see `db::as_system`); what the uploader gets back is filtered afterwards.
     let system = db::as_system(conn).await?;
     // The first revision says where its values came from.
-    let variant_label = if given.is_empty() { "File tags" } else { "File tags + given by hand" }.to_string();
-    let mut revision_reason = "imported_from_file".to_string();
+    let variant_label = match (described_metadata.is_some(), given.is_empty()) {
+        (false, true) => "File tags",
+        (false, false) => "File tags + given by hand",
+        (true, true) => "From the description",
+        (true, false) => "From the description + given by hand",
+    }
+    .to_string();
+    let mut revision_reason = if described_metadata.is_some() {
+        "given with the upload (the file's own tags weren't used; they're kept with the file)".to_string()
+    } else {
+        "imported_from_file".to_string()
+    };
     if !given.is_empty() {
         revision_reason += &format!("; given by hand (not from the tags): {}", given.join(", "));
     }
@@ -1084,7 +1126,25 @@ async fn create_track_rows(
     let any_on_album = tags.artists.iter().any(on_album);
     let mut credits: Vec<Credit> = Vec::new();
     let mut ambiguous = Vec::new();
-    for name in &tags.artists {
+    // Given with the description: its credits, in its roles and order.
+    let described_credits = hints.described.as_ref().map(|d| describe::described_credits(d, &tags.artists));
+    for credit in described_credits.iter().flatten() {
+        let hint = credit.artist.and_then(|i| hints.artists.get(i));
+        if resolver.collective_for(conn, hint, &credit.name).await?.is_some() {
+            continue;
+        }
+        let artist = resolver.artist_for(conn, hint, &credit.name).await?;
+        if credits.iter().any(|c| c.artist_id == artist.id && c.role == credit.role) {
+            continue;
+        }
+        if !artist.ambiguous.is_empty() {
+            ambiguous.push((credit.name.clone(), artist.id, artist.ambiguous));
+        }
+        credits.push(Credit { artist_id: artist.id, role: credit.role.clone(), alias_id: artist.alias_id });
+    }
+    // Else from the tags.
+    let tag_artists: &[String] = if described_credits.is_some() { &[] } else { &tags.artists };
+    for name in tag_artists {
         // A collective (its account): the track goes in its grouping, no credit.
         if resolver.collective(conn, hints, name).await?.is_some() {
             continue;
@@ -1113,7 +1173,7 @@ async fn create_track_rows(
 
     // COMPOSER: producer credits, after the artists. Someone already credited (e.g. a
     // self-produced track) is credited again as producer, since that's also true.
-    let composers: &[String] = if hints.no_composers { &[] } else { &tags.composers };
+    let composers: &[String] = if hints.no_composers || described_credits.is_some() { &[] } else { &tags.composers };
     for name in composers {
         if resolver.collective(conn, hints, name).await?.is_some() {
             continue;
@@ -1146,27 +1206,46 @@ async fn create_track_rows(
     let mut album_groupings: Vec<Uuid> = Vec::new();
     let mut album_id = None;
     if let Some(album_title) = &tags.album {
-        let mut album_artists = Vec::new();
-        for name in album_artist_names {
+        // The album's artists and their roles: the description's, else from ALBUM ARTIST.
+        let described_album = hints.described.as_ref().and_then(|d| d.album.as_ref());
+        // (name, who its hint says it is, role).
+        let named: Vec<(String, Option<&describe::ArtistHint>, Option<String>)> = match described_album {
+            Some(album) => album
+                .artists
+                .iter()
+                .map(|c| (c.name.clone(), c.artist.and_then(|i| hints.artists.get(i)), Some(c.role.clone())))
+                .collect(),
+            None => album_artist_names.iter().map(|name| (name.clone(), describe::hint_named(hints, name), None)).collect(),
+        };
+        let mut found = Vec::new();
+        for (name, hint, role) in named {
             // A collective's album: in its grouping (below), not credited to it.
-            match resolver.collective(conn, hints, name).await? {
+            match resolver.collective_for(conn, hint, &name).await? {
                 Some(grouping) => album_groupings.push(grouping),
-                None => album_artists.push(resolver.artist(conn, hints, name).await?),
+                None => found.push((resolver.artist_for(conn, hint, &name).await?, role)),
             }
         }
+        let mut album_artists: Vec<(db::ingest::FoundArtist, String)> = match described_album {
+            Some(_) => found.into_iter().map(|(artist, role)| (artist, role.unwrap_or_else(|| "primary".to_string()))).collect(),
+            None => db::ingest::album_roles_from_tags(&found.into_iter().map(|(a, _)| a).collect::<Vec<_>>(), single),
+        };
         // Only collectives: the album's artists are the track's primary ones.
         if album_artists.is_empty() {
             album_artists = metadata
                 .credits
                 .iter()
                 .filter(|c| c.role == "primary")
-                .map(|c| db::ingest::FoundArtist { id: c.artist_id, alias_id: c.alias_id, ambiguous: Vec::new() })
+                .map(|c| (db::ingest::FoundArtist { id: c.artist_id, alias_id: c.alias_id, ambiguous: Vec::new() }, "primary".to_string()))
                 .collect();
         }
+        let kind = match described_album {
+            Some(album) => album.kind.clone(),
+            None => if single { "single" } else { "album" }.to_string(),
+        };
         // The album's own date if the description has one, else the track's.
         let album_date = hints.album.as_ref().and_then(|a| a.release_date.as_deref()).or(tags.date.as_deref());
         let id = resolver
-            .album(conn, hints, album_title, &album_artists, single, album_date)
+            .album(conn, hints, album_title, &album_artists, &kind, album_date)
             .await?;
         album_id = Some(id);
         albums.push(AlbumMembership {
@@ -1203,7 +1282,9 @@ async fn create_track_rows(
     .await?;
 
     // Into the collectives' groupings (the names that were their accounts).
-    let collectives: Vec<Uuid> = resolver.collectives.iter().map(|(_, g)| *g).collect();
+    let mut collectives: Vec<Uuid> = resolver.collectives.iter().map(|(_, _, g)| *g).collect();
+    collectives.sort();
+    collectives.dedup();
     for grouping in collectives {
         let reason = "imported: posted under the collective's account";
         let album: Vec<Uuid> = album_id.filter(|_| album_groupings.contains(&grouping)).into_iter().collect();
@@ -1250,6 +1331,9 @@ async fn create_track_rows(
         }
     }
 
+    for lyrics in hints.described.iter().flat_map(|d| &d.lyrics) {
+        db::revisions::create_lyrics(conn, track_id, "description", lyrics, Source::Import, "given with the upload").await?;
+    }
     for body in &tags.lyrics {
         // Whether embedded lyrics are official is unknown, so they start as unofficial.
         let lyrics = LyricsData {

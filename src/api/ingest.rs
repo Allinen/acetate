@@ -94,6 +94,11 @@ pub async fn ingest(
             "form part \"{name}\" isn't named in the description"
         )));
     }
+    if description.hints.described.is_some() && tags_file.is_some() {
+        return Err(AppError::BadRequest(
+            "a tagged copy (`tags_file`) isn't used with `metadata`: the metadata is given".to_string(),
+        ));
+    }
     if let Some(volume) = &description.volume {
         super::check_volume(&state, &user, volume)?;
     }

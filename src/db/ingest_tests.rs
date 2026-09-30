@@ -173,7 +173,7 @@ async fn albums_need_the_same_artists_and_date(
     let mut tx = db::begin(&lib.owner, None).await?;
     let a = db::ingest::find_or_create_artist(&mut tx, "A").await?;
     let b = db::ingest::find_or_create_artist(&mut tx, "B").await?;
-    let album = db::ingest::create_album(&mut tx, "Same Title", &[a.clone(), b.clone()], true, Some("2020")).await?;
+    let album = db::ingest::create_album(&mut tx, "Same Title", &db::ingest::album_roles_from_tags(&[a.clone(), b.clone()], true), "single", Some("2020")).await?;
     let find = async |tx: &mut sqlx::PgConnection, artists: &[Uuid], date: Option<&str>| {
         db::ingest::find_album(tx, "same title", artists, date).await.unwrap()
     };
@@ -1183,5 +1183,208 @@ async fn given_values_and_the_fix_later_flag(_: PgPoolOptions, connect: PgConnec
         .fetch_one(&lib.owner)
         .await?;
     assert_eq!(note, json!({ "note": "imported quickly" }));
+    Ok(())
+}
+
+
+// ---- All of the metadata in the description (`metadata`): the tags aren't used ----
+
+/// A description as a client sends it, validated as the API does.
+fn described(description: serde_json::Value) -> anyhow::Result<IngestOptions> {
+    let description: crate::ingest::describe::NewDescription = serde_json::from_value(description)?;
+    let valid = description.validate(|_| None).map_err(anyhow::Error::msg)?;
+    Ok(IngestOptions {
+        origin: valid.origin,
+        sources: valid.track_sources,
+        hints: valid.hints,
+        ..options(None, 0, Hints::default())
+    })
+}
+
+fn full_metadata() -> serde_json::Value {
+    json!({
+        "origin": {"platform": "netease", "data": {"song_id": 501}},
+        "metadata": {
+            "title": "Real Title",
+            "credits": [
+                {"name": "Real Artist", "sources": [{"platform": "netease", "data": {"artist_id": 77}}]},
+                {"name": "Guest", "role": "featured"},
+                {"name": "Beatmaker", "role": "producer"},
+                {"name": "Real Artist", "role": "producer"}
+            ],
+            "release_date": "2020-01-01",
+            "genres": ["Rap"],
+            "comment": "from the platform",
+            "album": {
+                "title": "Real EP", "kind": "ep", "track_number": 3, "disc_number": 1,
+                "sources": [{"platform": "netease", "data": {"album_id": 88}}]
+            },
+            "lyrics": [{"body": "[00:01.00] line", "official": true, "language": "en"}]
+        }
+    })
+}
+
+#[sqlx::test]
+async fn described_metadata_is_the_track_and_the_tags_are_only_kept(
+    _: PgPoolOptions,
+    connect: PgConnectOptions,
+) -> anyhow::Result<()> {
+    let lib = setup(connect).await?;
+    let dir = tempfile::tempdir()?;
+    let store = BlobStore::open(dir.path())?;
+
+    // A tagged file (Mira Vale, "Glass Harbor", on Tidelines): none of it is used.
+    let report = ingest_file(&lib.owner, &store, "01 - Glass Harbor.flac", &described(full_metadata())?, false).await?;
+    assert_eq!(report.status, ReportStatus::Created);
+    let track = report.track_id.unwrap();
+    let names: Vec<&str> = report.artists.iter().map(|a| a.name.as_str()).collect();
+    assert!(!names.contains(&"Mira Vale"), "{names:?}");
+    assert_eq!(report.album.as_ref().unwrap().name, "Real EP");
+
+    let mut tx = db::begin(&lib.owner, None).await?;
+    let metadata = db::revisions::primary_metadata(&mut tx, track).await?.unwrap();
+    drop(tx);
+    assert_eq!(
+        (metadata.title.as_str(), metadata.release_date.as_deref(), metadata.genres.clone(), metadata.comment.as_deref()),
+        ("Real Title", Some("2020-01-01"), vec!["Rap".to_string()], Some("from the platform"))
+    );
+    let credits: Vec<(String, String)> = sqlx::query_as(
+        "SELECT a.name, c.role FROM track_credits c JOIN artists a ON a.id = c.artist_id WHERE c.track_id = $1 ORDER BY c.position",
+    )
+    .bind(track)
+    .fetch_all(&lib.owner)
+    .await?;
+    let credits: Vec<(&str, &str)> = credits.iter().map(|(n, r)| (n.as_str(), r.as_str())).collect();
+    assert_eq!(credits, [("Real Artist", "primary"), ("Guest", "featured"), ("Beatmaker", "producer"), ("Real Artist", "producer")]);
+    let album: (String, String, Option<i16>, Option<i16>) = sqlx::query_as(
+        "SELECT a.kind, a.title, at.track_number, at.disc_number FROM album_tracks at JOIN albums a ON a.id = at.album_id WHERE at.track_id = $1",
+    )
+    .bind(track)
+    .fetch_one(&lib.owner)
+    .await?;
+    assert_eq!(album, ("ep".into(), "Real EP".into(), Some(3), Some(1)));
+    let album_credits: Vec<String> = sqlx::query_scalar(
+        "SELECT a.name FROM album_credits c JOIN artists a ON a.id = c.artist_id JOIN album_tracks at ON at.album_id = c.album_id WHERE at.track_id = $1",
+    )
+    .bind(track)
+    .fetch_all(&lib.owner)
+    .await?;
+    assert_eq!(album_credits, ["Real Artist"], "the album's artists: the track's primary ones");
+    let label: String = sqlx::query_scalar("SELECT v.label FROM track_variants v JOIN tracks t ON t.primary_variant_id = v.id WHERE t.id = $1")
+        .bind(track)
+        .fetch_one(&lib.owner)
+        .await?;
+    assert_eq!(label, "From the description");
+    let lyrics: (String, bool, Option<String>) = sqlx::query_as("SELECT source, is_official, language FROM lyrics WHERE track_id = $1")
+        .bind(track)
+        .fetch_one(&lib.owner)
+        .await?;
+    assert_eq!(lyrics, ("description".into(), true, Some("en".into())));
+    // The file's own tags: kept, verbatim, with the file.
+    let tags: serde_json::Value = sqlx::query_scalar("SELECT f.embedded_tags FROM files f JOIN tracks t ON t.file_id = f.id WHERE t.id = $1")
+        .bind(track)
+        .fetch_one(&lib.owner)
+        .await?;
+    assert!(tags.to_string().contains("Tidelines"), "{tags}");
+
+    // A file with no artist in its tags at all: fine, the description has it. The artist
+    // is found by its NetEase id, credited under the name given.
+    let mut other = full_metadata();
+    other["origin"]["data"]["song_id"] = json!(502);
+    other["metadata"]["credits"] = json!([{"name": "R. Artist", "sources": [{"platform": "netease", "data": {"artist_id": 77}}]}]);
+    other["metadata"]["album"] = json!(null);
+    let report = ingest_file(&lib.owner, &store, "no-artist.opus", &described(other)?, false).await?;
+    assert_eq!(report.status, ReportStatus::Created);
+    assert_eq!(artist(&report, "R. Artist").matched_by, MatchedBy::PlatformId);
+    Ok(())
+}
+
+#[sqlx::test]
+async fn described_metadata_is_checked(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
+    let refused = |change: &dyn Fn(&mut serde_json::Value)| {
+        let mut description = full_metadata();
+        change(&mut description);
+        described(description).err().map(|err| err.to_string()).unwrap_or_default()
+    };
+    assert!(refused(&|d| d["metadata"]["credits"] = json!([{"name": "A", "role": "featured"}])).contains("primary"));
+    assert!(refused(&|d| d["artists"] = json!([{"name": "A"}])).contains("`artists` isn't used with `metadata`"));
+    assert!(refused(&|d| d["track"] = json!({"release_date_over_tags": true})).contains("isn't used"));
+    assert!(refused(&|d| d["metadata"]["credits"][1] = json!({"name": "Real Artist"})).contains("credited twice as primary"));
+    assert!(refused(&|d| d["metadata"]["credits"][1] = json!({"name": "Real Artist", "role": "featured", "id": Uuid::now_v7()})).is_empty(), "one id: fine");
+
+    // Roles and kinds the server doesn't have: refused before anything is made.
+    let lib = setup(connect).await?;
+    let dir = tempfile::tempdir()?;
+    let store = BlobStore::open(dir.path())?;
+    let mut description = full_metadata();
+    description["metadata"]["credits"][1]["role"] = json!("vibes");
+    let err = ingest_file(&lib.owner, &store, "01 - Glass Harbor.flac", &described(description)?, true).await.unwrap_err();
+    assert!(err.to_string().contains("no credit role \"vibes\""), "{err}");
+    // Also for a file that's stored already (it's tried as a new track, then merged).
+    ingest_file(&lib.owner, &store, "01 - Glass Harbor.flac", &options(None, 1, Hints::default()), false).await?;
+    let mut description = full_metadata();
+    description["metadata"]["credits"][1]["role"] = json!("vibes");
+    let err = ingest_file(&lib.owner, &store, "01 - Glass Harbor.flac", &described(description)?, false).await.unwrap_err();
+    assert!(err.to_string().contains("no credit role \"vibes\""), "{err}");
+    let mut description = full_metadata();
+    description["metadata"]["album"]["kind"] = json!("boxset");
+    let err = ingest_file(&lib.owner, &store, "01 - Glass Harbor.flac", &described(description)?, true).await.unwrap_err();
+    assert!(err.to_string().contains("no album kind"), "{err}");
+    Ok(())
+}
+
+/// A file that didn't import keeps its description (with `metadata`), to import again from
+/// the Review page: it reads back the same.
+#[test]
+fn described_metadata_goes_round_the_review_list() -> anyhow::Result<()> {
+    let options = described(full_metadata())?;
+    let json = crate::ingest::describe::description_json(&options.origin, "released", &options.sources, &options.hints, None);
+    let again = described(json)?;
+    let (a, b) = (options.hints.described.unwrap(), again.hints.described.unwrap());
+    assert_eq!((a.title, a.credits, a.lyrics.len()), (b.title, b.credits, b.lyrics.len()));
+    assert_eq!(a.album.unwrap().kind, "ep");
+    assert_eq!(again.hints.artists.iter().find(|h| h.name == "Real Artist").unwrap().sources.len(), 1);
+    assert_eq!(again.hints.album.unwrap().track_number, Some(3));
+    Ok(())
+}
+
+
+/// Two artists with one name on one track, told apart by their ids: two artists, each with
+/// its own ids. The same name without ids that differ is one artist.
+#[sqlx::test]
+async fn namesakes_are_told_apart_by_their_ids(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
+    let lib = setup(connect).await?;
+    let dir = tempfile::tempdir()?;
+    let store = BlobStore::open(dir.path())?;
+    let mut description = full_metadata();
+    description["metadata"]["credits"] = json!([
+        {"name": "Lil X", "sources": [{"platform": "netease", "data": {"artist_id": 1}}]},
+        {"name": "Lil X", "role": "featured", "sources": [{"platform": "netease", "data": {"artist_id": 2}}]},
+        {"name": "Lil X", "role": "producer"}
+    ]);
+    description["metadata"]["album"] = json!(null);
+    let report = ingest_file(&lib.owner, &store, "01 - Glass Harbor.flac", &described(description)?, false).await?;
+    let track = report.track_id.unwrap();
+    let credits: Vec<(Uuid, String, Vec<String>)> = sqlx::query_as(
+        "SELECT c.artist_id, c.role,
+                ARRAY(SELECT s.external_id FROM sources s WHERE s.artist_id = c.artist_id AND s.platform = 'netease' ORDER BY 1)
+         FROM track_credits c WHERE c.track_id = $1 ORDER BY c.position",
+    )
+    .bind(track)
+    .fetch_all(&lib.owner)
+    .await?;
+    assert_eq!(credits.len(), 3, "{credits:?}");
+    let (primary, featured, producer) = (&credits[0], &credits[1], &credits[2]);
+    assert_ne!(primary.0, featured.0, "two artists");
+    assert_eq!((primary.2.clone(), featured.2.clone()), (vec!["1".to_string()], vec!["2".to_string()]), "each with its own id");
+    assert_eq!(producer.0, primary.0, "the one without ids is the first");
+
+    // The same twice (different Acetate ids): no longer refused.
+    let (a, b) = (Uuid::now_v7(), Uuid::now_v7());
+    let mut description = full_metadata();
+    description["metadata"]["credits"] = json!([{"name": "Y", "id": a}, {"name": "Y", "id": b, "role": "featured"}]);
+    let options = described(description)?;
+    let credits = &options.hints.described.as_ref().unwrap().credits;
+    assert_ne!(credits[0].artist, credits[1].artist);
     Ok(())
 }

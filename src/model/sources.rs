@@ -535,3 +535,100 @@ mod tests {
         }
     }
 }
+
+/// The Python ingestion library (`clients/python`) has these shapes as typed classes, in
+/// a file made from `SHAPES`. This checks it's up to date; to make it again after changing
+/// `SHAPES`: `ACETATE_WRITE_PYTHON_SHAPES=1 cargo test python_shapes`.
+#[cfg(test)]
+mod python_shapes {
+    use super::*;
+
+    const PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/clients/python/acetate_ingest/_shapes.py");
+
+    /// How the platform is written in class names (`NetEaseTrack`).
+    fn class_prefix(platform: &str) -> String {
+        match platform {
+            "soundcloud" => "SoundCloud".into(),
+            "distrokid" => "DistroKid".into(),
+            "netease" => "NetEase".into(),
+            "qq" => "QQ".into(),
+            "youtube" => "YouTube".into(),
+            "beatstars" => "BeatStars".into(),
+            other => {
+                let mut chars = other.chars();
+                chars.next().map(|c| c.to_uppercase().collect::<String>() + chars.as_str()).unwrap_or_default()
+            }
+        }
+    }
+
+    fn render() -> String {
+        let mut out = String::from(
+            "# Made from the server's source shapes (`SHAPES` in src/model/sources.rs): don't edit.\n\
+             # `cargo test` checks it's up to date; `ACETATE_WRITE_PYTHON_SHAPES=1 cargo test python_shapes`\n\
+             # makes it again.\n\n\
+             from dataclasses import dataclass\n\
+             from typing import ClassVar\n\n\
+             from ._source import Field, Shape, ShapedSource\n\n\
+             SHAPES: dict[tuple[str, str], Shape] = {\n",
+        );
+        for shape in SHAPES {
+            let id = shape.id_field.map_or("None".to_string(), |f| format!("\"{f}\""));
+            out += &format!("    (\"{}\", \"{}\"): Shape(id_field={id}, fields={{\n", shape.platform, shape.kind.name());
+            for field in shape.fields {
+                let kind = match field.field_type {
+                    Int => "int",
+                    Str => "str",
+                    StrList => "strs",
+                };
+                let required = if field.required { "True" } else { "False" };
+                out += &format!("        \"{}\": Field(\"{kind}\", required={required}),\n", field.name);
+            }
+            out += "    }),\n";
+        }
+        out += "}\n";
+        let mut names = Vec::new();
+        for shape in SHAPES {
+            let kind = shape.kind.name();
+            let name = format!("{}{}{}", class_prefix(shape.platform), kind[..1].to_uppercase(), &kind[1..]);
+            let id = shape.id_field.map_or(String::from("none: sources with the same data are the same"), |f| format!("`{f}`"));
+            out += &format!(
+                "\n\n@dataclass(frozen=True, kw_only=True)\nclass {name}(ShapedSource):\n    \"\"\"A {kind}'s source on {}. Its id: {id}.\"\"\"\n\n    platform: ClassVar[str] = \"{}\"\n    kind: ClassVar[str] = \"{kind}\"\n",
+                shape.platform, shape.platform
+            );
+            for field in shape.fields {
+                assert!(!["source_id", "captured_at"].contains(&field.name), "{name}: `{}` is taken", field.name);
+                let python_type = match field.field_type {
+                    Int => "int",
+                    Str => "str",
+                    StrList => "list[str]",
+                };
+                if field.required {
+                    out += &format!("    {}: {python_type}\n", field.name);
+                } else {
+                    out += &format!("    {}: {python_type} | None = None\n", field.name);
+                }
+            }
+            names.push(name);
+        }
+        out += "\n\n__all__ = [\n";
+        for name in names {
+            out += &format!("    \"{name}\",\n");
+        }
+        out += "]\n";
+        out
+    }
+
+    #[test]
+    fn python_shapes_are_up_to_date() {
+        let made = render();
+        if std::env::var_os("ACETATE_WRITE_PYTHON_SHAPES").is_some() {
+            std::fs::write(PATH, &made).unwrap();
+            return;
+        }
+        let kept = std::fs::read_to_string(PATH).unwrap_or_default();
+        assert!(
+            kept == made,
+            "{PATH} doesn't match SHAPES: make it again with `ACETATE_WRITE_PYTHON_SHAPES=1 cargo test python_shapes`"
+        );
+    }
+}

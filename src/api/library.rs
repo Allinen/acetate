@@ -8,7 +8,8 @@
 //! Every catalog has a `version`. With `?since=<version>`, only what changed since that
 //! copy comes back (a delta, `"delta": true`): the changed tracks, albums and artists as
 //! rows (those the user can see), the user's changed annotations, all playlists, and
-//! `removed` (merged ones: they only redirect now; annotations that say nothing anymore).
+//! `removed` (merged ones: they only redirect now; ones the user could see and can't
+//! anymore; annotations that say nothing anymore).
 //! Nothing changed: 304. When a delta can't be given (who may see what changed, or the
 //! copy is older than the change log keeps), the whole catalog comes back instead
 //! (`"delta": false`).
@@ -62,7 +63,7 @@ pub async fn catalog(
             let (mut gone_tracks, mut gone_albums, gone_artists) =
                 db::library::merged(&mut tx, &changes.tracks, &changes.albums, &changes.artists).await?;
             // Changed ones the user can't see anymore (restricted, turned into extras).
-            let (unseen_tracks, unseen_albums, gone_extras) = db::library::unseen(&mut tx, &changes.tracks, &changes.albums, &changes.extras).await?;
+            let (unseen_tracks, unseen_albums, gone_extras) = db::library::unseen(&mut tx, &since, &changes.tracks, &changes.albums, &changes.extras).await?;
             for id in unseen_tracks {
                 if !gone_tracks.contains(&id) {
                     gone_tracks.push(id);

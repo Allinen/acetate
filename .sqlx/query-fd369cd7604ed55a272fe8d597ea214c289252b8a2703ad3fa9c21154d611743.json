@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT x AS \"x!\" FROM unnest($1::uuid[]) x\n           WHERE NOT EXISTS (SELECT 1 FROM albums a WHERE a.id = x) AND x IN (SELECT seen_since('album', $1, $2))",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "x!",
+        "type_info": "Uuid",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "UuidArray",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "fd369cd7604ed55a272fe8d597ea214c289252b8a2703ad3fa9c21154d611743"
+}

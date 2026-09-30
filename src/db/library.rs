@@ -402,25 +402,39 @@ pub async fn changes_since(conn: &mut PgConnection, since: &str) -> anyhow::Resu
     Ok(changes)
 }
 
-/// Of these, the ones merged into another (visible to the user): the client drops them.
-/// (Something that became hidden isn't here: that logs `everything`, and the client gets
-/// the whole catalog, so a delta never names it.)
-/// Of these changed ones, those the user can't see (anymore): a delta says they're gone.
-/// (They were restricted, or turned into an extra; someone who never saw one gets only
-/// its id, see migration 0046.)
-pub async fn unseen(conn: &mut PgConnection, tracks: &[Uuid], albums: &[Uuid], extras: &[Uuid]) -> sqlx::Result<(Vec<Uuid>, Vec<Uuid>, Vec<Uuid>)> {
-    let tracks = sqlx::query_scalar!(r#"SELECT x AS "x!" FROM unnest($1::uuid[]) x WHERE NOT EXISTS (SELECT 1 FROM tracks t WHERE t.id = x)"#, tracks)
-        .fetch_all(&mut *conn)
-        .await?;
-    let albums = sqlx::query_scalar!(r#"SELECT x AS "x!" FROM unnest($1::uuid[]) x WHERE NOT EXISTS (SELECT 1 FROM albums a WHERE a.id = x)"#, albums)
-        .fetch_all(&mut *conn)
-        .await?;
-    let extras = sqlx::query_scalar!(r#"SELECT x AS "x!" FROM unnest($1::uuid[]) x WHERE NOT EXISTS (SELECT 1 FROM extras e WHERE e.id = x)"#, extras)
-        .fetch_all(&mut *conn)
-        .await?;
+/// Of these changed ones, those the user can't see anymore but could at some point since
+/// `since` (their copy's version): a delta says they're gone. (Restricted, or turned into
+/// an extra.) Something the user never saw is never named, not even by id: who could see
+/// what before each change is recorded for this (migration 0047).
+pub async fn unseen(conn: &mut PgConnection, since: &str, tracks: &[Uuid], albums: &[Uuid], extras: &[Uuid]) -> sqlx::Result<(Vec<Uuid>, Vec<Uuid>, Vec<Uuid>)> {
+    let tracks = sqlx::query_scalar!(
+        r#"SELECT x AS "x!" FROM unnest($1::uuid[]) x
+           WHERE NOT EXISTS (SELECT 1 FROM tracks t WHERE t.id = x) AND x IN (SELECT seen_since('track', $1, $2))"#,
+        tracks,
+        since
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    let albums = sqlx::query_scalar!(
+        r#"SELECT x AS "x!" FROM unnest($1::uuid[]) x
+           WHERE NOT EXISTS (SELECT 1 FROM albums a WHERE a.id = x) AND x IN (SELECT seen_since('album', $1, $2))"#,
+        albums,
+        since
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    let extras = sqlx::query_scalar!(
+        r#"SELECT x AS "x!" FROM unnest($1::uuid[]) x
+           WHERE NOT EXISTS (SELECT 1 FROM extras e WHERE e.id = x) AND x IN (SELECT seen_since('extra', $1, $2))"#,
+        extras,
+        since
+    )
+    .fetch_all(&mut *conn)
+    .await?;
     Ok((tracks, albums, extras))
 }
 
+/// Of these, the ones merged into another (visible to the user): the client drops them.
 pub async fn merged(conn: &mut PgConnection, tracks: &[Uuid], albums: &[Uuid], artists: &[Uuid]) -> sqlx::Result<(Vec<Uuid>, Vec<Uuid>, Vec<Uuid>)> {
     let tracks = sqlx::query_scalar!("SELECT id FROM tracks WHERE id = ANY($1) AND merged_into IS NOT NULL", tracks)
         .fetch_all(&mut *conn)
@@ -448,6 +462,9 @@ pub async fn trim_changes(conn: &mut PgConnection, days: i32) -> sqlx::Result<u6
         .execute(&mut *conn)
         .await?
         .rows_affected();
+    sqlx::query!("DELETE FROM library_audience WHERE xid <= $1::text::xid8", before.to_string())
+        .execute(&mut *conn)
+        .await?;
     sqlx::query!(
         "INSERT INTO library_changes_trimmed (before) VALUES (($1::bigint + 1)::text::xid8)
          ON CONFLICT (one) DO UPDATE SET before = EXCLUDED.before",

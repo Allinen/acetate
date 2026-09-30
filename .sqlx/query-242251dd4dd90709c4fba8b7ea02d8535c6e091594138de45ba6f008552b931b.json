@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM library_audience WHERE xid <= $1::text::xid8",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "242251dd4dd90709c4fba8b7ea02d8535c6e091594138de45ba6f008552b931b"
+}

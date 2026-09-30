@@ -3,7 +3,8 @@
 //! whole; entries are never removed.
 //!
 //! Names in use:
-//! * `uploads`: today's upload count (`api::upload_limits`).
+//! * `uploads`: today's upload count (`api::upload_limits`);
+//! * `rate_limits`: recent failed logins and share lookups (`api::rate_limit`).
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;

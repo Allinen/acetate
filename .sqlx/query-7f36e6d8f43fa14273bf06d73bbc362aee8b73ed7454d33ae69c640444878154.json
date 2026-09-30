@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT x AS \"x!\" FROM unnest($1::uuid[]) x\n           WHERE NOT EXISTS (SELECT 1 FROM extras e WHERE e.id = x) AND x IN (SELECT seen_since('extra', $1, $2))",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "x!",
+        "type_info": "Uuid",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "UuidArray",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "7f36e6d8f43fa14273bf06d73bbc362aee8b73ed7454d33ae69c640444878154"
+}

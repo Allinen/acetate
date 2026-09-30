@@ -118,7 +118,7 @@ async fn extras_are_in_the_catalog_and_its_deltas(_: PgPoolOptions, connect: PgC
     let mut tx = db::begin(&lib.app, Some(lib.carol)).await?;
     let changes = db::library::changes_since(&mut tx, &since).await?;
     assert!(!changes.everything);
-    assert_eq!(db::library::unseen(&mut tx, &[], &[], &changes.extras).await?.2, [open]);
+    assert_eq!(db::library::unseen(&mut tx, &since, &[], &[], &changes.extras).await?.2, [open]);
     assert_eq!(db::library::extras_json(&mut tx, None).await?, "[]");
     Ok(())
 }
@@ -175,7 +175,7 @@ async fn a_track_becomes_an_extra_and_a_track_again(_: PgPoolOptions, connect: P
     let mut tx = db::begin(&lib.app, Some(lib.carol)).await?;
     let changes = db::library::changes_since(&mut tx, &since).await?;
     assert!(!changes.everything);
-    assert_eq!(db::library::unseen(&mut tx, &changes.tracks, &changes.albums, &[]).await?.0, [lib.o]);
+    assert_eq!(db::library::unseen(&mut tx, &since, &changes.tracks, &changes.albums, &[]).await?.0, [lib.o]);
     assert!(changes.artists.contains(&lib.both), "its artist's counts");
     assert!(!db::library::tracks_json(&mut tx, None).await?.contains(&lib.o.to_string()));
     let since = db::library::version(&mut tx).await?;
@@ -191,7 +191,7 @@ async fn a_track_becomes_an_extra_and_a_track_again(_: PgPoolOptions, connect: P
     let mut tx = db::begin(&lib.app, Some(lib.carol)).await?;
     let changes = db::library::changes_since(&mut tx, &since).await?;
     assert!(!changes.everything);
-    let (tracks, albums, _) = db::library::unseen(&mut tx, &changes.tracks, &changes.albums, &[]).await?;
+    let (tracks, albums, _) = db::library::unseen(&mut tx, &since, &changes.tracks, &changes.albums, &[]).await?;
     assert!(tracks.contains(&lib.v) && albums.contains(&lib.album), "{tracks:?} {albums:?}");
     drop(tx);
     let mut tx = db::begin(&lib.app, Some(lib.bob)).await?;
@@ -252,7 +252,7 @@ async fn a_single_goes_with_its_track_in_a_small_delta(_: PgPoolOptions, connect
     let mut tx = db::begin(&lib.app, Some(lib.carol)).await?;
     let changes = db::library::changes_since(&mut tx, &since).await?;
     assert!(!changes.everything);
-    let (tracks, albums, _) = db::library::unseen(&mut tx, &changes.tracks, &changes.albums, &[]).await?;
+    let (tracks, albums, _) = db::library::unseen(&mut tx, &since, &changes.tracks, &changes.albums, &[]).await?;
     assert_eq!((tracks, albums), (vec![lib.o], vec![single]));
     Ok(())
 }
