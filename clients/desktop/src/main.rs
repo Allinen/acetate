@@ -48,18 +48,19 @@ fn main() -> eframe::Result {
             .with_icon(icon)
             .with_inner_size([1280.0, 820.0])
             .with_min_inner_size([900.0, 560.0]),
-        event_loop_builder: x11_if_asked(),
+        event_loop_builder: x11_unless_asked_not_to(),
         ..Default::default()
     };
     eframe::run_native("Acetate", options, Box::new(move |cc| Ok(Box::new(ui::App::new(cc, link)))))
 }
 
-/// `ACETATE_X11=1` (Linux): through XWayland on a Wayland desktop, where files can be
-/// dropped on the window (winit has no drag and drop on Wayland; see `ui::files`). Text may
-/// look softer with fractional scaling.
-fn x11_if_asked() -> Option<eframe::EventLoopBuilderHook> {
+/// Linux: through X11 (XWayland on a Wayland desktop) unless `ACETATE_WAYLAND=1`: winit has
+/// no drag and drop on Wayland (see `ui::files`), and through XWayland it works, with no
+/// other difference noticed. `ACETATE_WAYLAND=1` runs natively on Wayland (no dropping
+/// files; pasting copied ones and the file dialog still work).
+fn x11_unless_asked_not_to() -> Option<eframe::EventLoopBuilderHook> {
     #[cfg(target_os = "linux")]
-    if std::env::var("ACETATE_X11").is_ok_and(|v| !v.is_empty() && v != "0") {
+    if !std::env::var("ACETATE_WAYLAND").is_ok_and(|v| !v.is_empty() && v != "0") {
         return Some(Box::new(|builder| {
             use winit::platform::x11::EventLoopBuilderExtX11;
             builder.with_x11();

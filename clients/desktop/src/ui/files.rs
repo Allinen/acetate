@@ -2,9 +2,9 @@
 //! copying files in a file manager), or chosen in the system's file dialog.
 //!
 //! Dropping only works where the windowing library delivers it: X11, Windows and macOS.
-//! On Wayland it never does (winit has no drag and drop there), so a drop does nothing;
-//! pasting copied files and the dialog (the desktop's own, through its portal) work
-//! everywhere. `ACETATE_X11=1` runs the app through XWayland, where dropping works too.
+//! On Wayland it never does (winit has no drag and drop there), so on Linux the app runs
+//! through X11 (XWayland) unless `ACETATE_WAYLAND=1`; pasting copied files and the dialog
+//! (the desktop's own, through its portal) work everywhere.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
