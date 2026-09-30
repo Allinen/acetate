@@ -497,6 +497,45 @@ async fn shares_open_only_their_target(_: PgPoolOptions, connect: PgConnectOptio
 }
 
 #[sqlx::test]
+async fn the_share_list_says_whether_a_link_still_works(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
+    let lib = setup(connect).await?;
+    // bob shares H (restricted to friends, which he's in) and O.
+    let mut tx = db::begin(&lib.owner, Some(lib.bob)).await?;
+    let share_h = db::shares::create(&mut tx, &crate::auth::token_hash("h"), Some(lib.h), None, None).await?;
+    let share_o = db::shares::create(&mut tx, &crate::auth::token_hash("o"), Some(lib.o), None, None).await?;
+    tx.commit().await?;
+    let states = || async {
+        // As carol would list them if she were an admin: she can't see H herself.
+        let mut tx = db::begin(&lib.app, Some(lib.carol)).await?;
+        let list = db::shares::list(&mut tx, Some(lib.bob)).await?;
+        let state = |id| list.iter().find(|s| s.id == id).unwrap().state.clone();
+        anyhow::Ok((state(share_h), state(share_o)))
+    };
+    assert_eq!(states().await?, ("active".into(), "active".into()), "judged through bob's eyes, not carol's");
+
+    // bob leaves friends: H is hidden from him, so its link shows nothing.
+    sqlx::query("DELETE FROM user_groups WHERE user_id = $1 AND group_id = $2")
+        .bind(lib.bob)
+        .bind(lib.friends)
+        .execute(&lib.owner)
+        .await?;
+    assert_eq!(states().await?, ("target_hidden".into(), "active".into()));
+
+    // bob may not share anymore: both stop.
+    sqlx::query("DELETE FROM user_groups WHERE user_id = $1 AND group_id = (SELECT id FROM groups WHERE name = 'sharers')")
+        .bind(lib.bob)
+        .execute(&lib.owner)
+        .await?;
+    assert_eq!(states().await?, ("creator_cannot_share".into(), "creator_cannot_share".into()));
+
+    let mut tx = db::begin(&lib.owner, Some(lib.bob)).await?;
+    db::shares::revoke(&mut tx, share_o, None).await?;
+    tx.commit().await?;
+    assert_eq!(states().await?.1, "revoked");
+    Ok(())
+}
+
+#[sqlx::test]
 async fn cover_images_by_hash_follow_what_you_can_see(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
     let lib = setup(connect).await?;
     // The same image on V (visible to all) and H (hidden from carol); another only on H.

@@ -29,8 +29,8 @@ async function api(path, options = {}) {
   // Session gone (expired, logged out elsewhere, password changed): back to the login form.
   if (response.status === 401 && path !== "/api/auth/login") showLogin();
   if (!response.ok) {
-    // `message` is written for people; `error` is the short detail (older servers).
-    const message = body && (body.message || body.error) ? (body.message || body.error) : `${response.status} ${response.statusText}`;
+    // `message` is written for people.
+    const message = body?.message || `${response.status} ${response.statusText}`;
     throw new Error(message);
   }
   return body;
@@ -2361,14 +2361,16 @@ async function showShares() {
     setDetail(
       h("h2", {}, "Shares"),
       shares.length ? shares.map((s) => {
-        const state = s.revoked_at ? "revoked"
-          : s.expires_at && new Date(s.expires_at) < new Date() ? "expired" : "active";
+        const state = {
+          creator_cannot_share: "not working: its creator can't share anymore",
+          target_hidden: "not working: its creator can't see it anymore",
+        }[s.state] || s.state;
         return h("div", { class: "box" },
           h("div", { class: "row" },
             h("a", { href: s.track_id ? `#/track/${s.track_id}` : `#/album/${s.album_id}` }, s.title),
             h("span", { class: "tag" }, s.track_id ? "track" : "album"),
-            h("span", { class: state === "active" ? "ok" : "muted" }, state),
-            state === "active" ? h("button", {
+            h("span", { class: s.state === "active" ? "ok" : "muted" }, state),
+            s.state !== "revoked" && s.state !== "expired" ? h("button", {
               class: "small",
               onclick: async () => { await api(`/api/shares/${s.id}`, { method: "DELETE" }); showShares(); },
             }, "Revoke") : null),

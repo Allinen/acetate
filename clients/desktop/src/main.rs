@@ -41,7 +41,7 @@ fn main() -> eframe::Result {
         return Ok(());
     }
     // The simple logo (the full one is for the README, used sparingly).
-    let icon = eframe::icon_data::from_png_bytes(include_bytes!("../../../assets/brand/acetate-simple.png")).expect("the app icon");
+    let icon = eframe::icon_data::from_png_bytes(include_bytes!("../../../assets/brand/acetate-simple.jpg")).expect("the app icon");
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title("Acetate")

@@ -10,9 +10,6 @@
 /kuwo_ids.json
 /sc_ids.json
 /traktrain.json
-/assets/brand/acetate.png
-/clients/desktop/assets/acetate-512.png
-/assets/brand/acetate-simple.png
-/web/favicon.png
 __pycache__/
 *.egg-info/
+/TODO.md

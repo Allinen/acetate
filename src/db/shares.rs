@@ -76,6 +76,10 @@ pub struct ShareInfo {
     pub created_at: DateTime<Utc>,
     pub expires_at: Option<DateTime<Utc>>,
     pub revoked_at: Option<DateTime<Utc>>,
+    /// Whether the link works: "active", or why not: "revoked", "expired",
+    /// "creator_cannot_share" (its creator lost the permission to share) or
+    /// "target_hidden" (its creator can't see anything it shares anymore).
+    pub state: String,
 }
 
 /// Shares made by `created_by`, or everyone's if None. Newest first.
@@ -87,7 +91,7 @@ pub async fn list(conn: &mut PgConnection, created_by: Option<Uuid>) -> sqlx::Re
                -- NULL when you can't see it anymore (then the share shows nothing either).
                COALESCE(t.title, al.title, '(no longer visible to you)') AS "title!",
                u.username AS created_by,
-               s.created_at, s.expires_at, s.revoked_at
+               s.created_at, s.expires_at, s.revoked_at, share_state(s.id) AS "state!"
         FROM shares s
         JOIN users u ON u.id = s.created_by
         LEFT JOIN tracks t ON t.id = s.track_id

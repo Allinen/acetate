@@ -114,7 +114,7 @@ pub fn logo(ui: &mut egui::Ui, logo: &egui::TextureHandle, size: f32) {
 /// The logo as a texture, made once at start: the brand file, scaled down (it's drawn
 /// small; a big texture would only blur).
 pub fn logo_texture(ctx: &egui::Context) -> egui::TextureHandle {
-    let bytes = include_bytes!("../../../../assets/brand/acetate-simple.png");
+    let bytes = include_bytes!("../../../../assets/brand/acetate-simple.jpg");
     let image = image::load_from_memory(bytes).expect("the logo").thumbnail(128, 128).to_rgba8();
     let image = egui::ColorImage::from_rgba_unmultiplied([image.width() as usize, image.height() as usize], image.as_raw());
     ctx.load_texture("logo", image, egui::TextureOptions::LINEAR)

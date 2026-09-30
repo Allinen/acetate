@@ -355,10 +355,9 @@ pub enum AppError {
 }
 
 impl IntoResponse for AppError {
-    /// The body: `{"code", "message", "error"}`. `message` is for a person (what happened,
-    /// and what to do), so clients show it as it is; `code` is for code (a stable name
-    /// to act on: log in again on "unauthorized", offer a reload on "stale"); `error` is
-    /// the detail, as it always was.
+    /// The body: `{"code", "message"}`. `message` is for a person (what happened, and
+    /// what to do), so clients show it as it is; `code` is for code (a stable name to act
+    /// on: log in again on "unauthorized", offer a reload on "stale").
     fn into_response(self) -> Response {
         let (status, code, detail) = match self {
             AppError::TooManyRequests(wait) => {
@@ -367,7 +366,6 @@ impl IntoResponse for AppError {
                 let body = json!({
                     "code": "too_many_requests",
                     "message": format!("Too many tries. Wait {secs} seconds, then try again."),
-                    "error": format!("too many requests, try again in {secs} seconds"),
                 });
                 return (
                     StatusCode::TOO_MANY_REQUESTS,
@@ -378,7 +376,7 @@ impl IntoResponse for AppError {
             }
             AppError::UploadQuota { message, wait } => {
                 let secs = wait.as_secs() + 1;
-                let body = json!({ "code": "upload_quota", "message": message, "error": message });
+                let body = json!({ "code": "upload_quota", "message": message });
                 return (StatusCode::TOO_MANY_REQUESTS, [(axum::http::header::RETRY_AFTER, secs.to_string())], Json(body)).into_response();
             }
             AppError::TooLarge(msg) => (StatusCode::PAYLOAD_TOO_LARGE, "too_large", msg),
@@ -420,7 +418,7 @@ impl IntoResponse for AppError {
             }
         };
         let message = human_message(code, &detail);
-        (status, Json(json!({ "code": code, "message": message, "error": detail }))).into_response()
+        (status, Json(json!({ "code": code, "message": message }))).into_response()
     }
 }
 
@@ -511,11 +509,11 @@ mod error_tests {
     }
 
     #[tokio::test]
-    async fn every_error_has_a_code_a_sentence_and_the_detail() {
+    async fn every_error_has_a_code_and_a_sentence() {
         let (status, b) = body(AppError::NotFound).await;
         assert_eq!((status, b["code"].as_str()), (StatusCode::NOT_FOUND, Some("not_found")));
         assert_eq!(b["message"], "This isn't there (anymore), or you can't see it.");
-        assert_eq!(b["error"], "not found", "the detail, as before");
+        assert!(b.get("error").is_none(), "only code and message");
 
         let (_, b) = body(AppError::Forbidden("only its owner can change a playlist".into())).await;
         assert_eq!(b["message"], "You're not allowed to do this: Only its owner can change a playlist.");

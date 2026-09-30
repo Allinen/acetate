@@ -14,11 +14,11 @@ cd "$(dirname "$0")"
 
 cargo build --release
 bin="$HOME/.local/bin/acetate-desktop"
-icon="$HOME/.local/share/icons/hicolor/512x512/apps/acetate.png"
+icon="$HOME/.local/share/icons/hicolor/512x512/apps/acetate.jpg"
 entry="$HOME/.local/share/applications/acetate.desktop"
 mkdir -p "$(dirname "$bin")" "$(dirname "$icon")" "$(dirname "$entry")"
 install -m 755 target/release/acetate-desktop "$bin"
-install -m 644 assets/acetate-512.png "$icon"
+install -m 644 assets/acetate-512.jpg "$icon"
 # The entry runs the installed program by its full path (~/.local/bin may not be on PATH).
 # `%u`: the link the app is opened for, if any.
 sed "s|^Exec=.*|Exec=$bin %u|" acetate.desktop > "$entry"

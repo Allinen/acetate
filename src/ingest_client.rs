@@ -22,7 +22,7 @@ pub struct Server {
 /// An error response's body.
 #[derive(Deserialize)]
 struct ErrorBody {
-    error: String,
+    message: String,
 }
 
 impl Server {
@@ -71,7 +71,7 @@ impl Server {
         let response = self.client.get(format!("{}/api/groups", self.url)).bearer_auth(&self.token).send().await?;
         if !response.status().is_success() {
             let status = response.status();
-            let message = response.json::<ErrorBody>().await.map(|b| b.error).unwrap_or_default();
+            let message = response.json::<ErrorBody>().await.map(|b| b.message).unwrap_or_default();
             anyhow::bail!("can't list the server's groups for --restrict-to ({status}: {message})");
         }
         let groups: Vec<Group> = response.json().await?;
@@ -154,7 +154,7 @@ impl Server {
             return Ok(Outcome::Done(report));
         }
         let message = match response.json::<ErrorBody>().await {
-            Ok(body) => body.error,
+            Ok(body) => body.message,
             Err(_) => status.to_string(),
         };
         match status {
