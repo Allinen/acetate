@@ -1,0 +1,54 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT n.title, n.body, n.hidden_at IS NOT NULL AS \"hidden!\",\n                  (SELECT r.id FROM note_revisions r WHERE r.note_id = n.id ORDER BY r.id DESC LIMIT 1) AS \"latest!\"\n           FROM notes n WHERE n.id = $1 FOR UPDATE OF n",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "title",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "notes",
+            "name": "title"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "body",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "notes",
+            "name": "body"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "hidden!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "latest!",
+        "type_info": "Uuid",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      null,
+      null
+    ]
+  },
+  "hash": "debc482e69ced089c8d5ffa0b5dcacf4621065105152229af36cccbd70feaed2"
+}

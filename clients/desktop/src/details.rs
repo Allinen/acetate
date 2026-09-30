@@ -20,6 +20,9 @@ use crate::catalog::Cached;
 #[derive(Debug, Clone, Deserialize)]
 pub struct TrackDetail {
     pub id: Uuid,
+    /// Its notes (and those of tracks merged into it), oldest first; hidden ones flagged.
+    #[serde(default)]
+    pub notes: Vec<Note>,
     pub title: String,
     pub artist_display: String,
     pub status: String,
@@ -130,6 +133,23 @@ pub struct FileChange {
     pub old_origin: Option<Origin>,
     pub old_trashed_at: Option<String>,
     pub old_purged_at: Option<String>,
+}
+
+/// A note on a track, album or artist (see the server's `db::notes`).
+#[derive(Debug, Clone, Deserialize)]
+pub struct Note {
+    pub id: Uuid,
+    pub title: String,
+    pub body: String,
+    /// Taken off (kept): shown only in edit mode, to bring back.
+    #[serde(default)]
+    pub hidden: bool,
+    /// The base for editing it.
+    pub revision_id: Uuid,
+    pub updated_at: String,
+    pub updated_by: Option<String>,
+    /// Written on something merged into this one since.
+    pub merged_from: Option<Uuid>,
 }
 
 /// A change of whether a file is an original file (`PUT /api/files/{id}/original-filename`).
@@ -274,6 +294,8 @@ pub struct Cover {
 #[derive(Debug, Clone, Deserialize)]
 pub struct AlbumDetail {
     pub id: Uuid,
+    #[serde(default)]
+    pub notes: Vec<Note>,
     pub title: String,
     pub kind: String,
     pub release_date: Option<String>,
@@ -306,6 +328,8 @@ pub struct AlbumMerge {
 #[derive(Debug, Clone, Deserialize)]
 pub struct ArtistDetail {
     pub id: Uuid,
+    #[serde(default)]
+    pub notes: Vec<Note>,
     pub name: String,
     #[serde(default)]
     pub disambiguation: String,

@@ -12,6 +12,7 @@ egui_extras = "0.36.2"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
 nucleo-matcher = "0.3.1"
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "json", "query", "zstd", "gzip", "multipart"] }
+rfd = { version = "0.17.2", default-features = false, features = ["xdg-portal"] }
 rodio = { version = "0.22.2", default-features = false, features = ["playback", "symphonia-all", "symphonia-simd"] }
 rustfft = "6.4.1"
 rusty-opus = "0.9.1"
@@ -24,3 +25,6 @@ uuid = { version = "1.26.1", features = ["serde"] }
 
 [profile.release]
 opt-level = 3
+
+[target.'cfg(target_os = "linux")'.dependencies]
+winit = { version = "0.30", default-features = false, features = ["x11"] }

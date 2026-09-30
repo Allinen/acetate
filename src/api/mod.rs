@@ -10,6 +10,7 @@ mod annotations;
 mod auth;
 mod covers;
 mod lyrics;
+mod notes;
 mod catalog;
 mod groupings;
 mod groups;
@@ -163,6 +164,11 @@ pub fn router(state: AppState) -> Router {
         // Lyrics (entries are edited, never deleted).
         .route("/api/tracks/{id}/lyrics", require(&[EditMetadata], post(lyrics::create)))
         .route("/api/lyrics/{id}", require(&[EditMetadata], put(lyrics::edit)))
+        // Notes on tracks, albums and artists (listed with their details).
+        .route("/api/notes", require(&[EditMetadata], post(notes::create)))
+        .route("/api/notes/{id}", require(&[EditMetadata], put(notes::edit)))
+        .route("/api/notes/{id}/hidden", require(&[EditMetadata], post(notes::set_hidden)))
+        .route("/api/notes/{id}/revisions", require(&[ViewHistory], get(notes::revisions)))
         .route("/api/lyrics-revisions/{id}/restore", require(&[RestoreRevision], post(lyrics::restore)))
         // Covers. Uploads need a bigger body limit than the default 2 MB.
         .route(

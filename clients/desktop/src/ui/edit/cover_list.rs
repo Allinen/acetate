@@ -65,6 +65,8 @@ pub struct CoverList {
     picking: bool,
     /// Choosing one of its covers to copy.
     copy_from: Option<From>,
+    /// An image chosen in the system's file dialog ("Choose an image…").
+    chosen: std::sync::Arc<std::sync::Mutex<Vec<std::path::PathBuf>>>,
 }
 
 impl CoverList {
@@ -98,9 +100,12 @@ impl CoverList {
         }
         let can = shell.account.can("edit_metadata") && !self.busy;
 
-        // A pasted or dropped image: a new cover, now.
-        if paste && can && !shell.palette_open && !shell.modal_open {
-            match take_image(ui.ctx()) {
+        // A pasted, dropped or chosen image: a new cover, now. (Chosen ones are this
+        // list's; pasted and dropped ones go to the one list that takes them.)
+        let chosen = std::mem::take(&mut *self.chosen.lock().unwrap());
+        let taking = paste && !shell.palette_open && !shell.modal_open;
+        if can && (taking || !chosen.is_empty()) {
+            match take_image(ui.ctx(), taking, chosen) {
                 Some(Ok((bytes, name))) => self.upload(shell, owner, bytes, name),
                 Some(Err(err)) => self.result = Some(Err(err)),
                 None => {}
@@ -187,8 +192,11 @@ impl CoverList {
                 self.picking = true;
                 shell.act(Action::Pick { kind: PickKind::Album, except });
             }
+            if ui.add_enabled(can, egui::Button::new("Choose an image…")).clicked() {
+                crate::ui::files::choose(shell, "A cover", ("Images", crate::ui::files::IMAGES), false, &self.chosen);
+            }
             if paste {
-                ui.label(RichText::new("or paste an image (Ctrl+V), or drop one on the window").color(P.faint).small());
+                ui.label(RichText::new("or paste an image or a copied image file (Ctrl+V), or drop one on the window (not on Wayland)").color(P.faint).small());
             }
         });
         if let Some(from) = self.copy_from {
@@ -280,13 +288,15 @@ fn moved(covers: &[Cover], from: usize, to: usize) -> Vec<Uuid> {
     ids
 }
 
-/// An image pasted (Ctrl+V: an image in the clipboard, not text) or dropped on the window
-/// this frame: its bytes and a file name. Err: a dropped file that couldn't be read or
-/// isn't an image.
-pub fn take_image(ctx: &egui::Context) -> Option<Result<(Vec<u8>, String), String>> {
-    let pasted = ctx.input(|i| {
-        i.events.iter().any(|e| matches!(e, egui::Event::Paste(_)) || matches!(e, egui::Event::Key { key: Key::V, pressed: true, modifiers, .. } if modifiers.command))
-    });
+/// An image for a new cover: `chosen` in the file dialog, or (`taking`) pasted this frame
+/// (Ctrl+V: an image in the clipboard, or a copied image file) or dropped on the window.
+/// Its bytes and a file name. Err: an image file that couldn't be read or isn't one this
+/// can use. Files that aren't images (by their extension) are left for others (notes).
+pub fn take_image(ctx: &egui::Context, taking: bool, chosen: Vec<std::path::PathBuf>) -> Option<Result<(Vec<u8>, String), String>> {
+    let pasted = taking
+        && ctx.input(|i| {
+            i.events.iter().any(|e| matches!(e, egui::Event::Paste(_)) || matches!(e, egui::Event::Key { key: Key::V, pressed: true, modifiers, .. } if modifiers.command))
+        });
     let mut found = None;
     if pasted {
         // Text in the clipboard is for a text field; only an image is taken here.
@@ -300,9 +310,13 @@ pub fn take_image(ctx: &egui::Context) -> Option<Result<(Vec<u8>, String), Strin
             }
         }
     }
-    for file in ctx.input(|i| i.raw.dropped_files.clone()) {
-        let name = file.path().file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-        found = Some(match file.bytes() {
+    let mut files = chosen;
+    if taking {
+        files.extend(crate::ui::files::given(ctx));
+    }
+    for path in files.into_iter().filter(|p| crate::ui::files::IMAGES.contains(&crate::ui::files::extension(p).as_str())) {
+        let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        found = Some(match std::fs::read(&path) {
             Ok(bytes) if image::guess_format(&bytes).is_ok() => Ok((bytes, name)),
             Ok(_) => Err(format!("“{name}” isn't an image this can read (JPEG, PNG, WebP or GIF).")),
             Err(err) => Err(format!("Couldn't read “{name}”: {err}")),

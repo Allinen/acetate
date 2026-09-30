@@ -13,6 +13,7 @@ pub mod cover_list;
 pub mod credits;
 pub mod inline_search;
 pub mod og_file;
+pub mod notes;
 pub mod lyrics;
 pub mod lyrics_sync;
 pub mod part_of;

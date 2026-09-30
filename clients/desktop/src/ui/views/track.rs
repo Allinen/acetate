@@ -23,6 +23,8 @@ use crate::ui::{playing_track, widgets, Action, Page, Shell};
 
 #[derive(Default)]
 pub struct TrackPage {
+    /// Its notes, and writing them in edit mode.
+    notes: crate::ui::edit::notes::NotesView,
     /// The history section's state (restoring asks first).
     history: super::history::History,
     /// Its sources, and which one its file came from (edit mode).
@@ -247,6 +249,10 @@ impl TrackPage {
         let d: &TrackDetail = d;
         if !d.lyrics.is_empty() {
             section(ui, "Lyrics", true, |ui| self.lyrics(ui, shell, d, is_playing, player));
+        }
+        if crate::ui::edit::notes::NotesView::worth_showing(shell, &d.notes) {
+            let count = d.notes.iter().filter(|n| !n.hidden).count();
+            section(ui, &format!("Notes ({count})"), true, |ui| self.notes.show(ui, shell, crate::ui::edit::notes::Owner::Track(d.id), &d.notes, false, true));
         }
         section(ui, "Credits", true, |ui| credits(ui, shell, d));
         if !d.relations.is_empty() {

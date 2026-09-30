@@ -84,6 +84,8 @@ pub async fn search_tracks(
 #[derive(Debug, Serialize)]
 pub struct TrackDetail {
     pub id: Uuid,
+    /// Its notes (and those of tracks merged into it), oldest first; hidden ones flagged.
+    pub notes: Vec<super::notes::Note>,
     pub title: String,
     pub artist_display: String,
     pub status: String,
@@ -437,6 +439,7 @@ pub async fn get_track(
     let covers = covers_of(conn, id).await?;
 
     Ok(Some(TrackDetail {
+        notes: super::notes::list(conn, super::notes::Owner::Track(row.id)).await?,
         id: row.id,
         title: row.title,
         artist_display: row.artist_display,

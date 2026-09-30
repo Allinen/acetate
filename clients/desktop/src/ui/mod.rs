@@ -11,6 +11,7 @@
 //! Enter open or play · Shift+Enter play.
 
 pub mod covers;
+pub mod files;
 pub mod edit;
 pub mod keymap;
 pub mod modal;

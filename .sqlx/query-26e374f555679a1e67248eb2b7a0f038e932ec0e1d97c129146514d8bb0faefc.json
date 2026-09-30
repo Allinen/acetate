@@ -1,0 +1,127 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        WITH RECURSIVE ids(id) AS (\n            SELECT $2::uuid\n            UNION\n            SELECT x.id\n            FROM (SELECT id, merged_into FROM tracks WHERE $1 = 'track'\n                  UNION ALL SELECT id, merged_into FROM albums WHERE $1 = 'album'\n                  UNION ALL SELECT id, merged_into FROM artists WHERE $1 = 'artist') x\n            JOIN ids ON x.merged_into = ids.id\n        )\n        SELECT n.id, n.title, n.body, n.hidden_at IS NOT NULL AS \"hidden!\",\n               r.id AS \"revision_id!\", r.created_at AS \"updated_at!\", ru.username AS \"updated_by?\",\n               n.created_at, cu.username AS \"created_by?\",\n               NULLIF(COALESCE(n.track_id, n.album_id, n.artist_id), $2) AS merged_from\n        FROM notes n\n        JOIN LATERAL (SELECT id, created_at, created_by FROM note_revisions WHERE note_id = n.id ORDER BY id DESC LIMIT 1) r ON true\n        LEFT JOIN users ru ON ru.id = r.created_by\n        LEFT JOIN users cu ON cu.id = n.created_by\n        WHERE CASE $1 WHEN 'track' THEN n.track_id WHEN 'album' THEN n.album_id ELSE n.artist_id END IN (SELECT id FROM ids)\n        ORDER BY n.id\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "notes",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "title",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "notes",
+            "name": "title"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "body",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "notes",
+            "name": "body"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "hidden!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 4,
+        "name": "revision_id!",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "note_revisions",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "updated_at!",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "note_revisions",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "updated_by?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "username"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "notes",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "created_by?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "username"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "merged_from",
+        "type_info": "Uuid",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      null,
+      false,
+      false,
+      false,
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "26e374f555679a1e67248eb2b7a0f038e932ec0e1d97c129146514d8bb0faefc"
+}

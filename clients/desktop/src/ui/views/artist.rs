@@ -18,6 +18,8 @@ use crate::ui::{thousands, widgets, Action, Page, Shell};
 
 #[derive(Default)]
 pub struct ArtistPage {
+    /// Its notes (folded under their titles), and writing them in edit mode.
+    notes: crate::ui::edit::notes::NotesView,
     /// Its tracks (as a primary artist), those it's featured on, those it produced.
     list: TrackTable,
     featured: TrackTable,
@@ -425,6 +427,15 @@ impl ArtistPage {
                 });
                 ui.add_space(12.0);
             }
+        }
+
+        // Its notes, folded under their titles.
+        if let Some(d) = shell.artist_details.get(id).value.clone()
+            && crate::ui::edit::notes::NotesView::worth_showing(shell, &d.notes)
+        {
+            ui.label(RichText::new("Notes").font(font(16.0, semibold())));
+            self.notes.show(ui, shell, crate::ui::edit::notes::Owner::Artist(id), &d.notes, true, true);
+            ui.add_space(12.0);
         }
 
         if releases.is_empty() && own.is_empty() && featured.is_empty() && produced.is_empty() {

@@ -31,6 +31,8 @@ const ALBUM_COLUMNS: &[(Column, bool)] = &[
 #[derive(Default)]
 pub struct AlbumPage {
     list: TrackTable,
+    /// Its notes (folded under their titles), and writing them in edit mode.
+    notes: crate::ui::edit::notes::NotesView,
     /// The details panel is open.
     details: bool,
     /// This album and another side by side, to merge (edit mode), in place of the list.
@@ -241,6 +243,14 @@ impl AlbumPage {
             return;
         }
         let rows = TrackRows { tracks: Some(tracks), added: None };
+        // Its notes, folded under their titles (above the tracks: they're short to pass).
+        if let Some(d) = shell.album_details.get(id).value.clone()
+            && crate::ui::edit::notes::NotesView::worth_showing(shell, &d.notes)
+        {
+            ui.label(RichText::new("Notes").font(font(16.0, semibold())));
+            self.notes.show(ui, shell, crate::ui::edit::notes::Owner::Album(id), &d.notes, true, true);
+            ui.add_space(10.0);
+        }
         let options = Options { key: "album", columns: ALBUM_COLUMNS, added: None, filter_hint: None, album: Some((id, &album.artist_display)), keys: true, scroll: true };
         self.list.show(ui, shell, catalog, &rows, shell.generation, player, &options);
     }
