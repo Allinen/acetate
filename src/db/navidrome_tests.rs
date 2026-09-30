@@ -102,6 +102,9 @@ async fn navidrome_users_and_annotations_move_over(
         "INSERT INTO annotation VALUES ('u1', 'mf2', 'media_file', 3, NULL, 0, 0, NULL, NULL)",
         "INSERT INTO annotation VALUES ('u1', 'al1', 'album', 20, NULL, 5, 0, NULL, NULL)",
         "INSERT INTO annotation VALUES ('u2', 'ar1', 'artist', 7, NULL, 0, 1, NULL, NULL)",
+        "CREATE TABLE scrobbles (id integer primary key, media_file_id varchar, user_id varchar, submission_time integer)",
+        // Two plays of Glass Harbor, one of a file not in Acetate, one in the other library.
+        "INSERT INTO scrobbles VALUES (1, 'mf1', 'u1', 1785015389), (2, 'mf1', 'u1', 1785065930), (3, 'mf2', 'u1', 1785070000), (4, 'mfb', 'u1', 1785080000)",
     ] {
         sqlx::query(sql).execute(&nd).await?;
     }
@@ -150,6 +153,10 @@ async fn navidrome_users_and_annotations_move_over(
         .fetch_one(&lib.owner)
         .await?;
     assert_eq!(annotated, 2, "Glass Harbor and Tidelines only");
+    // Her plays of Glass Harbor, with their times, once each.
+    let plays: Vec<(uuid::Uuid, chrono::DateTime<chrono::Utc>, String)> =
+        sqlx::query_as("SELECT track_id, played_at, source FROM plays WHERE user_id = $1 ORDER BY played_at").bind(dora).fetch_all(&lib.owner).await?;
+    assert_eq!(plays.iter().map(|p| (p.0, p.1.timestamp(), p.2.as_str())).collect::<Vec<_>>(), [(track, 1785015389, "navidrome"), (track, 1785065930, "navidrome")]);
 
     // Her playlist, once (the second run left it alone): Glass Harbor twice, in order,
     // public as it was. The smart one isn't there.

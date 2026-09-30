@@ -45,6 +45,7 @@ async fn lyrics_are_revisioned(_: PgPoolOptions, connect: PgConnectOptions) -> a
         body: "[00:01.00] hello\n[00:02.00] world".into(),
         is_official: true,
         language: Some("en".into()),
+        removed: false,
     };
     let rev1 = db::revisions::write_lyrics(&mut tx, id, Some(rev0.revision_id), &synced, Source::Edit, "").await?;
     assert!(rev1.changed);
@@ -65,6 +66,30 @@ async fn lyrics_are_revisioned(_: PgPoolOptions, connect: PgConnectOptions) -> a
     assert_eq!(lyrics.body, "hello\nworld");
     assert!(!lyrics.is_synced);
     assert_eq!(lyrics.revisions.as_ref().unwrap().len(), 3, "created, edited, restored");
+    Ok(())
+}
+
+#[sqlx::test]
+async fn lyrics_are_removed_and_brought_back(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
+    let lib = setup(connect).await?;
+    let mut tx = db::begin(&lib.app, Some(lib.carol)).await?;
+    let data = LyricsData { body: "on the wrong track".into(), ..Default::default() };
+    let (id, first) = db::revisions::create_lyrics(&mut tx, lib.v, "manual", &data, Source::Edit, "").await?;
+    let removed = LyricsData { removed: true, ..data.clone() };
+    assert!(db::revisions::create_lyrics(&mut tx, lib.v, "manual", &removed, Source::Edit, "").await.is_err(), "not new and removed");
+
+    let gone = db::revisions::remove_lyrics(&mut tx, id, Some(first.revision_id), "wrong track").await?;
+    assert!(gone.changed);
+    let track = db::tracks::get_track(&mut tx, lib.v, true).await?.unwrap();
+    assert!(track.lyrics.is_empty());
+    assert_eq!(track.removed_lyrics.iter().map(|l| (l.id, l.body.as_str())).collect::<Vec<_>>(), [(id, "on the wrong track")]);
+    assert!(!db::revisions::remove_lyrics(&mut tx, id, None, "").await?.changed, "removed already");
+
+    // The revision from before brings it back.
+    db::revisions::restore_lyrics_revision(&mut tx, first.revision_id, "").await?;
+    let track = db::tracks::get_track(&mut tx, lib.v, true).await?.unwrap();
+    assert_eq!(track.lyrics.len(), 1);
+    assert!(track.removed_lyrics.is_empty());
     Ok(())
 }
 

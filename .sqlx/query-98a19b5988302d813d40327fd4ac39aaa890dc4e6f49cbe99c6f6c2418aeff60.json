@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        UPDATE lyrics l SET track_id = $2\n        WHERE l.track_id = $1\n          AND NOT EXISTS (SELECT 1 FROM lyrics k WHERE k.track_id = $2 AND k.body = l.body)\n        RETURNING l.id\n        ",
+  "query": "\n        UPDATE lyrics l SET track_id = $2\n        WHERE l.track_id = $1\n          AND NOT EXISTS (SELECT 1 FROM lyrics k WHERE k.track_id = $2 AND k.body = l.body AND NOT k.removed)\n        RETURNING l.id\n        ",
   "describe": {
     "columns": [
       {
@@ -25,5 +25,5 @@
       false
     ]
   },
-  "hash": "3e980c25262c1f6e32da236f7aa789a62107bc96b5914467bdb75b12a7aff4f8"
+  "hash": "98a19b5988302d813d40327fd4ac39aaa890dc4e6f49cbe99c6f6c2418aeff60"
 }

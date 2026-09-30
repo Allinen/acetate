@@ -1,0 +1,100 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT resolved_at, sha256, uploaded_filename, size_bytes, reason, resolution, cover_blobs\n            FROM ingest_problems\n            WHERE id = $1 AND track_id IS NULL AND audio_purged_at IS NULL\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "resolved_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "ingest_problems",
+            "name": "resolved_at"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "sha256",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "ingest_problems",
+            "name": "sha256"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "uploaded_filename",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "ingest_problems",
+            "name": "uploaded_filename"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "size_bytes",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "ingest_problems",
+            "name": "size_bytes"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "reason",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "ingest_problems",
+            "name": "reason"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "resolution",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "ingest_problems",
+            "name": "resolution"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "cover_blobs",
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "ingest_problems",
+            "name": "cover_blobs"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "76aa817f4117ce18f94d62353fcb8ea61158b17f4c4866c7bbf458da46527b22"
+}

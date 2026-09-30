@@ -63,7 +63,7 @@ impl History {
             if !r.reason.is_empty() {
                 ui.label(RichText::new(format!("“{}”", r.reason)).color(P.muted).italics());
             }
-            for line in changes(before.map(|b| &b.data), &r.data, catalog) {
+            for line in changes_named(before.map(|b| &b.data), &r.data, catalog, &d.alias_names) {
                 ui.label(RichText::new(format!("  {line}")).color(P.text));
             }
             if self.asked == Some(r.id) {
@@ -110,12 +110,13 @@ impl History {
 }
 
 /// What `after` changed from `before` (None: it's the first), in words.
+#[cfg(test)]
 pub fn changes(before: Option<&Value>, after: &Value, catalog: &Catalog) -> Vec<String> {
     changes_named(before, after, catalog, &HashMap::new())
 }
 
 /// Like `changes`, with names for ids not in the library (yet): a bulk edit's preview of
-/// artists and albums it would make.
+/// artists and albums it would make, or the aliases a track's history credits.
 pub fn changes_named(before: Option<&Value>, after: &Value, catalog: &Catalog, names: &HashMap<Uuid, String>) -> Vec<String> {
     let Some(before) = before else { return vec!["the first one".into()] };
     let fields: [(&str, &str); 8] = [
@@ -155,6 +156,11 @@ fn describe(key: &str, value: Option<&Value>, catalog: &Catalog, names: &HashMap
                 let name = artist
                     .and_then(|a| catalog.artist(a).map(|a| a.name.clone()).or_else(|| names.get(&a).map(|n| format!("{n} (new)"))))
                     .unwrap_or_else(|| "(an artist)".into());
+                // Credited under an alias: which one.
+                let name = match id(c, "alias_id").and_then(|a| names.get(&a)) {
+                    Some(alias) => format!("{name} as “{alias}”"),
+                    None => name,
+                };
                 match c.get("role").and_then(|r| r.as_str()) {
                     Some("primary") | None => name,
                     Some(role) => format!("{name} ({role})"),
@@ -196,9 +202,9 @@ mod tests {
 
     fn catalog() -> Catalog {
         let body = serde_json::json!({
-            "format": 7,
+            "format": 8,
             "tracks": {"columns": ["id", "title", "artist_display", "credits", "albums", "duration_ms", "file_id", "cover_id", "cover_key",
-                                    "release_date", "year", "status", "genres", "created_at", "is_restricted", "codec", "groupings", "platforms", "original_filename"], "rows": []},
+                                    "release_date", "year", "status", "genres", "created_at", "is_restricted", "codec", "groupings", "platforms", "original_filename", "bitrate", "sample_rate"], "rows": []},
             "albums": {"columns": ["id", "title", "kind", "artist_display", "credits", "release_date", "year", "cover_id", "cover_key", "created_at", "track_count", "duration_ms", "groupings"],
                        "rows": [["00000000-0000-7000-8000-0000000000b1", "LP", "album", "Ann", [], null, null, null, null, "", 1, 1]]},
             "artists": {"columns": ["id", "name", "disambiguation", "aliases", "track_count", "album_count"],

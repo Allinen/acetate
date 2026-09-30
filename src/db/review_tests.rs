@@ -186,6 +186,49 @@ async fn credits_in_the_title_are_flagged(_: PgPoolOptions, connect: PgConnectOp
 }
 
 #[sqlx::test]
+async fn a_source_that_says_too_little_is_flagged(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
+    let lib = setup(connect).await?;
+    let weak = |lib: &Library| {
+        let lib = lib.owner.clone();
+        async move {
+            let n: i64 = sqlx::query_scalar("SELECT count(*) FROM review_flags WHERE track_id = $1 AND kind = 'weak_source' AND resolved_at IS NULL")
+                .bind(lib_track(&lib).await?)
+                .fetch_one(&lib)
+                .await?;
+            anyhow::Ok(n)
+        }
+    };
+    async fn lib_track(pool: &sqlx::PgPool) -> anyhow::Result<Uuid> {
+        Ok(sqlx::query_scalar("SELECT id FROM tracks WHERE title = 'Song V'").fetch_one(pool).await?)
+    }
+    assert_eq!(weak(&lib).await?, 0, "a label and a description say enough");
+
+    // Its origin loses the description: a label alone.
+    let source: Uuid = sqlx::query_scalar("SELECT id FROM sources WHERE track_id = $1").bind(lib.v).fetch_one(&lib.owner).await?;
+    let mut tx = db::begin(&lib.app, Some(lib.carol)).await?;
+    let label_only = crate::model::sources::validate(
+        crate::model::sources::Kind::Track,
+        crate::model::sources::NewSource { platform: "custom".into(), source_id: Some(source), captured_at: None, data: serde_json::json!({ "label": "test" }) },
+    )?;
+    db::sources::add_snapshot(&mut tx, crate::model::sources::SourceOwner::Track(lib.v), &label_only).await?;
+    tx.commit().await?;
+    assert_eq!(weak(&lib).await?, 1);
+
+    // A real source: settled.
+    let mut tx = db::begin(&lib.app, Some(lib.carol)).await?;
+    let netease = crate::model::sources::validate(
+        crate::model::sources::Kind::Track,
+        crate::model::sources::NewSource { platform: "netease".into(), source_id: None, captured_at: None, data: serde_json::json!({ "song_id": 12345 }) },
+    )?;
+    db::sources::add_snapshot(&mut tx, crate::model::sources::SourceOwner::Track(lib.v), &netease).await?;
+    tx.commit().await?;
+    assert_eq!(weak(&lib).await?, 0);
+    let fixed: i64 = sqlx::query_scalar("SELECT count(*) FROM review_flags WHERE kind = 'weak_source' AND resolution = 'fixed'").fetch_one(&lib.owner).await?;
+    assert_eq!(fixed, 1);
+    Ok(())
+}
+
+#[sqlx::test]
 async fn a_duplicate_merged_since_shows_where_it_went(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
     let lib = setup(connect).await?;
     // O looks like V and H; V looks like H.

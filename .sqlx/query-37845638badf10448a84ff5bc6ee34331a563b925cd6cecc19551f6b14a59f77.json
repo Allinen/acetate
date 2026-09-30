@@ -1,0 +1,98 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT items.kind AS \"kind!\", items.id AS \"id!\", items.what AS \"what!\", items.owner_id,\n               items.owner_kind, items.owner, items.sha256, items.size_bytes, items.trashed_at AS \"trashed_at!\",\n               u.username AS \"trashed_by?\",\n               items.trashed_at + make_interval(days => $1) AS \"purgeable_at!\"\n        FROM (\n            SELECT 'cover' AS kind, c.id, 'cover' AS what,\n                   COALESCE(c.track_id, c.album_id) AS owner_id,\n                   CASE WHEN c.track_id IS NOT NULL THEN 'track' ELSE 'album' END AS owner_kind,\n                   COALESCE(t.title, al.title) AS owner,\n                   c.blob_sha256 AS sha256, NULL::bigint AS size_bytes, c.trashed_at, c.trashed_by\n            FROM covers c\n            LEFT JOIN tracks t ON t.id = c.track_id\n            LEFT JOIN albums al ON al.id = c.album_id\n            WHERE c.trashed_at IS NOT NULL\n            UNION ALL\n            SELECT 'source', s.id, s.platform || COALESCE(' ' || s.external_id, ''),\n                   COALESCE(s.track_id, s.album_id, s.artist_id, s.grouping_id),\n                   CASE WHEN s.track_id IS NOT NULL THEN 'track'\n                        WHEN s.album_id IS NOT NULL THEN 'album'\n                        WHEN s.artist_id IS NOT NULL THEN 'artist' ELSE 'grouping' END,\n                   COALESCE(t.title, al.title, ar.name, g.name),\n                   NULL, NULL, s.trashed_at, s.trashed_by\n            FROM sources s\n            LEFT JOIN tracks t ON t.id = s.track_id\n            LEFT JOIN albums al ON al.id = s.album_id\n            LEFT JOIN artists ar ON ar.id = s.artist_id\n            LEFT JOIN groupings g ON g.id = s.grouping_id\n            WHERE s.trashed_at IS NOT NULL\n            UNION ALL\n            SELECT 'file', f.id, COALESCE(f.original_filename, f.uploaded_filename), h.track_id, 'track', t.title,\n                   f.sha256, f.size_bytes, f.trashed_at, f.trashed_by\n            FROM files f\n            LEFT JOIN track_file_history h ON h.old_file_id = f.id\n            LEFT JOIN tracks t ON t.id = h.track_id\n            WHERE f.trashed_at IS NOT NULL AND f.purged_at IS NULL\n            UNION ALL\n            SELECT 'problem', p.id, p.uploaded_filename, NULL, NULL, NULL,\n                   p.sha256, p.size_bytes, p.resolved_at, p.resolved_by\n            FROM ingest_problems p\n            WHERE p.resolved_at IS NOT NULL AND p.track_id IS NULL AND p.audio_purged_at IS NULL\n              AND NOT EXISTS (SELECT 1 FROM files f WHERE f.sha256 = p.sha256 AND f.purged_at IS NULL)\n              AND NOT EXISTS (SELECT 1 FROM extra_files e WHERE e.sha256 = p.sha256)\n              -- The same file listed again later: that entry stands for it.\n              AND NOT EXISTS (SELECT 1 FROM ingest_problems o\n                              WHERE o.sha256 = p.sha256 AND o.id <> p.id AND o.audio_purged_at IS NULL\n                                AND (o.resolved_at IS NULL OR o.resolved_at > p.resolved_at))\n        ) items\n        LEFT JOIN users u ON u.id = items.trashed_by\n        ORDER BY items.trashed_at, items.id\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "kind!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "id!",
+        "type_info": "Uuid",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "what!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "owner_id",
+        "type_info": "Uuid",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 4,
+        "name": "owner_kind",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 5,
+        "name": "owner",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 6,
+        "name": "sha256",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 7,
+        "name": "size_bytes",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 8,
+        "name": "trashed_at!",
+        "type_info": "Timestamptz",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 9,
+        "name": "trashed_by?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "username"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "purgeable_at!",
+        "type_info": "Timestamptz",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      false,
+      null
+    ]
+  },
+  "hash": "37845638badf10448a84ff5bc6ee34331a563b925cd6cecc19551f6b14a59f77"
+}

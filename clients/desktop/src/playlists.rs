@@ -334,8 +334,8 @@ impl Playlists {
         });
     }
 
-    /// Renames it or makes it public/private.
-    pub fn update(&mut self, id: Uuid, name: Option<String>, public: Option<bool>) {
+    /// Renames it, describes it, or makes it public/private.
+    pub fn update(&mut self, id: Uuid, name: Option<String>, public: Option<bool>, description: Option<String>) {
         self.change_locally(id, |d| {
             if let Some(name) = &name {
                 d.name = name.clone();
@@ -343,10 +343,13 @@ impl Playlists {
             if let Some(public) = public {
                 d.public = public;
             }
+            if let Some(description) = &description {
+                d.description = description.clone();
+            }
         });
         let (api, number) = (self.api.clone(), self.ask(id));
         self.spawn(async move {
-            let body = json!({ "name": name, "public": public });
+            let body = json!({ "name": name, "public": public, "description": description });
             let result = api.send_json::<Detail>(Method::PATCH, &format!("/api/playlists/{id}"), Some(body)).await;
             let mut answers = match result {
                 Ok(detail) => vec![Answer::Detail(id, number, detail)],
@@ -357,7 +360,7 @@ impl Playlists {
         });
     }
 
-    /// Moves it to the trash (it can be taken back out, from the web UI for now).
+    /// Moves it to the trash (it's taken back out on the Trash page).
     pub fn trash(&mut self, id: Uuid, name: String) {
         let api = self.api.clone();
         self.spawn(async move {
@@ -475,7 +478,7 @@ mod against_a_server {
         let first = store.details[&id].value.as_ref().unwrap().entries[0].id;
         store.remove(id, vec![first]);
         assert_eq!(entries(&mut store, id).len(), 2, "shown at once");
-        store.update(id, Some("client test (renamed)".into()), Some(true));
+        store.update(id, Some("client test (renamed)".into()), Some(true), None);
         wait(&mut store, &|s| s.details[&id].value.as_ref().is_some_and(|d| d.name == "client test (renamed)" && d.public && d.entries.len() == 2));
         wait(&mut store, &|s| s.list(None).iter().any(|p| p.id == id && p.name == "client test (renamed)"));
 

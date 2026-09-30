@@ -80,6 +80,8 @@ enum Row {
 pub struct Review {
     /// The track's covers (a pasted or dropped image is added at once).
     covers: crate::ui::edit::cover_list::CoverList,
+    /// The track's sources (a source that says too little is fixed here).
+    sources: crate::ui::edit::sources::SourcesEditor,
     group: Group,
     /// Only tracks with a flag of this kind (a chip); None: every track with any.
     only: Option<String>,
@@ -131,6 +133,8 @@ pub struct Review {
     showing_not_imported: bool,
     /// Extras linked to nothing (videos imported from disk…), shown in place of the list.
     showing_unlinked: bool,
+    /// Showing artists and albums nobody uses anymore instead of the flagged tracks.
+    showing_unused: bool,
     asked_not_imported: bool,
 }
 
@@ -171,7 +175,7 @@ impl Review {
             self.bulk = None;
         }
         // (Files that didn't import have their own keys.)
-        if !self.showing_not_imported && !self.showing_unlinked {
+        if !self.showing_not_imported && !self.showing_unlinked && !self.showing_unused {
             self.keys(ui.ctx(), shell, catalog, player);
         }
         // A key may have marked a flag done: the rows follow at once.
@@ -210,20 +214,33 @@ impl Review {
                 if widgets::chip(ui, &format!("Unlinked extras {}", crate::ui::thousands(unlinked)), self.showing_unlinked) {
                     self.showing_unlinked = !self.showing_unlinked;
                     self.showing_not_imported = false;
+                    self.showing_unused = false;
+                }
+                ui.add_space(8.0);
+            }
+            // Artists and albums nothing refers to anymore: to merge or leave.
+            let unused = unused(catalog).len();
+            if unused > 0 || self.showing_unused {
+                if widgets::chip(ui, &format!("Nobody uses {}", crate::ui::thousands(unused)), self.showing_unused) {
+                    self.showing_unused = !self.showing_unused;
+                    self.showing_not_imported = false;
+                    self.showing_unlinked = false;
                 }
                 ui.add_space(8.0);
             }
             if files > 0 || self.showing_not_imported {
                 if widgets::chip(ui, &format!("Didn't import {}", crate::ui::thousands(files)), self.showing_not_imported) {
                     self.showing_unlinked = false;
+                    self.showing_unused = false;
                     self.showing_not_imported = !self.showing_not_imported;
                 }
                 ui.add_space(8.0);
             }
-            if widgets::chip(ui, "Everything", self.only.is_none() && !self.showing_not_imported && !self.showing_unlinked) {
+            if widgets::chip(ui, "Everything", self.only.is_none() && !self.showing_not_imported && !self.showing_unlinked && !self.showing_unused) {
                 self.only = None;
                 self.showing_not_imported = false;
                 self.showing_unlinked = false;
+                self.showing_unused = false;
             }
             for kind in kinds {
                 let count = self.counts.get(&kind).copied().unwrap_or(0);
@@ -236,6 +253,7 @@ impl Review {
                     self.only = if self.only.as_ref() == Some(&kind) && !self.showing_not_imported { None } else { Some(kind) };
                     self.showing_not_imported = false;
                     self.showing_unlinked = false;
+                    self.showing_unused = false;
                 }
             }
         });
@@ -243,6 +261,11 @@ impl Review {
         if self.showing_unlinked {
             ui.add_space(6.0);
             unlinked_extras(ui, shell, catalog, &self.filter);
+            return;
+        }
+        if self.showing_unused {
+            ui.add_space(6.0);
+            unused_list(ui, shell, catalog, &self.filter);
             return;
         }
         if self.showing_not_imported {
@@ -902,6 +925,9 @@ impl Review {
             ui.add_space(14.0);
             ui.label(RichText::new("Cover").font(font(14.0, semibold())));
             self.covers.show(ui, shell, crate::ui::edit::cover_list::Owner::Track(id), &d.covers, true);
+            ui.add_space(14.0);
+            ui.label(RichText::new("Sources").font(font(14.0, semibold())));
+            self.sources.show(ui, shell, crate::ui::edit::sources::Owner::Track(id), &d.sources);
 
             // A save finished: ambiguous artists fixed in it are settled; and after
             // Ctrl+Enter, on to the next when nothing's left.
@@ -964,6 +990,61 @@ fn tag_field(name: &str) -> Option<&'static str> {
         "date" | "year" | "tdrc" | "tyer" | "originaldate" => Some("release date"),
         _ => None,
     }
+}
+
+/// Something nobody uses: an artist or an album.
+enum Unused<'a> {
+    Artist(&'a crate::catalog::model::Artist),
+    Album(&'a crate::catalog::model::Album),
+}
+
+/// Artists credited on nothing (no track, no album, in no grouping) and albums without
+/// tracks, as far as the user sees: left behind when credits or tracks moved ("A feat. B"
+/// after its credits were fixed). They can't be deleted (old revisions refer to them);
+/// an artist is usually merged into the right one.
+fn unused(catalog: &Catalog) -> Vec<Unused<'_>> {
+    let members: std::collections::HashSet<uuid::Uuid> = catalog.groupings.iter().flat_map(|g| g.artists.iter().copied()).collect();
+    let artists = catalog.artists.iter().filter(|a| a.track_count == 0 && a.album_count == 0 && !members.contains(&a.id)).map(Unused::Artist);
+    let albums = catalog.albums.iter().filter(|a| a.track_count == 0).map(Unused::Album);
+    artists.chain(albums).collect()
+}
+
+/// `unused`, by name, each opening its page (where an artist is merged). `filter`: words
+/// in the name.
+fn unused_list(ui: &mut egui::Ui, shell: &mut Shell, catalog: &Catalog, filter: &str) {
+    let words: Vec<String> = filter.to_lowercase().split_whitespace().map(str::to_string).collect();
+    let name = |u: &Unused| match u {
+        Unused::Artist(a) => a.label(),
+        Unused::Album(a) => a.title.clone(),
+    };
+    let mut shown: Vec<Unused> = unused(catalog).into_iter().filter(|u| {
+        let text = name(u).to_lowercase();
+        words.iter().all(|w| text.contains(w.as_str()))
+    }).collect();
+    shown.sort_by_key(|u| name(u).to_lowercase());
+    ui.label(RichText::new("Artists credited on nothing and albums without tracks (as far as you can see). They can't be deleted, old versions refer to them: open one to merge it into the right one, or leave it.").color(P.muted));
+    ui.add_space(6.0);
+    if shown.is_empty() {
+        ui.label(RichText::new("None (or nothing matches the filter).").color(P.faint));
+        return;
+    }
+    egui::ScrollArea::vertical().id_salt("unused").auto_shrink([false, false]).show_rows(ui, 32.0, shown.len(), |ui, range| {
+        for u in &shown[range] {
+            let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width().min(760.0), 32.0), Sense::click());
+            if response.hovered() {
+                ui.painter().rect_filled(rect, 6, P.surface);
+            }
+            let (what, page) = match u {
+                Unused::Artist(a) => ("artist", crate::ui::Page::Artist(a.id)),
+                Unused::Album(a) => ("album", crate::ui::Page::Album(a.id)),
+            };
+            ui.painter().text(egui::pos2(rect.left() + 10.0, rect.center().y), egui::Align2::LEFT_CENTER, name(u), font(14.0, semibold()), P.text);
+            ui.painter().text(egui::pos2(rect.right() - 10.0, rect.center().y), egui::Align2::RIGHT_CENTER, what, font(12.0, medium()), P.faint);
+            if response.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                shell.act(Action::Go(page));
+            }
+        }
+    });
 }
 
 /// Extras linked to nothing (music videos imported from disk…), by name, to link from their

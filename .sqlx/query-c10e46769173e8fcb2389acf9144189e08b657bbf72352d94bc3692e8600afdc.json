@@ -1,0 +1,54 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT b.volume, k.kind AS \"kind!\", count(*) AS \"blobs!\", COALESCE(sum(b.size_bytes), 0)::bigint AS \"bytes!\",\n               count(*) FILTER (WHERE b.size_bytes IS NULL) AS \"unmeasured!\"\n        FROM blobs b\n        CROSS JOIN LATERAL (SELECT CASE\n            WHEN EXISTS (SELECT 1 FROM files f WHERE f.sha256 = b.sha256 AND f.purged_at IS NULL) THEN 'audio'\n            WHEN EXISTS (SELECT 1 FROM covers c WHERE c.blob_sha256 = b.sha256) THEN 'covers'\n            WHEN EXISTS (SELECT 1 FROM extra_files e WHERE e.sha256 = b.sha256)\n              OR EXISTS (SELECT 1 FROM extra_files e WHERE e.thumb_sha256 = b.sha256) THEN 'extras'\n            WHEN EXISTS (SELECT 1 FROM ingest_problems p WHERE (p.sha256 = b.sha256 OR b.sha256 = ANY (p.cover_blobs))\n                                                          AND p.audio_purged_at IS NULL) THEN 'not imported'\n            ELSE 'other'\n        END AS kind) k\n        GROUP BY b.volume, k.kind\n        ORDER BY b.volume, k.kind\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "volume",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "blobs",
+            "name": "volume"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "kind!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "blobs!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "bytes!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 4,
+        "name": "unmeasured!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "c10e46769173e8fcb2389acf9144189e08b657bbf72352d94bc3692e8600afdc"
+}

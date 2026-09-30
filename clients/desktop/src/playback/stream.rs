@@ -80,6 +80,17 @@ struct Shared {
     changed: Condvar,
 }
 
+/// The bytes of every file held for playing now (each whole, as big as the file), for the
+/// memory readout in Settings.
+pub static HELD: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+impl Drop for Shared {
+    fn drop(&mut self) {
+        let len = self.state.get_mut().map(|s| s.data.len() as u64).unwrap_or(0);
+        HELD.fetch_sub(len, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 /// A file being downloaded, readable (and seekable) as if it were all here.
 pub struct RemoteFile {
     shared: Arc<Shared>,
@@ -105,6 +116,7 @@ impl RemoteFile {
             }),
             changed: Condvar::new(),
         });
+        HELD.fetch_add(len, std::sync::atomic::Ordering::Relaxed);
         tokio::spawn(download(api.clone(), path, shared.clone(), response));
         Ok(RemoteFile { shared, position: 0 })
     }

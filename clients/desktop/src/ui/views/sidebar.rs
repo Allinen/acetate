@@ -115,8 +115,8 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell, page: Page, username: &str) {
             if ui.add(egui::Button::new(settings).frame(false)).on_hover_text("Ctrl+,").clicked() {
                 shell.act(Action::Go(Page::Settings));
             }
-            // Only for who can put things in the trash (and so take them back out).
-            if shell.account.can("edit_metadata") || shell.account.can("edit_sources") {
+            // Everyone's: playlists go there too.
+            {
                 let trash = RichText::new("Trash").color(if page == Page::Trash { P.text } else { P.muted });
                 if ui.add(egui::Button::new(trash).frame(false)).clicked() {
                     shell.act(Action::Go(Page::Trash));

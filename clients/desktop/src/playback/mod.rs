@@ -173,6 +173,10 @@ pub struct Controller {
     pub played: Mutex<Vec<(Uuid, Result<Annotation, String>)>>,
     /// Files downloaded ahead (see `prepare`).
     kept: Mutex<Vec<(Uuid, stream::RemoteFile)>>,
+    /// The last two files handed to the audio thread (what plays, and what's next): a
+    /// track looped, or played again right away, is read from memory, not downloaded
+    /// again.
+    recent: Mutex<Vec<(Uuid, stream::RemoteFile)>>,
     ctx: egui::Context,
 }
 
@@ -201,6 +205,7 @@ impl Controller {
             volume: Mutex::new((1.0, false)),
             played: Mutex::default(),
             kept: Mutex::default(),
+            recent: Mutex::default(),
             ctx,
         })
     }
@@ -211,12 +216,19 @@ impl Controller {
 
     /// Starts downloading a file; it can be played as soon as this returns.
     async fn fetch(&self, file_id: Uuid, path: String) -> anyhow::Result<stream::RemoteFile> {
-        // Kept (see `prepare`): another reader of the same download.
-        let kept = self.kept.lock().unwrap().iter().find(|(id, _)| *id == file_id).map(|(_, f)| f.clone());
-        if let Some(file) = kept {
-            return Ok(file);
+        // Kept (see `prepare`), or just played: another reader of the same download.
+        let kept = self.kept.lock().unwrap().iter().chain(self.recent.lock().unwrap().iter()).find(|(id, _)| *id == file_id).map(|(_, f)| f.clone());
+        let file = match kept {
+            Some(file) => file,
+            None => stream::RemoteFile::open(&self.api, path).await?,
+        };
+        let mut recent = self.recent.lock().unwrap();
+        recent.retain(|(id, _)| *id != file_id);
+        recent.push((file_id, file.clone()));
+        if recent.len() > 2 {
+            recent.remove(0);
         }
-        stream::RemoteFile::open(&self.api, path).await
+        Ok(file)
     }
 
     /// Plays from a list (an album, a playlist, a table), starting with `start`. Shuffled:
@@ -417,6 +429,7 @@ impl Controller {
         state.fetching = false;
         state.next_asked += 1;
         *self.pending_seek.lock().unwrap() = None;
+        self.recent.lock().unwrap().clear();
         self.send(Command::Stop);
         self.ctx.request_repaint();
     }

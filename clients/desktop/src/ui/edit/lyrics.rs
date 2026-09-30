@@ -83,6 +83,12 @@ pub struct LyricsEditor {
     asked_restore: Option<Uuid>,
     restoring: bool,
     restore_answer: Arc<Mutex<Option<Result<(), String>>>>,
+    /// "Remove…" asked (confirming), and a removal on its way (its answer comes as a
+    /// restore's).
+    asked_remove: bool,
+    removing: bool,
+    /// The removed entries shown.
+    removed_open: bool,
     /// Timing the lines (in place of the text field), if on.
     sync: Option<Sync>,
 }
@@ -155,7 +161,13 @@ impl LyricsEditor {
         if let Some(result) = self.restore_answer.lock().unwrap().take() {
             self.restoring = false;
             match result {
-                Ok(()) => shell.track_details.refresh(d.id),
+                Ok(()) => {
+                    // Removed: nothing open anymore (the first entry left opens).
+                    if std::mem::take(&mut self.removing) {
+                        self.open = None;
+                    }
+                    shell.track_details.refresh(d.id);
+                }
                 Err(err) => self.error = Some(format!("Couldn't restore it: {err}")),
             }
         }
@@ -202,6 +214,7 @@ impl LyricsEditor {
                 shell.ctx.memory_mut(|m| m.request_focus(egui::Id::new(BODY_ID)));
             }
         });
+        self.removed(ui, shell, d);
         if d.lyrics.is_empty() && self.open.is_none() {
             ui.label(RichText::new("No lyrics yet.").color(P.muted));
             return;
@@ -271,13 +284,34 @@ impl LyricsEditor {
                 self.fields = self.was.clone();
                 self.resync();
             }
+            // Taking an entry off (kept, with its history, to bring back).
+            if let Open::Entry(id) = open
+                && !dirty
+                && !self.saving
+                && !self.restoring
+            {
+                if !self.asked_remove {
+                    if ui.button("Remove…").on_hover_text("Take these lyrics off the track (kept, to bring back)").clicked() {
+                        self.asked_remove = true;
+                    }
+                } else {
+                    ui.label(RichText::new("Take them off the track?").color(P.danger));
+                    if ui.button("Remove them").clicked() {
+                        self.asked_remove = false;
+                        self.remove(shell, id);
+                    }
+                    if ui.button("Keep").clicked() {
+                        self.asked_remove = false;
+                    }
+                }
+            }
             if self.saving {
                 ui.label(RichText::new("Saving…").color(P.muted));
             } else if self.saved_at.is_some_and(|at| at.elapsed().as_secs() < 5) && !dirty {
                 ui.label(RichText::new("Saved").color(P.accent));
                 ui.ctx().request_repaint_after(std::time::Duration::from_secs(1));
             } else if dirty && self.fields.body.trim().is_empty() {
-                ui.label(RichText::new("Empty lyrics can't be saved (entries aren't removed: a wrong one is corrected).").color(P.faint).small());
+                ui.label(RichText::new("Empty lyrics can't be saved (to take an entry off, Remove it).").color(P.faint).small());
             }
         });
         if let Some(err) = &self.error {
@@ -407,10 +441,70 @@ impl LyricsEditor {
             let result = api.send_json::<Answer>(method, &path, Some(body)).await.and_then(|a| {
                 let entry = match open {
                     Open::Entry(id) => id,
-                    Open::New => a.id.ok_or_else(|| ApiError { status: None, code: "invalid".into(), message: "The server didn't say which entry it made.".into() })?,
+                    Open::New => a.id.ok_or_else(|| ApiError { status: None, code: "invalid".into(), message: "The server didn't say which entry it made.".into(), extra_id: None })?,
                 };
                 Ok(Saved { entry, revision: a.revision_id })
             });
+            *answer.lock().unwrap() = Some(result);
+            ctx.request_repaint();
+        });
+    }
+
+    /// The entries taken off the track, each with "Bring back".
+    fn removed(&mut self, ui: &mut egui::Ui, shell: &Shell, d: &TrackDetail) {
+        if d.removed_lyrics.is_empty() {
+            return;
+        }
+        let text = format!("{} Removed ({})", if self.removed_open { "▾" } else { "▸" }, d.removed_lyrics.len());
+        if ui.add(egui::Button::new(RichText::new(text).color(P.faint)).frame(false)).clicked() {
+            self.removed_open = !self.removed_open;
+        }
+        if !self.removed_open {
+            return;
+        }
+        for (n, l) in d.removed_lyrics.iter().enumerate() {
+            ui.horizontal(|ui| {
+                let first = l.body.lines().find(|line| !line.trim().is_empty()).unwrap_or("");
+                ui.label(RichText::new(name(l, n)).color(P.muted));
+                ui.add(egui::Label::new(RichText::new(first).color(P.faint)).truncate());
+                if ui.add_enabled(!self.restoring, egui::Button::new("Bring back").small()).clicked() {
+                    self.bring_back(shell, l);
+                }
+            });
+        }
+    }
+
+    /// Takes an entry off the track (`DELETE /api/lyrics/{id}`).
+    fn remove(&mut self, shell: &Shell, id: Uuid) {
+        self.restoring = true;
+        self.removing = true;
+        self.error = None;
+        let (api, answer, ctx) = (shell.api.clone(), self.restore_answer.clone(), shell.ctx.clone());
+        let path = match self.base {
+            Some(base) => format!("/api/lyrics/{id}?base_revision_id={base}"),
+            None => format!("/api/lyrics/{id}"),
+        };
+        shell.runtime.spawn(async move {
+            let result = api.send_json::<Value>(reqwest::Method::DELETE, &path, None).await.map(|_| ()).map_err(|err| err.message);
+            *answer.lock().unwrap() = Some(result);
+            ctx.request_repaint();
+        });
+    }
+
+    /// Puts a removed entry back, as it was.
+    fn bring_back(&mut self, shell: &Shell, l: &Lyrics) {
+        self.restoring = true;
+        self.error = None;
+        let body = json!({
+            "base_revision_id": l.revision_id,
+            "body": l.body,
+            "is_official": l.is_official,
+            "language": l.language,
+            "reason": "brought back",
+        });
+        let (api, answer, ctx, path) = (shell.api.clone(), self.restore_answer.clone(), shell.ctx.clone(), format!("/api/lyrics/{}", l.id));
+        shell.runtime.spawn(async move {
+            let result = api.send_json::<Value>(reqwest::Method::PUT, &path, Some(body)).await.map(|_| ()).map_err(|err| err.message);
             *answer.lock().unwrap() = Some(result);
             ctx.request_repaint();
         });

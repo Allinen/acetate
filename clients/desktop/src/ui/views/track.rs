@@ -73,13 +73,18 @@ impl TrackPage {
             }
         }
         let cached = shell.track_details.get(id);
-        let (detail, refreshing, error) = (cached.value.clone(), cached.refreshing, cached.error.clone());
+        let (detail, refreshing, error, became_extra) = (cached.value.clone(), cached.refreshing, cached.error.clone(), cached.became_extra);
         // A merged track answers with the one it went into: go there instead.
         if let Some(d) = &detail
             && d.id != id
         {
             shell.act(Action::Back);
             shell.act(Action::Go(Page::Track(d.id)));
+        }
+        // Made into an extra since: its page instead.
+        if let Some(extra) = became_extra {
+            shell.act(Action::Back);
+            shell.act(Action::Go(Page::Extra(extra)));
         }
         let track = catalog.track_index(id).map(|i| &catalog.tracks[i as usize]);
         if track.is_none() && detail.is_none() {

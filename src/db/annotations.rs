@@ -159,13 +159,18 @@ pub async fn set_rating(conn: &mut PgConnection, item: Item, rating: i16) -> any
 }
 
 /// A play of a track by the current user (the client calls it after a real listen): one
-/// more play of the track, and of its albums and its primary artists, as Navidrome counts.
+/// more play of the track, and of its albums and its primary artists, as Navidrome counts;
+/// and a line in the play log (`plays`).
 pub async fn played(conn: &mut PgConnection, track_id: Uuid) -> anyhow::Result<Annotation> {
     let now = Utc::now();
     let mut track = get(conn, Item::Track(track_id)).await?;
     track.play_count = track.play_count.saturating_add(1);
     track.last_played_at = Some(now);
     put(conn, Item::Track(track_id), &track).await?;
+    // And in the play log, with its time.
+    sqlx::query!("INSERT INTO plays (track_id, played_at) VALUES ($1, $2)", track_id, now)
+        .execute(&mut *conn)
+        .await?;
 
     let albums = sqlx::query_scalar!("SELECT album_id FROM album_tracks WHERE track_id = $1", track_id)
         .fetch_all(&mut *conn)

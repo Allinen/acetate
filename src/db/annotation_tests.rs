@@ -26,6 +26,9 @@ async fn annotations_are_personal(_: PgPoolOptions, connect: PgConnectOptions) -
     let album = annotations::get(&mut tx, Item::Album(lib.album)).await?;
     assert_eq!((album.play_count, album.rating), (1, 7));
     assert_eq!(annotations::get(&mut tx, Item::Artist(lib.both)).await?.play_count, 1);
+    // And in her play log.
+    let plays: Vec<uuid::Uuid> = sqlx::query_scalar("SELECT track_id FROM plays").fetch_all(&mut *tx).await?;
+    assert_eq!(plays, [lib.v]);
     drop(tx);
 
     // Bob sees none of it.
@@ -33,6 +36,8 @@ async fn annotations_are_personal(_: PgPoolOptions, connect: PgConnectOptions) -
     assert_eq!(annotations::get(&mut tx, Item::Track(lib.v)).await?, Default::default());
     let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM annotations").fetch_one(&mut *tx).await?;
     assert_eq!(rows, 0);
+    let plays: i64 = sqlx::query_scalar("SELECT count(*) FROM plays").fetch_one(&mut *tx).await?;
+    assert_eq!(plays, 0, "nor her plays");
     drop(tx);
 
     // Carol can't annotate H (restricted to friends), and a rating is 0 to 10.

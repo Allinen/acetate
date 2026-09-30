@@ -122,7 +122,13 @@ pub struct TrackDetail {
     /// Only included for users allowed to view history.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub revisions: Option<Vec<Revision>>,
+    /// With `revisions`: the names of the aliases they credit, listed or not (an artist's
+    /// own list has only the listed ones), so a diff can say "as “…”".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub alias_names: Option<std::collections::HashMap<Uuid, String>>,
     pub lyrics: Vec<Lyrics>,
+    /// Lyrics entries taken off it (kept with their history, to bring back).
+    pub removed_lyrics: Vec<Lyrics>,
     /// Tracks merged into this one (filled in by the API, see `revisions::merges_into`).
     pub merges: Vec<super::revisions::MergeInfo>,
     /// The current user's plays, rating and star.
@@ -234,6 +240,8 @@ pub struct Lyrics {
     /// Where the entry came from: "embedded" (in the file), "manual".
     pub source: String,
     pub body: String,
+    #[serde(skip)]
+    pub removed: bool,
     /// The latest revision: the base for editing.
     pub revision_id: Uuid,
     /// With `view_history` only.
@@ -437,7 +445,11 @@ pub async fn get_track(
         Some(revisions)
     };
 
-    let lyrics = lyrics_of(conn, id, with_history).await?;
+    let alias_names = match &revisions {
+        Some(revisions) => Some(alias_names(conn, revisions).await?),
+        None => None,
+    };
+    let (removed_lyrics, lyrics) = lyrics_of(conn, id, with_history).await?.into_iter().partition(|l| l.removed);
     let covers = covers_of(conn, id).await?;
 
     Ok(Some(TrackDetail {
@@ -482,6 +494,8 @@ pub async fn get_track(
         external_revision_id,
         revisions,
         lyrics,
+        removed_lyrics,
+        alias_names,
         covers,
         merges: Vec::new(),
         annotation: super::annotations::get(conn, super::annotations::Item::Track(id)).await?,
@@ -554,11 +568,28 @@ async fn strip_hidden<'a>(
     Ok(())
 }
 
+/// The names of the aliases credited in these revisions (the ones the user may see).
+async fn alias_names(conn: &mut PgConnection, revisions: &[Revision]) -> sqlx::Result<std::collections::HashMap<Uuid, String>> {
+    let ids: Vec<Uuid> = revisions
+        .iter()
+        .filter_map(|r| r.data.get("credits")?.as_array())
+        .flatten()
+        .filter_map(|c| c.get("alias_id")?.as_str()?.parse().ok())
+        .collect::<std::collections::BTreeSet<Uuid>>()
+        .into_iter()
+        .collect();
+    if ids.is_empty() {
+        return Ok(Default::default());
+    }
+    let rows = sqlx::query!("SELECT id, alias FROM artist_aliases WHERE id = ANY($1)", &ids).fetch_all(conn).await?;
+    Ok(rows.into_iter().map(|r| (r.id, r.alias)).collect())
+}
+
 /// A track's lyrics entries, official ones first; with their history if `with_history`.
 async fn lyrics_of(conn: &mut PgConnection, track_id: Uuid, with_history: bool) -> sqlx::Result<Vec<Lyrics>> {
     let rows = sqlx::query!(
         r#"
-        SELECT l.id, l.is_official, l.is_synced, l.language, l.source, l.body,
+        SELECT l.id, l.is_official, l.is_synced, l.language, l.source, l.body, l.removed,
                (SELECT r.id FROM lyrics_revisions r
                 WHERE r.lyrics_id = l.id ORDER BY r.id DESC LIMIT 1) AS "revision_id!"
         FROM lyrics l WHERE l.track_id = $1
@@ -577,6 +608,7 @@ async fn lyrics_of(conn: &mut PgConnection, track_id: Uuid, with_history: bool) 
             language: r.language,
             source: r.source,
             body: r.body,
+            removed: r.removed,
             revision_id: r.revision_id,
             revisions: None, // filled in below, if asked for
         })

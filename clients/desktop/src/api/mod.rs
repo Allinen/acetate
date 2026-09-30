@@ -35,6 +35,8 @@ pub struct ApiError {
     /// reload on `stale`), not for showing.
     pub code: String,
     pub message: String,
+    /// `became_extra` (a track made into an extra): the extra.
+    pub extra_id: Option<Uuid>,
 }
 
 impl std::fmt::Display for ApiError {
@@ -51,7 +53,7 @@ impl std::error::Error for ApiError {}
 struct ErrorBody {
     code: Option<String>,
     message: Option<String>,
-    error: Option<String>,
+    extra_id: Option<Uuid>,
 }
 
 /// The user's own plays, rating and star on something, as the server answers a change.
@@ -152,6 +154,7 @@ impl Api {
             status: None,
             code: "unauthorized".into(),
             message: "You're not logged in.".into(),
+            extra_id: None,
         })?;
         let request = self.client.request(method, format!("{}{path}", session.server)).bearer_auth(&session.token);
         Ok((request, session.server))
@@ -165,16 +168,16 @@ impl Api {
             return Ok(response);
         }
         let body: Option<ErrorBody> = response.json().await.ok();
-        let (code, message) = match body {
-            Some(ErrorBody { code, message, error }) => (code, message.or(error)),
-            None => (None, None),
+        let (code, message, extra_id) = match body {
+            Some(ErrorBody { code, message, extra_id }) => (code, message, extra_id),
+            None => (None, None, None),
         };
         let code = code.unwrap_or_else(|| status.as_str().to_string());
         if status == reqwest::StatusCode::UNAUTHORIZED && code != "wrong_login" {
             self.expired.store(true, Relaxed);
         }
         let message = message.unwrap_or_else(|| format!("The server answered {status}."));
-        Err(ApiError { status: Some(status.as_u16()), code, message })
+        Err(ApiError { status: Some(status.as_u16()), code, message, extra_id })
     }
 
     /// A request with an optional JSON body, answered with JSON.
@@ -196,11 +199,27 @@ impl Api {
         Ok(())
     }
 
-    /// Uploads a file (one multipart field named "file"), answered with JSON: covers.
+    /// Uploads a file (one multipart field named "file"), answered with JSON: covers,
+    /// extras' files. A big one is sent ahead in chunks (`/api/uploads`), under proxies'
+    /// caps on a request's body (Cloudflare: 100 MB), and the form names it.
     pub async fn upload<T: DeserializeOwned>(&self, path: &str, bytes: Vec<u8>, file_name: &str) -> Result<T, ApiError> {
+        const CHUNK_BYTES: usize = 50_000_000;
+        let part = if bytes.len() > CHUNK_BYTES {
+            #[derive(Deserialize)]
+            struct Started {
+                id: Uuid,
+            }
+            let upload = self.send_json::<Started>(reqwest::Method::POST, "/api/uploads", None).await?.id;
+            for (n, chunk) in bytes.chunks(CHUNK_BYTES).enumerate() {
+                let (request, server) = self.request(reqwest::Method::PUT, &format!("/api/uploads/{upload}?offset={}", n * CHUNK_BYTES))?;
+                self.go(request.body(chunk.to_vec()), &server).await?;
+            }
+            reqwest::multipart::Part::text(upload.to_string()).mime_str("application/vnd.acetate.upload").expect("a valid type")
+        } else {
+            reqwest::multipart::Part::bytes(bytes)
+        };
         let (request, server) = self.request(reqwest::Method::POST, path)?;
-        let part = reqwest::multipart::Part::bytes(bytes).file_name(file_name.to_string());
-        let request = request.multipart(reqwest::multipart::Form::new().part("file", part));
+        let request = request.multipart(reqwest::multipart::Form::new().part("file", part.file_name(file_name.to_string())));
         read_json(self.go(request, &server).await?).await
     }
 
@@ -272,6 +291,7 @@ async fn read_json<T: DeserializeOwned>(response: reqwest::Response) -> Result<T
         status: None,
         code: "unexpected".into(),
         message: format!("The server's answer isn't what this app expected. Is the app up to date? ({err})"),
+        extra_id: None,
     })
 }
 
@@ -286,5 +306,5 @@ pub fn unreachable(err: &reqwest::Error, server: &str) -> ApiError {
     } else {
         format!("Couldn't talk to the server at {server} ({err}).")
     };
-    ApiError { status: None, code: "unreachable".into(), message }
+    ApiError { status: None, code: "unreachable".into(), message, extra_id: None }
 }

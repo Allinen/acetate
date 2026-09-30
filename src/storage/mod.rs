@@ -287,6 +287,11 @@ pub struct BlobWriter {
 }
 
 impl BlobWriter {
+    /// Bytes written so far.
+    pub fn size(&self) -> u64 {
+        self.size
+    }
+
     pub async fn write(&mut self, chunk: &[u8]) -> anyhow::Result<()> {
         self.hasher.update(chunk);
         self.file.write_all(chunk).await?;

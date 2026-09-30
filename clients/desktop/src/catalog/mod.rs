@@ -26,10 +26,12 @@ pub struct Cached<T> {
     pub refreshing: bool,
     /// The last refresh's error, if it failed (the kept copy is still shown).
     pub error: Option<String>,
+    /// A track that was made into an extra since: that extra (its page is shown instead).
+    pub became_extra: Option<uuid::Uuid>,
 }
 
 impl<T> Default for Cached<T> {
     fn default() -> Self {
-        Cached { value: None, confirmed_at: None, refreshing: false, error: None }
+        Cached { value: None, confirmed_at: None, refreshing: false, error: None, became_extra: None }
     }
 }

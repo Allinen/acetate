@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT count(*) AS \"n!\" FROM lyrics n\n        WHERE n.track_id = $1 AND NOT EXISTS (SELECT 1 FROM lyrics e WHERE e.track_id = $2 AND e.body = n.body)\n        ",
+  "query": "\n        SELECT count(*) AS \"n!\" FROM lyrics n\n        WHERE n.track_id = $1 AND NOT n.removed\n          AND NOT EXISTS (SELECT 1 FROM lyrics e WHERE e.track_id = $2 AND e.body = n.body AND NOT e.removed)\n        ",
   "describe": {
     "columns": [
       {
@@ -20,5 +20,5 @@
       null
     ]
   },
-  "hash": "c5243a5eb80aaf55c740e391e7ae9f974469cc16048dcca9fa8d19cb79507631"
+  "hash": "b1cfeed8a1180351c8bac3130b41e2ba1b37b5a03643c242d866eb6ba8c3bd53"
 }

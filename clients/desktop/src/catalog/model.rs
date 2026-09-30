@@ -9,7 +9,7 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 /// The catalog format this client reads (the server's `FORMAT`).
-pub const FORMAT: u32 = 7;
+pub const FORMAT: u32 = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -88,12 +88,17 @@ pub struct Track {
     /// gave it.
     #[serde(default)]
     pub original_filename: Option<String>,
+    /// Its file's bitrate (kbps) and sample rate (Hz), where known.
+    #[serde(default)]
+    pub bitrate: Option<i32>,
+    #[serde(default)]
+    pub sample_rate: Option<i32>,
 }
 
 const TRACK_COLUMNS: &[&str] = &[
     "id", "title", "artist_display", "credits", "albums", "duration_ms", "file_id", "cover_id",
     "cover_key", "release_date", "year", "status", "genres", "created_at", "is_restricted", "codec",
-    "groupings", "platforms", "original_filename",
+    "groupings", "platforms", "original_filename", "bitrate", "sample_rate",
 ];
 
 // Every column is read (rows are arrays in column order); not all are shown yet.

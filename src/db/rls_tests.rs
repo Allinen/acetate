@@ -144,7 +144,8 @@ pub(super) async fn make_track(
             platform: "custom".into(),
             source_id: None,
             captured_at: None,
-            data: json!({ "label": "test" }),
+            // With a description: a label alone would raise "source says too little".
+            data: json!({ "label": "test", "description": "made by the tests" }),
         },
     )?;
     let snapshot = db::sources::add_snapshot(conn, SourceOwner::Track(track_id), &origin).await?;

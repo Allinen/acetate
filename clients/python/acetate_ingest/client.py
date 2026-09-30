@@ -30,6 +30,10 @@ AudioFile = Union[str, "os.PathLike[str]", bytes, BinaryIO]
 #: How much is read from a file at a time while sending it.
 CHUNK = 1024 * 1024
 
+#: A form part with this type names a chunked upload (`/api/uploads`) instead of carrying
+#: a file's bytes.
+UPLOAD_PART_TYPE = "application/vnd.acetate.upload"
+
 
 class Acetate:
     """An Acetate server, logged in.
@@ -39,9 +43,12 @@ class Acetate:
     >>> acetate = Acetate.from_env()                            # ACETATE_URL, ACETATE_TOKEN
     """
 
-    def __init__(self, url: str, token: str, *, timeout: float = 30 * 60) -> None:
+    def __init__(self, url: str, token: str, *, timeout: float = 30 * 60, chunk_size: int = 50_000_000) -> None:
         #: Long by default: a big WAV over a slow link, and the server hashing and probing it.
         self.timeout = timeout
+        #: Files bigger than this are sent ahead in pieces of this size, one request each,
+        #: under proxies' caps on a request's body (Cloudflare: 100 MB).
+        self.chunk_size = chunk_size
         self.url = url.rstrip("/")
         self.token = token
 
@@ -140,14 +147,39 @@ class Acetate:
             raise InvalidDescription("a tagged copy (`tags_file`) isn't used with `metadata`: the metadata is given")
         body = description.to_json(name_image)
         parts: list[_Part] = [_Part("description", None, json.dumps(body).encode())]
-        parts.append(_Part("file", filename or _name_of(file, "file"), _content(file, "file")))
+        parts.append(self._file_part("file", filename or _name_of(file, "file"), _content(file, "file")))
         if tags_file is not None:
-            parts.append(_Part("tags_file", _name_of(tags_file, "tags_file", "tagged copy"), _content(tags_file, "tags_file")))
+            parts.append(self._file_part("tags_file", _name_of(tags_file, "tags_file", "tagged copy"), _content(tags_file, "tags_file")))
         for name, image in images:
             parts.append(_Part(name, name, _content(image, name)))
 
         answer = self._request("POST", "/api/ingest" + ("?dry_run=true" if dry_run else ""), multipart=parts)
         return Report.from_json(answer)
+
+    def _file_part(self, name: str, filename: str, content: bytes | str | os.PathLike[str]) -> _Part:
+        """A file's form part: its bytes, or for a big file, the chunked upload it was
+        sent in first."""
+        part = _Part(name, filename, content)
+        if part.size() <= self.chunk_size:
+            return part
+        upload = self._request("POST", "/api/uploads")["id"]
+        offset = 0
+        for piece in part.chunks(self.chunk_size):
+            tries = 0
+            while True:
+                try:
+                    offset = self._request("PUT", f"/api/uploads/{upload}?offset={offset}", data=piece)["size"]
+                    break
+                except CantConnect:
+                    tries += 1
+                    if tries > 3:
+                        raise
+                    # Go on from what the server has (part of this piece, maybe).
+                    got = self._request("GET", f"/api/uploads/{upload}")["size"]
+                    piece, offset = piece[got - offset :], got
+                    if not piece:
+                        break
+        return _Part(name, filename, upload.encode(), kind=UPLOAD_PART_TYPE)
 
     # ---- HTTP ----
 
@@ -158,6 +190,7 @@ class Acetate:
         *,
         json_body: Any = None,
         multipart: list[_Part] | None = None,
+        data: bytes | None = None,
     ) -> Any:
         headers = {"User-Agent": f"acetate-ingest/{__version__} (Python)", "Accept": "application/json"}
         if self.token:
@@ -166,6 +199,10 @@ class Acetate:
         if json_body is not None:
             data = json.dumps(json_body).encode()
             headers["Content-Type"] = "application/json"
+            headers["Content-Length"] = str(len(data))
+            chunks = iter((data,))
+        elif data is not None:
+            headers["Content-Type"] = "application/octet-stream"
             headers["Content-Length"] = str(len(data))
             chunks = iter((data,))
         elif multipart is not None:
@@ -233,16 +270,17 @@ def _server_error(status: int, reason: str, headers: Any, text: bytes) -> Server
 
 
 class _Part:
-    def __init__(self, name: str, filename: str | None, content: bytes | str | os.PathLike[str]) -> None:
+    def __init__(self, name: str, filename: str | None, content: bytes | str | os.PathLike[str], kind: str | None = None) -> None:
         self.name = name
         self.filename = filename
         self.content = content
+        self.kind = kind
 
     def head(self, boundary: str) -> bytes:
         disposition = f'form-data; name="{_quote(self.name)}"'
         if self.filename is not None:
             disposition += f'; filename="{_quote(self.filename)}"'
-        kind = "application/json" if self.name == "description" else "application/octet-stream"
+        kind = self.kind or ("application/json" if self.name == "description" else "application/octet-stream")
         return f"--{boundary}\r\nContent-Disposition: {disposition}\r\nContent-Type: {kind}\r\n\r\n".encode()
 
     def size(self) -> int:
@@ -250,12 +288,13 @@ class _Part:
             return len(self.content)
         return os.path.getsize(self.content)
 
-    def chunks(self) -> Iterator[bytes]:
+    def chunks(self, size: int = CHUNK) -> Iterator[bytes]:
         if isinstance(self.content, bytes):
-            yield self.content
+            for start in range(0, len(self.content), size):
+                yield self.content[start : start + size]
             return
         with open(self.content, "rb") as f:
-            while chunk := f.read(CHUNK):
+            while chunk := f.read(size):
                 yield chunk
 
 

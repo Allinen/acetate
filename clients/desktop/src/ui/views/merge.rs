@@ -92,6 +92,39 @@ pub struct MergeView {
     kept_by: Option<(Arc<crate::playback::Controller>, tokio::runtime::Handle)>,
     /// Shown in a popup, which has its own title (so the view's is left out).
     in_popup: bool,
+    /// Who may see each (left, right), for `manage_access`: asked once, when either is
+    /// restricted.
+    access: Arc<Mutex<Option<(Access, Access)>>>,
+    access_asked: bool,
+}
+
+/// A track's access (`GET /api/tracks/{id}/access`), as far as the merge view needs it.
+#[derive(Clone, serde::Deserialize)]
+struct Access {
+    restricted: bool,
+    groups: Vec<GroupRef>,
+}
+
+#[derive(Clone, serde::Deserialize)]
+struct GroupRef {
+    id: Uuid,
+    name: String,
+}
+
+impl Access {
+    /// Who may see it, in words.
+    fn audience(&self) -> String {
+        match (self.restricted, self.groups.is_empty()) {
+            (false, _) => "everyone".to_string(),
+            (true, true) => "only admins".to_string(),
+            (true, false) => self.groups.iter().map(|g| g.name.as_str()).collect::<Vec<_>>().join(", "),
+        }
+    }
+
+    fn same_as(&self, other: &Access) -> bool {
+        let ids = |a: &Access| a.groups.iter().map(|g| g.id).collect::<std::collections::BTreeSet<_>>();
+        self.restricted == other.restricted && (!self.restricted || ids(self) == ids(other))
+    }
 }
 
 impl Drop for MergeView {
@@ -119,6 +152,8 @@ impl MergeView {
             file_suggested: false,
             kept_by: None,
             in_popup: false,
+            access: Arc::default(),
+            access_asked: false,
         }
     }
 
@@ -130,6 +165,9 @@ impl MergeView {
 
     fn swap(&mut self) {
         std::mem::swap(&mut self.left, &mut self.right);
+        if let Some((l, r)) = self.access.lock().unwrap().as_mut() {
+            std::mem::swap(l, r);
+        }
         for pick in &mut self.picks {
             *pick = if *pick == Side::Left { Side::Right } else { Side::Left };
         }
@@ -228,8 +266,38 @@ impl MergeView {
                 self.swap();
             }
         });
-        if lt.map(|t| t.is_restricted) != rt.map(|t| t.is_restricted) {
-            ui.label(RichText::new("Who may see them differs: the kept track keeps its own access.").color(P.danger));
+        // Who may see them: with `manage_access`, which groups (asked once); else only
+        // whether each is restricted.
+        let any_restricted = lt.is_some_and(|t| t.is_restricted) || rt.is_some_and(|t| t.is_restricted);
+        if any_restricted && shell.account.can("manage_access") && !self.access_asked {
+            self.access_asked = true;
+            let (api, access, ctx, left, right) = (shell.api.clone(), self.access.clone(), shell.ctx.clone(), self.left, self.right);
+            shell.runtime.spawn(async move {
+                let (l_path, r_path) = (format!("/api/tracks/{left}/access"), format!("/api/tracks/{right}/access"));
+                let l = api.send_json::<Access>(reqwest::Method::GET, &l_path, None).await;
+                let r = api.send_json::<Access>(reqwest::Method::GET, &r_path, None).await;
+                if let (Ok(l), Ok(r)) = (l, r) {
+                    *access.lock().unwrap() = Some((l, r));
+                    ctx.request_repaint();
+                }
+            });
+        }
+        let access = self.access.lock().unwrap().clone();
+        match access {
+            Some((l, r)) if !l.same_as(&r) => {
+                let text = format!(
+                    "Who may see them differs (kept: {}; merged: {}). The kept track keeps its own access.",
+                    l.audience(),
+                    r.audience()
+                );
+                ui.label(RichText::new(text).color(P.danger));
+            }
+            Some(_) => {}
+            None => {
+                if lt.map(|t| t.is_restricted) != rt.map(|t| t.is_restricted) {
+                    ui.label(RichText::new("Who may see them differs: the kept track keeps its own access.").color(P.danger));
+                }
+            }
         }
         ui.add_space(6.0);
         let values = |d: &TrackDetail, field: &str| -> String { value(d, catalog, field) };

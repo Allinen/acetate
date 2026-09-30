@@ -1,0 +1,76 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT t.id, t.title, t.primary_variant_id AS \"variant!\", f.sha256, f.uploaded_filename\n        FROM tracks t\n        JOIN files f ON f.id = t.file_id\n        JOIN track_variants v ON v.id = t.primary_variant_id\n        WHERE t.merged_into IS NULL AND t.became_extra_id IS NULL\n          AND t.created_at < $1\n          AND v.label LIKE 'File tags%'\n          AND (f.embedded_tags::text ILIKE '%compos%' OR f.embedded_tags::text LIKE '%TCOM%' OR f.embedded_tags::text LIKE '%wrt%')\n          AND NOT EXISTS (\n              SELECT 1 FROM track_revisions r\n              WHERE r.track_id = t.id AND r.data -> 'credits' @> '[{\"role\": \"producer\"}]'\n          )\n        ORDER BY t.id\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tracks",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "title",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tracks",
+            "name": "title"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "variant!",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tracks",
+            "name": "primary_variant_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "sha256",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "files",
+            "name": "sha256"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "uploaded_filename",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "files",
+            "name": "uploaded_filename"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "d9d25e29d3fc7ddb22a860bdbefbe8489d796430d018216ac581fc723c7928fd"
+}

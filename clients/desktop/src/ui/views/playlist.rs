@@ -26,6 +26,8 @@ pub struct PlaylistPage {
     history: bool,
     /// The trash button was clicked once: the next click moves it there.
     confirm_trash: bool,
+    /// The description being written (for this playlist), if it's open.
+    describing: Option<(Uuid, String)>,
     /// Liked songs: every track shown since the page was opened, with when it was starred.
     /// One unstarred meanwhile stays where it was (unstarred), so starring it again is one
     /// key away; it's gone the next time the page opens.
@@ -49,7 +51,7 @@ const PLAYLIST_COLUMNS: &[(Column, bool)] = &[
 
 impl Default for PlaylistPage {
     fn default() -> Self {
-        PlaylistPage { table: TrackTable::new(TrackSort::Natural), history: false, confirm_trash: false, liked_seen: Default::default() }
+        PlaylistPage { table: TrackTable::new(TrackSort::Natural), history: false, confirm_trash: false, describing: None, liked_seen: Default::default() }
     }
 }
 
@@ -122,10 +124,14 @@ impl PlaylistPage {
             ui.add_space(8.0);
             if detail.mine {
                 if widgets::chip(ui, if detail.public { "Public" } else { "Private" }, detail.public) {
-                    shell.playlists.update(id, None, Some(!detail.public));
+                    shell.playlists.update(id, None, Some(!detail.public), None);
                 }
                 if widgets::chip(ui, "Rename  F2", false) {
                     shell.act(Action::RenamePlaylist(id));
+                }
+                let open = self.describing.as_ref().is_some_and(|(d, _)| *d == id);
+                if widgets::chip(ui, "Describe…", open) {
+                    self.describing = if open { None } else { Some((id, detail.description.clone())) };
                 }
             }
             if widgets::chip(ui, "History", self.history) {
@@ -145,6 +151,21 @@ impl PlaylistPage {
                 }
             }
         });
+        // The description, being written.
+        if let Some((_, text)) = self.describing.as_mut().filter(|(d, _)| *d == id) {
+            ui.add_space(8.0);
+            ui.add(egui::TextEdit::multiline(text).hint_text("What it's for, what's in it (optional)").desired_rows(3).desired_width(520.0));
+            let text = text.trim().to_string();
+            ui.horizontal(|ui| {
+                if ui.button("Save the description").clicked() {
+                    shell.playlists.update(id, None, None, Some(text));
+                    self.describing = None;
+                }
+                if ui.button("Cancel").clicked() {
+                    self.describing = None;
+                }
+            });
+        }
         ui.add_space(16.0);
 
         if self.history {

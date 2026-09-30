@@ -389,6 +389,54 @@ async fn refused_file(lib_pool: &PgPool, store: &BlobStore, opts: &IngestOptions
 }
 
 #[sqlx::test]
+async fn listed_files_keep_their_covers_and_go_to_the_trash_when_resolved(
+    _: PgPoolOptions,
+    connect: PgConnectOptions,
+) -> anyhow::Result<()> {
+    let lib = setup(connect).await?;
+    let dir = tempfile::tempdir()?;
+    let store = BlobStore::open(dir.path())?;
+    let hints = Hints { track_covers: vec![b"a cover sent along".to_vec()], ..Hints::default() };
+    let file = refused_file(&lib.owner, &store, &options(Some(lib.carol), 1, hints)).await?;
+
+    // The cover is kept, and named in the description by its hash.
+    let (id, description, covers): (Uuid, serde_json::Value, Vec<String>) =
+        sqlx::query_as("SELECT id, description, cover_blobs FROM ingest_problems").fetch_one(&lib.owner).await?;
+    assert_eq!(covers.len(), 1);
+    assert_eq!(description["track"]["covers"], json!([format!("sha256:{}", covers[0])]));
+    assert!(store.size(&covers[0]).await.is_some());
+    let trash = |pool: PgPool| async move {
+        let mut tx = db::begin(&pool, Some(lib.carol)).await?;
+        anyhow::Ok(db::trash::list(&mut tx).await?.into_iter().filter(|t| t.kind == "problem").map(|t| t.id).collect::<Vec<_>>())
+    };
+    assert!(trash(lib.app.clone()).await?.is_empty(), "open: not in the trash");
+
+    // Resolved by hand ("junk"): in the trash; restoring opens it again.
+    let mut tx = db::begin(&lib.app, Some(lib.carol)).await?;
+    assert!(db::problems::resolve(&mut tx, id, "junk").await?);
+    tx.commit().await?;
+    assert_eq!(trash(lib.app.clone()).await?, vec![id]);
+    let mut tx = db::begin(&lib.app, Some(lib.carol)).await?;
+    assert!(db::trash::restore(&mut tx, db::trash::Kind::Problem, id).await?);
+    assert!(db::problems::get_open(&mut tx, id).await?.is_some());
+    assert!(db::problems::resolve(&mut tx, id, "junk").await?);
+    tx.commit().await?;
+
+    // Purged after the grace period: the audio and the cover go, the entry stays.
+    sqlx::query("UPDATE ingest_problems SET resolved_at = now() - interval '8 days'").execute(&lib.owner).await?;
+    let mut tx = db::begin(&lib.app, Some(lib.alice)).await?;
+    let purged = db::trash::purge(&mut tx, &store, &[(db::trash::Kind::Problem, id)], &file.sha256[..8]).await?;
+    tx.commit().await?;
+    let mut deleted = purged.delete_blobs.clone();
+    deleted.sort();
+    let mut expected = vec![file.sha256.clone(), covers[0].clone()];
+    expected.sort();
+    assert_eq!(deleted, expected);
+    assert!(trash(lib.app.clone()).await?.is_empty());
+    Ok(())
+}
+
+#[sqlx::test]
 async fn listed_files_import_with_values_given_by_hand(
     _: PgPoolOptions,
     connect: PgConnectOptions,

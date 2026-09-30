@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT sha256, uploaded_filename FROM ingest_problems WHERE id = $1",
+  "query": "SELECT sha256, uploaded_filename FROM ingest_problems WHERE id = $1 AND audio_purged_at IS NULL",
   "describe": {
     "columns": [
       {
@@ -36,5 +36,5 @@
       false
     ]
   },
-  "hash": "7aa6251f98415d32296e64832f49031f9b25a7a0df29bb872f3929a7f1e83908"
+  "hash": "1b9db40e134d913962a32858108a2cfb72278f5ce6c9704ced5fc745a905d32a"
 }

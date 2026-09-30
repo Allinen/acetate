@@ -159,7 +159,7 @@ pub async fn add_files(State(state): State<AppState>, user: CurrentUser, Path(id
     }
     let mut reason = String::new();
     let mut added = Vec::new();
-    while let Some(mut field) = multipart.next_field().await.map_err(|e| AppError::BadRequest(e.to_string()))? {
+    while let Some(field) = multipart.next_field().await.map_err(|e| AppError::BadRequest(e.to_string()))? {
         let Some(filename) = field.file_name().map(str::to_string) else {
             let name = field.name().unwrap_or_default().to_string();
             let value = field.text().await.map_err(|e| AppError::BadRequest(e.to_string()))?;
@@ -169,11 +169,7 @@ pub async fn add_files(State(state): State<AppState>, user: CurrentUser, Path(id
             }
             continue;
         };
-        let mut writer = state.store.writer().await?;
-        while let Some(chunk) = field.chunk().await.map_err(|e| AppError::BadRequest(e.to_string()))? {
-            writer.write(&chunk).await?;
-        }
-        let pending = writer.finish().await?;
+        let pending = super::uploads::receive(&state, &user, field).await?;
         let (sha256, size) = (pending.sha256.clone(), pending.size as i64);
         let (volume, stored) = state.store.commit(pending, state.store.default_volume()).await?;
         let facts = crate::ingest::video::examine(&state.store, &stored, &filename).await;

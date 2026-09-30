@@ -566,7 +566,7 @@ pub async fn add_album_covers(
             height: image.height,
             source: "import",
         };
-        db::blobs::register(conn, sha256, volume, None).await?;
+        db::blobs::register(conn, sha256, volume, Some(image.size)).await?;
         db::covers::add(conn, CoverOwner::Album(album_id), &cover).await?;
         added += 1;
     }
@@ -770,6 +770,10 @@ pub fn description_json(
         "lax_artist_names": hints.lax_artist_names,
     })
 }
+
+/// How a stored description names a cover kept as a blob (a file that didn't import, see
+/// `ingest::record_problem`): this, then its sha256.
+pub const STORED_COVER: &str = "sha256:";
 
 /// A description as a client sends it (`POST /api/ingest`). See the README for an example.
 #[derive(Debug, Deserialize)]
@@ -1198,7 +1202,7 @@ fn validate_metadata(
         .lyrics
         .into_iter()
         .filter(|l| !l.body.trim().is_empty())
-        .map(|l| crate::model::LyricsData { body: l.body, is_official: l.official, language: l.language })
+        .map(|l| crate::model::LyricsData { body: l.body, is_official: l.official, language: l.language, removed: false })
         .collect();
     let described = Described {
         title,

@@ -21,10 +21,12 @@ mod rate_limit;
 mod problems;
 mod review;
 mod shares;
+mod storage;
 mod sources;
 mod tracks;
 mod trash;
 mod upload;
+pub mod uploads;
 pub mod upload_limits;
 mod ingest;
 mod library;
@@ -73,6 +75,8 @@ pub struct AppState {
     pub images: Arc<crate::storage::images::ImageCache>,
     /// How much may be uploaded per request and per day (see `upload_limits`).
     pub upload_limits: Arc<upload_limits::UploadLimits>,
+    /// Chunked uploads under way (see `uploads`).
+    pub uploads: Arc<uploads::Uploads>,
 }
 
 impl AppState {
@@ -164,7 +168,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/sources/{id}", require(&[EditSources], delete(sources::trash)))
         // Lyrics (entries are edited, never deleted).
         .route("/api/tracks/{id}/lyrics", require(&[EditMetadata], post(lyrics::create)))
-        .route("/api/lyrics/{id}", require(&[EditMetadata], put(lyrics::edit)))
+        .route("/api/lyrics/{id}", require(&[EditMetadata], put(lyrics::edit).delete(lyrics::remove)))
         // Notes on tracks, albums and artists (listed with their details).
         .route("/api/notes", require(&[EditMetadata], post(notes::create)))
         .route("/api/notes/{id}", require(&[EditMetadata], put(notes::edit)))
@@ -215,6 +219,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/trash", require(&[EditMetadata, EditSources], get(trash::list)))
         .route("/api/trash/restore", require(&[EditMetadata, EditSources], post(trash::restore)))
         .route("/api/trash/purge", require(&[Admin], post(trash::purge)))
+        .route("/api/storage", require(&[Admin], get(storage::totals)))
         .route("/api/files/replaced", require(&[Admin], get(trash::replaced_files)))
         .route("/api/files/trash", require(&[Admin], post(trash::trash_files)))
         .route("/api/source-shapes", require(&[Browse], get(sources::shapes)))
@@ -296,6 +301,16 @@ pub fn router(state: AppState) -> Router {
             "/api/ingest",
             require(&[Upload], post(ingest::ingest).layer(DefaultBodyLimit::disable()).layer(middleware::from_fn_with_state(state.clone(), upload_limits::limit))),
         )
+        // Chunked uploads: a file over several requests (see `uploads`). Each chunk goes
+        // through the upload limits.
+        .route("/api/uploads", require(&[Upload], post(uploads::start)))
+        .route(
+            "/api/uploads/{id}",
+            require(&[Upload], get(uploads::progress).delete(uploads::drop_upload)).merge(require(
+                &[Upload],
+                put(uploads::append).layer(DefaultBodyLimit::disable()).layer(middleware::from_fn_with_state(state.clone(), upload_limits::limit)),
+            )),
+        )
         .route(
             "/api/tracks/{id}/file",
             require(
@@ -351,6 +366,9 @@ pub enum AppError {
     Conflict(String),
     /// It existed, but is gone for good (e.g. a purged file): 410.
     Gone(String),
+    /// A track that was made into this extra: 404, with the extra's id (`extra_id`) to go
+    /// to instead.
+    BecameExtra(uuid::Uuid),
     Internal(anyhow::Error),
 }
 
@@ -373,6 +391,14 @@ impl IntoResponse for AppError {
                     Json(body),
                 )
                     .into_response();
+            }
+            AppError::BecameExtra(extra) => {
+                let body = json!({
+                    "code": "became_extra",
+                    "message": "This track was turned into an extra; it's there now.",
+                    "extra_id": extra,
+                });
+                return (StatusCode::NOT_FOUND, Json(body)).into_response();
             }
             AppError::UploadQuota { message, wait } => {
                 let secs = wait.as_secs() + 1;

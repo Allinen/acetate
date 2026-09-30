@@ -144,6 +144,9 @@ pub struct LyricsData {
     /// e.g. "en", "ja". Free text.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
+    /// Taken off the track (kept, with its history; an earlier revision brings it back).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub removed: bool,
 }
 
 impl LyricsData {
@@ -383,6 +386,8 @@ pub struct ImageInfo {
     pub mime: &'static str,
     pub width: Option<i32>,
     pub height: Option<i32>,
+    /// Its size in bytes.
+    pub size: i64,
 }
 
 /// None if it's not a JPEG, PNG, WebP or GIF image (the formats covers can be).
@@ -399,5 +404,6 @@ pub fn image_info(bytes: &[u8]) -> Option<ImageInfo> {
         mime,
         width: size.and_then(|s| i32::try_from(s.width).ok()),
         height: size.and_then(|s| i32::try_from(s.height).ok()),
+        size: bytes.len() as i64,
     })
 }

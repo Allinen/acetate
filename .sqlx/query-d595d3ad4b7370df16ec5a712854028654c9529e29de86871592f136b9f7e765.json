@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT EXISTS (SELECT 1 FROM covers WHERE blob_sha256 = $1)\n                OR EXISTS (SELECT 1 FROM files WHERE sha256 = $1 AND purged_at IS NULL)\n                -- A file that didn't import (and the covers sent with it), kept for the\n                -- review list, or resolved by hand and not purged yet.\n                -- (One imported has its file and covers elsewhere; the ones purged here\n                -- are marked already.)\n                OR EXISTS (SELECT 1 FROM ingest_problems\n                           WHERE (sha256 = $1 OR $1 = ANY (cover_blobs)) AND audio_purged_at IS NULL\n                             AND (resolved_at IS NULL OR track_id IS NULL))\n                -- An extra's file (taken off or not: it can be brought back).\n                OR EXISTS (SELECT 1 FROM extra_files WHERE sha256 = $1 OR thumb_sha256 = $1)\n               AS \"used!\"\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "used!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "d595d3ad4b7370df16ec5a712854028654c9529e29de86871592f136b9f7e765"
+}

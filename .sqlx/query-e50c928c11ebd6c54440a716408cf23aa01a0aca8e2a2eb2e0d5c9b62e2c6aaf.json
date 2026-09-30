@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE ingest_problems SET audio_purged_at = now() WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e50c928c11ebd6c54440a716408cf23aa01a0aca8e2a2eb2e0d5c9b62e2c6aaf"
+}

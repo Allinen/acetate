@@ -58,6 +58,12 @@ pub struct TrackDetail {
     pub variants: Vec<Variant>,
     #[serde(default)]
     pub lyrics: Vec<Lyrics>,
+    /// Lyrics entries taken off it (kept, to bring back).
+    #[serde(default)]
+    pub removed_lyrics: Vec<Lyrics>,
+    /// The names of the aliases its history credits, listed or not (with history only).
+    #[serde(default)]
+    pub alias_names: HashMap<Uuid, String>,
     #[serde(default)]
     pub merges: Vec<Merge>,
     #[serde(default)]
@@ -494,7 +500,8 @@ pub struct Details<T> {
     kept: HashMap<Uuid, Cached<T>>,
     /// Numbers each fetch: only the latest one's answer is kept.
     asked: HashMap<Uuid, u64>,
-    answers: Arc<Mutex<Vec<(Uuid, u64, Result<(T, Vec<u8>), String>)>>>,
+    /// Errors: why, and for a track made into an extra, that extra.
+    answers: Arc<Mutex<Vec<(Uuid, u64, Result<(T, Vec<u8>), (String, Option<Uuid>)>)>>>,
     _kind: PhantomData<T>,
 }
 
@@ -546,7 +553,10 @@ impl<T: DeserializeOwned + Send + Sync + 'static> Details<T> {
                 anyhow::Ok((serde_json::from_value::<T>(body)?, bytes))
             }
             .await
-            .map_err(|err| format!("{err:#}"));
+            .map_err(|err| {
+                let extra = err.downcast_ref::<crate::api::ApiError>().and_then(|e| e.extra_id);
+                (format!("{err:#}"), extra)
+            });
             answers.lock().unwrap().push((id, number, result));
             ctx.request_repaint();
         });
@@ -572,10 +582,14 @@ impl<T: DeserializeOwned + Send + Sync + 'static> Details<T> {
                     }
                     cached.value = Some(Arc::new(value));
                     cached.error = None;
+                    cached.became_extra = None;
                     cached.confirmed_at = Some(std::time::SystemTime::now());
                 }
                 // The copy shown stays; the error says why it may be old.
-                Err(err) => cached.error = Some(err),
+                Err((err, extra)) => {
+                    cached.error = Some(err);
+                    cached.became_extra = extra;
+                }
             }
         }
     }

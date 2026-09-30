@@ -23,6 +23,7 @@ mod catalog;
 mod details;
 mod links;
 mod lyrics;
+mod memory;
 mod playback;
 mod playlists;
 mod resume;

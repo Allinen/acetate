@@ -184,6 +184,8 @@ pub struct Shell {
     pub catalog: Cached<Catalog>,
     /// Counts catalog replacements: a page's lists are rebuilt when it changes.
     pub generation: u64,
+    /// The catalog was replaced: freed memory is given back next frame (`memory::trim`).
+    pub trim_asked: bool,
     pub actions: Vec<Action>,
     pub data_dir: PathBuf,
     /// Where copies of things are kept (scaled covers).
@@ -532,6 +534,9 @@ impl Shell {
             match update {
                 Update::Loaded { catalog, from_server } => {
                     self.catalog.value = Some(catalog);
+                    // The old one's memory, back to the system (it held about as much),
+                    // once this frame's copies of it are gone too.
+                    self.trim_asked = true;
                     self.generation += 1;
                     if from_server {
                         if let Some(asked) = self.refresh_asked {
@@ -596,6 +601,8 @@ pub struct App {
     keys_open: bool,
     spectrum: Spectrum,
     last_time: f64,
+    /// When freed memory was last given back (see `memory::trim`).
+    last_trim: f64,
     pages: views::Pages,
 
     page: Page,
@@ -658,6 +665,7 @@ impl App {
             watching: None,
             catalog: Cached::default(),
             generation: 0,
+            trim_asked: false,
             actions: Vec::new(),
             data_dir,
             cache_dir,
@@ -690,6 +698,7 @@ impl App {
             keys_open: false,
             spectrum: Spectrum::new(64),
             last_time: 0.0,
+            last_trim: 0.0,
             pages: views::Pages::default(),
             page: Page::Albums,
             back: Vec::new(),
@@ -1119,6 +1128,10 @@ impl eframe::App for App {
         let now = ctx.input(|i| i.time);
         let dt = ((now - self.last_time) as f32).clamp(0.0, 0.1);
         self.last_time = now;
+        if now - self.last_trim > 60.0 || std::mem::take(&mut self.shell.trim_asked) {
+            self.last_trim = now;
+            crate::memory::trim();
+        }
         self.shell.covers.poll(&ctx);
         self.shell.take_updates();
         self.pages.login.poll(&mut self.shell);

@@ -923,7 +923,7 @@ async fn save(
             outcome.meta = Some(written.revision_id);
         }
         if let (true, Some(base)) = (facts_changed, facts_base) {
-            let body = facts_body(&facts, base, &reason).map_err(|message| ApiError { status: None, code: "invalid".into(), message })?;
+            let body = facts_body(&facts, base, &reason).map_err(|message| ApiError { status: None, code: "invalid".into(), message, extra_id: None })?;
             let written: Written = api.send_json(reqwest::Method::PUT, &format!("/api/tracks/{track}/facts"), Some(body)).await?;
             outcome.facts = Some(written.revision_id);
         }

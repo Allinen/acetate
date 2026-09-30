@@ -279,13 +279,24 @@ pub async fn ingest_staged(
             if !dry_run {
                 // Listing it is a convenience: if that fails too, the original error is
                 // what matters.
-                if let Err(record_err) = record_problem(pool, file, options, &err).await {
+                if let Err(record_err) = record_problem(pool, store, file, options, &err).await {
                     tracing::error!("couldn't list {} for review: {record_err:#}", options.uploaded_filename);
                 }
             }
             Err(err)
         }
     }
+}
+
+/// A track's cover as ingest found it: embedded in the file, or given with the description.
+struct TrackCover {
+    sha256: String,
+    mime: Option<String>,
+    width: Option<i32>,
+    height: Option<i32>,
+    /// Bytes.
+    size: i64,
+    source: &'static str,
 }
 
 /// Whether an error means the file (or what was said about it) was refused, rather than
@@ -299,6 +310,7 @@ pub fn is_refusal(err: &anyhow::Error) -> bool {
 /// Lists a file that didn't import on the Review page (see `db::problems`).
 async fn record_problem(
     pool: &PgPool,
+    store: &BlobStore,
     file: &StagedFile,
     options: &IngestOptions,
     err: &anyhow::Error,
@@ -311,13 +323,39 @@ async fn record_problem(
     let tags = tokio::task::spawn_blocking(move || tags::read_tags(&path, extension.as_deref()))
         .await?
         .ok();
-    let description = describe::description_json(
+    let mut description = describe::description_json(
         &options.origin,
         &options.status,
         &options.sources,
         &options.hints,
         options.restrict_to.as_deref(),
     );
+    // The covers sent with it are kept as blobs, named in the description by their hash
+    // (`load_problem_covers` reads them back for importing it again).
+    let mut cover_blobs = Vec::new();
+    let mut keep = async |images: &[Vec<u8>]| -> anyhow::Result<Vec<String>> {
+        let mut names = Vec::new();
+        for bytes in images {
+            let sha256 = store.put_bytes(bytes).await?;
+            names.push(format!("{}{sha256}", describe::STORED_COVER));
+            cover_blobs.push(sha256);
+        }
+        Ok(names)
+    };
+    let track_covers = keep(&options.hints.track_covers).await?;
+    let album_covers = match &options.hints.album {
+        Some(album) => keep(&album.covers).await?,
+        None => Vec::new(),
+    };
+    if !track_covers.is_empty() {
+        description["track"]["covers"] = json!(track_covers);
+    }
+    if !album_covers.is_empty() {
+        let album = if options.hints.described.is_some() { &mut description["metadata"]["album"] } else { &mut description["album"] };
+        if album.is_object() {
+            album["covers"] = json!(album_covers);
+        }
+    }
     let problem = db::problems::NewProblem {
         kind: if refused { "skipped" } else { "failed" },
         sha256: &file.sha256,
@@ -332,7 +370,11 @@ async fn record_problem(
     };
     let mut tx = db::begin(pool, options.user).await?;
     db::blobs::register(&mut tx, &file.sha256, &file.volume, Some(file.size as i64)).await?;
-    db::problems::record(&mut tx, &problem).await?;
+    for sha256 in &cover_blobs {
+        let size = store.size(sha256).await.map(|s| s as i64);
+        db::blobs::register(&mut tx, sha256, store.default_volume(), size).await?;
+    }
+    db::problems::record(&mut tx, &problem, &cover_blobs).await?;
     tx.commit().await?;
     Ok(())
 }
@@ -492,7 +534,8 @@ async fn merge_duplicate(
     let lyrics = sqlx::query_scalar!(
         r#"
         SELECT count(*) AS "n!" FROM lyrics n
-        WHERE n.track_id = $1 AND NOT EXISTS (SELECT 1 FROM lyrics e WHERE e.track_id = $2 AND e.body = n.body)
+        WHERE n.track_id = $1 AND NOT n.removed
+          AND NOT EXISTS (SELECT 1 FROM lyrics e WHERE e.track_id = $2 AND e.body = n.body AND NOT e.removed)
         "#,
         new,
         existing
@@ -647,13 +690,21 @@ async fn new_track(
     //    only hashes them.
     let sha256 = file.sha256.clone();
     let size_bytes = file.size as i64;
-    // (blob, mime, where it's from); the same image only once.
-    let mut covers: Vec<(String, Option<String>, &'static str)> = Vec::new();
+    // The same image only once.
+    let mut covers: Vec<TrackCover> = Vec::new();
     if !options.hints.skip_embedded_covers {
         for picture in &tags.pictures {
             let sha = put_image(store, &picture.data, dry_run).await?;
-            if !covers.iter().any(|(s, _, _)| *s == sha) {
-                covers.push((sha, picture.mime.clone(), "embedded"));
+            if !covers.iter().any(|c| c.sha256 == sha) {
+                let image = crate::model::image_info(&picture.data);
+                covers.push(TrackCover {
+                    sha256: sha,
+                    mime: picture.mime.clone(),
+                    width: image.as_ref().and_then(|i| i.width),
+                    height: image.as_ref().and_then(|i| i.height),
+                    size: picture.data.len() as i64,
+                    source: "embedded",
+                });
             }
         }
     }
@@ -662,8 +713,15 @@ async fn new_track(
             return Err(Rejected::Invalid(format!("track cover {}: not a JPEG, PNG, WebP or GIF image", n + 1)).into());
         };
         let sha = put_image(store, bytes, dry_run).await?;
-        if !covers.iter().any(|(s, _, _)| *s == sha) {
-            covers.push((sha, Some(image.mime.to_string()), "description"));
+        if !covers.iter().any(|c| c.sha256 == sha) {
+            covers.push(TrackCover {
+                sha256: sha,
+                mime: Some(image.mime.to_string()),
+                width: image.width,
+                height: image.height,
+                size: image.size,
+                source: "description",
+            });
         }
     }
     let mut album_cover_blobs = Vec::new();
@@ -1070,7 +1128,7 @@ async fn create_track_rows(
     conn: &mut PgConnection,
     options: &IngestOptions,
     file: &NewFileInfo<'_>,
-    covers: &[(String, Option<String>, &'static str)],
+    covers: &[TrackCover],
     album_covers: &[(String, ImageInfo)],
 ) -> anyhow::Result<Report> {
     let tags = file.tags;
@@ -1291,16 +1349,15 @@ async fn create_track_rows(
         db::groupings::add(conn, grouping, &[track_id], &album, reason).await?;
     }
 
-    for (position, (cover_sha, mime, source)) in covers.iter().enumerate() {
-        db::ingest::insert_track_cover(
-            conn,
-            track_id,
-            cover_sha,
-            mime.as_deref(),
-            position as i16,
-            source,
-        )
-        .await?;
+    for (position, cover) in covers.iter().enumerate() {
+        let new = db::covers::NewCover {
+            blob_sha256: &cover.sha256,
+            mime: cover.mime.as_deref(),
+            width: cover.width,
+            height: cover.height,
+            source: cover.source,
+        };
+        db::ingest::insert_track_cover(conn, track_id, &new, position as i16).await?;
     }
     let mut album_covers_added = 0;
     if let Some(album_id) = album_id {
@@ -1390,8 +1447,8 @@ async fn create_track_rows(
         .await?;
         db::blobs::register(conn, file.sha256, file.volume, Some(file.size_bytes)).await?;
     }
-    for (cover_sha, _, _) in covers {
-        db::blobs::register(conn, cover_sha, file.cover_volume, None).await?;
+    for cover in covers {
+        db::blobs::register(conn, &cover.sha256, file.cover_volume, Some(cover.size)).await?;
     }
     // If this file was listed as not imported before (e.g. its tags were fixed since), it
     // is now.

@@ -1120,7 +1120,7 @@ async fn write_one(api: &Api, track: Uuid, d: &TrackDetail, change: &Change, n: 
     }
     if new_facts != facts {
         let Some(base) = d.external_revision_id else {
-            return Err(ApiError { status: None, code: "invalid".into(), message: "it has no facts revision to build on".into() });
+            return Err(ApiError { status: None, code: "invalid".into(), message: "it has no facts revision to build on".into(), extra_id: None });
         };
         let mut body = new_facts.clone();
         body["base_revision_id"] = json!(base);

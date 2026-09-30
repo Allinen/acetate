@@ -415,21 +415,21 @@ pub async fn platform_ids_of(
 pub async fn insert_track_cover(
     conn: &mut PgConnection,
     track_id: Uuid,
-    blob_sha256: &str,
-    mime: Option<&str>,
+    cover: &super::covers::NewCover<'_>,
     position: i16,
-    source: &str,
 ) -> sqlx::Result<()> {
     sqlx::query!(
         r#"
-        INSERT INTO covers (track_id, blob_sha256, mime, position, source)
-        VALUES ($1, $2, $3, $4, $5)
+        INSERT INTO covers (track_id, blob_sha256, mime, width, height, position, source)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
         "#,
         track_id,
-        blob_sha256,
-        mime,
+        cover.blob_sha256,
+        cover.mime,
+        cover.width,
+        cover.height,
         position,
-        source,
+        cover.source,
     )
     .execute(conn)
     .await?;

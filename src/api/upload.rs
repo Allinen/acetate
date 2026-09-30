@@ -51,7 +51,7 @@ pub async fn upload(
     let mut next_sources: Vec<ValidSource> = Vec::new();
     let mut results = Vec::new();
 
-    while let Some(mut field) = multipart.next_field().await.map_err(bad_request)? {
+    while let Some(field) = multipart.next_field().await.map_err(bad_request)? {
         let name = field.name().unwrap_or_default().to_string();
 
         // Fields without a filename are plain text fields.
@@ -94,11 +94,7 @@ pub async fn upload(
             continue;
         };
 
-        let mut writer = state.store.writer().await?;
-        while let Some(chunk) = field.chunk().await.map_err(bad_request)? {
-            writer.write(&chunk).await?;
-        }
-        let pending = writer.finish().await?;
+        let pending = super::uploads::receive(&state, &user, field).await?;
 
         let options = IngestOptions {
             user: user.id(),
@@ -160,7 +156,7 @@ pub async fn replace_file(
     let mut reason = String::new();
     let mut volume: Option<String> = None;
 
-    while let Some(mut field) = multipart.next_field().await.map_err(bad_request)? {
+    while let Some(field) = multipart.next_field().await.map_err(bad_request)? {
         let name = field.name().unwrap_or_default().to_string();
         let Some(filename) = field.file_name().map(str::to_string) else {
             let value = field.text().await.map_err(bad_request)?;
@@ -183,11 +179,7 @@ pub async fn replace_file(
             ));
         };
 
-        let mut writer = state.store.writer().await?;
-        while let Some(chunk) = field.chunk().await.map_err(bad_request)? {
-            writer.write(&chunk).await?;
-        }
-        let pending = writer.finish().await?;
+        let pending = super::uploads::receive(&state, &user, field).await?;
 
         let options = ReplaceOptions {
             user: user.id(),

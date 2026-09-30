@@ -545,7 +545,7 @@ impl ExtrasView {
     }
 }
 
-/// Uploads files to an extra, one request each (each within the server's size limit).
+/// Uploads files to an extra, one after another (a big one in chunks, see `Api::upload`).
 pub async fn upload_all(api: &crate::api::Api, extra: &str, files: &[PathBuf], progress: &AtomicUsize, ctx: &egui::Context) -> Result<(), String> {
     for (n, path) in files.iter().enumerate() {
         let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "file".into());

@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                UPDATE ingest_problems p SET resolved_at = NULL, resolved_by = NULL, resolution = ''\n                WHERE p.id = $1 AND p.resolved_at IS NOT NULL AND p.track_id IS NULL AND p.audio_purged_at IS NULL\n                  AND NOT EXISTS (SELECT 1 FROM ingest_problems o WHERE o.sha256 = p.sha256 AND o.resolved_at IS NULL)\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "67e4b012609aecf0aa5738a3a70428c5b6afdc9b381a8de156a1a2ddd9eb553a"
+}

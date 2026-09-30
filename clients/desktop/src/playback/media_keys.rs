@@ -20,6 +20,9 @@ pub struct MediaKeys {
     /// What the system was last told: (track, playing, paused), so it's only told changes.
     told: Mutex<Option<(Option<Uuid>, bool, bool)>>,
     told_volume: Mutex<Option<f32>>,
+    /// The cover it was told (a file's address; None: none yet, as it wasn't on disk), and
+    /// when the disk was last looked at for a better one.
+    told_cover: Mutex<(Option<String>, std::time::Instant)>,
     /// The cache folder, where covers are kept on disk (the system shows them from there).
     covers: PathBuf,
 }
@@ -65,7 +68,13 @@ impl MediaKeys {
             eprintln!("no media keys: {err:?}");
             return None;
         }
-        Some(MediaKeys { controls: Mutex::new(controls), told: Mutex::new(None), told_volume: Mutex::new(None), covers })
+        Some(MediaKeys {
+            controls: Mutex::new(controls),
+            told: Mutex::new(None),
+            told_volume: Mutex::new(None),
+            told_cover: Mutex::new((None, std::time::Instant::now())),
+            covers,
+        })
     }
 
     /// After a seek: the system is told the new position with the next update.
@@ -92,28 +101,30 @@ impl MediaKeys {
         if *told == Some(state) {
             return;
         }
+        // The cover is on disk only once it's been shown (loaded in the background): until
+        // the bigger copy is there, look again now and then, and tell the system when it
+        // is.
+        if *told == Some(state) {
+            let mut told_cover = self.told_cover.lock().unwrap();
+            let best = current.and_then(|c| c.cover).map(|c| format!("file://{}", crate::ui::covers::path(&self.covers, c.key, crate::ui::covers::CoverSize::Standard).display()));
+            if best.is_some() && told_cover.0 != best && told_cover.1.elapsed() > Duration::from_secs(1) {
+                told_cover.1 = std::time::Instant::now();
+                let cover = self.cover(current);
+                if cover != told_cover.0 {
+                    told_cover.0 = cover.clone();
+                    self.tell_metadata(current, cover.as_deref());
+                }
+            }
+            return;
+        }
         let track_changed = told.map(|t| t.0) != Some(state.0);
         *told = Some(state);
-        let mut controls = self.controls.lock().unwrap();
         if track_changed {
-            let cover = current
-                .and_then(|c| c.cover)
-                .and_then(|c| {
-                    // The bigger copy if it's there (it is once "now playing" was shown).
-                    [crate::ui::covers::CoverSize::Standard, crate::ui::covers::CoverSize::Small]
-                        .into_iter()
-                        .map(|size| crate::ui::covers::path(&self.covers, c.key, size))
-                        .find(|path| path.exists())
-                })
-                .map(|path| format!("file://{}", path.display()));
-            let _ = controls.set_metadata(MediaMetadata {
-                title: current.map(|c| c.title.as_str()),
-                artist: current.map(|c| c.artist.as_str()),
-                album: current.and_then(|c| c.album.as_deref()),
-                cover_url: cover.as_deref(),
-                duration: current.and_then(|c| c.duration_ms).map(|ms| Duration::from_millis(ms.max(0) as u64)),
-            });
+            let cover = self.cover(current);
+            *self.told_cover.lock().unwrap() = (cover.clone(), std::time::Instant::now());
+            self.tell_metadata(current, cover.as_deref());
         }
+        let mut controls = self.controls.lock().unwrap();
         let progress = Some(MediaPosition(view.position_now()));
         let playback = match (view.playing, view.paused) {
             (false, _) => MediaPlayback::Stopped,
@@ -121,6 +132,32 @@ impl MediaKeys {
             (true, false) => MediaPlayback::Playing { progress },
         };
         let _ = controls.set_playback(playback);
+    }
+}
+
+impl MediaKeys {
+    /// The cover of what plays as the system reads it: the bigger copy on disk if it's
+    /// there (it is once "now playing" was shown), else the small one.
+    fn cover(&self, current: Option<&super::QueueItem>) -> Option<String> {
+        current
+            .and_then(|c| c.cover)
+            .and_then(|c| {
+                [crate::ui::covers::CoverSize::Standard, crate::ui::covers::CoverSize::Small]
+                    .into_iter()
+                    .map(|size| crate::ui::covers::path(&self.covers, c.key, size))
+                    .find(|path| path.exists())
+            })
+            .map(|path| format!("file://{}", path.display()))
+    }
+
+    fn tell_metadata(&self, current: Option<&super::QueueItem>, cover: Option<&str>) {
+        let _ = self.controls.lock().unwrap().set_metadata(MediaMetadata {
+            title: current.map(|c| c.title.as_str()),
+            artist: current.map(|c| c.artist.as_str()),
+            album: current.and_then(|c| c.album.as_deref()),
+            cover_url: cover,
+            duration: current.and_then(|c| c.duration_ms).map(|ms| Duration::from_millis(ms.max(0) as u64)),
+        });
     }
 }
 

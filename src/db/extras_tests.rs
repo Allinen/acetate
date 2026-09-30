@@ -168,6 +168,11 @@ async fn a_track_becomes_an_extra_and_a_track_again(_: PgPoolOptions, connect: P
     for who in [lib.carol, lib.bob, lib.alice] {
         assert!(!sees(who, lib.o).await?, "nobody sees the track, admins neither");
     }
+    // Its old link leads to the extra.
+    let mut tx = db::begin(&lib.app, Some(lib.carol)).await?;
+    assert_eq!(db::extras::became(&mut tx, lib.o).await?, Some(made.extra_id));
+    assert_eq!(db::extras::became(&mut tx, lib.v).await?, None, "still a track");
+    drop(tx);
     let o_sha: String = sqlx::query_scalar("SELECT f.sha256 FROM tracks t JOIN files f ON f.id = t.file_id WHERE t.id = $1").bind(lib.o).fetch_one(&lib.owner).await?;
     let extra_sha: String = sqlx::query_scalar("SELECT sha256 FROM extra_files WHERE extra_id = $1").bind(made.extra_id).fetch_one(&lib.owner).await?;
     assert_eq!(o_sha, extra_sha, "the same bytes");

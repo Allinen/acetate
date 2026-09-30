@@ -1,5 +1,6 @@
-//! Settings: the sound output and volume, the account, and the library kept on this
-//! computer (how much, where, and checking it against the server).
+//! Settings: the sound output and volume, the account, what the server stores (admins),
+//! and the library kept on this computer (how much, where, and checking it against the
+//! server).
 
 use std::sync::{Arc, Mutex};
 
@@ -20,10 +21,48 @@ pub struct SettingsPage {
     /// Which app opens acetate:// links (the system's answer; empty: none), asked in
     /// the background.
     links_handler: Arc<Mutex<Option<String>>>,
+    /// What the server stores on each volume (`GET /api/storage`, admins), asked when the
+    /// page opens.
+    storage: Arc<Mutex<Option<Result<Vec<StorageVolume>, String>>>>,
+}
+
+#[derive(Clone, serde::Deserialize)]
+struct StorageVolume {
+    name: String,
+    default: bool,
+    parts: Vec<StoragePart>,
+}
+
+#[derive(Clone, serde::Deserialize)]
+struct StoragePart {
+    kind: String,
+    blobs: i64,
+    bytes: i64,
+    unmeasured: i64,
+}
+
+/// `12.3 MB`, `1.2 GB`, `3.4 TB`.
+fn size(bytes: i64) -> String {
+    let bytes = bytes as f64;
+    if bytes >= 1e12 {
+        format!("{:.1} TB", bytes / 1e12)
+    } else if bytes >= 1e9 {
+        format!("{:.1} GB", bytes / 1e9)
+    } else {
+        format!("{:.1} MB", bytes / 1e6)
+    }
 }
 
 impl SettingsPage {
     pub fn opened(&mut self, shell: &Shell) {
+        if shell.account.can("admin") {
+            let (api, storage, ctx) = (shell.api.clone(), self.storage.clone(), shell.ctx.clone());
+            shell.runtime.spawn(async move {
+                let answer = api.send_json::<Vec<StorageVolume>>(reqwest::Method::GET, "/api/storage", None).await.map_err(|e| e.message);
+                *storage.lock().unwrap() = Some(answer);
+                ctx.request_repaint();
+            });
+        }
         let outputs = self.outputs.clone();
         shell.runtime.spawn_blocking(move || *outputs.lock().unwrap() = Some(crate::playback::engine::outputs()));
         let handler = self.links_handler.clone();
@@ -106,6 +145,39 @@ impl SettingsPage {
                 shell.act(Action::LogOut);
             }
 
+            if shell.account.can("admin") {
+                section(ui, "Stored on the server");
+                match self.storage.lock().unwrap().clone() {
+                    None => {
+                        ui.label(RichText::new("Adding up…").color(P.faint));
+                    }
+                    Some(Err(err)) => {
+                        ui.label(RichText::new(format!("Couldn't ask the server: {err}")).color(P.danger));
+                    }
+                    Some(Ok(volumes)) => {
+                        egui::Grid::new("storage").num_columns(2).spacing([24.0, 10.0]).show(ui, |ui| {
+                            for volume in &volumes {
+                                let total: i64 = volume.parts.iter().map(|p| p.bytes).sum();
+                                let name = if volume.default { format!("{} (new files go here)", volume.name) } else { volume.name.clone() };
+                                ui.label(RichText::new(name).color(P.muted));
+                                ui.vertical(|ui| {
+                                    ui.label(RichText::new(size(total)).font(font(14.0, medium())));
+                                    for part in &volume.parts {
+                                        let unmeasured = if part.unmeasured > 0 { format!(" ({} not measured yet)", thousands(part.unmeasured as usize)) } else { String::new() };
+                                        ui.label(RichText::new(format!("{}: {} · {}{unmeasured}", part.kind, size(part.bytes), thousands(part.blobs as usize))).color(P.faint));
+                                    }
+                                });
+                                ui.end_row();
+                            }
+                        });
+                        hint(ui, "Audio counts tracks' current and previous files; “other” is what nothing refers to anymore. Sizes the server never recorded (older covers) are filled in by acetate measure-covers.");
+                    }
+                }
+            }
+
+            section(ui, "Memory");
+            self.memory(ui, shell);
+
             section(ui, "Library on this computer");
             let catalog = shell.catalog.value.clone();
             egui::Grid::new("library").num_columns(2).spacing([24.0, 10.0]).show(ui, |ui| {
@@ -187,6 +259,39 @@ impl SettingsPage {
             ui.add_space(24.0);
             ui.label(RichText::new(format!("Acetate {}", env!("CARGO_PKG_VERSION"))).color(P.faint).small());
         });
+    }
+}
+
+impl SettingsPage {
+    /// What the app holds: in all (measured), and its big parts.
+    fn memory(&mut self, ui: &mut egui::Ui, shell: &Shell) {
+        let mb = |bytes: u64| format!("{} MB", thousands((bytes / 1_000_000) as usize));
+        egui::Grid::new("memory").num_columns(2).spacing([24.0, 10.0]).show(ui, |ui| {
+            if let Some((now, peak)) = crate::memory::resident() {
+                ui.label(RichText::new("In use").color(P.muted));
+                ui.label(format!("{} (at most {} since it started)", mb(now), mb(peak)));
+                ui.end_row();
+            }
+            if let Some(c) = &shell.catalog.value {
+                // Measured once on a real library: about 2.2 kB a track with everything.
+                ui.label(RichText::new("The library").color(P.muted));
+                ui.label(format!("about {} ({} tracks; twice that for a moment while it's refreshed)", mb(c.tracks.len() as u64 * 2_230), thousands(c.tracks.len())));
+                ui.end_row();
+            }
+            let (covers, cover_bytes) = shell.covers.textures();
+            ui.label(RichText::new("Covers shown").color(P.muted));
+            ui.label(format!("{} ({} images, let go when not shown for a while)", mb(cover_bytes as u64), thousands(covers)));
+            ui.end_row();
+            ui.label(RichText::new("Playing").color(P.muted));
+            let held = crate::playback::stream::HELD.load(std::sync::atomic::Ordering::Relaxed);
+            ui.label(format!("{} (what plays and what's next, each file whole)", mb(held)));
+            ui.end_row();
+        });
+        if ui.small_button("Give freed memory back now").clicked() {
+            crate::memory::trim();
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(300));
+        }
+        hint(ui, "Freed memory is given back to the system after the library is refreshed, when covers are let go, and once a minute.");
     }
 }
 

@@ -277,6 +277,43 @@ pub async fn run(pool: &PgPool, mut options: Options) -> anyhow::Result<()> {
         }
     }
 
+    // ---- Plays: each with its time (Navidrome's `scrobbles`, where it has them) ----
+    // Only the log: the counts came with the annotations above. Each once, however often
+    // this runs (`imported_key`).
+    let has_scrobbles: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'scrobbles')")
+        .fetch_one(&nd)
+        .await?;
+    let (mut plays_added, mut plays_unmatched) = (0, 0);
+    if has_scrobbles {
+        let scrobbles = sqlx::query("SELECT id, media_file_id, user_id, submission_time FROM scrobbles ORDER BY id").fetch_all(&nd).await?;
+        for row in &scrobbles {
+            let nd_user: String = row.try_get("user_id")?;
+            let Some(&user_id) = user_ids.get(&nd_user) else { continue };
+            let media_file: String = row.try_get("media_file_id")?;
+            if !matcher.in_libraries("media_file", &media_file).await? {
+                continue;
+            }
+            let Some(track) = matcher.track(&mut tx, &media_file).await? else {
+                plays_unmatched += 1;
+                continue;
+            };
+            let id: i64 = row.try_get("id")?;
+            let at = DateTime::<Utc>::from_timestamp(row.try_get::<i64, _>("submission_time")?, 0).unwrap_or_default();
+            let added = sqlx::query(
+                "INSERT INTO plays (user_id, track_id, played_at, source, imported_key) VALUES ($1, $2, $3, 'navidrome', $4)
+                 ON CONFLICT (imported_key) DO NOTHING",
+            )
+            .bind(user_id)
+            .bind(track)
+            .bind(at)
+            .bind(format!("navidrome:{id}"))
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+            plays_added += added;
+        }
+    }
+
     let s = &matcher.stats;
     println!(
         "\ntracks:  {} matched ({} by the path they were imported from, the rest by content), {} not in Acetate, \
@@ -292,6 +329,9 @@ pub async fn run(pool: &PgPool, mut options: Options) -> anyhow::Result<()> {
         println!("  ... and {} more", s.notes.len() - 40);
     }
     println!("annotations: {written} written ({} matched)", found.len());
+    if has_scrobbles {
+        println!("plays (with their times): {plays_added} added, {plays_unmatched} of tracks not matched");
+    }
     println!(
         "playlists: {playlists_made} imported, {playlists_refreshed} brought up to date (unchanged since imported), \
          {playlists_there} left as they are (changed since imported){}",

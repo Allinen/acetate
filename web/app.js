@@ -682,6 +682,8 @@ async function showTrack(id) {
     names.artist.set(c.artist_id, c.artist_name);
     if (c.alias_id) names.alias.set(c.alias_id, c.alias);
   }
+  // Aliases the history credits, listed or not.
+  for (const [id, alias] of Object.entries(t.alias_names || {})) names.alias.set(id, alias);
   for (const a of t.albums) names.album.set(a.album_id, a.title);
   for (const r of t.relations) names.track.set(r.track_id, r.title);
   const variantLabel = (variantId) => t.variants.find((v) => v.id === variantId)?.label ?? "variant";
@@ -1762,9 +1764,22 @@ function addToPlaylistBox(trackId) {
 // Lyrics and covers
 // ---------------------------------------------------------------------------
 
-// A track's lyrics entries: each with an editor and its history. Entries are edited, never
-// deleted.
+// A track's lyrics entries: each with an editor and its history. A removed entry is kept
+// (listed apart): restoring a revision from before brings it back.
 async function lyricsView(t, reload) {
+  const removeButton = (l) => {
+    const status = h("span", {});
+    return [h("button", {
+      type: "button", class: "small",
+      onclick: () => {
+        if (!confirm("Take these lyrics off the track? They're kept, to bring back.")) return;
+        save(status, () => api(`/api/lyrics/${l.id}?base_revision_id=${l.revision_id}`, { method: "DELETE" }), reload);
+      },
+    }, "Remove"), status];
+  };
+  const removed = await Promise.all((t.removed_lyrics || []).map(async (l) => h("div", { class: "box" },
+    h("pre", {}, l.body),
+    l.revisions ? await historyView(l.revisions, () => "lyrics", (r) => `/api/lyrics-revisions/${r.id}/restore`, reload) : null)));
   const entries = await Promise.all(t.lyrics.map(async (l) => h("div", { class: "box" },
     h("div", { class: "row" },
       h("span", { class: "tag" }, l.is_official ? "official" : "unofficial"),
@@ -1773,11 +1788,13 @@ async function lyricsView(t, reload) {
       h("span", { class: "muted" }, l.source)),
     h("pre", {}, l.body),
     can("edit_metadata") ? h("details", {}, h("summary", {}, "Edit…"), lyricsForm(t.id, l, reload)) : null,
+    can("edit_metadata") ? h("div", { class: "row" }, removeButton(l)) : null,
     l.revisions ? h("details", {}, h("summary", {}, `History (${l.revisions.length})`),
       await historyView(l.revisions, () => "lyrics", (r) => `/api/lyrics-revisions/${r.id}/restore`, reload)) : null)));
   return [
     entries.length ? entries : h("p", { class: "muted" }, "None."),
     can("edit_metadata") ? h("details", {}, h("summary", {}, "Add lyrics…"), lyricsForm(t.id, null, reload)) : null,
+    removed.length ? h("details", {}, h("summary", {}, `Removed (${removed.length}): restore a revision from before to bring one back`), removed) : null,
   ];
 }
 

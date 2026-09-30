@@ -3,7 +3,9 @@
 //! `year:2019`, `genre:…`, `status:demo`, `format:flac`, `flag:cover`, `kind:ep`,
 //! `disc:2`, `track:5` (its number), `group:` (a collective, era, project it's in),
 //! `source:youtube` (where it came from: a platform it has a source on), `og:` (original
-//! files: `og:` or `og:yes`; `og:no` the rest; other words look in the original filename). A value
+//! files: `og:` or `og:yes`; `og:no` the rest; other words look in the original filename),
+//! `bitrate:<192` (kbps: `<`, `<=`, `>`, `>=`, `=`, or a number alone for about that),
+//! `rate:44.1k` (the sample rate, compared the same way), `format:lossy` / `lossless`. A value
 //! runs until the next key, so `artist:lil quill year:2017` needs no quotes. A key can be
 //! shortened to any start of it (`art:`, `yr` isn't one: the aliases are listed below),
 //! and a word with a colon that isn't a key is a plain word.
@@ -39,6 +41,10 @@ pub enum Key {
     /// Its file is an original file (an og file): yes, no, or words in its name. Alone
     /// (`og:`) it means yes.
     Og,
+    /// Its file's bitrate in kbps, compared (`<192`, `>=320`, `128`: about that).
+    Bitrate,
+    /// Its file's sample rate (`44.1k`, `48000`, `>48k`).
+    SampleRate,
 }
 
 /// Every key's names: the first is its own, the rest are other names for it. A typed key
@@ -59,6 +65,8 @@ const KEYS: &[(Key, &[&str])] = &[
     (Key::Group, &["group", "grouping", "collective"]),
     (Key::Source, &["source", "sources", "platform", "from"]),
     (Key::Og, &["og", "original"]),
+    (Key::Bitrate, &["bitrate", "kbps"]),
+    (Key::SampleRate, &["rate", "samplerate", "hz"]),
 ];
 
 impl Key {
@@ -166,6 +174,34 @@ fn track_has(catalog: &Catalog, t: &Track, key: Key, value: &str) -> bool {
         }
         Key::Source => t.platforms.iter().any(|p| p.starts_with(value)),
         Key::Og => og_matches(t.original_filename.as_deref(), value),
+        Key::Bitrate => t.bitrate.is_some_and(|b| compare(b as f64, value, 1.0, true)),
+        Key::SampleRate => t.sample_rate.is_some_and(|r| compare(r as f64, value, 1000.0, false)),
+    }
+}
+
+/// Whether a number matches a comparison typed for it: `<N`, `<=N`, `>N`, `>=N`, `=N`, or
+/// `N` alone (about N if `loose`: within 3%, so 192 finds a VBR file's 193; else exactly).
+/// `N` may end in `k` (times 1000, unless `unit` is 1000 already: then as typed, and a
+/// number under 1000 counts in thousands too, so `rate:44.1` is 44.1 kHz).
+fn compare(have: f64, value: &str, unit: f64, loose: bool) -> bool {
+    let value = value.replace(' ', "");
+    let (op, number) = ["<=", ">=", "<", ">", "="].iter().find_map(|op| value.strip_prefix(op).map(|n| (*op, n))).unwrap_or(("", value.as_str()));
+    let (digits, k) = match number.strip_suffix(['k', 'K']) {
+        Some(digits) => (digits, true),
+        None => (number, false),
+    };
+    let Ok(mut want) = digits.parse::<f64>() else { return false };
+    if k || (unit >= 1000.0 && want < 1000.0) {
+        want *= 1000.0;
+    }
+    match op {
+        "<" => have < want,
+        "<=" => have <= want,
+        ">" => have > want,
+        ">=" => have >= want,
+        "=" => have == want,
+        _ if loose => (have - want).abs() <= want * 0.03,
+        _ => have == want,
     }
 }
 
@@ -173,7 +209,12 @@ fn track_has(catalog: &Catalog, t: &Track, key: Key, value: &str) -> bool {
 /// are PCM ("pcm_s16le"…), for `wav`.
 fn format_matches(codec: &str, value: &str) -> bool {
     let codec = codec.to_lowercase();
-    codec.contains(value) || (matches!(value, "wav" | "wave" | "pcm") && codec.starts_with("pcm"))
+    let lossless = ["flac", "alac", "pcm", "wavpack", "ape", "tta", "mlp", "truehd"].iter().any(|l| codec.starts_with(l));
+    match value {
+        "lossless" => lossless,
+        "lossy" => !lossless,
+        _ => codec.contains(value) || (matches!(value, "wav" | "wave" | "pcm") && codec.starts_with("pcm")),
+    }
 }
 
 /// Whether an original filename (None: not an og file) matches `og:value` (lowercase):
@@ -249,5 +290,20 @@ mod tests {
         let has = |codec: &str| format_matches(codec, &q.fields[0].1);
         assert!(has("pcm_s16le") && has("pcm_s24le") && !has("flac"));
         assert!(format_matches("flac", "fla"));
+        assert!(format_matches("flac", "lossless") && format_matches("pcm_s24le", "lossless") && !format_matches("mp3", "lossless"));
+        assert!(format_matches("mp3", "lossy") && format_matches("aac", "lossy") && !format_matches("alac", "lossy"));
+    }
+
+    #[test]
+    fn bitrates_and_sample_rates_compare() {
+        assert_eq!(Query::parse("bitrate:<192").fields, [(Key::Bitrate, "<192".into())]);
+        assert_eq!(Query::parse("rate:44.1k").fields, [(Key::SampleRate, "44.1k".into())]);
+        assert!(compare(128.0, "<192", 1.0, true) && !compare(256.0, "<192", 1.0, true));
+        assert!(compare(193.0, "192", 1.0, true), "about: VBR");
+        assert!(!compare(160.0, "192", 1.0, true));
+        assert!(compare(320.0, ">=320", 1.0, true) && compare(320.0, "=320", 1.0, true));
+        assert!(compare(44100.0, "44.1k", 1000.0, false) && compare(44100.0, "44.1", 1000.0, false) && compare(44100.0, "44100", 1000.0, false));
+        assert!(compare(96000.0, ">48k", 1000.0, false) && !compare(48000.0, ">48k", 1000.0, false));
+        assert!(!compare(128.0, "fast", 1.0, true));
     }
 }

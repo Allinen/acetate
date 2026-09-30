@@ -473,7 +473,7 @@ fn run(shell: &mut Shell, catalog: Option<&Catalog>, mode: &Mode, query: &str, e
         (Mode::AddTo(tracks), Entry::Playlist(id)) => shell.playlists.add(id, name.to_string(), tracks.clone()),
         (Mode::AddTo(tracks), Entry::Create) => shell.playlists.create(query.to_string(), tracks.clone()),
         (Mode::Name(None), Entry::Create) => shell.playlists.create(query.to_string(), Vec::new()),
-        (Mode::Name(Some(id)), Entry::Create) => shell.playlists.update(*id, Some(query.to_string()), None),
+        (Mode::Name(Some(id)), Entry::Create) => shell.playlists.update(*id, Some(query.to_string()), None, None),
         (Mode::Search, _) => search_result(shell, catalog, entry, shift),
         // Made when the form is saved.
         (Mode::Pick(kind, _), Entry::Create) => shell.picker.pick(*kind, None, query.to_string()),

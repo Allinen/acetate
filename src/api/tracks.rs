@@ -51,7 +51,11 @@ pub async fn get(
         return Ok(Redirect::permanent(&format!("/api/tracks/{target}")).into_response());
     }
     let Some(mut track) = db::tracks::get_track(&mut tx, id, with_history).await? else {
-        return Err(AppError::NotFound);
+        // Made into an extra since: the link leads there.
+        return Err(match db::extras::became(&mut tx, id).await? {
+            Some(extra) => AppError::BecameExtra(extra),
+            None => AppError::NotFound,
+        });
     };
     if with_history {
         track.merges = revisions::merges_into(&mut tx, id).await?;

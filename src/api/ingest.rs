@@ -60,12 +60,8 @@ pub async fn ingest(
                     return Err(AppError::BadRequest(format!("send one `{name}` per request")));
                 }
                 let filename = field.file_name().unwrap_or_default().to_string();
-                // Streamed to disk while hashing, like uploads.
-                let mut writer = state.store.writer().await?;
-                while let Some(chunk) = field.chunk().await.map_err(bad_request)? {
-                    writer.write(&chunk).await?;
-                }
-                *slot = Some((filename, writer.finish().await?));
+                // Streamed to disk while hashing (or a chunked upload's, see `uploads`).
+                *slot = Some((filename, super::uploads::receive(&state, &user, field).await?));
             }
             _ => {
                 let mut bytes = Vec::new();

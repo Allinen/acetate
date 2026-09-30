@@ -89,6 +89,16 @@ class AgainstAServer(unittest.TestCase):
         )
         self.assertIn(report.status, ("created", "duplicate"))
 
+    def test_a_big_file_goes_in_chunks(self):
+        # Small pieces, so the test file counts as big.
+        chunked = Acetate(self.acetate.url, self.acetate.token, chunk_size=20_000)
+        report = chunked.ingest(
+            os.path.join(AUDIO, "lantern demo.mp3"),
+            Description(origin=CustomTrack(label="discord", description="the Python library's tests")),
+            dry_run=True,
+        )
+        self.assertIn(report.status, ("created", "duplicate"))
+
     def test_values_given_for_a_file_without_tags(self):
         path = os.path.join(AUDIO, "no-artist.opus")
         description = Description(

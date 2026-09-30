@@ -713,3 +713,10 @@ pub async fn back_to_track(conn: &mut PgConnection, extra: Uuid, reason: &str) -
         Err(err) => Err(err.into()),
     }
 }
+
+/// The extra a track became (made into an extra, so hidden), if the user can see it.
+pub async fn became(conn: &mut PgConnection, track: Uuid) -> sqlx::Result<Option<Uuid>> {
+    sqlx::query_scalar!(r#"SELECT id AS "id!" FROM extras WHERE id = track_became_extra($1)"#, track)
+        .fetch_optional(conn)
+        .await
+}

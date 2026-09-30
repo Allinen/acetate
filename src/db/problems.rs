@@ -25,13 +25,15 @@ pub struct NewProblem<'a> {
 
 /// Records a file that didn't import, or, if it's already listed (the same file tried
 /// again), updates its entry. As the system: the entry may be someone else's.
-pub async fn record(conn: &mut PgConnection, problem: &NewProblem<'_>) -> sqlx::Result<Uuid> {
+/// `cover_blobs`: the images named in its description (kept, see `ingest::record_problem`);
+/// a new attempt adds its own to an open entry's.
+pub async fn record(conn: &mut PgConnection, problem: &NewProblem<'_>, cover_blobs: &[String]) -> sqlx::Result<Uuid> {
     let system = super::as_system(conn).await?;
     let id = sqlx::query_scalar!(
         r#"
         INSERT INTO ingest_problems (kind, sha256, size_bytes, uploaded_filename, path, reason,
-                                     description, embedded_tags, tag_title, tag_artists)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                                     description, embedded_tags, tag_title, tag_artists, cover_blobs)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
         ON CONFLICT (sha256) WHERE resolved_at IS NULL DO UPDATE SET
             kind = EXCLUDED.kind,
             reason = EXCLUDED.reason,
@@ -41,6 +43,7 @@ pub async fn record(conn: &mut PgConnection, problem: &NewProblem<'_>) -> sqlx::
             embedded_tags = COALESCE(EXCLUDED.embedded_tags, ingest_problems.embedded_tags),
             tag_title = EXCLUDED.tag_title,
             tag_artists = EXCLUDED.tag_artists,
+            cover_blobs = ARRAY(SELECT DISTINCT unnest(ingest_problems.cover_blobs || EXCLUDED.cover_blobs)),
             attempts = ingest_problems.attempts + 1,
             last_attempt_at = now()
         RETURNING id
@@ -55,6 +58,7 @@ pub async fn record(conn: &mut PgConnection, problem: &NewProblem<'_>) -> sqlx::
         problem.embedded_tags,
         problem.tag_title,
         problem.tag_artists,
+        cover_blobs,
     )
     .fetch_one(&mut *conn)
     .await?;
@@ -164,6 +168,8 @@ pub struct OpenProblem {
     pub uploaded_filename: String,
     pub path: Option<String>,
     pub description: Option<serde_json::Value>,
+    /// The covers sent with it, kept as blobs.
+    pub cover_blobs: Vec<String>,
 }
 
 /// An open entry the user can see.
@@ -171,7 +177,7 @@ pub async fn get_open(conn: &mut PgConnection, id: Uuid) -> sqlx::Result<Option<
     sqlx::query_as!(
         OpenProblem,
         r#"
-        SELECT sha256, size_bytes, uploaded_filename, path, description
+        SELECT sha256, size_bytes, uploaded_filename, path, description, cover_blobs
         FROM ingest_problems
         WHERE id = $1 AND resolved_at IS NULL
         "#,
@@ -184,7 +190,7 @@ pub async fn get_open(conn: &mut PgConnection, id: Uuid) -> sqlx::Result<Option<
 /// The kept audio of an entry the user can see: (sha256, uploaded filename).
 pub async fn audio(conn: &mut PgConnection, id: Uuid) -> sqlx::Result<Option<(String, String)>> {
     let row = sqlx::query!(
-        "SELECT sha256, uploaded_filename FROM ingest_problems WHERE id = $1",
+        "SELECT sha256, uploaded_filename FROM ingest_problems WHERE id = $1 AND audio_purged_at IS NULL",
         id
     )
     .fetch_optional(conn)

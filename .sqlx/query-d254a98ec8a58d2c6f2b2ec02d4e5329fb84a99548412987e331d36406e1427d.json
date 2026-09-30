@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE covers SET width = $2, height = $3 WHERE blob_sha256 = $1 AND (width IS NULL OR height IS NULL)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int4",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d254a98ec8a58d2c6f2b2ec02d4e5329fb84a99548412987e331d36406e1427d"
+}

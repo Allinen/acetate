@@ -119,7 +119,7 @@ impl UploadLimits {
     fn too_large(&self, got: Option<u64>) -> AppError {
         let got = got.map(|b| format!(" (this one is {})", size(b))).unwrap_or_default();
         AppError::TooLarge(format!(
-            "An upload can be at most {} at a time{got}. Send the files one by one; a single file over that has to be imported on the server (acetate ingest).",
+            "A request can carry at most {} at a time{got}. Send the files one by one, and a bigger file in chunks (POST /api/uploads).",
             size(self.per_request)
         ))
     }

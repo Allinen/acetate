@@ -1,0 +1,28 @@
+//! How much memory the app holds, and giving freed memory back.
+//!
+//! Measured on a real library (168k tracks, 2026-09-30): the catalog takes about 375 MB,
+//! and a refresh builds the new one while the old is still shown (about 740 MB for a
+//! moment). The system allocator (glibc) keeps what's freed for later instead of giving it
+//! back, so each refresh left about 250 MB more held by the app, and it added up. `trim`
+//! gives it back; it's called after the catalog is replaced, when covers are let go, and
+//! once a minute.
+
+/// The app's resident memory now and at its highest, in bytes (Linux; None elsewhere).
+pub fn resident() -> Option<(u64, u64)> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    let kb = |key: &str| -> Option<u64> { status.lines().find(|l| l.starts_with(key))?.split_whitespace().nth(1)?.parse().ok() };
+    Some((kb("VmRSS:")? * 1024, kb("VmHWM:")? * 1024))
+}
+
+/// Gives memory the app freed back to the system (glibc's `malloc_trim`), on a thread of
+/// its own: with a big heap it takes a few milliseconds.
+pub fn trim() {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    std::thread::spawn(|| {
+        unsafe extern "C" {
+            fn malloc_trim(pad: usize) -> i32;
+        }
+        // SAFETY: glibc's own function, safe to call from any thread at any time.
+        unsafe { malloc_trim(0) };
+    });
+}

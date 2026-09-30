@@ -19,6 +19,10 @@ pub struct Server {
     token: String,
 }
 
+/// Files bigger than this go in chunks of this size (`/api/uploads`), under proxies' caps
+/// on a request's body (Cloudflare: 100 MB).
+const CHUNK_BYTES: u64 = 50_000_000;
+
 /// An error response's body.
 #[derive(Deserialize)]
 struct ErrorBody {
@@ -130,11 +134,21 @@ impl Server {
         }
         form = form.text("description", description.to_string());
 
-        // The audio is streamed from disk, not read into memory first.
+        // The audio is streamed from disk, not read into memory first; a big file goes
+        // ahead in chunks, and the form names it.
         let file = tokio::fs::File::open(path).await.with_context(|| format!("opening {}", path.display()))?;
         let length = file.metadata().await?.len();
-        let body = reqwest::Body::wrap_stream(tokio_util::io::ReaderStream::new(file));
-        form = form.part("file", Part::stream_with_length(body, length).file_name(options.uploaded_filename.clone()));
+        let part = if length > CHUNK_BYTES {
+            let id = match self.upload_in_chunks(file, length).await {
+                Ok(id) => id,
+                Err(err) => return Ok(Outcome::Failed(format!("sending it failed: {err:#}"))),
+            };
+            Part::text(id.to_string()).mime_str("application/vnd.acetate.upload")?
+        } else {
+            let body = reqwest::Body::wrap_stream(tokio_util::io::ReaderStream::new(file));
+            Part::stream_with_length(body, length)
+        };
+        form = form.part("file", part.file_name(options.uploaded_filename.clone()));
 
         let response = self
             .client
@@ -168,5 +182,59 @@ impl Server {
             }
             _ => Ok(Outcome::Failed(format!("{status}: {message}"))),
         }
+    }
+
+    /// Sends a file in chunks (`/api/uploads`); returns the upload's id. A chunk that
+    /// fails is sent again from where the server got to, a few times.
+    async fn upload_in_chunks(&self, mut file: tokio::fs::File, length: u64) -> anyhow::Result<uuid::Uuid> {
+        use tokio::io::{AsyncReadExt, AsyncSeekExt};
+
+        #[derive(Deserialize)]
+        struct Started {
+            id: uuid::Uuid,
+        }
+        #[derive(Deserialize)]
+        struct Progress {
+            size: u64,
+        }
+        let check = |response: reqwest::Response| async move {
+            let status = response.status();
+            if status.is_success() {
+                return Ok(response);
+            }
+            let message = response.json::<ErrorBody>().await.map(|b| b.message).unwrap_or_default();
+            anyhow::bail!("{status}: {message}")
+        };
+        let started: Started =
+            check(self.client.post(format!("{}/api/uploads", self.url)).bearer_auth(&self.token).send().await?).await?.json().await?;
+        let url = format!("{}/api/uploads/{}", self.url, started.id);
+        let mut offset = 0;
+        let mut tries = 0;
+        while offset < length {
+            let mut chunk = vec![0; CHUNK_BYTES.min(length - offset) as usize];
+            file.seek(std::io::SeekFrom::Start(offset)).await?;
+            file.read_exact(&mut chunk).await?;
+            let sent = self.client.put(&url).query(&[("offset", offset)]).bearer_auth(&self.token).body(chunk).send().await;
+            match sent {
+                Ok(response) if response.status().is_success() => {
+                    offset = response.json::<Progress>().await?.size;
+                    tries = 0;
+                }
+                failed => {
+                    tries += 1;
+                    if tries > 3 {
+                        match failed {
+                            Ok(response) => check(response).await?,
+                            Err(err) => return Err(err.into()),
+                        };
+                    }
+                    // Go on from what the server has.
+                    let progress: Progress =
+                        check(self.client.get(&url).bearer_auth(&self.token).send().await?).await?.json().await?;
+                    offset = progress.size;
+                }
+            }
+        }
+        Ok(started.id)
     }
 }

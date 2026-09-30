@@ -1130,7 +1130,7 @@ pub async fn merge_tracks(
         r#"
         UPDATE lyrics l SET track_id = $2
         WHERE l.track_id = $1
-          AND NOT EXISTS (SELECT 1 FROM lyrics k WHERE k.track_id = $2 AND k.body = l.body)
+          AND NOT EXISTS (SELECT 1 FROM lyrics k WHERE k.track_id = $2 AND k.body = l.body AND NOT k.removed)
         RETURNING l.id
         "#,
         from,
@@ -1870,6 +1870,9 @@ pub async fn create_lyrics(
     reason: &str,
 ) -> anyhow::Result<(Uuid, Written)> {
     data.validate().map_err(invalid)?;
+    if data.removed {
+        return Err(EditRejected::Invalid("a new lyrics entry can't be removed already".to_string()).into());
+    }
     let track_exists = sqlx::query_scalar!(
         r#"SELECT EXISTS (SELECT 1 FROM tracks WHERE id = $1) AS "exists!""#,
         track_id
@@ -1902,6 +1905,22 @@ pub async fn create_lyrics(
             changed: true,
         },
     ))
+}
+
+/// Removes a lyrics entry: a revision like the latest, marked removed. False if it's
+/// removed already.
+pub async fn remove_lyrics(conn: &mut PgConnection, lyrics_id: Uuid, base: Option<Uuid>, reason: &str) -> anyhow::Result<Written> {
+    let Some(latest) = sqlx::query_scalar!(
+        "SELECT data FROM lyrics_revisions WHERE lyrics_id = $1 ORDER BY id DESC LIMIT 1",
+        lyrics_id
+    )
+    .fetch_optional(&mut *conn)
+    .await?
+    else {
+        return Err(EditRejected::NotFound("lyrics").into());
+    };
+    let data = LyricsData { removed: true, ..serde_json::from_value(latest)? };
+    write_lyrics(conn, lyrics_id, base, &data, Source::Edit, reason).await
 }
 
 /// Writes a new revision of a lyrics entry.
@@ -1939,14 +1958,15 @@ pub async fn write_lyrics(
 
     sqlx::query!(
         r#"
-        UPDATE lyrics SET body = $2, is_official = $3, is_synced = $4, language = $5
+        UPDATE lyrics SET body = $2, is_official = $3, is_synced = $4, language = $5, removed = $6
         WHERE id = $1
         "#,
         lyrics_id,
         data.body,
         data.is_official,
         data.is_synced(),
-        data.language
+        data.language,
+        data.removed
     )
     .execute(&mut *conn)
     .await?;

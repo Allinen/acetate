@@ -1,0 +1,38 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO ingest_problems (kind, sha256, size_bytes, uploaded_filename, path, reason,\n                                     description, embedded_tags, tag_title, tag_artists, cover_blobs)\n        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)\n        ON CONFLICT (sha256) WHERE resolved_at IS NULL DO UPDATE SET\n            kind = EXCLUDED.kind,\n            reason = EXCLUDED.reason,\n            uploaded_filename = EXCLUDED.uploaded_filename,\n            path = EXCLUDED.path,\n            description = EXCLUDED.description,\n            embedded_tags = COALESCE(EXCLUDED.embedded_tags, ingest_problems.embedded_tags),\n            tag_title = EXCLUDED.tag_title,\n            tag_artists = EXCLUDED.tag_artists,\n            cover_blobs = ARRAY(SELECT DISTINCT unnest(ingest_problems.cover_blobs || EXCLUDED.cover_blobs)),\n            attempts = ingest_problems.attempts + 1,\n            last_attempt_at = now()\n        RETURNING id\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "ingest_problems",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Int8",
+        "Text",
+        "Text",
+        "Text",
+        "Jsonb",
+        "Jsonb",
+        "Text",
+        "TextArray",
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "32dae02a60171abfd8c921f78c13b4c17488d170d47e6919022a7d8bf60247cf"
+}

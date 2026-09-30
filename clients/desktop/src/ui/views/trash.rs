@@ -8,6 +8,9 @@
 //! from a merge), with their sizes: where merges and upgrades free space. Marked ones are
 //! moved to the trash (and can be purged a week later).
 //!
+//! Your playlists in the trash (everyone has playlists, so everyone sees this page), each
+//! taken back out with "Restore".
+//!
 //! Marking: the box in front of a row, or "Mark all shown".
 
 use std::collections::HashSet;
@@ -64,12 +67,22 @@ const PAGE: usize = 100;
 
 type Answer<T> = Arc<Mutex<Option<Result<T, String>>>>;
 
+/// A playlist of yours in the trash (`GET /api/playlists?trash=true`).
+#[derive(Clone, Deserialize)]
+struct TrashedPlaylist {
+    id: Uuid,
+    name: String,
+    mine: bool,
+}
+
 #[derive(Default)]
 pub struct TrashPage {
     tab: Tab,
+    playlists: Vec<TrashedPlaylist>,
+    playlists_answer: Answer<Vec<TrashedPlaylist>>,
     items: Option<Result<Vec<TrashItem>, String>>,
     items_answer: Answer<Vec<TrashItem>>,
-    /// Only this kind shown ("cover", "source", "file"); None: all.
+    /// Only this kind shown ("cover", "source", "file", "problem"); None: all.
     only: Option<String>,
     marked: HashSet<Uuid>,
     /// Purge asked: what's typed to confirm it.
@@ -98,6 +111,17 @@ impl TrashPage {
     }
 
     fn load(&mut self, shell: &Shell) {
+        let (api, answer, ctx) = (shell.api.clone(), self.playlists_answer.clone(), shell.ctx.clone());
+        shell.runtime.spawn(async move {
+            let result = api.send_json::<Vec<TrashedPlaylist>>(reqwest::Method::GET, "/api/playlists?trash=true", None).await.map_err(|err| err.message);
+            *answer.lock().unwrap() = Some(result);
+            ctx.request_repaint();
+        });
+        // The rest of the trash is for who can put things there.
+        if !may_trash_anything(shell) {
+            self.items = Some(Ok(Vec::new()));
+            return;
+        }
         let (api, answer, ctx) = (shell.api.clone(), self.items_answer.clone(), shell.ctx.clone());
         shell.runtime.spawn(async move {
             let result = api.send_json::<Vec<TrashItem>>(reqwest::Method::GET, "/api/trash", None).await.map_err(|err| err.message);
@@ -132,6 +156,12 @@ impl TrashPage {
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui, shell: &mut Shell) {
+        if let Some(result) = self.playlists_answer.lock().unwrap().take() {
+            match result {
+                Ok(list) => self.playlists = list.into_iter().filter(|p| p.mine).collect(),
+                Err(err) => self.result = Some(Err(format!("Couldn't list your playlists in the trash: {err}"))),
+            }
+        }
         if let Some(result) = self.items_answer.lock().unwrap().take() {
             // What's gone from the trash isn't marked anymore.
             if let Ok(items) = &result {
@@ -189,8 +219,41 @@ impl TrashPage {
         }
         match self.tab {
             Tab::OldFiles if admin => self.old_files(ui, shell),
-            _ => self.trash(ui, shell, admin),
+            _ => {
+                self.playlists(ui, shell);
+                if may_trash_anything(shell) {
+                    self.trash(ui, shell, admin);
+                }
+            }
         }
+    }
+
+    /// Your playlists in the trash, each with "Restore".
+    fn playlists(&mut self, ui: &mut egui::Ui, shell: &Shell) {
+        if self.playlists.is_empty() {
+            if !may_trash_anything(shell) {
+                ui.label(RichText::new("No playlists of yours in the trash.").color(P.muted));
+            }
+            return;
+        }
+        ui.label(RichText::new("Your playlists").font(font(16.0, bold())));
+        for playlist in self.playlists.clone() {
+            ui.horizontal(|ui| {
+                ui.label(&playlist.name);
+                if ui.add_enabled(!self.busy, egui::Button::new("Restore").small()).clicked() {
+                    self.busy = true;
+                    self.result = None;
+                    let (api, answer, ctx) = (shell.api.clone(), self.done_answer.clone(), shell.ctx.clone());
+                    let (path, name) = (format!("/api/playlists/{}/restore", playlist.id), playlist.name.clone());
+                    shell.runtime.spawn(async move {
+                        let result = api.send(reqwest::Method::POST, &path, None).await.map(|()| format!("“{name}” is back")).map_err(|err| err.message);
+                        *answer.lock().unwrap() = Some(result);
+                        ctx.request_repaint();
+                    });
+                }
+            });
+        }
+        ui.add_space(14.0);
     }
 
     fn trash(&mut self, ui: &mut egui::Ui, shell: &mut Shell, admin: bool) {
@@ -218,7 +281,7 @@ impl TrashPage {
             if widgets::chip(ui, &format!("All  {} · {}", thousands(items.len()), size(total)), self.only.is_none()) {
                 self.only = None;
             }
-            for (kind, name) in [("cover", "Covers"), ("source", "Sources"), ("file", "Files")] {
+            for (kind, name) in [("cover", "Covers"), ("source", "Sources"), ("file", "Files"), ("problem", "Didn't import")] {
                 let count = items.iter().filter(|i| i.kind == kind).count();
                 if count > 0 && widgets::chip(ui, &format!("{name}  {}", thousands(count)), self.only.as_deref() == Some(kind)) {
                     self.only = Some(kind.to_string());
@@ -413,11 +476,17 @@ impl TrashPage {
     }
 }
 
+/// Whether the user may put anything but playlists in the trash (and so see it).
+fn may_trash_anything(shell: &Shell) -> bool {
+    shell.account.can("edit_metadata") || shell.account.can("edit_sources")
+}
+
 /// Whether the user may put this kind in the trash (and take it back out).
 fn may_trash(shell: &Shell, kind: &str) -> bool {
     match kind {
         "cover" => shell.account.can("edit_metadata"),
         "source" => shell.account.can("edit_sources"),
+        "problem" => shell.account.can("upload"),
         _ => shell.account.can("admin"),
     }
 }
@@ -427,6 +496,7 @@ fn kind_name(kind: &str) -> &str {
         "cover" => "Cover",
         "source" => "Source",
         "file" => "Audio file",
+        "problem" => "Didn't import",
         other => other,
     }
 }

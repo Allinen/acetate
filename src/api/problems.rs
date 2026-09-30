@@ -117,7 +117,17 @@ async fn load_open(
     };
     let description: NewDescription = serde_json::from_value(json)
         .map_err(|err| AppError::BadRequest(format!("the stored description doesn't fit: {err}")))?;
-    let description = description.validate(|_| None).map_err(AppError::BadRequest)?;
+    // The covers sent with it, kept as blobs and named by their hash.
+    let mut covers = std::collections::HashMap::new();
+    for sha256 in &problem.cover_blobs {
+        let bytes = tokio::fs::read(state.store.path_for(sha256).await)
+            .await
+            .map_err(|err| AppError::Internal(anyhow::anyhow!("reading the kept cover {sha256}: {err}")))?;
+        covers.insert(sha256.clone(), bytes);
+    }
+    let description = description
+        .validate(|name| name.strip_prefix(crate::ingest::describe::STORED_COVER).and_then(|sha256| covers.get(sha256).cloned()))
+        .map_err(AppError::BadRequest)?;
     // Already stored: it stays on the volume it's on.
     let file = ingest::StagedFile::stored(&state.store, &problem.sha256, problem.size_bytes as u64).await;
     Ok((file, problem, description))

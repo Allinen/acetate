@@ -1,8 +1,9 @@
-//! Lyrics: adding and editing a track's lyrics entries, through revisions (see
-//! `db::revisions`). Entries are never deleted; a wrong one is edited.
+//! Lyrics: adding, editing and removing a track's lyrics entries, through revisions (see
+//! `db::revisions`). Entries are never deleted: a removed one is kept, with its history,
+//! and restoring an earlier revision brings it back.
 
 use axum::Json;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -88,6 +89,28 @@ pub async fn restore(
     let reason = body.map(|Json(b)| b.reason).unwrap_or_default();
     let mut tx = state.db(&user).await?;
     let written = revisions::restore_lyrics_revision(&mut tx, revision_id, &reason).await?;
+    tx.commit().await?;
+    Ok(Json(written))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RemoveLyrics {
+    /// The revision seen (409 if it isn't the latest anymore).
+    base_revision_id: Option<Uuid>,
+    #[serde(default)]
+    reason: String,
+}
+
+/// `DELETE /api/lyrics/{id}?base_revision_id=...&reason=...`: takes the entry off its
+/// track (a revision marking it removed; the track's `removed_lyrics` lists it).
+pub async fn remove(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<Uuid>,
+    Query(params): Query<RemoveLyrics>,
+) -> Result<Json<Written>, AppError> {
+    let mut tx = state.db(&user).await?;
+    let written = revisions::remove_lyrics(&mut tx, id, params.base_revision_id, &params.reason).await?;
     tx.commit().await?;
     Ok(Json(written))
 }

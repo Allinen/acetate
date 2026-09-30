@@ -32,6 +32,10 @@ use crate::catalog::model::{Cover, CoverKey};
 const PARALLEL: usize = 8;
 /// A texture not shown for this long (seconds) is let go (its copy on disk stays).
 const EVICT_AFTER: f64 = 20.0;
+/// At most this many bytes of textures (a standard cover is 1.6 MB): scrolling fast
+/// through a big grid would otherwise load hundreds within `EVICT_AFTER`. Past it, the
+/// ones shown longest ago go first (never ones shown in the last second).
+const BUDGET: usize = 256 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CoverSize {
@@ -96,7 +100,38 @@ impl Covers {
             self.states.insert((key, size), state);
         }
         // (Dropping the texture's handle frees it.)
+        let before = self.states.len();
         self.states.retain(|_, state| !matches!(state, State::Ready { shown, .. } if now - *shown > EVICT_AFTER));
+        let (_, mut bytes) = self.textures();
+        if bytes > BUDGET {
+            let mut ready: Vec<((CoverKey, CoverSize), f64, usize)> = self
+                .states
+                .iter()
+                .filter_map(|(key, state)| match state {
+                    State::Ready { texture, shown, .. } if now - *shown > 1.0 => Some((*key, *shown, texture_bytes(texture))),
+                    _ => None,
+                })
+                .collect();
+            ready.sort_by(|a, b| a.1.total_cmp(&b.1));
+            for (key, _, size) in ready {
+                if bytes <= BUDGET {
+                    break;
+                }
+                self.states.remove(&key);
+                bytes -= size;
+            }
+        }
+        if self.states.len() < before {
+            crate::memory::trim();
+        }
+    }
+
+    /// The textures held: how many, and their bytes.
+    pub fn textures(&self) -> (usize, usize) {
+        self.states.values().fold((0, 0), |(n, bytes), state| match state {
+            State::Ready { texture, .. } => (n + 1, bytes + texture_bytes(texture)),
+            _ => (n, bytes),
+        })
     }
 
     /// Whether this image couldn't be loaded (there's nothing to wait for).
@@ -134,6 +169,12 @@ impl Covers {
             }
         }
     }
+}
+
+/// A texture's size in memory (4 bytes a pixel).
+fn texture_bytes(texture: &TextureHandle) -> usize {
+    let [w, h] = texture.size();
+    w * h * 4
 }
 
 /// Where an image's copy at `size` is kept (`cache_dir`: the app's cache folder).

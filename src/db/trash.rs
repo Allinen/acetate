@@ -6,7 +6,10 @@
 //! * a cover: its row is deleted;
 //! * a source: deleted with its snapshots;
 //! * a file: its bytes are deleted, its row stays as a tombstone (tags, origin, and its
-//!   place in the track's history), marked `purged_at`.
+//!   place in the track's history), marked `purged_at`;
+//! * a file that didn't import, resolved by hand (not imported): it's in the trash from
+//!   when it was resolved, if nothing else uses its audio. Its audio and the covers sent
+//!   with it are deleted, its entry stays (`audio_purged_at`). Restoring opens it again.
 //!
 //! A blob (image or audio) is deleted only once nothing uses it anymore: covers are
 //! copied by pointing at the same blob, so purging one copy keeps it for the others.
@@ -35,6 +38,7 @@ pub enum Kind {
     Cover,
     Source,
     File,
+    Problem,
 }
 
 impl Kind {
@@ -43,6 +47,7 @@ impl Kind {
             Kind::Cover => "cover",
             Kind::Source => "source",
             Kind::File => "file",
+            Kind::Problem => "problem",
         }
     }
 }
@@ -108,6 +113,17 @@ pub async fn list(conn: &mut PgConnection) -> sqlx::Result<Vec<TrashItem>> {
             LEFT JOIN track_file_history h ON h.old_file_id = f.id
             LEFT JOIN tracks t ON t.id = h.track_id
             WHERE f.trashed_at IS NOT NULL AND f.purged_at IS NULL
+            UNION ALL
+            SELECT 'problem', p.id, p.uploaded_filename, NULL, NULL, NULL,
+                   p.sha256, p.size_bytes, p.resolved_at, p.resolved_by
+            FROM ingest_problems p
+            WHERE p.resolved_at IS NOT NULL AND p.track_id IS NULL AND p.audio_purged_at IS NULL
+              AND NOT EXISTS (SELECT 1 FROM files f WHERE f.sha256 = p.sha256 AND f.purged_at IS NULL)
+              AND NOT EXISTS (SELECT 1 FROM extra_files e WHERE e.sha256 = p.sha256)
+              -- The same file listed again later: that entry stands for it.
+              AND NOT EXISTS (SELECT 1 FROM ingest_problems o
+                              WHERE o.sha256 = p.sha256 AND o.id <> p.id AND o.audio_purged_at IS NULL
+                                AND (o.resolved_at IS NULL OR o.resolved_at > p.resolved_at))
         ) items
         LEFT JOIN users u ON u.id = items.trashed_by
         ORDER BY items.trashed_at, items.id
@@ -142,6 +158,19 @@ pub async fn restore(conn: &mut PgConnection, kind: Kind, id: Uuid) -> sqlx::Res
                 r#"
                 UPDATE files SET trashed_at = NULL, trashed_by = NULL
                 WHERE id = $1 AND trashed_at IS NOT NULL AND purged_at IS NULL
+                "#,
+                id
+            )
+            .execute(&mut *conn)
+            .await?
+        }
+        Kind::Problem => {
+            // Open again, if the same file isn't listed open already.
+            sqlx::query!(
+                r#"
+                UPDATE ingest_problems p SET resolved_at = NULL, resolved_by = NULL, resolution = ''
+                WHERE p.id = $1 AND p.resolved_at IS NOT NULL AND p.track_id IS NULL AND p.audio_purged_at IS NULL
+                  AND NOT EXISTS (SELECT 1 FROM ingest_problems o WHERE o.sha256 = p.sha256 AND o.resolved_at IS NULL)
                 "#,
                 id
             )
@@ -252,7 +281,8 @@ struct Target {
     trashed_at: Option<DateTime<Utc>>,
     /// Typed to confirm a purge of this one item: its sha256 (covers, files) or id.
     confirm_key: String,
-    blob: Option<String>,
+    /// The blobs it uses (deleted if nothing else does).
+    blobs: Vec<String>,
     description: serde_json::Value,
     size_bytes: i64,
 }
@@ -341,6 +371,11 @@ pub async fn purge(
                 .execute(&mut *conn)
                 .await?;
             }
+            Kind::Problem => {
+                sqlx::query!("UPDATE ingest_problems SET audio_purged_at = now() WHERE id = $1", t.id)
+                    .execute(&mut *conn)
+                    .await?;
+            }
         }
     }
 
@@ -348,15 +383,20 @@ pub async fn purge(
     // the image. (A trashed cover still counts: it can be taken back out.)
     let mut freed_by: std::collections::HashMap<Uuid, i64> = std::collections::HashMap::new();
     let mut delete_blobs = Vec::new();
-    let blobs: BTreeSet<&String> = targets.iter().filter_map(|t| t.blob.as_ref()).collect();
+    let blobs: BTreeSet<&String> = targets.iter().flat_map(|t| &t.blobs).collect();
     for sha in blobs {
         let system = super::as_system(conn).await?;
         let used = sqlx::query_scalar!(
             r#"
             SELECT EXISTS (SELECT 1 FROM covers WHERE blob_sha256 = $1)
                 OR EXISTS (SELECT 1 FROM files WHERE sha256 = $1 AND purged_at IS NULL)
-                -- A file that didn't import, kept for the review list.
-                OR EXISTS (SELECT 1 FROM ingest_problems WHERE sha256 = $1 AND resolved_at IS NULL)
+                -- A file that didn't import (and the covers sent with it), kept for the
+                -- review list, or resolved by hand and not purged yet.
+                -- (One imported has its file and covers elsewhere; the ones purged here
+                -- are marked already.)
+                OR EXISTS (SELECT 1 FROM ingest_problems
+                           WHERE (sha256 = $1 OR $1 = ANY (cover_blobs)) AND audio_purged_at IS NULL
+                             AND (resolved_at IS NULL OR track_id IS NULL))
                 -- An extra's file (taken off or not: it can be brought back).
                 OR EXISTS (SELECT 1 FROM extra_files WHERE sha256 = $1 OR thumb_sha256 = $1)
                AS "used!"
@@ -369,7 +409,7 @@ pub async fn purge(
         if !used {
             let size = store.size(sha).await.unwrap_or(0) as i64;
             // Credited to the first purged item that used it.
-            if let Some(t) = targets.iter().find(|t| t.blob.as_ref() == Some(sha)) {
+            if let Some(t) = targets.iter().find(|t| t.blobs.contains(sha)) {
                 *freed_by.entry(t.id).or_default() += size;
             }
             // No longer stored anywhere once it's deleted (after the commit).
@@ -429,7 +469,7 @@ async fn load_target(conn: &mut PgConnection, kind: Kind, id: Uuid) -> sqlx::Res
                 "sha256": r.blob_sha256, "mime": r.mime, "source": r.source,
                 "track_id": r.track_id, "album_id": r.album_id, "owner": r.owner,
             }),
-            blob: Some(r.blob_sha256),
+            blobs: vec![r.blob_sha256],
             size_bytes: 0,
         }),
         Kind::Source => sqlx::query!(
@@ -453,7 +493,7 @@ async fn load_target(conn: &mut PgConnection, kind: Kind, id: Uuid) -> sqlx::Res
                 "track_id": r.track_id, "album_id": r.album_id, "artist_id": r.artist_id,
                 "snapshots": r.snapshots,
             }),
-            blob: None,
+            blobs: Vec::new(),
             size_bytes: 0,
         }),
         Kind::File => sqlx::query!(
@@ -481,7 +521,29 @@ async fn load_target(conn: &mut PgConnection, kind: Kind, id: Uuid) -> sqlx::Res
                 "codec": r.codec, "bitrate": r.bitrate,
                 "track_id": r.track_id, "track_title": r.track_title,
             }),
-            blob: Some(r.sha256),
+            blobs: vec![r.sha256],
+            size_bytes: r.size_bytes,
+        }),
+        Kind::Problem => sqlx::query!(
+            r#"
+            SELECT resolved_at, sha256, uploaded_filename, size_bytes, reason, resolution, cover_blobs
+            FROM ingest_problems
+            WHERE id = $1 AND track_id IS NULL AND audio_purged_at IS NULL
+            "#,
+            id
+        )
+        .fetch_optional(&mut *conn)
+        .await?
+        .map(|r| Target {
+            kind,
+            id,
+            trashed_at: r.resolved_at,
+            confirm_key: r.sha256.clone(),
+            description: json!({
+                "sha256": r.sha256, "uploaded_filename": r.uploaded_filename,
+                "reason": r.reason, "resolution": r.resolution, "cover_blobs": r.cover_blobs,
+            }),
+            blobs: std::iter::once(r.sha256).chain(r.cover_blobs).collect(),
             size_bytes: r.size_bytes,
         }),
     })

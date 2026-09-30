@@ -7,6 +7,9 @@ mod ingest;
 mod ingest_client;
 mod ingest_command;
 mod merge_duplicates_command;
+mod producers_command;
+mod album_covers_command;
+mod measure_command;
 mod model;
 mod navidrome;
 mod storage;
@@ -158,6 +161,36 @@ enum Command {
         /// Only list what would be moved.
         #[arg(long)]
         dry_run: bool,
+    },
+    /// Fills in what older rows lack: covers' width and height (read from the images;
+    /// covers imported before 2026-09-30 weren't measured) and blobs' sizes (for the storage
+    /// totals). Never changes a blob. Lists what it would do unless --apply.
+    MeasureCovers {
+        /// Save what was measured. Without it nothing is changed.
+        #[arg(long)]
+        apply: bool,
+    },
+    /// One-off: albums without covers of their own (made by hand, or imported before
+    /// 2026-09-27) get a copy of the cover they show now (their first track's), so it's
+    /// theirs and stays when their tracks change. Lists what it would do unless --apply.
+    OwnAlbumCovers {
+        /// Add the copies. Without it nothing is changed.
+        #[arg(long)]
+        apply: bool,
+    },
+    /// Producer credits from the COMPOSER tag for tracks imported before ingest read it
+    /// (2026-09-26): read from each track's stored file, like ingest does. Only tracks whose
+    /// metadata came from their tags and that never had a producer credit (so COMPOSER
+    /// wasn't left out on purpose or fixed by hand). Lists what it would do unless --apply.
+    ProducersFromComposer {
+        /// Only tracks imported before this day (UTC): when the server started reading
+        /// COMPOSER (the update after 2026-09-26). Later imports without producer credits
+        /// were made with --no-composers.
+        #[arg(long, default_value = "2026-09-27")]
+        before: chrono::NaiveDate,
+        /// Add the credits (each track gets a revision). Without it nothing is changed.
+        #[arg(long)]
+        apply: bool,
     },
     /// Move users and their plays, stars and ratings over from a Navidrome server. Reads
     /// Navidrome's database and music files, never changes them. Matches tracks by their
@@ -467,6 +500,9 @@ async fn main() -> anyhow::Result<()> {
             duplicate_albums_command::run(&pool, options).await
         }
         Command::FixMergedCovers { dry_run } => duplicate_albums_command::fix_merged_covers(&pool, dry_run).await,
+        Command::MeasureCovers { apply } => measure_command::run(&pool, &store, apply).await,
+        Command::OwnAlbumCovers { apply } => album_covers_command::run(&pool, apply).await,
+        Command::ProducersFromComposer { before, apply } => producers_command::run(&pool, &store, before, apply).await,
         Command::ImportNavidrome { db, path_maps, libraries, password_key, dry_run } => {
             let path_maps = path_maps
                 .iter()
@@ -517,6 +553,7 @@ async fn serve(config: Config, owner_pool: sqlx::PgPool, store: BlobStore) -> an
     // Failed logins and share lookups, likewise.
     let rate_limits = api::RateLimits::load(&pool).await?;
     let app = api::router(api::AppState {
+        uploads: Default::default(),
         pool,
         store,
         web_dir: config.web_dir.clone(),
