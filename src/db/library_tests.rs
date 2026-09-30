@@ -129,7 +129,7 @@ async fn an_edit_is_in_the_next_delta_and_only_it(_: PgPoolOptions, connect: PgC
 }
 
 #[sqlx::test]
-async fn a_merge_is_removed_and_restricting_means_everything(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
+async fn a_merge_is_removed_and_a_restricted_track_is_gone_in_the_delta(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
     let lib = setup(connect).await?;
     let since = version(&lib).await?;
     let mut tx = db::begin(&lib.app, Some(lib.alice)).await?;
@@ -142,14 +142,22 @@ async fn a_merge_is_removed_and_restricting_means_everything(_: PgPoolOptions, c
     assert_eq!(gone, vec![lib.o], "O only redirects now");
     drop(tx);
 
-    // Restricting a track changes who sees what: the whole catalog, not a delta that
-    // would name it.
+    // Restricting a track: a delta, which says it's gone for those who can't see it now
+    // (they could until now: nothing new to them; migration 0046).
     let since = version(&lib).await?;
     let mut tx = db::begin(&lib.owner, None).await?;
     db::access::set(&mut tx, lib.v, true, &[lib.friends], "test").await?;
     tx.commit().await?;
-    let c = changes(&lib, lib.carol, since).await?;
-    assert!(c.everything && c.tracks.is_empty());
+    let c = changes(&lib, lib.carol, since.clone()).await?;
+    assert!(!c.everything && c.tracks.contains(&lib.v));
+    let mut tx = db::begin(&lib.app, Some(lib.carol)).await?;
+    let (gone, _, _) = db::library::unseen(&mut tx, &c.tracks, &c.albums, &[]).await?;
+    assert!(gone.contains(&lib.v), "gone for carol");
+    drop(tx);
+    // Bob (friends) still sees it: not gone for him.
+    let c = changes(&lib, lib.bob, since).await?;
+    let mut tx = db::begin(&lib.app, Some(lib.bob)).await?;
+    assert!(db::library::unseen(&mut tx, &c.tracks, &[], &[]).await?.0.is_empty());
     Ok(())
 }
 

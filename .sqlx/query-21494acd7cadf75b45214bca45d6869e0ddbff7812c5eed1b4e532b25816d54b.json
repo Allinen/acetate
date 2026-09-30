@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT x AS \"x!\" FROM unnest($1::uuid[]) x WHERE NOT EXISTS (SELECT 1 FROM tracks t WHERE t.id = x)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "x!",
+        "type_info": "Uuid",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "UuidArray"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "21494acd7cadf75b45214bca45d6869e0ddbff7812c5eed1b4e532b25816d54b"
+}

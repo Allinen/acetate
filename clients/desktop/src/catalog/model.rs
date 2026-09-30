@@ -280,8 +280,9 @@ impl Album {
     }
 }
 
-/// What a delta drops: tracks, albums and artists merged into another, and annotations
-/// that say nothing anymore.
+/// What a delta drops: tracks, albums and artists merged into another; tracks, albums and
+/// extras the user can't see anymore (restricted, turned into extras); and annotations that
+/// say nothing anymore.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct Removed {
@@ -289,6 +290,8 @@ pub struct Removed {
     pub albums: Vec<Uuid>,
     pub artists: Vec<Uuid>,
     pub annotations: Vec<Uuid>,
+    /// Extras the user can't see anymore (restricted).
+    pub extras: Vec<Uuid>,
 }
 
 /// Reads a catalog body. A format or columns this client doesn't know is an error that

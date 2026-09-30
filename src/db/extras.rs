@@ -385,8 +385,12 @@ pub async fn unlink(conn: &mut PgConnection, extra: Uuid, from: Link, reason: &s
 
 async fn unlink_one(conn: &mut PgConnection, extra: Uuid, from: Link, reason: &str) -> anyhow::Result<bool> {
     let (track, album, artist) = from.ids();
+    // A track's link: also one made to a track merged into it since.
     let gone = sqlx::query!(
-        "DELETE FROM extra_links WHERE extra_id = $1 AND track_id IS NOT DISTINCT FROM $2 AND album_id IS NOT DISTINCT FROM $3 AND artist_id IS NOT DISTINCT FROM $4",
+        r#"DELETE FROM extra_links WHERE extra_id = $1
+           AND (($2::uuid IS NOT NULL AND track_id IS NOT NULL AND (track_id = $2 OR final_track(track_id) = $2))
+                OR ($3::uuid IS NOT NULL AND album_id = $3)
+                OR ($4::uuid IS NOT NULL AND artist_id = $4))"#,
         extra,
         track,
         album,
@@ -512,11 +516,16 @@ pub async fn get(conn: &mut PgConnection, id: Uuid) -> sqlx::Result<Option<Extra
 }
 
 /// The extras linked to a track, album or artist (taken-off ones too, flagged), by name.
+/// A track's include those linked to tracks merged into it (links stay where they were
+/// made: undoing the merge needs nothing).
 pub async fn linked_to(conn: &mut PgConnection, to: Link) -> sqlx::Result<Vec<Extra>> {
     let (track, album, artist) = to.ids();
     let ids = sqlx::query_scalar!(
-        r#"SELECT e.id FROM extra_links l JOIN extras e ON e.id = l.extra_id
-           WHERE l.track_id IS NOT DISTINCT FROM $1 AND l.album_id IS NOT DISTINCT FROM $2 AND l.artist_id IS NOT DISTINCT FROM $3
+        r#"SELECT e.id FROM extras e
+           WHERE EXISTS (SELECT 1 FROM extra_links l WHERE l.extra_id = e.id
+                         AND (($1::uuid IS NOT NULL AND l.track_id IS NOT NULL AND final_track(l.track_id) = $1)
+                              OR ($2::uuid IS NOT NULL AND l.album_id = $2)
+                              OR ($3::uuid IS NOT NULL AND l.artist_id = $3)))
            ORDER BY lower(e.name), e.id"#,
         track,
         album,
@@ -567,15 +576,19 @@ async fn files(conn: &mut PgConnection, extra: Uuid) -> sqlx::Result<Vec<ExtraFi
 async fn links(conn: &mut PgConnection, extra: Uuid) -> sqlx::Result<Vec<Linked>> {
     sqlx::query_as!(
         Linked,
-        r#"SELECT CASE WHEN l.track_id IS NOT NULL THEN 'track' WHEN l.album_id IS NOT NULL THEN 'album' ELSE 'artist' END AS "kind!",
-                  COALESCE(l.track_id, l.album_id, l.artist_id) AS "id!",
-                  COALESCE(t.title, al.title, a.name) AS "title!"
-           FROM extra_links l
-           LEFT JOIN tracks t ON t.id = l.track_id
-           LEFT JOIN albums al ON al.id = l.album_id
-           LEFT JOIN artists a ON a.id = l.artist_id
-           WHERE l.extra_id = $1
-           ORDER BY l.id"#,
+        r#"SELECT s.kind AS "kind!", s.id AS "id!", s.title AS "title!" FROM (
+               SELECT DISTINCT ON (COALESCE(t.id, l.album_id, l.artist_id))
+                      CASE WHEN l.track_id IS NOT NULL THEN 'track' WHEN l.album_id IS NOT NULL THEN 'album' ELSE 'artist' END AS kind,
+                      COALESCE(t.id, l.album_id, l.artist_id) AS id,
+                      COALESCE(t.title, al.title, a.name) AS title, l.id AS link
+               FROM extra_links l
+               -- A track merged since: the one it went into.
+               LEFT JOIN tracks t ON t.id = final_track(l.track_id)
+               LEFT JOIN albums al ON al.id = l.album_id
+               LEFT JOIN artists a ON a.id = l.artist_id
+               WHERE l.extra_id = $1 AND COALESCE(t.id, al.id, a.id) IS NOT NULL
+               ORDER BY COALESCE(t.id, l.album_id, l.artist_id), l.id
+           ) s ORDER BY s.link"#,
         extra
     )
     .fetch_all(conn)

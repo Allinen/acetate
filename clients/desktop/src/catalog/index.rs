@@ -512,7 +512,7 @@ pub fn merge_raw(base: model::Raw, delta: model::Raw) -> model::Raw {
     let artists = merge(base.artists.rows, delta.artists.rows, &removed.artists, |a| a.id);
     // A changed extra replaces its row (one taken off comes flagged, and is left out when
     // indexed).
-    let extras = merge(base.extras.rows, delta.extras.rows, &[], |e| e.id);
+    let extras = merge(base.extras.rows, delta.extras.rows, &removed.extras, |e| e.id);
     let mut annotations: HashMap<Uuid, model::Annotation> = base.annotations.rows.into_iter().map(|a| (a.id, a)).collect();
     for id in &removed.annotations {
         annotations.remove(id);

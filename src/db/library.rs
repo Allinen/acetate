@@ -54,7 +54,8 @@ pub async fn extras_json(conn: &mut PgConnection, ids: Option<&[Uuid]>) -> sqlx:
                    e.id, e.name, e.kind, e.is_restricted, e.hidden_at IS NOT NULL,
                    COALESCE((SELECT json_agg(json_build_array(
                                  CASE WHEN l.track_id IS NOT NULL THEN 'track' WHEN l.album_id IS NOT NULL THEN 'album' ELSE 'artist' END,
-                                 COALESCE(l.track_id, l.album_id, l.artist_id)) ORDER BY l.id)
+                                 -- (A track merged since: the one it went into.)
+                                 COALESCE(final_track(l.track_id), l.album_id, l.artist_id)) ORDER BY l.id)
                              FROM extra_links l WHERE l.extra_id = e.id), '[]'::json),
                    (SELECT count(*) FROM extra_files f WHERE f.extra_id = e.id AND f.hidden_at IS NULL),
                    first.id, first.duration_ms, video.id, left(video.thumb_sha256, 16)
@@ -339,15 +340,11 @@ pub struct Changes {
     /// A grouping changed (its name, what's in it): the list is sent again.
     pub groupings: bool,
     pub extras: Vec<Uuid>,
-    /// Gone for everyone who saw them (a track turned into an extra, and an album it was
-    /// the last track of): the delta says so.
-    pub gone_tracks: Vec<Uuid>,
-    pub gone_albums: Vec<Uuid>,
 }
 
 impl Changes {
     pub fn is_empty(&self) -> bool {
-        !self.everything && self.tracks.is_empty() && self.albums.is_empty() && self.artists.is_empty() && self.annotations.is_empty() && !self.groupings && self.extras.is_empty() && self.gone_tracks.is_empty() && self.gone_albums.is_empty()
+        !self.everything && self.tracks.is_empty() && self.albums.is_empty() && self.artists.is_empty() && self.annotations.is_empty() && !self.groupings && self.extras.is_empty()
     }
 }
 
@@ -397,8 +394,8 @@ pub async fn changes_since(conn: &mut PgConnection, since: &str) -> anyhow::Resu
             "annotation" => changes.annotations.push(id),
             "grouping" => changes.groupings = true,
             "extra" => changes.extras.push(id),
-            "track_gone" => changes.gone_tracks.push(id),
-            "album_gone" => changes.gone_albums.push(id),
+            // (Logged by 0045 only, alongside a "track"/"album" change that `unseen`
+            // finds: nothing more to do.)
             _ => {}
         }
     }
@@ -408,6 +405,22 @@ pub async fn changes_since(conn: &mut PgConnection, since: &str) -> anyhow::Resu
 /// Of these, the ones merged into another (visible to the user): the client drops them.
 /// (Something that became hidden isn't here: that logs `everything`, and the client gets
 /// the whole catalog, so a delta never names it.)
+/// Of these changed ones, those the user can't see (anymore): a delta says they're gone.
+/// (They were restricted, or turned into an extra; someone who never saw one gets only
+/// its id, see migration 0046.)
+pub async fn unseen(conn: &mut PgConnection, tracks: &[Uuid], albums: &[Uuid], extras: &[Uuid]) -> sqlx::Result<(Vec<Uuid>, Vec<Uuid>, Vec<Uuid>)> {
+    let tracks = sqlx::query_scalar!(r#"SELECT x AS "x!" FROM unnest($1::uuid[]) x WHERE NOT EXISTS (SELECT 1 FROM tracks t WHERE t.id = x)"#, tracks)
+        .fetch_all(&mut *conn)
+        .await?;
+    let albums = sqlx::query_scalar!(r#"SELECT x AS "x!" FROM unnest($1::uuid[]) x WHERE NOT EXISTS (SELECT 1 FROM albums a WHERE a.id = x)"#, albums)
+        .fetch_all(&mut *conn)
+        .await?;
+    let extras = sqlx::query_scalar!(r#"SELECT x AS "x!" FROM unnest($1::uuid[]) x WHERE NOT EXISTS (SELECT 1 FROM extras e WHERE e.id = x)"#, extras)
+        .fetch_all(&mut *conn)
+        .await?;
+    Ok((tracks, albums, extras))
+}
+
 pub async fn merged(conn: &mut PgConnection, tracks: &[Uuid], albums: &[Uuid], artists: &[Uuid]) -> sqlx::Result<(Vec<Uuid>, Vec<Uuid>, Vec<Uuid>)> {
     let tracks = sqlx::query_scalar!("SELECT id FROM tracks WHERE id = ANY($1) AND merged_into IS NOT NULL", tracks)
         .fetch_all(&mut *conn)

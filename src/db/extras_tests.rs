@@ -110,13 +110,15 @@ async fn extras_are_in_the_catalog_and_its_deltas(_: PgPoolOptions, connect: PgC
     assert_eq!(rows[0][links], serde_json::json!([["track", lib.v]]));
     drop(tx);
 
-    // Restricted: the whole catalog again (nothing says it's gone).
+    // Restricted: a delta, which says it's gone for carol (not the whole catalog).
     let since = version(lib.carol).await?;
     let mut tx = db::begin(&lib.app, Some(lib.bob)).await?;
     db::extras::set_access(&mut tx, open, &Access { restricted: true, groups: vec![lib.friends] }, "").await?;
     tx.commit().await?;
     let mut tx = db::begin(&lib.app, Some(lib.carol)).await?;
-    assert!(db::library::changes_since(&mut tx, &since).await?.everything);
+    let changes = db::library::changes_since(&mut tx, &since).await?;
+    assert!(!changes.everything);
+    assert_eq!(db::library::unseen(&mut tx, &[], &[], &changes.extras).await?.2, [open]);
     assert_eq!(db::library::extras_json(&mut tx, None).await?, "[]");
     Ok(())
 }
@@ -173,7 +175,7 @@ async fn a_track_becomes_an_extra_and_a_track_again(_: PgPoolOptions, connect: P
     let mut tx = db::begin(&lib.app, Some(lib.carol)).await?;
     let changes = db::library::changes_since(&mut tx, &since).await?;
     assert!(!changes.everything);
-    assert_eq!(changes.gone_tracks, [lib.o]);
+    assert_eq!(db::library::unseen(&mut tx, &changes.tracks, &changes.albums, &[]).await?.0, [lib.o]);
     assert!(changes.artists.contains(&lib.both), "its artist's counts");
     assert!(!db::library::tracks_json(&mut tx, None).await?.contains(&lib.o.to_string()));
     let since = db::library::version(&mut tx).await?;
@@ -185,9 +187,12 @@ async fn a_track_becomes_an_extra_and_a_track_again(_: PgPoolOptions, connect: P
     let v_extra = db::extras::track_to_extra(&mut tx, lib.v, "clip", Some("V clip"), &About::default(), None, "").await?;
     assert_eq!(v_extra.albums.iter().map(|a| (a.title.as_str(), a.alone)).collect::<Vec<_>>(), [("Album A", false)]);
     tx.commit().await?;
-    // A is left with H only (restricted): hidden from carol, so the whole catalog.
+    // A is left with H only (restricted): gone for carol, said in the delta.
     let mut tx = db::begin(&lib.app, Some(lib.carol)).await?;
-    assert!(db::library::changes_since(&mut tx, &since).await?.everything);
+    let changes = db::library::changes_since(&mut tx, &since).await?;
+    assert!(!changes.everything);
+    let (tracks, albums, _) = db::library::unseen(&mut tx, &changes.tracks, &changes.albums, &[]).await?;
+    assert!(tracks.contains(&lib.v) && albums.contains(&lib.album), "{tracks:?} {albums:?}");
     drop(tx);
     let mut tx = db::begin(&lib.app, Some(lib.bob)).await?;
     let h_extra = db::extras::track_to_extra(&mut tx, lib.h, "clip", None, &About::default(), None, "").await?;
@@ -247,6 +252,31 @@ async fn a_single_goes_with_its_track_in_a_small_delta(_: PgPoolOptions, connect
     let mut tx = db::begin(&lib.app, Some(lib.carol)).await?;
     let changes = db::library::changes_since(&mut tx, &since).await?;
     assert!(!changes.everything);
-    assert_eq!((changes.gone_tracks.as_slice(), changes.gone_albums.as_slice()), ([lib.o].as_slice(), [single].as_slice()));
+    let (tracks, albums, _) = db::library::unseen(&mut tx, &changes.tracks, &changes.albums, &[]).await?;
+    assert_eq!((tracks, albums), (vec![lib.o], vec![single]));
+    Ok(())
+}
+
+/// Tracks merged: the kept one shows the extras of the other (the links stay where they
+/// were made), and undoing the merge gives them back.
+#[sqlx::test]
+async fn extras_follow_a_track_merge(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
+    let lib = setup(connect).await?;
+    let mut tx = db::begin(&lib.app, Some(lib.alice)).await?;
+    let (extra, _) = db::extras::create(&mut tx, "O stems", "stems", &About::default(), &[Link::Track(lib.o)], None, "").await?;
+    let merged = db::revisions::merge_tracks(&mut tx, lib.v, lib.o, &Default::default(), None, None, "").await?;
+    let on_v = db::extras::linked_to(&mut tx, Link::Track(lib.v)).await?;
+    assert_eq!(on_v.iter().map(|e| e.id).collect::<Vec<_>>(), [extra]);
+    assert_eq!(on_v[0].links.iter().map(|l| l.id).collect::<Vec<_>>(), [lib.v], "shown on the kept track");
+    let rows = db::library::extras_json(&mut tx, None).await?;
+    assert!(rows.contains(&lib.v.to_string()) && !rows.contains(&lib.o.to_string()));
+    // The merge undone: back on O, not on V.
+    db::revisions::undo_track_merge(&mut tx, merged.merge_id, "").await?;
+    assert_eq!(db::extras::linked_to(&mut tx, Link::Track(lib.o)).await?.len(), 1);
+    assert!(db::extras::linked_to(&mut tx, Link::Track(lib.v)).await?.is_empty());
+    // Merged again: "Not on this track" from V undoes the link made to O.
+    db::revisions::merge_tracks(&mut tx, lib.v, lib.o, &Default::default(), None, None, "").await?;
+    assert!(db::extras::unlink(&mut tx, extra, Link::Track(lib.v), "").await?);
+    assert!(db::extras::linked_to(&mut tx, Link::Track(lib.v)).await?.is_empty());
     Ok(())
 }

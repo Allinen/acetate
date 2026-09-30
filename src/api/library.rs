@@ -61,9 +61,18 @@ pub async fn catalog(
             let issues = db::library::issues_json(&mut tx, Some(&changes.tracks)).await?;
             let (mut gone_tracks, mut gone_albums, gone_artists) =
                 db::library::merged(&mut tx, &changes.tracks, &changes.albums, &changes.artists).await?;
-            // Turned into extras (and albums they were the last track of): gone for all.
-            gone_tracks.extend(&changes.gone_tracks);
-            gone_albums.extend(&changes.gone_albums);
+            // Changed ones the user can't see anymore (restricted, turned into extras).
+            let (unseen_tracks, unseen_albums, gone_extras) = db::library::unseen(&mut tx, &changes.tracks, &changes.albums, &changes.extras).await?;
+            for id in unseen_tracks {
+                if !gone_tracks.contains(&id) {
+                    gone_tracks.push(id);
+                }
+            }
+            for id in unseen_albums {
+                if !gone_albums.contains(&id) {
+                    gone_albums.push(id);
+                }
+            }
             let playlists = serde_json::to_string(&db::playlists::list(&mut tx, false).await?)?;
             let groupings = db::library::groupings_json(&mut tx).await?;
             let extras = db::library::extras_json(&mut tx, Some(&changes.extras)).await?;
@@ -74,7 +83,7 @@ pub async fn catalog(
             let kept: std::collections::HashSet<String> = kept.iter().filter_map(|r| r.get(1)?.as_str().map(str::to_string)).collect();
             let cleared: Vec<uuid::Uuid> = changes.annotations.iter().filter(|id| !kept.contains(&id.to_string())).copied().collect();
             let removed = serde_json::json!({
-                "tracks": gone_tracks, "albums": gone_albums, "artists": gone_artists, "annotations": cleared,
+                "tracks": gone_tracks, "albums": gone_albums, "artists": gone_artists, "annotations": cleared, "extras": gone_extras,
             });
             let body = format!(
                 r#"{{"format":{FORMAT},"delta":true,"version":"{version}","tracks":{},"albums":{},"artists":{},"annotations":{},"issues":{},"groupings":{},"extras":{},"playlists":{playlists},"removed":{removed}}}"#,
