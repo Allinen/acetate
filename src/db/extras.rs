@@ -1,0 +1,453 @@
+//! Extras (migration 0040): audio and other files that aren't tracks (vocals, stems,
+//! samples, clips, project files), with a name, a kind, their files, and links to the
+//! tracks, albums and artists they belong to. Restricted like tracks. Nothing is deleted:
+//! an extra or a file is taken off (hidden) and brought back; links are made and undone;
+//! everything is logged (`extra_log`).
+
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+use sqlx::PgConnection;
+use uuid::Uuid;
+
+use super::revisions::EditRejected;
+
+/// What an extra is linked to.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind", content = "id")]
+pub enum Link {
+    Track(Uuid),
+    Album(Uuid),
+    Artist(Uuid),
+}
+
+impl Link {
+    fn ids(self) -> (Option<Uuid>, Option<Uuid>, Option<Uuid>) {
+        match self {
+            Link::Track(id) => (Some(id), None, None),
+            Link::Album(id) => (None, Some(id), None),
+            Link::Artist(id) => (None, None, Some(id)),
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Link::Track(_) => "track",
+            Link::Album(_) => "album",
+            Link::Artist(_) => "artist",
+        }
+    }
+}
+
+/// Who sees an extra: everyone, or (restricted) admins and these groups.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Access {
+    pub restricted: bool,
+    #[serde(default)]
+    pub groups: Vec<Uuid>,
+}
+
+/// One of an extra's files.
+#[derive(Debug, Serialize)]
+pub struct ExtraFile {
+    pub id: Uuid,
+    pub name: String,
+    pub size_bytes: i64,
+    pub container: Option<String>,
+    pub codec: Option<String>,
+    pub sample_rate: Option<i32>,
+    pub channels: Option<i16>,
+    pub bit_depth: Option<i16>,
+    pub duration_ms: Option<i64>,
+    pub hidden: bool,
+    pub added_at: DateTime<Utc>,
+}
+
+/// Something it's linked to, named.
+#[derive(Debug, Serialize, PartialEq)]
+pub struct Linked {
+    pub kind: String,
+    pub id: Uuid,
+    pub title: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct Group {
+    pub id: Uuid,
+    pub name: String,
+}
+
+/// An extra, as its page (or a page it's linked to) shows it.
+#[derive(Debug, Serialize)]
+pub struct Extra {
+    pub id: Uuid,
+    pub name: String,
+    pub kind: String,
+    pub is_restricted: bool,
+    /// Who sees it when restricted (besides admins).
+    pub groups: Vec<Group>,
+    pub hidden: bool,
+    pub created_at: DateTime<Utc>,
+    pub created_by: Option<String>,
+    pub files: Vec<ExtraFile>,
+    pub links: Vec<Linked>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct LogEntry {
+    pub what: String,
+    pub details: serde_json::Value,
+    pub reason: String,
+    pub at: DateTime<Utc>,
+    pub by: Option<String>,
+}
+
+/// A file's technical facts (audio), as probed.
+#[derive(Debug, Default)]
+pub struct FileFacts {
+    pub container: Option<String>,
+    pub codec: Option<String>,
+    pub sample_rate: Option<i32>,
+    pub channels: Option<i16>,
+    pub bit_depth: Option<i16>,
+    pub duration_ms: Option<i64>,
+}
+
+fn checked_name(name: &str) -> anyhow::Result<String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(EditRejected::Invalid("an extra needs a name".into()).into());
+    }
+    Ok(name.chars().take(500).collect())
+}
+
+fn checked_kind(kind: &str) -> String {
+    let kind = kind.trim().to_lowercase();
+    if kind.is_empty() { "other".into() } else { kind.chars().take(60).collect() }
+}
+
+async fn log(conn: &mut PgConnection, extra: Uuid, what: &str, details: serde_json::Value, reason: &str) -> sqlx::Result<()> {
+    sqlx::query!("INSERT INTO extra_log (extra_id, what, details, reason) VALUES ($1, $2, $3, $4)", extra, what, details, reason.trim())
+        .execute(conn)
+        .await?;
+    Ok(())
+}
+
+/// Who sees a track: the access a new extra linked to it starts with.
+pub async fn access_of_track(conn: &mut PgConnection, track: Uuid) -> anyhow::Result<Access> {
+    let restricted = sqlx::query_scalar!("SELECT is_restricted FROM tracks WHERE id = $1 AND merged_into IS NULL", track)
+        .fetch_optional(&mut *conn)
+        .await?
+        .ok_or(EditRejected::NotFound("track"))?;
+    let groups = if restricted {
+        sqlx::query_scalar!("SELECT group_id FROM track_access WHERE track_id = $1 ORDER BY group_id", track).fetch_all(&mut *conn).await?
+    } else {
+        Vec::new()
+    };
+    Ok(Access { restricted, groups })
+}
+
+/// A new extra, linked to `links` (each must be there and not merged away). `access`: who
+/// sees it; None: like the first linked track (everyone, without one). Returns its id and
+/// the access it got.
+pub async fn create(conn: &mut PgConnection, name: &str, kind: &str, links: &[Link], access: Option<Access>, reason: &str) -> anyhow::Result<(Uuid, Access)> {
+    let name = checked_name(name)?;
+    let kind = checked_kind(kind);
+    let access = match access {
+        Some(access) => access,
+        None => match links.iter().find_map(|l| if let Link::Track(t) = l { Some(*t) } else { None }) {
+            Some(track) => access_of_track(conn, track).await?,
+            None => Access::default(),
+        },
+    };
+    // Made open, its groups added, then restricted (in this transaction: nobody sees it in
+    // between). Restricted from the start, the visibility check would refuse the new row
+    // (no group sees it yet).
+    let id = sqlx::query_scalar!("INSERT INTO extras (name, kind) VALUES ($1, $2) RETURNING id", name, kind).fetch_one(&mut *conn).await?;
+    log(conn, id, "made", json!({ "name": name, "kind": kind, "access": access }), reason).await?;
+    for link in links {
+        self::link(conn, id, *link, reason).await?;
+    }
+    write_access(conn, id, &access).await?;
+    if access.restricted {
+        set_restricted(conn, id, true).await?;
+    }
+    Ok((id, access))
+}
+
+async fn write_access(conn: &mut PgConnection, extra: Uuid, access: &Access) -> anyhow::Result<()> {
+    if access.restricted {
+        let known = sqlx::query_scalar!("SELECT count(*) AS \"n!\" FROM groups WHERE id = ANY($1)", &access.groups).fetch_one(&mut *conn).await?;
+        if known as usize != access.groups.len() {
+            return Err(EditRejected::Invalid("one of those groups isn't there".into()).into());
+        }
+    }
+    sqlx::query!("DELETE FROM extra_access WHERE extra_id = $1", extra).execute(&mut *conn).await?;
+    if access.restricted {
+        for group in &access.groups {
+            sqlx::query!("INSERT INTO extra_access (extra_id, group_id) VALUES ($1, $2) ON CONFLICT DO NOTHING", extra, group).execute(&mut *conn).await?;
+        }
+    }
+    Ok(())
+}
+
+/// Who sees it, changed. (Before the change: restricting it to groups the user isn't in
+/// would hide it from them, which is allowed; the change is logged.)
+pub async fn set_access(conn: &mut PgConnection, extra: Uuid, access: &Access, reason: &str) -> anyhow::Result<bool> {
+    let now = sqlx::query_scalar!("SELECT is_restricted FROM extras WHERE id = $1 FOR UPDATE", extra)
+        .fetch_optional(&mut *conn)
+        .await?
+        .ok_or(EditRejected::NotFound("extra"))?;
+    let groups = sqlx::query_scalar!("SELECT group_id FROM extra_access WHERE extra_id = $1 ORDER BY group_id", extra).fetch_all(&mut *conn).await?;
+    let mut wanted = access.groups.clone();
+    wanted.sort();
+    wanted.dedup();
+    let wanted = Access { restricted: access.restricted, groups: if access.restricted { wanted } else { Vec::new() } };
+    if now == wanted.restricted && groups == wanted.groups {
+        return Ok(false);
+    }
+    // The log first: once it's restricted away from the user, they can't write it.
+    log(conn, extra, "access", json!({ "from": Access { restricted: now, groups }, "to": wanted }), reason).await?;
+    // In the order that keeps it visible to the user until the last step: opening it up,
+    // unrestricted first; restricting it, its groups first. (The other way round, the
+    // user loses sight of it halfway, and the rest silently changes nothing.)
+    if wanted.restricted {
+        write_access(conn, extra, &wanted).await?;
+        set_restricted(conn, extra, true).await?;
+    } else {
+        set_restricted(conn, extra, false).await?;
+        write_access(conn, extra, &wanted).await?;
+    }
+    Ok(true)
+}
+
+async fn set_restricted(conn: &mut PgConnection, extra: Uuid, restricted: bool) -> anyhow::Result<()> {
+    let hidden_from_you = || EditRejected::Invalid("that would hide it from you: restrict it to a group you're in".into());
+    let done = match sqlx::query!("UPDATE extras SET is_restricted = $2 WHERE id = $1", extra, restricted).execute(&mut *conn).await {
+        Ok(done) => done.rows_affected(),
+        // The row it would become isn't one the user may see.
+        Err(sqlx::Error::Database(err)) if err.code().as_deref() == Some("42501") => return Err(hidden_from_you().into()),
+        Err(err) => return Err(err.into()),
+    };
+    if done == 0 {
+        return Err(hidden_from_you().into());
+    }
+    Ok(())
+}
+
+/// Its name and kind.
+pub async fn edit(conn: &mut PgConnection, extra: Uuid, name: &str, kind: &str, reason: &str) -> anyhow::Result<bool> {
+    let (name, kind) = (checked_name(name)?, checked_kind(kind));
+    let now = sqlx::query!("SELECT name, kind FROM extras WHERE id = $1 FOR UPDATE", extra)
+        .fetch_optional(&mut *conn)
+        .await?
+        .ok_or(EditRejected::NotFound("extra"))?;
+    if now.name == name && now.kind == kind {
+        return Ok(false);
+    }
+    sqlx::query!("UPDATE extras SET name = $2, kind = $3 WHERE id = $1", extra, name, kind).execute(&mut *conn).await?;
+    log(conn, extra, "edited", json!({ "from": { "name": now.name, "kind": now.kind }, "to": { "name": name, "kind": kind } }), reason).await?;
+    Ok(true)
+}
+
+/// Taken off (kept) or brought back.
+pub async fn set_hidden(conn: &mut PgConnection, extra: Uuid, hidden: bool, reason: &str) -> anyhow::Result<bool> {
+    let now = sqlx::query_scalar!("SELECT hidden_at IS NOT NULL AS \"h!\" FROM extras WHERE id = $1 FOR UPDATE", extra)
+        .fetch_optional(&mut *conn)
+        .await?
+        .ok_or(EditRejected::NotFound("extra"))?;
+    if now == hidden {
+        return Ok(false);
+    }
+    sqlx::query!("UPDATE extras SET hidden_at = CASE WHEN $2 THEN now() END WHERE id = $1", extra, hidden).execute(&mut *conn).await?;
+    log(conn, extra, if hidden { "taken off" } else { "brought back" }, json!({}), reason).await?;
+    Ok(true)
+}
+
+/// Links it to a track, album or artist (there, and not merged away). False: linked already.
+pub async fn link(conn: &mut PgConnection, extra: Uuid, to: Link, reason: &str) -> anyhow::Result<bool> {
+    let merged = match to {
+        Link::Track(id) => sqlx::query_scalar!("SELECT merged_into IS NOT NULL AS \"m!\" FROM tracks WHERE id = $1", id).fetch_optional(&mut *conn).await?,
+        Link::Album(id) => sqlx::query_scalar!("SELECT merged_into IS NOT NULL AS \"m!\" FROM albums WHERE id = $1", id).fetch_optional(&mut *conn).await?,
+        Link::Artist(id) => sqlx::query_scalar!("SELECT merged_into IS NOT NULL AS \"m!\" FROM artists WHERE id = $1", id).fetch_optional(&mut *conn).await?,
+    };
+    match merged {
+        None => return Err(EditRejected::NotFound(to.name()).into()),
+        Some(true) => return Err(EditRejected::Invalid(format!("that {} was merged into another: link that one", to.name())).into()),
+        Some(false) => {}
+    }
+    let (track, album, artist) = to.ids();
+    let made = sqlx::query!(
+        "INSERT INTO extra_links (extra_id, track_id, album_id, artist_id) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING",
+        extra,
+        track,
+        album,
+        artist
+    )
+    .execute(&mut *conn)
+    .await?
+    .rows_affected()
+        > 0;
+    if made {
+        log(conn, extra, "linked", json!({ "to": to }), reason).await?;
+    }
+    Ok(made)
+}
+
+/// Undoes a link. False: it wasn't linked (or the other side isn't seen).
+pub async fn unlink(conn: &mut PgConnection, extra: Uuid, from: Link, reason: &str) -> anyhow::Result<bool> {
+    let (track, album, artist) = from.ids();
+    let gone = sqlx::query!(
+        "DELETE FROM extra_links WHERE extra_id = $1 AND track_id IS NOT DISTINCT FROM $2 AND album_id IS NOT DISTINCT FROM $3 AND artist_id IS NOT DISTINCT FROM $4",
+        extra,
+        track,
+        album,
+        artist
+    )
+    .execute(&mut *conn)
+    .await?
+    .rows_affected()
+        > 0;
+    if gone {
+        log(conn, extra, "unlinked", json!({ "from": from }), reason).await?;
+    }
+    Ok(gone)
+}
+
+/// A file (its bytes stored already, and registered) added to an extra.
+pub async fn add_file(conn: &mut PgConnection, extra: Uuid, sha256: &str, name: &str, size_bytes: i64, facts: &FileFacts, reason: &str) -> anyhow::Result<Uuid> {
+    sqlx::query_scalar!("SELECT id FROM extras WHERE id = $1", extra).fetch_optional(&mut *conn).await?.ok_or(EditRejected::NotFound("extra"))?;
+    let id = sqlx::query_scalar!(
+        r#"INSERT INTO extra_files (extra_id, sha256, name, size_bytes, container, codec, sample_rate, channels, bit_depth, duration_ms)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id"#,
+        extra,
+        sha256,
+        name,
+        size_bytes,
+        facts.container,
+        facts.codec,
+        facts.sample_rate,
+        facts.channels,
+        facts.bit_depth,
+        facts.duration_ms
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    log(conn, extra, "file added", json!({ "file": id, "name": name, "sha256": sha256 }), reason).await?;
+    Ok(id)
+}
+
+/// A file taken off (kept) or brought back.
+pub async fn set_file_hidden(conn: &mut PgConnection, file: Uuid, hidden: bool, reason: &str) -> anyhow::Result<bool> {
+    let row = sqlx::query!("SELECT extra_id, name, hidden_at IS NOT NULL AS \"h!\" FROM extra_files WHERE id = $1 FOR UPDATE", file)
+        .fetch_optional(&mut *conn)
+        .await?
+        .ok_or(EditRejected::NotFound("file"))?;
+    if row.h == hidden {
+        return Ok(false);
+    }
+    sqlx::query!("UPDATE extra_files SET hidden_at = CASE WHEN $2 THEN now() END WHERE id = $1", file, hidden).execute(&mut *conn).await?;
+    log(conn, row.extra_id, if hidden { "file taken off" } else { "file brought back" }, json!({ "file": file, "name": row.name }), reason).await?;
+    Ok(true)
+}
+
+/// Where a file's bytes are, and its name (to stream it), if the user sees it.
+pub async fn file_blob(conn: &mut PgConnection, file: Uuid) -> sqlx::Result<Option<(String, String)>> {
+    Ok(sqlx::query!("SELECT sha256, name FROM extra_files WHERE id = $1", file).fetch_optional(conn).await?.map(|r| (r.sha256, r.name)))
+}
+
+/// One extra.
+pub async fn get(conn: &mut PgConnection, id: Uuid) -> sqlx::Result<Option<Extra>> {
+    let Some(row) = sqlx::query!(
+        r#"SELECT e.id, e.name, e.kind, e.is_restricted, e.hidden_at IS NOT NULL AS "hidden!", e.created_at, u.username AS "created_by?"
+           FROM extras e LEFT JOIN users u ON u.id = e.created_by WHERE e.id = $1"#,
+        id
+    )
+    .fetch_optional(&mut *conn)
+    .await?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(Extra {
+        id: row.id,
+        name: row.name,
+        kind: row.kind,
+        is_restricted: row.is_restricted,
+        groups: groups(conn, id).await?,
+        hidden: row.hidden,
+        created_at: row.created_at,
+        created_by: row.created_by,
+        files: files(conn, id).await?,
+        links: links(conn, id).await?,
+    }))
+}
+
+/// The extras linked to a track, album or artist (taken-off ones too, flagged), by name.
+pub async fn linked_to(conn: &mut PgConnection, to: Link) -> sqlx::Result<Vec<Extra>> {
+    let (track, album, artist) = to.ids();
+    let ids = sqlx::query_scalar!(
+        r#"SELECT e.id FROM extra_links l JOIN extras e ON e.id = l.extra_id
+           WHERE l.track_id IS NOT DISTINCT FROM $1 AND l.album_id IS NOT DISTINCT FROM $2 AND l.artist_id IS NOT DISTINCT FROM $3
+           ORDER BY lower(e.name), e.id"#,
+        track,
+        album,
+        artist
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    let mut out = Vec::with_capacity(ids.len());
+    for id in ids {
+        if let Some(extra) = get(conn, id).await? {
+            out.push(extra);
+        }
+    }
+    Ok(out)
+}
+
+/// An extra's log, newest first.
+pub async fn history(conn: &mut PgConnection, id: Uuid) -> sqlx::Result<Vec<LogEntry>> {
+    sqlx::query_as!(
+        LogEntry,
+        r#"SELECT l.what, l.details, l.reason, l.at, u.username AS "by?"
+           FROM extra_log l LEFT JOIN users u ON u.id = l.by_user WHERE l.extra_id = $1 ORDER BY l.id DESC"#,
+        id
+    )
+    .fetch_all(conn)
+    .await
+}
+
+async fn groups(conn: &mut PgConnection, extra: Uuid) -> sqlx::Result<Vec<Group>> {
+    sqlx::query_as!(Group, "SELECT g.id, g.name FROM extra_access a JOIN groups g ON g.id = a.group_id WHERE a.extra_id = $1 ORDER BY g.name", extra)
+        .fetch_all(conn)
+        .await
+}
+
+async fn files(conn: &mut PgConnection, extra: Uuid) -> sqlx::Result<Vec<ExtraFile>> {
+    sqlx::query_as!(
+        ExtraFile,
+        r#"SELECT id, name, size_bytes, container, codec, sample_rate, channels, bit_depth, duration_ms,
+                  hidden_at IS NOT NULL AS "hidden!", added_at
+           FROM extra_files WHERE extra_id = $1 ORDER BY lower(name), id"#,
+        extra
+    )
+    .fetch_all(conn)
+    .await
+}
+
+async fn links(conn: &mut PgConnection, extra: Uuid) -> sqlx::Result<Vec<Linked>> {
+    sqlx::query_as!(
+        Linked,
+        r#"SELECT CASE WHEN l.track_id IS NOT NULL THEN 'track' WHEN l.album_id IS NOT NULL THEN 'album' ELSE 'artist' END AS "kind!",
+                  COALESCE(l.track_id, l.album_id, l.artist_id) AS "id!",
+                  COALESCE(t.title, al.title, a.name) AS "title!"
+           FROM extra_links l
+           LEFT JOIN tracks t ON t.id = l.track_id
+           LEFT JOIN albums al ON al.id = l.album_id
+           LEFT JOIN artists a ON a.id = l.artist_id
+           WHERE l.extra_id = $1
+           ORDER BY l.id"#,
+        extra
+    )
+    .fetch_all(conn)
+    .await
+}

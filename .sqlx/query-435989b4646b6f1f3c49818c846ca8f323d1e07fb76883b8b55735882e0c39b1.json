@@ -1,0 +1,76 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT l.what, l.details, l.reason, l.at, u.username AS \"by?\"\n           FROM extra_log l LEFT JOIN users u ON u.id = l.by_user WHERE l.extra_id = $1 ORDER BY l.id DESC",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "what",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "extra_log",
+            "name": "what"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "details",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "extra_log",
+            "name": "details"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "reason",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "extra_log",
+            "name": "reason"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "extra_log",
+            "name": "at"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "by?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "username"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "435989b4646b6f1f3c49818c846ca8f323d1e07fb76883b8b55735882e0c39b1"
+}

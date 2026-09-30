@@ -62,6 +62,8 @@ pub enum Page {
     Grouping(Uuid),
     /// Every grouping, to browse.
     Groupings,
+    /// An extra (vocals, stems, a sample…): its files, what it belongs to, who sees it.
+    Extra(Uuid),
 }
 
 /// Something to do, asked for by a page, a key or a button.

@@ -11,6 +11,7 @@ mod auth;
 mod covers;
 mod lyrics;
 mod notes;
+mod extras;
 mod catalog;
 mod groupings;
 mod groups;
@@ -169,6 +170,20 @@ pub fn router(state: AppState) -> Router {
         .route("/api/notes/{id}", require(&[EditMetadata], put(notes::edit)))
         .route("/api/notes/{id}/hidden", require(&[EditMetadata], post(notes::set_hidden)))
         .route("/api/notes/{id}/revisions", require(&[ViewHistory], get(notes::revisions)))
+        // Extras: vocals, stems, samples… (listed with what they're linked to).
+        .route("/api/extras", require(&[EditMetadata], post(extras::create)))
+        .route("/api/extras/{id}", require(&[Browse], get(extras::get)).merge(require(&[EditMetadata], put(extras::edit))))
+        .route("/api/extras/{id}/history", require(&[ViewHistory], get(extras::history)))
+        .route("/api/extras/{id}/access", require(&[ManageAccess], put(extras::set_access)))
+        .route("/api/extras/{id}/hidden", require(&[EditMetadata], post(extras::set_hidden)))
+        .route("/api/extras/{id}/links", require(&[EditMetadata], post(extras::link)))
+        .route(
+            "/api/extras/{id}/files",
+            require(&[Upload], post(extras::add_files).layer(DefaultBodyLimit::disable()).layer(middleware::from_fn_with_state(state.clone(), upload_limits::limit))),
+        )
+        .route("/api/extra-files/{id}/hidden", require(&[EditMetadata], post(extras::set_file_hidden)))
+        .route("/api/extra-files/{id}/stream", require(&[Stream], get(extras::stream)))
+        .route("/api/ingest-problems/{id}/extra", require(&[EditMetadata], post(extras::from_problem)))
         .route("/api/lyrics-revisions/{id}/restore", require(&[RestoreRevision], post(lyrics::restore)))
         // Covers. Uploads need a bigger body limit than the default 2 MB.
         .route(

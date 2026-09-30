@@ -26,10 +26,10 @@ use sha2::{Digest, Sha256};
 use super::{AppError, AppState};
 use crate::auth::CurrentUser;
 use crate::db;
-use crate::db::library::{ALBUM_COLUMNS, ANNOTATION_COLUMNS, ARTIST_COLUMNS, GROUPING_COLUMNS, ISSUE_COLUMNS, TRACK_COLUMNS};
+use crate::db::library::{ALBUM_COLUMNS, ANNOTATION_COLUMNS, ARTIST_COLUMNS, EXTRA_COLUMNS, GROUPING_COLUMNS, ISSUE_COLUMNS, TRACK_COLUMNS};
 
 /// Bumped when the format changes in a way old clients can't read.
-const FORMAT: u32 = 5;
+const FORMAT: u32 = 6;
 
 #[derive(Debug, Deserialize)]
 pub struct CatalogParams {
@@ -63,6 +63,7 @@ pub async fn catalog(
                 db::library::merged(&mut tx, &changes.tracks, &changes.albums, &changes.artists).await?;
             let playlists = serde_json::to_string(&db::playlists::list(&mut tx, false).await?)?;
             let groupings = db::library::groupings_json(&mut tx).await?;
+            let extras = db::library::extras_json(&mut tx, Some(&changes.extras)).await?;
             drop(tx);
             // The user's changed annotations that say nothing anymore (unstarred, unrated,
             // never played) aren't rows: the client drops them.
@@ -73,13 +74,14 @@ pub async fn catalog(
                 "tracks": gone_tracks, "albums": gone_albums, "artists": gone_artists, "annotations": cleared,
             });
             let body = format!(
-                r#"{{"format":{FORMAT},"delta":true,"version":"{version}","tracks":{},"albums":{},"artists":{},"annotations":{},"issues":{},"groupings":{},"playlists":{playlists},"removed":{removed}}}"#,
+                r#"{{"format":{FORMAT},"delta":true,"version":"{version}","tracks":{},"albums":{},"artists":{},"annotations":{},"issues":{},"groupings":{},"extras":{},"playlists":{playlists},"removed":{removed}}}"#,
                 part(TRACK_COLUMNS, &tracks)?,
                 part(ALBUM_COLUMNS, &albums)?,
                 part(ARTIST_COLUMNS, &artists)?,
                 part(ANNOTATION_COLUMNS, &annotations)?,
                 part(ISSUE_COLUMNS, &issues)?,
                 part(GROUPING_COLUMNS, &groupings)?,
+                part(EXTRA_COLUMNS, &extras)?,
             );
             return Ok(([(header::CONTENT_TYPE, HeaderValue::from_static("application/json")), no_cache()], body).into_response());
         }
@@ -92,18 +94,20 @@ pub async fn catalog(
     let issues = db::library::issues_json(&mut tx, None).await?;
     let playlists = serde_json::to_string(&db::playlists::list(&mut tx, false).await?)?;
     let groupings = db::library::groupings_json(&mut tx).await?;
+    let extras = db::library::extras_json(&mut tx, None).await?;
     drop(tx);
 
     // The parts are JSON already (built by Postgres), so they're put together as text
     // instead of being parsed and serialized again.
     let body = format!(
-        r#"{{"format":{FORMAT},"delta":false,"version":"{version}","tracks":{},"albums":{},"artists":{},"annotations":{},"issues":{},"groupings":{},"playlists":{playlists}}}"#,
+        r#"{{"format":{FORMAT},"delta":false,"version":"{version}","tracks":{},"albums":{},"artists":{},"annotations":{},"issues":{},"groupings":{},"extras":{},"playlists":{playlists}}}"#,
         part(TRACK_COLUMNS, &tracks)?,
         part(ALBUM_COLUMNS, &albums)?,
         part(ARTIST_COLUMNS, &artists)?,
         part(ANNOTATION_COLUMNS, &annotations)?,
         part(ISSUE_COLUMNS, &issues)?,
         part(GROUPING_COLUMNS, &groupings)?,
+        part(EXTRA_COLUMNS, &extras)?,
     );
 
     // The ETag leaves out the version (it moves with any change anywhere, even ones this

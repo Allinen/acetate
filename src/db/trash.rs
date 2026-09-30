@@ -357,6 +357,8 @@ pub async fn purge(
                 OR EXISTS (SELECT 1 FROM files WHERE sha256 = $1 AND purged_at IS NULL)
                 -- A file that didn't import, kept for the review list.
                 OR EXISTS (SELECT 1 FROM ingest_problems WHERE sha256 = $1 AND resolved_at IS NULL)
+                -- An extra's file (taken off or not: it can be brought back).
+                OR EXISTS (SELECT 1 FROM extra_files WHERE sha256 = $1)
                AS "used!"
             "#,
             sha

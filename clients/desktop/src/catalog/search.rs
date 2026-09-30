@@ -15,6 +15,8 @@ pub struct Hits {
     pub artists: Vec<(u32, u32)>,
     pub albums: Vec<(u32, u32)>,
     pub tracks: Vec<(u32, u32)>,
+    /// Extras (places in `Catalog::extras`).
+    pub extras: Vec<(u32, u32)>,
 }
 
 /// One kind of thing to search.
@@ -23,6 +25,7 @@ pub enum Part {
     Artists,
     Albums,
     Tracks,
+    Extras,
 }
 
 pub struct Search {
@@ -45,6 +48,7 @@ impl Search {
             artists: self.best(&pattern, artists, limit),
             albums: self.best(&pattern, albums, limit),
             tracks: self.best(&pattern, tracks, limit),
+            extras: self.best(&pattern, catalog.extra_texts(), limit),
         }
     }
 
@@ -56,6 +60,7 @@ impl Search {
             Part::Artists => artists,
             Part::Albums => albums,
             Part::Tracks => tracks,
+            Part::Extras => catalog.extra_texts(),
         };
         self.best(&pattern, texts, limit)
     }

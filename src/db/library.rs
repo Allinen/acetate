@@ -39,6 +39,39 @@ pub const ALBUM_COLUMNS: &[&str] = &[
 pub const GROUPING_COLUMNS: &[&str] = &["id", "kind", "name", "track_count", "album_count", "artists"];
 
 /// `aliases`: the names it's listed as credited under (hidden ones, taken off it, aren't).
+/// Extras (stems, samples…; `db::extras`) the user can see, to search and to list on the
+/// pages they're linked to. `links`: `[["track" | "album" | "artist", id], …]` (only those
+/// seen). `files`: how many (not taken off); `first_file`/`duration_ms`: the first audio
+/// one's (by name), to play (none: no audio). `hidden`: taken off (a delta sends it so the client drops it).
+pub const EXTRA_COLUMNS: &[&str] = &["id", "name", "kind", "is_restricted", "hidden", "links", "files", "first_file", "duration_ms"];
+
+/// The extras (all, or these ones) the user can see, see `EXTRA_COLUMNS`.
+pub async fn extras_json(conn: &mut PgConnection, ids: Option<&[Uuid]>) -> sqlx::Result<String> {
+    sqlx::query_scalar!(
+        r#"
+        SELECT COALESCE(json_agg(json_build_array(
+                   e.id, e.name, e.kind, e.is_restricted, e.hidden_at IS NOT NULL,
+                   COALESCE((SELECT json_agg(json_build_array(
+                                 CASE WHEN l.track_id IS NOT NULL THEN 'track' WHEN l.album_id IS NOT NULL THEN 'album' ELSE 'artist' END,
+                                 COALESCE(l.track_id, l.album_id, l.artist_id)) ORDER BY l.id)
+                             FROM extra_links l WHERE l.extra_id = e.id), '[]'::json),
+                   (SELECT count(*) FROM extra_files f WHERE f.extra_id = e.id AND f.hidden_at IS NULL),
+                   first.id, first.duration_ms
+               ) ORDER BY e.id), '[]'::json)::text AS "rows!"
+        FROM extras e
+        LEFT JOIN LATERAL (
+            SELECT f.id, f.duration_ms FROM extra_files f
+            WHERE f.extra_id = e.id AND f.hidden_at IS NULL AND (f.codec IS NOT NULL OR f.duration_ms IS NOT NULL)
+            ORDER BY lower(f.name), f.id LIMIT 1
+        ) first ON true
+        WHERE $1::uuid[] IS NULL OR e.id = ANY($1)
+        "#,
+        ids as Option<&[Uuid]>
+    )
+    .fetch_one(conn)
+    .await
+}
+
 pub const ARTIST_COLUMNS: &[&str] = &["id", "name", "disambiguation", "aliases", "track_count", "album_count"];
 
 /// Each track's open review flags: `[[flag id, kind], ...]` (kinds in `review_kinds`
@@ -299,11 +332,12 @@ pub struct Changes {
     pub annotations: Vec<Uuid>,
     /// A grouping changed (its name, what's in it): the list is sent again.
     pub groupings: bool,
+    pub extras: Vec<Uuid>,
 }
 
 impl Changes {
     pub fn is_empty(&self) -> bool {
-        !self.everything && self.tracks.is_empty() && self.albums.is_empty() && self.artists.is_empty() && self.annotations.is_empty() && !self.groupings
+        !self.everything && self.tracks.is_empty() && self.albums.is_empty() && self.artists.is_empty() && self.annotations.is_empty() && !self.groupings && self.extras.is_empty()
     }
 }
 
@@ -352,6 +386,7 @@ pub async fn changes_since(conn: &mut PgConnection, since: &str) -> anyhow::Resu
             "artist" => changes.artists.push(id),
             "annotation" => changes.annotations.push(id),
             "grouping" => changes.groupings = true,
+            "extra" => changes.extras.push(id),
             _ => {}
         }
     }

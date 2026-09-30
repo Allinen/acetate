@@ -45,6 +45,8 @@ pub struct ArtistDetail {
     pub tracks: Vec<TrackSummary>,
     /// Its notes (and those of artists merged into it), oldest first; hidden ones flagged.
     pub notes: Vec<super::notes::Note>,
+    /// Extras linked to it (stems, samples…); taken-off ones flagged.
+    pub extras: Vec<super::extras::Extra>,
     /// Only included for users allowed to view history.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub revisions: Option<Vec<EntityRevision>>,
@@ -114,6 +116,7 @@ pub async fn get_artist(
         sources: super::sources::list_for(conn, id).await?,
         tracks: artist_tracks(conn, id, None, 100).await?,
         notes: super::notes::list(conn, super::notes::Owner::Artist(id)).await?,
+        extras: super::extras::linked_to(conn, super::extras::Link::Artist(id)).await?,
         revisions,
     }))
 }
@@ -170,6 +173,8 @@ pub struct AlbumDetail {
     pub merges: Vec<super::album_merges::AlbumMergeInfo>,
     /// Its notes (and those of albums merged into it), oldest first; hidden ones flagged.
     pub notes: Vec<super::notes::Note>,
+    /// Extras linked to it; taken-off ones flagged.
+    pub extras: Vec<super::extras::Extra>,
     /// Only included for users allowed to view history.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub revisions: Option<Vec<EntityRevision>>,
@@ -298,6 +303,7 @@ pub async fn get_album(
         tracks,
         merges: super::album_merges::merges_into(conn, id).await?,
         notes: super::notes::list(conn, super::notes::Owner::Album(id)).await?,
+        extras: super::extras::linked_to(conn, super::extras::Link::Album(id)).await?,
         revisions,
     }))
 }

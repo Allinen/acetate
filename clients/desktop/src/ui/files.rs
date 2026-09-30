@@ -34,12 +34,15 @@ fn without_line_end(path: PathBuf) -> PathBuf {
 }
 
 /// The system's file dialog, asked in the background; what was chosen arrives in `answer`.
-/// `kinds`: what it offers (a name, and extensions without the dot).
+/// `kinds`: what it offers (a name, and extensions without the dot; none: any file).
 pub fn choose(shell: &crate::ui::Shell, title: &str, kinds: (&str, &[&str]), multiple: bool, answer: &Arc<Mutex<Vec<PathBuf>>>) {
     let (title, name, extensions) = (title.to_string(), kinds.0.to_string(), kinds.1.iter().map(|e| e.to_string()).collect::<Vec<_>>());
     let (answer, ctx) = (answer.clone(), shell.ctx.clone());
     shell.runtime.spawn(async move {
-        let dialog = rfd::AsyncFileDialog::new().set_title(&title).add_filter(&name, &extensions);
+        let mut dialog = rfd::AsyncFileDialog::new().set_title(&title);
+        if !extensions.is_empty() {
+            dialog = dialog.add_filter(&name, &extensions);
+        }
         let chosen: Vec<PathBuf> = if multiple {
             dialog.pick_files().await.unwrap_or_default().iter().map(|f| f.path().to_path_buf()).collect()
         } else {

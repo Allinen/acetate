@@ -25,6 +25,8 @@ use crate::ui::{playing_track, widgets, Action, Page, Shell};
 pub struct TrackPage {
     /// Its notes, and writing them in edit mode.
     notes: crate::ui::edit::notes::NotesView,
+    /// Its extras (vocals, stems…), and attaching them in edit mode.
+    extras: crate::ui::edit::extras::ExtrasView,
     /// The history section's state (restoring asks first).
     history: super::history::History,
     /// Its sources, and which one its file came from (edit mode).
@@ -253,6 +255,13 @@ impl TrackPage {
         if crate::ui::edit::notes::NotesView::worth_showing(shell, &d.notes) {
             let count = d.notes.iter().filter(|n| !n.hidden).count();
             section(ui, &format!("Notes ({count})"), true, |ui| self.notes.show(ui, shell, crate::ui::edit::notes::Owner::Track(d.id), &d.notes, false, true));
+        }
+        if crate::ui::edit::extras::ExtrasView::worth_showing(shell, &d.extras) {
+            let count = d.extras.iter().filter(|e| !e.hidden).count();
+            let restricted = catalog.track_index(d.id).is_some_and(|i| catalog.tracks[i as usize].is_restricted);
+            section(ui, &format!("Extras ({count})"), true, |ui| {
+                self.extras.show(ui, shell, crate::ui::edit::extras::Owner::Track(d.id), &d.extras, restricted, true)
+            });
         }
         section(ui, "Credits", true, |ui| credits(ui, shell, d));
         if !d.relations.is_empty() {

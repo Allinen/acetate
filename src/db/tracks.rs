@@ -86,6 +86,8 @@ pub struct TrackDetail {
     pub id: Uuid,
     /// Its notes (and those of tracks merged into it), oldest first; hidden ones flagged.
     pub notes: Vec<super::notes::Note>,
+    /// Extras linked to it (vocals, stems…); taken-off ones flagged.
+    pub extras: Vec<super::extras::Extra>,
     pub title: String,
     pub artist_display: String,
     pub status: String,
@@ -440,6 +442,7 @@ pub async fn get_track(
 
     Ok(Some(TrackDetail {
         notes: super::notes::list(conn, super::notes::Owner::Track(row.id)).await?,
+        extras: super::extras::linked_to(conn, super::extras::Link::Track(row.id)).await?,
         id: row.id,
         title: row.title,
         artist_display: row.artist_display,

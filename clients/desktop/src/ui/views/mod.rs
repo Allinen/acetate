@@ -21,6 +21,7 @@ pub mod queue;
 pub mod review;
 pub mod review_bulk;
 pub mod credited_as;
+pub mod extra;
 pub mod mark_og;
 pub mod not_imported;
 pub mod settings;
@@ -58,6 +59,7 @@ pub struct Pages {
     pub trash: trash::TrashPage,
     grouping: grouping::GroupingPage,
     groupings: groupings::GroupingsPage,
+    extra: extra::ExtraPage,
 }
 
 impl Pages {
@@ -67,6 +69,7 @@ impl Pages {
             Page::Album(_) => self.album = Default::default(),
             Page::Artist(_) => self.artist = Default::default(),
             Page::Grouping(_) => self.grouping = Default::default(),
+            Page::Extra(_) => self.extra = Default::default(),
             Page::Playlist(_) | Page::Liked => self.playlist = Default::default(),
             Page::Track(_) => self.track = Default::default(),
             Page::Queue => self.queue.opened(),
@@ -108,6 +111,7 @@ impl Pages {
             Page::Review => self.review.show(ui, shell, &catalog, player),
             Page::Grouping(id) => self.grouping.show(ui, shell, &catalog, id, player),
             Page::Groupings => self.groupings.show(ui, shell, &catalog),
+            Page::Extra(id) => self.extra.show(ui, shell, id),
             Page::NowPlaying | Page::Queue | Page::Settings | Page::Trash => {}
         }
     }

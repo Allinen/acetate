@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT is_restricted FROM extras WHERE id = $1 FOR UPDATE",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "is_restricted",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "extras",
+            "name": "is_restricted"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "a063b0bea14de36c311935f8bf993eca592ed20cad449bf69b81b1a2df720be3"
+}

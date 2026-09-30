@@ -9,7 +9,7 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 /// The catalog format this client reads (the server's `FORMAT`).
-pub const FORMAT: u32 = 5;
+pub const FORMAT: u32 = 6;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -137,6 +137,27 @@ pub struct Grouping {
 
 const GROUPING_COLUMNS: &[&str] = &["id", "kind", "name", "track_count", "album_count", "artists"];
 
+/// An extra (vocals, stems, a sample…: not a track), to search and play.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Extra {
+    pub id: Uuid,
+    pub name: String,
+    /// "vocals", "stems", "sample"… (free text).
+    pub kind: String,
+    pub is_restricted: bool,
+    /// Taken off: left out.
+    pub hidden: bool,
+    /// What it belongs to: ("track" | "album" | "artist", id).
+    pub links: Vec<(String, Uuid)>,
+    /// How many files it has.
+    pub files: i64,
+    /// Its first file (by name), to play, and its length.
+    pub first_file: Option<Uuid>,
+    pub duration_ms: Option<i64>,
+}
+
+const EXTRA_COLUMNS: &[&str] = &["id", "name", "kind", "is_restricted", "hidden", "links", "files", "first_file", "duration_ms"];
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Artist {
     pub id: Uuid,
@@ -201,6 +222,12 @@ pub struct Part<T> {
     pub rows: Vec<T>,
 }
 
+impl<T> Default for Part<T> {
+    fn default() -> Self {
+        Part { columns: Vec::new(), rows: Vec::new() }
+    }
+}
+
 // Every column is read (rows are arrays in column order); not all are shown yet.
 #[allow(dead_code)]
 #[derive(Deserialize)]
@@ -223,6 +250,9 @@ pub struct Raw {
     pub issues: Part<Issues>,
     /// Every grouping (a delta has them all too: there are few).
     pub groupings: Part<Grouping>,
+    /// Extras (a delta: the changed ones).
+    #[serde(default)]
+    pub extras: Part<Extra>,
     pub playlists: Vec<Playlist>,
 }
 
@@ -268,6 +298,9 @@ pub fn parse(body: &[u8]) -> anyhow::Result<Raw> {
     check_columns("annotations", &raw.annotations.columns, ANNOTATION_COLUMNS)?;
     check_columns("issues", &raw.issues.columns, ISSUE_COLUMNS)?;
     check_columns("groupings", &raw.groupings.columns, GROUPING_COLUMNS)?;
+    if !raw.extras.columns.is_empty() {
+        check_columns("extras", &raw.extras.columns, EXTRA_COLUMNS)?;
+    }
     Ok(raw)
 }
 

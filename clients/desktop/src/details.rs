@@ -23,6 +23,9 @@ pub struct TrackDetail {
     /// Its notes (and those of tracks merged into it), oldest first; hidden ones flagged.
     #[serde(default)]
     pub notes: Vec<Note>,
+    /// Extras linked to it (vocals, stems…); taken-off ones flagged.
+    #[serde(default)]
+    pub extras: Vec<Extra>,
     pub title: String,
     pub artist_display: String,
     pub status: String,
@@ -133,6 +136,54 @@ pub struct FileChange {
     pub old_origin: Option<Origin>,
     pub old_trashed_at: Option<String>,
     pub old_purged_at: Option<String>,
+}
+
+/// An extra (vocals, stems, a sample…: not a track), as its page and the pages it's linked
+/// to show it (`GET /api/extras/{id}`, and in track, album and artist details).
+#[derive(Debug, Clone, Deserialize)]
+pub struct Extra {
+    pub id: Uuid,
+    pub name: String,
+    pub kind: String,
+    pub is_restricted: bool,
+    /// Who sees it when restricted (besides admins).
+    #[serde(default)]
+    pub groups: Vec<GroupRef>,
+    /// Taken off (kept).
+    #[serde(default)]
+    pub hidden: bool,
+    #[serde(default)]
+    pub files: Vec<ExtraFile>,
+    /// What it belongs to (those the user sees).
+    #[serde(default)]
+    pub links: Vec<ExtraLink>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct GroupRef {
+    pub id: Uuid,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ExtraFile {
+    pub id: Uuid,
+    pub name: String,
+    pub size_bytes: i64,
+    pub codec: Option<String>,
+    pub sample_rate: Option<i32>,
+    pub bit_depth: Option<i16>,
+    pub duration_ms: Option<i64>,
+    #[serde(default)]
+    pub hidden: bool,
+}
+
+/// What an extra is linked to: "track", "album" or "artist", and its name.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ExtraLink {
+    pub kind: String,
+    pub id: Uuid,
+    pub title: String,
 }
 
 /// A note on a track, album or artist (see the server's `db::notes`).
@@ -296,6 +347,8 @@ pub struct AlbumDetail {
     pub id: Uuid,
     #[serde(default)]
     pub notes: Vec<Note>,
+    #[serde(default)]
+    pub extras: Vec<Extra>,
     pub title: String,
     pub kind: String,
     pub release_date: Option<String>,
@@ -330,6 +383,8 @@ pub struct ArtistDetail {
     pub id: Uuid,
     #[serde(default)]
     pub notes: Vec<Note>,
+    #[serde(default)]
+    pub extras: Vec<Extra>,
     pub name: String,
     #[serde(default)]
     pub disambiguation: String,

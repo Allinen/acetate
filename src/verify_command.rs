@@ -105,7 +105,9 @@ async fn lookup(pool: &PgPool, shas: &[String]) -> anyhow::Result<Vec<(bool, boo
     let rows = sqlx::query!(
         r#"
         SELECT h.n AS "n!",
-               EXISTS (SELECT 1 FROM files f WHERE f.sha256 = h.sha256 AND f.purged_at IS NULL) AS "in_library!",
+               (EXISTS (SELECT 1 FROM files f WHERE f.sha256 = h.sha256 AND f.purged_at IS NULL)
+                -- An extra's file (a stem, a sample…) is stored too.
+                OR EXISTS (SELECT 1 FROM extra_files x WHERE x.sha256 = h.sha256)) AS "in_library!",
                EXISTS (SELECT 1 FROM ingest_problems p
                        WHERE p.sha256 = h.sha256 AND p.resolved_at IS NULL) AS "for_review!"
         FROM unnest($1::text[]) WITH ORDINALITY AS h(sha256, n)
@@ -178,6 +180,7 @@ pub async fn verify_blobs(pool: &PgPool, store: &BlobStore) -> anyhow::Result<()
         SELECT sha256 AS "sha256!" FROM files WHERE purged_at IS NULL
         UNION SELECT blob_sha256 FROM covers
         UNION SELECT sha256 FROM ingest_problems WHERE resolved_at IS NULL
+        UNION SELECT sha256 FROM extra_files
         "#
     )
     .fetch_all(pool)

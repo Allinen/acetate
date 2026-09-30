@@ -148,6 +148,11 @@ pub fn describe(catalog: &Catalog, part: Part, i: u32) -> (String, String) {
             sub.push(if a.track_count == 1 { "1 track".into() } else { format!("{} tracks", a.track_count) });
             (a.name.clone(), sub.join(" · "))
         }
+        Part::Extras => {
+            let e = &catalog.extras[i as usize];
+            let files = if e.files == 1 { "1 file".to_string() } else { format!("{} files", e.files) };
+            (e.name.clone(), format!("{} · {files}", e.kind))
+        }
         Part::Tracks => {
             let t = &catalog.tracks[i as usize];
             let mut sub = vec![t.artist_display.clone()];

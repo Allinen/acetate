@@ -30,6 +30,9 @@ pub enum AudioSource {
     /// A file that didn't import, kept for review (`file_id` is its entry's id): heard
     /// like any track, but it isn't one (no plays counted).
     NotImported,
+    /// An extra's file (vocals, a stem…; `file_id` is the extra file's id): not a track
+    /// either (no plays counted).
+    Extra,
 }
 
 /// One queued track, with what the UI shows about it.
@@ -52,6 +55,7 @@ impl QueueItem {
         match self.source {
             AudioSource::File => format!("/api/files/{}/stream", self.file_id),
             AudioSource::NotImported => format!("/api/ingest-problems/{}/audio", self.file_id),
+            AudioSource::Extra => format!("/api/extra-files/{}/stream", self.file_id),
         }
     }
 }

@@ -84,6 +84,8 @@ enum Entry {
     Track(u32),
     /// A grouping (collective, era, project…): its place in the catalog's list.
     Grouping(u32),
+    /// An extra (vocals, stems…): its place in the catalog's list.
+    Extra(u32),
     Playlist(Uuid),
     Liked,
     /// Make a playlist named what was typed (or, when naming, use that name).
@@ -312,6 +314,7 @@ impl Palette {
                     entries.extend(self.hits.artists.iter().take(4).map(|h| Entry::Artist(h.0)));
                     entries.extend(self.hits.albums.iter().take(6).map(|h| Entry::Album(h.0)));
                     entries.extend(self.hits.tracks.iter().take(8).map(|h| Entry::Track(h.0)));
+                    entries.extend(self.hits.extras.iter().take(4).map(|h| Entry::Extra(h.0)));
                 }
                 if !commands_only && !words.is_empty() {
                     if matches("liked songs") {
@@ -419,6 +422,24 @@ impl Palette {
                 let sub = format!("{} tracks · {} releases", grouping.track_count, grouping.album_count);
                 (grouping.name.clone(), Some(sub), capitalized(&grouping.kind))
             }
+            (Entry::Extra(i), Some(c)) => {
+                let extra = &c.extras[i as usize];
+                painter.rect_stroke(cover_rect.shrink(4.0), 6, egui::Stroke::new(1.5, P.accent), egui::StrokeKind::Inside);
+                painter.text(cover_rect.center(), Align2::CENTER_CENTER, "♪", font(15.0, medium()), P.accent);
+                // What it belongs to (the first thing, by name).
+                let belongs = extra.links.iter().find_map(|(kind, id)| match kind.as_str() {
+                    "track" => c.track_index(*id).map(|t| c.tracks[t as usize].title.clone()),
+                    "album" => c.album(*id).map(|a| a.title.clone()),
+                    _ => c.artist(*id).map(|a| a.name.clone()),
+                });
+                let files = crate::ui::edit::extras::files_text(extra.files as usize);
+                let lock = if extra.is_restricted { " · restricted" } else { "" };
+                let sub = match belongs {
+                    Some(b) => format!("{} · {files} · {b}{lock}", extra.kind),
+                    None => format!("{} · {files}{lock}", extra.kind),
+                };
+                (extra.name.clone(), Some(sub), "Extra".into())
+            }
             (Entry::Track(i), Some(c)) => {
                 let track = &c.tracks[i as usize];
                 shell.cover(ui, track.cover(), track.id, cover_rect, 5, 0.0);
@@ -469,6 +490,14 @@ fn search_result(shell: &mut Shell, catalog: Option<&Catalog>, entry: Entry, shi
         (Entry::Command(i), _) => shell.act((COMMANDS[i].action)()),
         (Entry::Playlist(id), _) => shell.act(Action::Go(Page::Playlist(id))),
         (Entry::Liked, _) => shell.act(Action::Go(Page::Liked)),
+        (Entry::Extra(i), Some(c)) => {
+            let extra = &c.extras[i as usize];
+            // Shift: its first file plays; else its page.
+            match (shift, extra.first_file) {
+                (true, Some(file)) => crate::ui::edit::extras::play_file(shell, &extra.name, file, &extra.name, extra.duration_ms),
+                _ => shell.act(Action::Go(Page::Extra(extra.id))),
+            }
+        }
         (Entry::Grouping(i), Some(c)) => {
             let grouping = &c.groupings[i as usize];
             if shift {
@@ -544,7 +573,8 @@ fn keyed(catalog: &Catalog, query: &crate::catalog::query::Query, text: &str, li
     };
     let rows = TrackRows { tracks: None, added: None };
     let tracks = catalog.order_tracks(&rows, text, TrackSort::Added, false).into_iter().take(limit).map(|i| (i as u32, 0)).collect();
-    Hits { artists, albums, tracks }
+    // (Keys are about tracks, albums and artists: no extras.)
+    Hits { artists, albums, tracks, extras: Vec::new() }
 }
 
 /// Three lines: a list.

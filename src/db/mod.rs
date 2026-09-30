@@ -21,6 +21,7 @@ pub mod review_bulk;
 pub mod credited_as;
 pub mod og_files;
 pub mod notes;
+pub mod extras;
 pub mod revisions;
 pub mod shares;
 pub mod sources;
@@ -67,6 +68,8 @@ mod credited_as_tests;
 mod og_files_tests;
 #[cfg(test)]
 mod notes_tests;
+#[cfg(test)]
+mod extras_tests;
 
 use std::time::Duration;
 

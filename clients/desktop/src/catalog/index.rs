@@ -25,6 +25,10 @@ pub struct Catalog {
     pub issues: HashMap<Uuid, Vec<(Uuid, String)>>,
     /// Collectives, eras, projects…, by name.
     pub groupings: Vec<Grouping>,
+    /// Extras (vocals, stems…: not tracks), not taken off.
+    pub extras: Vec<model::Extra>,
+    /// Lowercase text to search them by: name, kind, what they belong to.
+    extra_text: Vec<String>,
 
     track_by_id: HashMap<Uuid, u32>,
     grouping_by_id: HashMap<Uuid, u32>,
@@ -161,6 +165,24 @@ impl Catalog {
             .map(|t| t.albums.first().and_then(|m| album_by_id.get(&m.0)).map(|&a| album_rank[a as usize]).unwrap_or(u32::MAX))
             .collect();
 
+        // Extras (not those taken off), found by their name, kind and what they belong to.
+        let extras: Vec<model::Extra> = raw.extras.rows.into_iter().filter(|e| !e.hidden).collect();
+        let extra_text = extras
+            .iter()
+            .map(|e| {
+                let linked: Vec<&str> = e
+                    .links
+                    .iter()
+                    .filter_map(|(kind, id)| match kind.as_str() {
+                        "track" => track_by_id.get(id).map(|&i| tracks[i as usize].title.as_str()),
+                        "album" => album_by_id.get(id).map(|&i| albums[i as usize].title.as_str()),
+                        _ => artist_by_id.get(id).map(|&i| artists[i as usize].name.as_str()),
+                    })
+                    .collect();
+                format!("{}\0{}\0{}", e.name, e.kind, linked.join("\0")).to_lowercase()
+            })
+            .collect();
+
         Catalog {
             version: raw.version,
             track_album_rank,
@@ -175,6 +197,8 @@ impl Catalog {
             grouping_tracks,
             grouping_albums,
             groupings: raw.groupings.rows,
+            extra_text,
+            extras,
             playlists: raw.playlists,
             tracks,
             albums,
@@ -212,6 +236,7 @@ impl Catalog {
             annotations: model::Part { columns: Vec::new(), rows: self.annotations.values().cloned().collect() },
             issues: model::Part { columns: Vec::new(), rows: self.issues.iter().map(|(t, f)| model::Issues(*t, f.clone())).collect() },
             groupings: model::Part { columns: Vec::new(), rows: self.groupings.clone() },
+            extras: model::Part { columns: Vec::new(), rows: self.extras.clone() },
             playlists: self.playlists.clone(),
         }
     }
@@ -274,6 +299,12 @@ impl Catalog {
     pub fn texts(&self) -> (&[String], &[String], &[String]) {
         (&self.track_text, &self.album_text, &self.artist_text)
     }
+
+    /// The extras' search text (by place in `extras`).
+    pub fn extra_texts(&self) -> &[String] {
+        &self.extra_text
+    }
+
 
     // ---- Lists: filtered and sorted ----
 
@@ -479,6 +510,9 @@ pub fn merge_raw(base: model::Raw, delta: model::Raw) -> model::Raw {
     let tracks = merge(base.tracks.rows, delta.tracks.rows, &removed.tracks, |t| t.id);
     let albums = merge(base.albums.rows, delta.albums.rows, &removed.albums, |a| a.id);
     let artists = merge(base.artists.rows, delta.artists.rows, &removed.artists, |a| a.id);
+    // A changed extra replaces its row (one taken off comes flagged, and is left out when
+    // indexed).
+    let extras = merge(base.extras.rows, delta.extras.rows, &[], |e| e.id);
     let mut annotations: HashMap<Uuid, model::Annotation> = base.annotations.rows.into_iter().map(|a| (a.id, a)).collect();
     for id in &removed.annotations {
         annotations.remove(id);
@@ -509,6 +543,7 @@ pub fn merge_raw(base: model::Raw, delta: model::Raw) -> model::Raw {
         artists: model::Part { columns: Vec::new(), rows: artists },
         annotations: model::Part { columns: Vec::new(), rows: annotations.into_values().collect() },
         issues: model::Part { columns: Vec::new(), rows: issues.into_iter().map(|(t, f)| model::Issues(t, f)).collect() },
+        extras: model::Part { columns: Vec::new(), rows: extras },
         // Sent whole with every delta.
         groupings: delta.groupings,
         playlists: delta.playlists,
@@ -530,7 +565,7 @@ mod tests {
     fn catalog() -> Catalog {
         // Two albums; track 3 is on both, first on "B" (its main one).
         let body = serde_json::json!({
-            "format": 5,
+            "format": 6,
             "tracks": {"columns": ["id", "title", "artist_display", "credits", "albums", "duration_ms", "file_id", "cover_id", "cover_key",
                                     "release_date", "year", "status", "genres", "created_at", "is_restricted", "codec", "groupings", "platforms", "original_filename"],
                        "rows": [
@@ -610,7 +645,7 @@ mod tests {
             serde_json::json!([t(n), title, "Ann", [], album, 1000, "00000000-0000-7000-8000-0000000000f9", null, null, null, null, "released", [], "", false, "flac"])
         };
         let delta = serde_json::json!({
-            "format": 5, "delta": true, "version": "10:20:",
+            "format": 6, "delta": true, "version": "10:20:",
             "tracks": {"columns": [], "rows": [track(1, "Second (edited)"), track(4, "Fourth")]},
             "albums": {"columns": [], "rows": []},
             "artists": {"columns": [], "rows": []},
@@ -648,7 +683,7 @@ mod tests {
 
     #[test]
     fn unknown_columns_ask_for_an_update() {
-        let body = br#"{"format": 6}"#;
+        let body = br#"{"format": 7}"#;
         let err = model::parse(body).err().unwrap().to_string();
         assert!(err.contains("update the app"), "{err}");
     }
@@ -701,6 +736,7 @@ mod bench {
             annotations: model::Part { columns: Vec::new(), rows: Vec::new() },
             issues: model::Part { columns: Vec::new(), rows: Vec::new() },
             groupings: model::Part { columns: Vec::new(), rows: Vec::new() },
+            extras: model::Part::default(),
             playlists: Vec::new(),
         };
         let t = Instant::now();

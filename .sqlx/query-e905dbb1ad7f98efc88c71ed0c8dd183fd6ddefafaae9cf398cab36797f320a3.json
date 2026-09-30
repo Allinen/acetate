@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT is_restricted FROM tracks WHERE id = $1 AND merged_into IS NULL",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "is_restricted",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "tracks",
+            "name": "is_restricted"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "e905dbb1ad7f98efc88c71ed0c8dd183fd6ddefafaae9cf398cab36797f320a3"
+}

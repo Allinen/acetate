@@ -20,6 +20,8 @@ use crate::ui::{thousands, widgets, Action, Page, Shell};
 pub struct ArtistPage {
     /// Its notes (folded under their titles), and writing them in edit mode.
     notes: crate::ui::edit::notes::NotesView,
+    /// Its extras, and attaching them in edit mode.
+    extras: crate::ui::edit::extras::ExtrasView,
     /// Its tracks (as a primary artist), those it's featured on, those it produced.
     list: TrackTable,
     featured: TrackTable,
@@ -438,6 +440,13 @@ impl ArtistPage {
             {
                 ui.label(RichText::new("Notes").font(font(16.0, semibold())));
                 self.notes.show(ui, shell, crate::ui::edit::notes::Owner::Artist(id), &d.notes, true, true);
+                ui.add_space(12.0);
+            }
+            if let Some(d) = shell.artist_details.get(id).value.clone()
+                && crate::ui::edit::extras::ExtrasView::worth_showing(shell, &d.extras)
+            {
+                ui.label(RichText::new("Extras").font(font(16.0, semibold())));
+                self.extras.show(ui, shell, crate::ui::edit::extras::Owner::Artist(id), &d.extras, false, true);
                 ui.add_space(12.0);
             }
 

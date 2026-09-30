@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE extra_files SET hidden_at = CASE WHEN $2 THEN now() END WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Bool"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f4cf7ff97239e4bcd8e85671f267e9fde0c756e2a419618f0bdfe78eb0ec7a8d"
+}

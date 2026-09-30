@@ -70,6 +70,8 @@ pub struct NotImported {
     reason: String,
     title: String,
     artists: String,
+    /// Made an extra of the chosen track instead: its kind (guessed from the file's name).
+    extra_kind: String,
     /// It's an original file (an og file), with this name: on to start with for WAVs.
     is_og: bool,
     og_name: String,
@@ -225,6 +227,7 @@ impl NotImported {
             self.title = p.tag_title.clone().unwrap_or_else(|| name.clone());
             self.artists = p.tag_artists.join("; ");
             self.is_og = is_wav(&p.uploaded_filename);
+            self.extra_kind = guess_kind(&p.uploaded_filename).to_string();
             self.og_name = p.uploaded_filename.clone();
         }
         egui::ScrollArea::vertical().id_salt(("not-imported-detail", p.id)).auto_shrink([false, false]).show(ui, |ui| {
@@ -350,6 +353,26 @@ impl NotImported {
                     self.send(shell, p.id, format!("/api/ingest-problems/{}/add-to-track", p.id), body, Some(t.id), text, true);
                 }
             });
+            // Not the song itself but something of it (vocals, a stem…): an extra of it.
+            ui.add_space(4.0);
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new("Or an extra of it:").color(P.muted));
+                for k in crate::ui::edit::extras::KINDS {
+                    if widgets::chip(ui, k, self.extra_kind == *k) {
+                        self.extra_kind = k.to_string();
+                    }
+                }
+                let make = ui
+                    .add_enabled(!self.sending, egui::Button::new("Make it an extra of this track"))
+                    .on_hover_text("Kept with the track (vocals, a stem…), not a track of its own; seen like the track")
+                    .clicked();
+                if make {
+                    let name = searchable_name(&p.uploaded_filename);
+                    let body = serde_json::json!({ "name": name, "kind": self.extra_kind, "links": [{ "kind": "track", "id": t.id }], "reason": self.reason.trim() });
+                    let text = format!("Made an extra ({}) of “{}”.", self.extra_kind, t.title);
+                    self.send(shell, p.id, format!("/api/ingest-problems/{}/extra", p.id), body, Some(t.id), text, true);
+                }
+            });
         });
     }
 
@@ -435,6 +458,22 @@ fn tags(ui: &mut egui::Ui, p: &Problem) {
     });
 }
 
+/// An extra's kind, guessed from a file's name ("… (vocals).wav" → vocals).
+fn guess_kind(filename: &str) -> &'static str {
+    let name = filename.to_lowercase();
+    if ["acapella", "a cappella", "acappella", "vocal", "vox"].iter().any(|w| name.contains(w)) {
+        "vocals"
+    } else if ["instrumental", "inst.", "(inst)", " inst "].iter().any(|w| name.contains(w)) {
+        "instrumental"
+    } else if name.contains("stem") {
+        "stems"
+    } else if name.contains("sample") {
+        "sample"
+    } else {
+        "other"
+    }
+}
+
 /// A WAV file (by its name): nearly always an artist's own file, not a rip.
 fn is_wav(filename: &str) -> bool {
     std::path::Path::new(filename).extension().and_then(|e| e.to_str()).is_some_and(|e| matches!(e.to_lowercase().as_str(), "wav" | "wave"))
@@ -485,6 +524,11 @@ mod tests {
         assert_eq!(searchable_name("no extension"), "no extension");
         assert_eq!(folder("/music/some artist/song.flac"), "some artist");
         assert!(is_wav("MASTER.WAV") && is_wav("a.wav") && !is_wav("a.flac") && !is_wav("wav"));
+        assert_eq!(guess_kind("Glass Harbor (Acapella).wav"), "vocals");
+        assert_eq!(guess_kind("song_VOX_dry.wav"), "vocals");
+        assert_eq!(guess_kind("song (Instrumental).flac"), "instrumental");
+        assert_eq!(guess_kind("drums stem.wav"), "stems");
+        assert_eq!(guess_kind("bounce v3.wav"), "other");
     }
 
     #[test]
