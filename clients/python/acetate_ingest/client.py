@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
+import http.client
 import io
 import json
 import os
 import secrets
-import urllib.error
-import urllib.request
+import urllib.parse
 from typing import Any, BinaryIO, Iterator, Union
 
 from . import __version__
@@ -162,46 +162,71 @@ class Acetate:
         headers = {"User-Agent": f"acetate-ingest/{__version__} (Python)", "Accept": "application/json"}
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
-        data: Any = None
+        chunks: Iterator[bytes] = iter(())
         if json_body is not None:
             data = json.dumps(json_body).encode()
             headers["Content-Type"] = "application/json"
+            headers["Content-Length"] = str(len(data))
+            chunks = iter((data,))
         elif multipart is not None:
             boundary = "acetate-" + secrets.token_hex(16)
             headers["Content-Type"] = f"multipart/form-data; boundary={boundary}"
             headers["Content-Length"] = str(_multipart_length(multipart, boundary))
-            data = _multipart_body(multipart, boundary)
-        request = urllib.request.Request(self.url + path, data=data, headers=headers, method=method)
+            chunks = _multipart_body(multipart, boundary)
+        elif method != "GET":
+            headers["Content-Length"] = "0"
+
+        url = urllib.parse.urlsplit(self.url + path)
+        connection_class = http.client.HTTPSConnection if url.scheme == "https" else http.client.HTTPConnection
+        connection = connection_class(url.netloc, timeout=self.timeout)
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+            broke: OSError | None = None
+            try:
+                connection.putrequest(method, url.path + (f"?{url.query}" if url.query else ""), skip_accept_encoding=True)
+                for name, value in headers.items():
+                    connection.putheader(name, value)
+                connection.endheaders()
+                for chunk in chunks:
+                    connection.send(chunk)
+            except (BrokenPipeError, ConnectionResetError) as err:
+                # The server refuses some uploads before reading them (too large, the day's
+                # quota used up, not logged in, a description it won't take) and closes the
+                # connection; its answer, saying why, is still there to read.
+                broke = err
+            except OSError as err:
+                raise CantConnect(f"can't reach {self.url}: {err}") from None
+            try:
+                response = connection.getresponse()
                 text = response.read()
-        except urllib.error.HTTPError as err:
-            raise _server_error(err) from None
-        except (urllib.error.URLError, OSError) as err:
-            raise CantConnect(f"can't reach {self.url}: {getattr(err, 'reason', err)}") from None
+            except (OSError, http.client.HTTPException) as err:
+                raise CantConnect(f"can't reach {self.url}: {broke or err}") from None
+        finally:
+            connection.close()
+        if response.status >= 400:
+            raise _server_error(response.status, response.reason, response.headers, text)
         return json.loads(text) if text else None
 
 
-def _server_error(err: urllib.error.HTTPError) -> ServerError:
+def _server_error(status: int, reason: str, headers: Any, text: bytes) -> ServerError:
     try:
-        body = json.loads(err.read() or b"{}")
+        body = json.loads(text or b"{}")
     except ValueError:
         body = {}
-    finally:
-        err.close()
+    if not isinstance(body, dict):
+        body = {}
     code = body.get("code") or "unknown"
-    message = body.get("message") or f"{err.code} {err.reason}"
-    retry_after = err.headers.get("Retry-After")
+    message = body.get("message") or f"{status} {reason}"
+    retry_after = headers.get("Retry-After")
     retry = int(retry_after) if retry_after and retry_after.isdigit() else None
-    if err.code == 401:
-        return NotLoggedIn(err.code, code, message)
-    if err.code == 413:
-        return TooLarge(err.code, code, message)
-    if err.code == 429 and code == "upload_quota":
-        return UploadQuotaExceeded(err.code, code, message, retry)
-    if err.code == 429:
-        return RateLimited(err.code, code, message, retry)
-    return ServerError(err.code, code, message)
+    if status == 401:
+        return NotLoggedIn(status, code, message)
+    if status == 413:
+        return TooLarge(status, code, message)
+    if status == 429 and code == "upload_quota":
+        return UploadQuotaExceeded(status, code, message, retry)
+    if status == 429:
+        return RateLimited(status, code, message, retry)
+    return ServerError(status, code, message)
 
 
 # ---- Multipart, streamed: files are read a piece at a time while sending ----

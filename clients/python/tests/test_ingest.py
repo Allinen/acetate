@@ -8,6 +8,7 @@ import email.policy
 import http.server
 import json
 import os
+import socket
 import tempfile
 import threading
 import unittest
@@ -18,6 +19,7 @@ from acetate_ingest import (
     Album,
     AlbumHint,
     ArtistHint,
+    CantConnect,
     Credit,
     CustomTrack,
     Description,
@@ -32,6 +34,7 @@ from acetate_ingest import (
     RawSource,
     ServerError,
     SoundCloudTrack,
+    TooLarge,
     TrackHint,
     UploadQuotaExceeded,
 )
@@ -268,6 +271,43 @@ class Sending(unittest.TestCase):
         with self.assertRaises(ServerError) as caught:
             acetate.ingest(b"x", description, filename="a.flac")
         self.assertEqual(caught.exception.code, "rejected")
+
+    def test_a_refusal_before_the_upload_is_read(self):
+        # As the server's upload limits do: answer from the headers, close without reading
+        # the rest. Sending then breaks (a broken pipe), but the answer is what's raised.
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+
+        def refuse():
+            conn, _ = listener.accept()
+            conn.recv(65536)
+            body = json.dumps({"code": "too_large", "message": "At most 100 MB at a time."}).encode()
+            conn.sendall(
+                b"HTTP/1.1 413 Payload Too Large\r\nConnection: close\r\nContent-Length: %d\r\n\r\n%s"
+                % (len(body), body)
+            )
+            conn.shutdown(socket.SHUT_WR)
+            conn.close()
+
+        threading.Thread(target=refuse, daemon=True).start()
+        url = f"http://127.0.0.1:{listener.getsockname()[1]}"
+        try:
+            with self.assertRaises(TooLarge) as caught:
+                Acetate(url, "tok").ingest(
+                    b"x" * 50_000_000, Description(origin=NetEaseTrack(song_id=1)), filename="a.flac"
+                )
+        finally:
+            listener.close()
+        self.assertEqual(str(caught.exception), "At most 100 MB at a time.")
+
+    def test_no_server(self):
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        port = listener.getsockname()[1]
+        listener.close()
+        with self.assertRaises(CantConnect):
+            Acetate(f"http://127.0.0.1:{port}", "tok").me()
 
 
 if __name__ == "__main__":
