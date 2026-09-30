@@ -12,6 +12,7 @@
 
 pub mod covers;
 pub mod files;
+pub mod watch;
 pub mod edit;
 pub mod keymap;
 pub mod modal;
@@ -178,6 +179,8 @@ pub struct Shell {
     pub covers: Covers,
     /// A cover's original, shown on its own in a popup (a click on a big cover).
     pub original: Option<covers::Original>,
+    /// A video being watched (over everything).
+    pub watching: Option<watch::Watch>,
     pub catalog: Cached<Catalog>,
     /// Counts catalog replacements: a page's lists are rebuilt when it changes.
     pub generation: u64,
@@ -312,6 +315,25 @@ impl Shell {
 
     /// The original's popup, while one is open: as big as fits (never bigger than it is),
     /// with its size in pixels and bytes.
+    /// Watches an extra's video file: over everything, the music paused.
+    pub fn watch(&mut self, file: Uuid, title: &str) {
+        let view = self.controller.view.lock().unwrap().clone();
+        if view.playing && !view.paused {
+            self.controller.set_paused(true);
+        }
+        let volume = if view.muted { 0.0 } else { (view.volume as f64 * 100.0).clamp(0.0, 100.0) };
+        self.watching = Some(watch::Watch::open(&self.ctx, &self.api, file, title, volume));
+    }
+
+    /// The video being watched, while there's one.
+    fn show_watch(&mut self, ctx: &egui::Context) {
+        let Some(watching) = self.watching.as_mut() else { return };
+        self.modal_open = true;
+        if watching.show(ctx) {
+            self.watching = None;
+        }
+    }
+
     fn show_original(&mut self, ctx: &egui::Context) {
         let Some(original) = self.original.as_mut() else { return };
         self.modal_open = true;
@@ -633,6 +655,7 @@ impl App {
             controller,
             covers,
             original: None,
+            watching: None,
             catalog: Cached::default(),
             generation: 0,
             actions: Vec::new(),
@@ -1181,6 +1204,7 @@ impl eframe::App for App {
             });
         self.pages.palette.show(&ctx, &mut self.shell);
         self.shell.show_original(&ctx);
+        self.shell.show_watch(&ctx);
         keymap::overlay(&ctx, &mut self.keys_open);
         self.apply(&ctx);
     }

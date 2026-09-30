@@ -11,7 +11,7 @@ use super::media::serve_blob;
 use super::{AppError, AppState};
 use crate::auth::{CurrentUser, Permission};
 use crate::db;
-use crate::db::extras::{About, Access, Extra, FileFacts, FromTrack, Link, LogEntry};
+use crate::db::extras::{About, Access, Extra, FromTrack, Link, LogEntry};
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -174,9 +174,9 @@ pub async fn add_files(State(state): State<AppState>, user: CurrentUser, Path(id
             writer.write(&chunk).await?;
         }
         let pending = writer.finish().await?;
-        let facts = probe(pending.path(), &filename).await;
         let (sha256, size) = (pending.sha256.clone(), pending.size as i64);
-        let (volume, _) = state.store.commit(pending, state.store.default_volume()).await?;
+        let (volume, stored) = state.store.commit(pending, state.store.default_volume()).await?;
+        let facts = crate::ingest::video::examine(&state.store, &stored, &filename).await;
         let mut tx = state.db(&user).await?;
         db::blobs::register(&mut tx, &sha256, &volume, Some(size)).await?;
         added.push(db::extras::add_file(&mut tx, id, &sha256, &filename, size, &facts, &reason).await?);
@@ -186,24 +186,6 @@ pub async fn add_files(State(state): State<AppState>, user: CurrentUser, Path(id
         return Err(AppError::BadRequest("no file field in the form".into()));
     }
     Ok(Json(serde_json::json!({ "files": added })))
-}
-
-/// A file's audio facts, if it's audio (anything else: none).
-async fn probe(path: &std::path::Path, filename: &str) -> FileFacts {
-    let path = path.to_path_buf();
-    let extension = std::path::Path::new(filename).extension().and_then(|e| e.to_str()).map(str::to_lowercase);
-    let probed = tokio::task::spawn_blocking(move || crate::ingest::probe::probe_file(&path, extension.as_deref())).await;
-    match probed {
-        Ok(Ok(p)) => FileFacts {
-            container: p.container,
-            codec: p.codec,
-            sample_rate: p.sample_rate.and_then(|v| i32::try_from(v).ok()),
-            channels: p.channels.and_then(|v| i16::try_from(v).ok()),
-            bit_depth: p.bit_depth.and_then(|v| i16::try_from(v).ok()),
-            duration_ms: p.duration_ms.and_then(|v| i64::try_from(v).ok()),
-        },
-        _ => FileFacts::default(),
-    }
 }
 
 /// `GET /api/extra-files/{id}/stream`: the file as stored (Range requests work).
@@ -255,7 +237,7 @@ pub async fn from_problem(State(state): State<AppState>, user: CurrentUser, Path
     let mut tx = state.db(&user).await?;
     let open = db::problems::get_open(&mut tx, problem).await?.ok_or(AppError::NotFound)?;
     let path = state.store.path_for(&open.sha256).await;
-    let facts = probe(&path, &open.uploaded_filename).await;
+    let facts = crate::ingest::video::examine(&state.store, &path, &open.uploaded_filename).await;
     let (id, _) = db::extras::create(&mut tx, &body.name, &body.kind, &About { description: body.description.clone(), source: body.source.clone() }, &body.links, None, &body.reason).await?;
     db::extras::add_file(&mut tx, id, &open.sha256, &open.uploaded_filename, open.size_bytes, &facts, &body.reason).await?;
     db::problems::resolve(&mut tx, problem, "made an extra").await?;
@@ -291,9 +273,17 @@ pub async fn track_to_extra(State(state): State<AppState>, user: CurrentUser, Pa
     let done = db::extras::track_to_extra(&mut tx, track, &body.kind, body.name.as_deref(), &About { description: body.description.clone(), source: body.source.clone() }, body.belongs_to, &body.reason).await?;
     if body.preview {
         tx.rollback().await?;
-    } else {
-        tx.commit().await?;
+        return Ok(Json(done));
     }
+    // A video imported as a track (its sound read): watched now, so its facts and thumbnail.
+    if crate::ingest::video::is_video_name(&done.file) {
+        let path = state.store.path_for(&done.sha256).await;
+        let facts = crate::ingest::video::examine(&state.store, &path, &done.file).await;
+        if facts.width.is_some() {
+            db::extras::set_file_facts(&mut tx, done.file_id, &facts).await?;
+        }
+    }
+    tx.commit().await?;
     Ok(Json(done))
 }
 

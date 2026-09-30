@@ -498,7 +498,7 @@ mod tests {
         };
         let album = |id: &str| serde_json::json!([id, "EP", "ep", "Ann", [], null, null, null, null, "", 2, 1]);
         let body = serde_json::json!({
-            "format": 6,
+            "format": 7,
             "tracks": {"columns": ["id", "title", "artist_display", "credits", "albums", "duration_ms", "file_id", "cover_id", "cover_key",
                                     "release_date", "year", "status", "genres", "created_at", "is_restricted", "codec", "groupings", "platforms", "original_filename"],
                        "rows": [track(1, "One", a, None, 1), track(2, "Two", a, None, 2),

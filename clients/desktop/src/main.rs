@@ -28,6 +28,7 @@ mod playlists;
 mod resume;
 mod review;
 mod settings;
+mod video;
 mod ui;
 
 fn main() -> eframe::Result {

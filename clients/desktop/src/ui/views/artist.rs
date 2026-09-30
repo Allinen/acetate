@@ -250,7 +250,8 @@ impl ArtistPage {
                 }
                 ui.label(RichText::new(format!("{}  {}", section.title(), thousands(count))).font(font(22.0, bold())));
             });
-            if chips_shown {
+            // (The chips choose tracks: nothing to do with extras.)
+            if chips_shown && section != Section::Extras {
                 ui.add_space(4.0);
                 name_chips(ui, &mut self.credited_as, &mut self.og_only);
             }

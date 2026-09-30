@@ -565,7 +565,7 @@ mod tests {
     fn catalog() -> Catalog {
         // Two albums; track 3 is on both, first on "B" (its main one).
         let body = serde_json::json!({
-            "format": 6,
+            "format": 7,
             "tracks": {"columns": ["id", "title", "artist_display", "credits", "albums", "duration_ms", "file_id", "cover_id", "cover_key",
                                     "release_date", "year", "status", "genres", "created_at", "is_restricted", "codec", "groupings", "platforms", "original_filename"],
                        "rows": [
@@ -645,7 +645,7 @@ mod tests {
             serde_json::json!([t(n), title, "Ann", [], album, 1000, "00000000-0000-7000-8000-0000000000f9", null, null, null, null, "released", [], "", false, "flac"])
         };
         let delta = serde_json::json!({
-            "format": 6, "delta": true, "version": "10:20:",
+            "format": 7, "delta": true, "version": "10:20:",
             "tracks": {"columns": [], "rows": [track(1, "Second (edited)"), track(4, "Fourth")]},
             "albums": {"columns": [], "rows": []},
             "artists": {"columns": [], "rows": []},
@@ -683,7 +683,7 @@ mod tests {
 
     #[test]
     fn unknown_columns_ask_for_an_update() {
-        let body = br#"{"format": 7}"#;
+        let body = br#"{"format": 8}"#;
         let err = model::parse(body).err().unwrap().to_string();
         assert!(err.contains("update the app"), "{err}");
     }

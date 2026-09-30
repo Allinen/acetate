@@ -20,7 +20,7 @@ use crate::ui::theme::{font, medium, semibold, PALETTE as P};
 use crate::ui::{thousands, widgets, Action, Page, Shell};
 
 /// The kinds offered (any other can be typed).
-pub const KINDS: &[&str] = &["vocals", "instrumental", "stems", "sample", "clip", "project", "other"];
+pub const KINDS: &[&str] = &["vocals", "instrumental", "stems", "sample", "clip", "video", "project", "other"];
 
 /// What extras are shown on.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -93,15 +93,29 @@ pub fn save_file(shell: &Shell, file: Uuid, name: &str, said: &Arc<Mutex<Option<
     });
 }
 
-/// A file's line: ▶ (audio), its name, what it is, and "Save…".
-pub fn file_line(ui: &mut egui::Ui, shell: &Shell, extra: &Extra, f: &ExtraFile, said: &Arc<Mutex<Option<Result<String, String>>>>) {
+/// A file's line: ▶ (audio) or its thumbnail and "Watch" (video), its name, what it is,
+/// and "Save…".
+pub fn file_line(ui: &mut egui::Ui, shell: &mut Shell, extra: &Extra, f: &ExtraFile, said: &Arc<Mutex<Option<Result<String, String>>>>) {
     ui.horizontal(|ui| {
-        let audio = f.duration_ms.is_some() || f.codec.is_some();
-        if audio && ui.small_button("▶").on_hover_text("Play it").clicked() {
+        if f.is_video() {
+            let (rect, response) = ui.allocate_exact_size(egui::Vec2::new(96.0, 54.0), egui::Sense::click());
+            shell.cover(ui, f.thumb(), f.id, rect, 4, 0.0);
+            let watch = ui.button("▶ Watch").clicked();
+            if watch || response.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                shell.watch(f.id, &extra.name);
+            }
+        } else if (f.duration_ms.is_some() || f.codec.is_some()) && ui.small_button("▶").on_hover_text("Play it").clicked() {
             play_file(shell, &extra.name, f.id, &f.name, f.duration_ms);
         }
         ui.label(RichText::new(&f.name).font(font(13.5, medium())));
         let mut facts = Vec::new();
+        if let (Some(w), Some(h)) = (f.width, f.height) {
+            let fps = f.frame_rate.map(|r| format!(" {r:.0} fps")).unwrap_or_default();
+            facts.push(format!("{w}×{h}{fps}"));
+        }
+        if let Some(codec) = &f.video_codec {
+            facts.push(codec.to_uppercase());
+        }
         if let Some(codec) = &f.codec {
             facts.push(codec.to_uppercase());
         }
@@ -286,10 +300,11 @@ impl ExtrasView {
                         if ui.small_button("Add files…").clicked() {
                             add_files = Some(extra.id);
                         }
-                        if ui.small_button(format!("Unlink from this {}", owner.name())).on_hover_text("The extra stays (on its page, and what else it's linked to)").clicked() {
+                        let tip = "Only here: the extra stays, on its own page and wherever else it's linked (a track's single goes with it)";
+                        if ui.small_button(format!("Not on this {}", owner.name())).on_hover_text(tip).clicked() {
                             unlink = Some(extra.id);
                         }
-                        if ui.small_button("Take off").on_hover_text("Hidden, not deleted: brought back from “Taken off”").clicked() {
+                        if ui.small_button("Take off everywhere").on_hover_text("Hidden from every page it's on (kept, not deleted: “Taken off” brings it back)").clicked() {
                             take_off = Some((extra.id, true));
                         }
                     });

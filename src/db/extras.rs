@@ -80,6 +80,12 @@ pub struct ExtraFile {
     pub channels: Option<i16>,
     pub bit_depth: Option<i16>,
     pub duration_ms: Option<i64>,
+    pub width: Option<i32>,
+    pub height: Option<i32>,
+    pub frame_rate: Option<f32>,
+    pub video_codec: Option<String>,
+    /// A video's thumbnail: the start of its image's hash (`GET /api/images/{hash}`).
+    pub thumb: Option<String>,
     pub hidden: bool,
     pub added_at: DateTime<Utc>,
 }
@@ -127,15 +133,24 @@ pub struct LogEntry {
     pub by: Option<String>,
 }
 
-/// A file's technical facts (audio), as probed.
+/// A file's technical facts (audio, video), as probed, and a video's thumbnail (stored
+/// already: its hash and volume).
 #[derive(Debug, Default)]
 pub struct FileFacts {
     pub container: Option<String>,
+    /// The sound's codec.
     pub codec: Option<String>,
     pub sample_rate: Option<i32>,
     pub channels: Option<i16>,
     pub bit_depth: Option<i16>,
     pub duration_ms: Option<i64>,
+    pub width: Option<i32>,
+    pub height: Option<i32>,
+    pub frame_rate: Option<f32>,
+    pub video_codec: Option<String>,
+    pub thumb: Option<(String, String)>,
+    /// Where it was imported from (the server's disk).
+    pub imported_from: Option<String>,
 }
 
 fn checked_name(name: &str) -> anyhow::Result<String> {
@@ -309,8 +324,27 @@ pub async fn set_hidden(conn: &mut PgConnection, extra: Uuid, hidden: bool, reas
     Ok(true)
 }
 
-/// Links it to a track, album or artist (there, and not merged away). False: linked already.
+/// What goes along with a link: a track alone on a single and that single are one release
+/// (as for groupings, credits, covers…): linking (or unlinking) one does the other too.
+async fn along(conn: &mut PgConnection, with: Link) -> sqlx::Result<Vec<Link>> {
+    Ok(match with {
+        Link::Track(track) => super::groupings::singles_of(conn, track).await?.into_iter().map(Link::Album).collect(),
+        Link::Album(album) => super::groupings::only_track_of(conn, album).await?.map(Link::Track).into_iter().collect(),
+        Link::Artist(_) => Vec::new(),
+    })
+}
+
+/// Links it to a track, album or artist (there, and not merged away), and what goes along
+/// (a track's single it's alone on, a single's only track). False: linked already.
 pub async fn link(conn: &mut PgConnection, extra: Uuid, to: Link, reason: &str) -> anyhow::Result<bool> {
+    let made = link_one(conn, extra, to, reason).await?;
+    for other in along(conn, to).await? {
+        link_one(conn, extra, other, reason).await?;
+    }
+    Ok(made)
+}
+
+async fn link_one(conn: &mut PgConnection, extra: Uuid, to: Link, reason: &str) -> anyhow::Result<bool> {
     let merged = match to {
         Link::Track(id) => sqlx::query_scalar!("SELECT merged_into IS NOT NULL AS \"m!\" FROM tracks WHERE id = $1", id).fetch_optional(&mut *conn).await?,
         Link::Album(id) => sqlx::query_scalar!("SELECT merged_into IS NOT NULL AS \"m!\" FROM albums WHERE id = $1", id).fetch_optional(&mut *conn).await?,
@@ -339,8 +373,17 @@ pub async fn link(conn: &mut PgConnection, extra: Uuid, to: Link, reason: &str) 
     Ok(made)
 }
 
-/// Undoes a link. False: it wasn't linked (or the other side isn't seen).
+/// Undoes a link, and those that went along (a track's single it's alone on, a single's
+/// only track). False: it wasn't linked (or the other side isn't seen).
 pub async fn unlink(conn: &mut PgConnection, extra: Uuid, from: Link, reason: &str) -> anyhow::Result<bool> {
+    let gone = unlink_one(conn, extra, from, reason).await?;
+    for other in along(conn, from).await? {
+        unlink_one(conn, extra, other, reason).await?;
+    }
+    Ok(gone)
+}
+
+async fn unlink_one(conn: &mut PgConnection, extra: Uuid, from: Link, reason: &str) -> anyhow::Result<bool> {
     let (track, album, artist) = from.ids();
     let gone = sqlx::query!(
         "DELETE FROM extra_links WHERE extra_id = $1 AND track_id IS NOT DISTINCT FROM $2 AND album_id IS NOT DISTINCT FROM $3 AND artist_id IS NOT DISTINCT FROM $4",
@@ -362,9 +405,13 @@ pub async fn unlink(conn: &mut PgConnection, extra: Uuid, from: Link, reason: &s
 /// A file (its bytes stored already, and registered) added to an extra.
 pub async fn add_file(conn: &mut PgConnection, extra: Uuid, sha256: &str, name: &str, size_bytes: i64, facts: &FileFacts, reason: &str) -> anyhow::Result<Uuid> {
     sqlx::query_scalar!("SELECT id FROM extras WHERE id = $1", extra).fetch_optional(&mut *conn).await?.ok_or(EditRejected::NotFound("extra"))?;
+    if let Some((thumb, volume)) = &facts.thumb {
+        super::blobs::register(conn, thumb, volume, None).await?;
+    }
     let id = sqlx::query_scalar!(
-        r#"INSERT INTO extra_files (extra_id, sha256, name, size_bytes, container, codec, sample_rate, channels, bit_depth, duration_ms)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id"#,
+        r#"INSERT INTO extra_files (extra_id, sha256, name, size_bytes, container, codec, sample_rate, channels, bit_depth, duration_ms,
+                                    width, height, frame_rate, video_codec, thumb_sha256, imported_from)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) RETURNING id"#,
         extra,
         sha256,
         name,
@@ -374,12 +421,45 @@ pub async fn add_file(conn: &mut PgConnection, extra: Uuid, sha256: &str, name: 
         facts.sample_rate,
         facts.channels,
         facts.bit_depth,
-        facts.duration_ms
+        facts.duration_ms,
+        facts.width,
+        facts.height,
+        facts.frame_rate,
+        facts.video_codec,
+        facts.thumb.as_ref().map(|t| t.0.clone()),
+        facts.imported_from
     )
     .fetch_one(&mut *conn)
     .await?;
     log(conn, extra, "file added", json!({ "file": id, "name": name, "sha256": sha256 }), reason).await?;
     Ok(id)
+}
+
+/// A file's facts (a video's, read after it was added), and its thumbnail.
+pub async fn set_file_facts(conn: &mut PgConnection, file: Uuid, facts: &FileFacts) -> anyhow::Result<()> {
+    if let Some((thumb, volume)) = &facts.thumb {
+        super::blobs::register(conn, thumb, volume, None).await?;
+    }
+    sqlx::query!(
+        r#"UPDATE extra_files SET container = COALESCE($2, container), codec = COALESCE($3, codec), sample_rate = COALESCE($4, sample_rate),
+                  channels = COALESCE($5, channels), duration_ms = COALESCE($6, duration_ms), width = $7, height = $8, frame_rate = $9,
+                  video_codec = $10, thumb_sha256 = $11
+           WHERE id = $1"#,
+        file,
+        facts.container,
+        facts.codec,
+        facts.sample_rate,
+        facts.channels,
+        facts.duration_ms,
+        facts.width,
+        facts.height,
+        facts.frame_rate,
+        facts.video_codec,
+        facts.thumb.as_ref().map(|t| t.0.clone())
+    )
+    .execute(conn)
+    .await?;
+    Ok(())
 }
 
 /// A file taken off (kept) or brought back.
@@ -475,6 +555,7 @@ async fn files(conn: &mut PgConnection, extra: Uuid) -> sqlx::Result<Vec<ExtraFi
     sqlx::query_as!(
         ExtraFile,
         r#"SELECT id, name, size_bytes, container, codec, sample_rate, channels, bit_depth, duration_ms,
+                  width, height, frame_rate, video_codec, left(thumb_sha256, 16) AS thumb,
                   hidden_at IS NOT NULL AS "hidden!", added_at
            FROM extra_files WHERE extra_id = $1 ORDER BY lower(name), id"#,
         extra
@@ -520,6 +601,10 @@ pub struct FromTrack {
     pub source: String,
     /// The file it takes (the track's, the same bytes).
     pub file: String,
+    pub file_id: Uuid,
+    /// Its bytes (to examine it: a video gets its facts and thumbnail after).
+    #[serde(skip)]
+    pub sha256: String,
     pub links: Vec<Linked>,
     pub access: Access,
     pub albums: Vec<AlbumLeft>,
@@ -584,8 +669,9 @@ pub async fn track_to_extra(conn: &mut PgConnection, track: Uuid, kind: &str, na
         channels: row.channels,
         bit_depth: row.bit_depth,
         duration_ms: row.duration_ms,
+        ..Default::default()
     };
-    add_file(conn, extra, &row.sha256, &row.file_name, row.size_bytes, &facts, reason).await?;
+    let file_id = add_file(conn, extra, &row.sha256, &row.file_name, row.size_bytes, &facts, reason).await?;
     log(conn, extra, "made from a track", json!({ "track": track, "title": row.title }), reason).await?;
     sqlx::query!("SELECT track_became_extra($1, $2)", track, extra).execute(&mut *conn).await?;
     let made = get(conn, extra).await?.ok_or(EditRejected::NotFound("extra"))?;
@@ -595,6 +681,8 @@ pub async fn track_to_extra(conn: &mut PgConnection, track: Uuid, kind: &str, na
         kind: made.kind,
         source: made.source,
         file: row.file_name,
+        file_id,
+        sha256: row.sha256,
         links: made.links,
         access,
         albums,

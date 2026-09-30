@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, name, size_bytes, container, codec, sample_rate, channels, bit_depth, duration_ms,\n                  hidden_at IS NOT NULL AS \"hidden!\", added_at\n           FROM extra_files WHERE extra_id = $1 ORDER BY lower(name), id",
+  "query": "SELECT id, name, size_bytes, container, codec, sample_rate, channels, bit_depth, duration_ms,\n                  width, height, frame_rate, video_codec, left(thumb_sha256, 16) AS thumb,\n                  hidden_at IS NOT NULL AS \"hidden!\", added_at\n           FROM extra_files WHERE extra_id = $1 ORDER BY lower(name), id",
   "describe": {
     "columns": [
       {
@@ -104,12 +104,62 @@
       },
       {
         "ordinal": 9,
+        "name": "width",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "extra_files",
+            "name": "width"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "height",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "extra_files",
+            "name": "height"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "frame_rate",
+        "type_info": "Float4",
+        "origin": {
+          "Table": {
+            "table": "extra_files",
+            "name": "frame_rate"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "video_codec",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "extra_files",
+            "name": "video_codec"
+          }
+        }
+      },
+      {
+        "ordinal": 13,
+        "name": "thumb",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 14,
         "name": "hidden!",
         "type_info": "Bool",
         "origin": "Expression"
       },
       {
-        "ordinal": 10,
+        "ordinal": 15,
         "name": "added_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -135,9 +185,14 @@
       true,
       true,
       true,
+      true,
+      true,
+      true,
+      true,
+      null,
       null,
       false
     ]
   },
-  "hash": "e24334e353957a40762e9a41f1c45bfdd4caca4a0abd58e2a1e8fd4aaff971f8"
+  "hash": "b7cb1168e36952d29915f61204f574df65f91f2b4424af09360b195da4b541a7"
 }

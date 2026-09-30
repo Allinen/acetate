@@ -165,6 +165,21 @@ impl TrackPage {
             marks(&mut marks_ui, shell, Kind::Track, id);
             marks_ui.add_space(8.0);
             widgets::share_chip(&mut marks_ui, shell, crate::links::Target::Track(id));
+            // Its music video (an extra with one, linked to it): watched from here.
+            let mut videos: Vec<(uuid::Uuid, String)> = catalog
+                .extras
+                .iter()
+                .filter(|e| e.links.iter().any(|l| l.1 == id))
+                .filter_map(|e| Some((e.video?, e.name.clone())))
+                .collect();
+            videos.sort_by_key(|v| v.1.to_lowercase());
+            if let Some((video, name)) = videos.first() {
+                marks_ui.add_space(4.0);
+                let text = if videos.len() > 1 { format!("▶ Watch the video ({})", videos.len()) } else { "▶ Watch the video".to_string() };
+                if widgets::chip(&mut marks_ui, &text, false) {
+                    shell.watch(*video, name);
+                }
+            }
             ui.add_space(10.0);
             if let Some(t) = track {
                 let groupings = t.groupings.clone();

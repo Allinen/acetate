@@ -182,8 +182,30 @@ pub struct ExtraFile {
     pub sample_rate: Option<i32>,
     pub bit_depth: Option<i16>,
     pub duration_ms: Option<i64>,
+    /// A video's (else None).
+    #[serde(default)]
+    pub width: Option<i32>,
+    #[serde(default)]
+    pub height: Option<i32>,
+    #[serde(default)]
+    pub frame_rate: Option<f32>,
+    #[serde(default)]
+    pub video_codec: Option<String>,
+    /// A video's thumbnail (its image's key).
+    #[serde(default)]
+    pub thumb: Option<String>,
     #[serde(default)]
     pub hidden: bool,
+}
+
+impl ExtraFile {
+    pub fn is_video(&self) -> bool {
+        self.width.is_some()
+    }
+
+    pub fn thumb(&self) -> Option<crate::catalog::model::Cover> {
+        Some(crate::catalog::model::Cover { id: self.id, key: crate::catalog::model::CoverKey::from_hex(self.thumb.as_deref()?)? })
+    }
 }
 
 /// What an extra is linked to: "track", "album" or "artist", and its name.

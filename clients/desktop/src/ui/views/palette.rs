@@ -424,8 +424,14 @@ impl Palette {
             }
             (Entry::Extra(i), Some(c)) => {
                 let extra = &c.extras[i as usize];
-                painter.rect_stroke(cover_rect.shrink(4.0), 6, egui::Stroke::new(1.5, P.accent), egui::StrokeKind::Inside);
-                painter.text(cover_rect.center(), Align2::CENTER_CENTER, "♪", font(15.0, medium()), P.accent);
+                // A video: its thumbnail; else a note.
+                match extra.thumb() {
+                    Some(thumb) => shell.cover(ui, Some(thumb), extra.id, cover_rect, 5, 0.0),
+                    None => {
+                        painter.rect_stroke(cover_rect.shrink(4.0), 6, egui::Stroke::new(1.5, P.accent), egui::StrokeKind::Inside);
+                        painter.text(cover_rect.center(), Align2::CENTER_CENTER, if extra.video.is_some() { "▶" } else { "♪" }, font(15.0, medium()), P.accent);
+                    }
+                }
                 // What it belongs to (the first thing, by name).
                 let belongs = extra.links.iter().find_map(|(kind, id)| match kind.as_str() {
                     "track" => c.track_index(*id).map(|t| c.tracks[t as usize].title.clone()),
@@ -492,9 +498,10 @@ fn search_result(shell: &mut Shell, catalog: Option<&Catalog>, entry: Entry, shi
         (Entry::Liked, _) => shell.act(Action::Go(Page::Liked)),
         (Entry::Extra(i), Some(c)) => {
             let extra = &c.extras[i as usize];
-            // Shift: its first file plays; else its page.
-            match (shift, extra.first_file) {
-                (true, Some(file)) => crate::ui::edit::extras::play_file(shell, &extra.name, file, &extra.name, extra.duration_ms),
+            // Shift: its video is watched, or its first audio file plays; else its page.
+            match (shift, extra.video, extra.first_file) {
+                (true, Some(video), _) => shell.watch(video, &extra.name),
+                (true, None, Some(file)) => crate::ui::edit::extras::play_file(shell, &extra.name, file, &extra.name, extra.duration_ms),
                 _ => shell.act(Action::Go(Page::Extra(extra.id))),
             }
         }

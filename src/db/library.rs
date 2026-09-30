@@ -42,8 +42,9 @@ pub const GROUPING_COLUMNS: &[&str] = &["id", "kind", "name", "track_count", "al
 /// Extras (stems, samples…; `db::extras`) the user can see, to search and to list on the
 /// pages they're linked to. `links`: `[["track" | "album" | "artist", id], …]` (only those
 /// seen). `files`: how many (not taken off); `first_file`/`duration_ms`: the first audio
-/// one's (by name), to play (none: no audio). `hidden`: taken off (a delta sends it so the client drops it).
-pub const EXTRA_COLUMNS: &[&str] = &["id", "name", "kind", "is_restricted", "hidden", "links", "files", "first_file", "duration_ms"];
+/// one's (by name), to play (none: no audio). `video`: its first video file (to watch);
+/// `thumb_key`: that video's thumbnail (`GET /api/images/{key}`). `hidden`: taken off (a delta sends it so the client drops it).
+pub const EXTRA_COLUMNS: &[&str] = &["id", "name", "kind", "is_restricted", "hidden", "links", "files", "first_file", "duration_ms", "video", "thumb_key"];
 
 /// The extras (all, or these ones) the user can see, see `EXTRA_COLUMNS`.
 pub async fn extras_json(conn: &mut PgConnection, ids: Option<&[Uuid]>) -> sqlx::Result<String> {
@@ -56,14 +57,19 @@ pub async fn extras_json(conn: &mut PgConnection, ids: Option<&[Uuid]>) -> sqlx:
                                  COALESCE(l.track_id, l.album_id, l.artist_id)) ORDER BY l.id)
                              FROM extra_links l WHERE l.extra_id = e.id), '[]'::json),
                    (SELECT count(*) FROM extra_files f WHERE f.extra_id = e.id AND f.hidden_at IS NULL),
-                   first.id, first.duration_ms
+                   first.id, first.duration_ms, video.id, left(video.thumb_sha256, 16)
                ) ORDER BY e.id), '[]'::json)::text AS "rows!"
         FROM extras e
         LEFT JOIN LATERAL (
             SELECT f.id, f.duration_ms FROM extra_files f
-            WHERE f.extra_id = e.id AND f.hidden_at IS NULL AND (f.codec IS NOT NULL OR f.duration_ms IS NOT NULL)
+            WHERE f.extra_id = e.id AND f.hidden_at IS NULL AND (f.codec IS NOT NULL OR f.duration_ms IS NOT NULL) AND f.width IS NULL
             ORDER BY lower(f.name), f.id LIMIT 1
         ) first ON true
+        LEFT JOIN LATERAL (
+            SELECT f.id, f.thumb_sha256 FROM extra_files f
+            WHERE f.extra_id = e.id AND f.hidden_at IS NULL AND f.width IS NOT NULL
+            ORDER BY lower(f.name), f.id LIMIT 1
+        ) video ON true
         WHERE $1::uuid[] IS NULL OR e.id = ANY($1)
         "#,
         ids as Option<&[Uuid]>
@@ -333,11 +339,15 @@ pub struct Changes {
     /// A grouping changed (its name, what's in it): the list is sent again.
     pub groupings: bool,
     pub extras: Vec<Uuid>,
+    /// Gone for everyone who saw them (a track turned into an extra, and an album it was
+    /// the last track of): the delta says so.
+    pub gone_tracks: Vec<Uuid>,
+    pub gone_albums: Vec<Uuid>,
 }
 
 impl Changes {
     pub fn is_empty(&self) -> bool {
-        !self.everything && self.tracks.is_empty() && self.albums.is_empty() && self.artists.is_empty() && self.annotations.is_empty() && !self.groupings && self.extras.is_empty()
+        !self.everything && self.tracks.is_empty() && self.albums.is_empty() && self.artists.is_empty() && self.annotations.is_empty() && !self.groupings && self.extras.is_empty() && self.gone_tracks.is_empty() && self.gone_albums.is_empty()
     }
 }
 
@@ -387,6 +397,8 @@ pub async fn changes_since(conn: &mut PgConnection, since: &str) -> anyhow::Resu
             "annotation" => changes.annotations.push(id),
             "grouping" => changes.groupings = true,
             "extra" => changes.extras.push(id),
+            "track_gone" => changes.gone_tracks.push(id),
+            "album_gone" => changes.gone_albums.push(id),
             _ => {}
         }
     }

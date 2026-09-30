@@ -16,8 +16,10 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     && cp target/release/acetate /usr/local/bin/acetate
 
 FROM debian:trixie-slim
+# ffmpeg: music videos' facts (ffprobe) and thumbnails (a frame). Without it they're
+# kept all the same, without those.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
+    && apt-get install -y --no-install-recommends ca-certificates ffmpeg \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --uid 1000 --create-home acetate
 COPY --from=build /usr/local/bin/acetate /usr/local/bin/acetate

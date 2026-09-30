@@ -1,0 +1,43 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO extra_files (extra_id, sha256, name, size_bytes, container, codec, sample_rate, channels, bit_depth, duration_ms,\n                                    width, height, frame_rate, video_codec, thumb_sha256, imported_from)\n           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) RETURNING id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "extra_files",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text",
+        "Int8",
+        "Text",
+        "Text",
+        "Int4",
+        "Int2",
+        "Int2",
+        "Int8",
+        "Int4",
+        "Int4",
+        "Float4",
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "6370522409516bc779ab7d989f65095047dea1da08fd89f1e0e21fe5fa3ca5c7"
+}

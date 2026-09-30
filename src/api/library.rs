@@ -29,7 +29,7 @@ use crate::db;
 use crate::db::library::{ALBUM_COLUMNS, ANNOTATION_COLUMNS, ARTIST_COLUMNS, EXTRA_COLUMNS, GROUPING_COLUMNS, ISSUE_COLUMNS, TRACK_COLUMNS};
 
 /// Bumped when the format changes in a way old clients can't read.
-const FORMAT: u32 = 6;
+const FORMAT: u32 = 7;
 
 #[derive(Debug, Deserialize)]
 pub struct CatalogParams {
@@ -59,8 +59,11 @@ pub async fn catalog(
             let artists = db::library::artists_json(&mut tx, Some(&changes.artists)).await?;
             let annotations = db::library::annotations_json(&mut tx, Some(&changes.annotations)).await?;
             let issues = db::library::issues_json(&mut tx, Some(&changes.tracks)).await?;
-            let (gone_tracks, gone_albums, gone_artists) =
+            let (mut gone_tracks, mut gone_albums, gone_artists) =
                 db::library::merged(&mut tx, &changes.tracks, &changes.albums, &changes.artists).await?;
+            // Turned into extras (and albums they were the last track of): gone for all.
+            gone_tracks.extend(&changes.gone_tracks);
+            gone_albums.extend(&changes.gone_albums);
             let playlists = serde_json::to_string(&db::playlists::list(&mut tx, false).await?)?;
             let groupings = db::library::groupings_json(&mut tx).await?;
             let extras = db::library::extras_json(&mut tx, Some(&changes.extras)).await?;

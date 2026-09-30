@@ -129,6 +129,8 @@ pub struct Review {
     /// Files that didn't import, and whether they're shown (in place of the list).
     not_imported: super::not_imported::NotImported,
     showing_not_imported: bool,
+    /// Extras linked to nothing (videos imported from disk…), shown in place of the list.
+    showing_unlinked: bool,
     asked_not_imported: bool,
 }
 
@@ -169,7 +171,7 @@ impl Review {
             self.bulk = None;
         }
         // (Files that didn't import have their own keys.)
-        if !self.showing_not_imported {
+        if !self.showing_not_imported && !self.showing_unlinked {
             self.keys(ui.ctx(), shell, catalog, player);
         }
         // A key may have marked a flag done: the rows follow at once.
@@ -202,15 +204,26 @@ impl Review {
             kinds.extend(unknown);
             // Files that didn't import: not tracks, so shown in place of the list.
             let files = self.not_imported.matching(&self.filter);
+            // Extras linked to nothing yet (music videos imported from disk…): to link.
+            let unlinked = catalog.extras.iter().filter(|e| e.links.is_empty()).count();
+            if unlinked > 0 || self.showing_unlinked {
+                if widgets::chip(ui, &format!("Unlinked extras {}", crate::ui::thousands(unlinked)), self.showing_unlinked) {
+                    self.showing_unlinked = !self.showing_unlinked;
+                    self.showing_not_imported = false;
+                }
+                ui.add_space(8.0);
+            }
             if files > 0 || self.showing_not_imported {
                 if widgets::chip(ui, &format!("Didn't import {}", crate::ui::thousands(files)), self.showing_not_imported) {
+                    self.showing_unlinked = false;
                     self.showing_not_imported = !self.showing_not_imported;
                 }
                 ui.add_space(8.0);
             }
-            if widgets::chip(ui, "Everything", self.only.is_none() && !self.showing_not_imported) {
+            if widgets::chip(ui, "Everything", self.only.is_none() && !self.showing_not_imported && !self.showing_unlinked) {
                 self.only = None;
                 self.showing_not_imported = false;
+                self.showing_unlinked = false;
             }
             for kind in kinds {
                 let count = self.counts.get(&kind).copied().unwrap_or(0);
@@ -222,10 +235,16 @@ impl Review {
                 if widgets::chip(ui, &text, self.only.as_ref() == Some(&kind) && !self.showing_not_imported) {
                     self.only = if self.only.as_ref() == Some(&kind) && !self.showing_not_imported { None } else { Some(kind) };
                     self.showing_not_imported = false;
+                    self.showing_unlinked = false;
                 }
             }
         });
         ui.add_space(4.0);
+        if self.showing_unlinked {
+            ui.add_space(6.0);
+            unlinked_extras(ui, shell, catalog, &self.filter);
+            return;
+        }
         if self.showing_not_imported {
             ui.add_space(6.0);
             self.not_imported.show(ui, shell, catalog, &self.filter);
@@ -945,6 +964,50 @@ fn tag_field(name: &str) -> Option<&'static str> {
         "date" | "year" | "tdrc" | "tyer" | "originaldate" => Some("release date"),
         _ => None,
     }
+}
+
+/// Extras linked to nothing (music videos imported from disk…), by name, to link from their
+/// pages. `filter`: words in the name or kind.
+fn unlinked_extras(ui: &mut egui::Ui, shell: &mut Shell, catalog: &Catalog, filter: &str) {
+    let words: Vec<String> = filter.to_lowercase().split_whitespace().map(str::to_string).collect();
+    let mut shown: Vec<&crate::catalog::model::Extra> = catalog
+        .extras
+        .iter()
+        .filter(|e| e.links.is_empty())
+        .filter(|e| {
+            let text = format!("{} {}", e.name, e.kind).to_lowercase();
+            words.iter().all(|w| text.contains(w.as_str()))
+        })
+        .collect();
+    shown.sort_by_key(|e| e.name.to_lowercase());
+    ui.label(RichText::new("Linked to nothing yet: open one to link it to its song (“Link to a track…”) or its artist.").color(P.muted));
+    ui.add_space(6.0);
+    if shown.is_empty() {
+        ui.label(RichText::new("None (or nothing matches the filter).").color(P.faint));
+        return;
+    }
+    egui::ScrollArea::vertical().id_salt("unlinked-extras").auto_shrink([false, false]).show_rows(ui, 52.0, shown.len(), |ui, range| {
+        for e in &shown[range] {
+            let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width().min(760.0), 52.0), Sense::click());
+            if response.hovered() {
+                ui.painter().rect_filled(rect, 8, P.surface);
+            }
+            let thumb = egui::Rect::from_min_size(rect.min + Vec2::new(6.0, 6.0), Vec2::new(71.0, 40.0));
+            match e.thumb() {
+                Some(cover) => shell.cover(ui, Some(cover), e.id, thumb, 4, 0.0),
+                None => {
+                    ui.painter().rect_stroke(thumb, 4, egui::Stroke::new(1.0, P.line), egui::StrokeKind::Inside);
+                }
+            }
+            let left = thumb.right() + 12.0;
+            ui.painter().text(egui::pos2(left, rect.top() + 9.0), egui::Align2::LEFT_TOP, &e.name, font(14.0, semibold()), P.text);
+            let files = crate::ui::edit::extras::files_text(e.files as usize);
+            ui.painter().text(egui::pos2(left, rect.top() + 29.0), egui::Align2::LEFT_TOP, format!("{} · {files}", e.kind), font(12.0, medium()), P.muted);
+            if response.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                shell.act(Action::Go(crate::ui::Page::Extra(e.id)));
+            }
+        }
+    });
 }
 
 /// An ambiguous artist's candidates: (id, name), in the flag's order.

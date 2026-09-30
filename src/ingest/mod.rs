@@ -11,6 +11,7 @@ pub mod comment_links;
 pub mod describe;
 pub mod layouts;
 pub mod probe;
+pub mod video;
 pub mod tags;
 
 use std::fmt;

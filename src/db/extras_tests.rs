@@ -169,9 +169,14 @@ async fn a_track_becomes_an_extra_and_a_track_again(_: PgPoolOptions, connect: P
     let o_sha: String = sqlx::query_scalar("SELECT f.sha256 FROM tracks t JOIN files f ON f.id = t.file_id WHERE t.id = $1").bind(lib.o).fetch_one(&lib.owner).await?;
     let extra_sha: String = sqlx::query_scalar("SELECT sha256 FROM extra_files WHERE extra_id = $1").bind(made.extra_id).fetch_one(&lib.owner).await?;
     assert_eq!(o_sha, extra_sha, "the same bytes");
+    // O wasn't restricted: a small delta says it's gone (not the whole catalog).
     let mut tx = db::begin(&lib.app, Some(lib.carol)).await?;
-    assert!(db::library::changes_since(&mut tx, &since).await?.everything);
+    let changes = db::library::changes_since(&mut tx, &since).await?;
+    assert!(!changes.everything);
+    assert_eq!(changes.gone_tracks, [lib.o]);
+    assert!(changes.artists.contains(&lib.both), "its artist's counts");
     assert!(!db::library::tracks_json(&mut tx, None).await?.contains(&lib.o.to_string()));
+    let since = db::library::version(&mut tx).await?;
     drop(tx);
 
     // V and H (album A): V becomes an extra, then H. With no track left, A is gone for
@@ -179,6 +184,12 @@ async fn a_track_becomes_an_extra_and_a_track_again(_: PgPoolOptions, connect: P
     let mut tx = db::begin(&lib.app, Some(lib.bob)).await?;
     let v_extra = db::extras::track_to_extra(&mut tx, lib.v, "clip", Some("V clip"), &About::default(), None, "").await?;
     assert_eq!(v_extra.albums.iter().map(|a| (a.title.as_str(), a.alone)).collect::<Vec<_>>(), [("Album A", false)]);
+    tx.commit().await?;
+    // A is left with H only (restricted): hidden from carol, so the whole catalog.
+    let mut tx = db::begin(&lib.app, Some(lib.carol)).await?;
+    assert!(db::library::changes_since(&mut tx, &since).await?.everything);
+    drop(tx);
+    let mut tx = db::begin(&lib.app, Some(lib.bob)).await?;
     let h_extra = db::extras::track_to_extra(&mut tx, lib.h, "clip", None, &About::default(), None, "").await?;
     assert_eq!(h_extra.access, Access { restricted: true, groups: vec![lib.friends] }, "seen like H");
     assert!(h_extra.albums[0].alone);
@@ -196,5 +207,46 @@ async fn a_track_becomes_an_extra_and_a_track_again(_: PgPoolOptions, connect: P
     assert!(album_seen(lib.bob).await?, "A is back (flags {flags:?})");
     let mut tx = db::begin(&lib.app, Some(lib.bob)).await?;
     assert!(db::extras::get(&mut tx, h_extra.extra_id).await?.unwrap().hidden, "the extra is taken off (kept)");
+    Ok(())
+}
+
+/// A track alone on its single and that single are one release: an extra linked to one
+/// is linked to both, and unlinked from both.
+#[sqlx::test]
+async fn an_extra_goes_with_a_track_and_its_single(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
+    let lib = setup(connect).await?;
+    let mut tx = db::begin(&lib.app, Some(lib.carol)).await?;
+    let single = db::review_bulk::make_singles(&mut tx, &[lib.o], "").await?.made[0].album_id;
+    let (id, _) = db::extras::create(&mut tx, "O vocals", "vocals", &About::default(), &[Link::Track(lib.o)], None, "").await?;
+    let linked = |extra: db::extras::Extra| extra.links.iter().map(|l| (l.kind.clone(), l.id)).collect::<Vec<_>>();
+    let extra = db::extras::get(&mut tx, id).await?.unwrap();
+    assert_eq!(linked(extra), [("track".to_string(), lib.o), ("album".to_string(), single)]);
+    // V is on album A with H: A isn't a single of V's alone, so it doesn't go along.
+    db::extras::link(&mut tx, id, Link::Track(lib.v), "").await?;
+    assert_eq!(db::extras::get(&mut tx, id).await?.unwrap().links.len(), 3);
+    // Unlinked from the single: its track goes too.
+    assert!(db::extras::unlink(&mut tx, id, Link::Album(single), "").await?);
+    assert_eq!(linked(db::extras::get(&mut tx, id).await?.unwrap()), [("track".to_string(), lib.v)]);
+    Ok(())
+}
+
+/// A track alone on its single, turned into an extra: the delta says both are gone.
+#[sqlx::test]
+async fn a_single_goes_with_its_track_in_a_small_delta(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
+    let lib = setup(connect).await?;
+    sqlx::query("INSERT INTO blobs (sha256, volume, size_bytes) SELECT sha256, 'main', size_bytes FROM files ON CONFLICT DO NOTHING")
+        .execute(&lib.owner)
+        .await?;
+    let mut tx = db::begin(&lib.app, Some(lib.carol)).await?;
+    let single = db::review_bulk::make_singles(&mut tx, &[lib.o], "").await?.made[0].album_id;
+    tx.commit().await?;
+    let mut tx = db::begin(&lib.app, Some(lib.carol)).await?;
+    let since = db::library::version(&mut tx).await?;
+    db::extras::track_to_extra(&mut tx, lib.o, "vocals", None, &About::default(), Some(lib.v), "").await?;
+    tx.commit().await?;
+    let mut tx = db::begin(&lib.app, Some(lib.carol)).await?;
+    let changes = db::library::changes_since(&mut tx, &since).await?;
+    assert!(!changes.everything);
+    assert_eq!((changes.gone_tracks.as_slice(), changes.gone_albums.as_slice()), ([lib.o].as_slice(), [single].as_slice()));
     Ok(())
 }

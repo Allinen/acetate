@@ -181,6 +181,7 @@ pub async fn verify_blobs(pool: &PgPool, store: &BlobStore) -> anyhow::Result<()
         UNION SELECT blob_sha256 FROM covers
         UNION SELECT sha256 FROM ingest_problems WHERE resolved_at IS NULL
         UNION SELECT sha256 FROM extra_files
+        UNION SELECT thumb_sha256 FROM extra_files WHERE thumb_sha256 IS NOT NULL
         "#
     )
     .fetch_all(pool)

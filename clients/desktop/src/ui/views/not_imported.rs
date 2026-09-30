@@ -8,6 +8,9 @@
 //! * **import it as a new track**, with the title and artists its tags lack typed in;
 //! * **resolve it** with a note (nothing to import).
 //!
+//! A video (a music video that didn't import as a track) is kept as one: an extra of kind
+//! "video", linked to the track chosen or to nothing yet; or every video shown at once.
+//!
 //! Adding or importing can say the file is an original file (an og file, named as it was
 //! uploaded): on to start with for WAV files, which are nearly always the artist's own.
 //! Review's filter works here too: words in the name, the path (folders), the reason or
@@ -81,6 +84,9 @@ pub struct NotImported {
     done: Arc<Mutex<Option<Done>>>,
     /// The last thing done (or why not), with the track it went to.
     notice: Option<(Result<String, String>, Option<Uuid>)>,
+    /// Videos being kept as music videos, many at once: how many done, of how many.
+    batch: Option<(Arc<std::sync::atomic::AtomicUsize>, usize)>,
+    batch_done: Arc<Mutex<Option<String>>>,
 }
 
 impl NotImported {
@@ -165,6 +171,29 @@ impl NotImported {
             let at = self.selected.and_then(|id| shown.iter().position(|&n| self.list[n].id == id)).unwrap_or(0);
             let to = if next { (at + 1).min(shown.len().saturating_sub(1)) } else { at.saturating_sub(1) };
             self.selected = shown.get(to).map(|&n| self.list[n].id);
+        }
+        // Videos among those shown: kept as music videos, all at once.
+        let videos: Vec<(Uuid, String)> = shown.iter().map(|&n| &self.list[n]).filter(|p| is_video(&p.uploaded_filename)).map(|p| (p.id, searchable_name(&p.uploaded_filename))).collect();
+        let batch_done = self.batch_done.lock().unwrap().take();
+        if let Some(text) = batch_done {
+            self.batch = None;
+            self.notice = Some((Ok(text), None));
+            shell.act(Action::RefreshLibrary);
+            self.refresh(shell);
+        }
+        if !videos.is_empty() || self.batch.is_some() {
+            ui.horizontal(|ui| match &self.batch {
+                Some((done, of)) => {
+                    ui.label(RichText::new(format!("Keeping videos as music videos… {} of {of}", done.load(std::sync::atomic::Ordering::Relaxed))).color(P.muted));
+                }
+                None => {
+                    let tip = "Each an extra of kind “video”, linked to nothing yet (Review: “Unlinked extras”), with its thumbnail";
+                    if ui.button(format!("Keep the {} videos shown as music videos", videos.len())).on_hover_text(tip).clicked() {
+                        self.keep_videos(shell, videos.clone());
+                    }
+                }
+            });
+            ui.add_space(6.0);
         }
         let rest = ui.available_rect_before_wrap();
         let list_rect = egui::Rect::from_min_size(rest.min, Vec2::new(LIST_WIDTH, rest.height()));
@@ -274,6 +303,24 @@ impl NotImported {
             });
             ui.add_space(12.0);
 
+            // A video: kept as a music video (linked to the track chosen below, if one is).
+            if is_video(&p.uploaded_filename) {
+                let target = self.target.and_then(|i| catalog.tracks.get(i as usize)).map(|t| (t.id, t.title.clone()));
+                egui::Frame::NONE.fill(P.surface).corner_radius(8).inner_margin(egui::Margin::same(10)).show(ui, |ui| {
+                    ui.label(RichText::new("It's a video").font(font(15.0, semibold())));
+                    let whose = match &target {
+                        Some((_, title)) => format!("It's kept as a music video of “{title}” (the track chosen below)."),
+                        None => "It's kept as a music video linked to nothing yet (choose its track below first, or link it later: Review, “Unlinked extras”).".into(),
+                    };
+                    ui.label(RichText::new(whose).color(P.muted));
+                    if ui.add_enabled(!self.sending, egui::Button::new("Keep it as a music video")).clicked() {
+                        let links: Vec<serde_json::Value> = target.iter().map(|(id, _)| serde_json::json!({ "kind": "track", "id": id })).collect();
+                        let body = serde_json::json!({ "name": searchable_name(&p.uploaded_filename), "kind": "video", "links": links, "reason": self.reason.trim() });
+                        self.send(shell, p.id, format!("/api/ingest-problems/{}/extra", p.id), body, target.as_ref().map(|t| t.0), "Kept as a music video.".into(), true);
+                    }
+                });
+                ui.add_space(14.0);
+            }
             if shell.account.can("replace_file") {
                 self.add_to_track(ui, shell, catalog, &p);
                 ui.add_space(14.0);
@@ -400,6 +447,32 @@ impl NotImported {
         }
     }
 
+    /// Videos kept as music videos, one after another (each gets its facts and thumbnail
+    /// on the server): extras of kind "video", linked to nothing yet.
+    fn keep_videos(&mut self, shell: &Shell, videos: Vec<(Uuid, String)>) {
+        let done = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        self.batch = Some((done.clone(), videos.len()));
+        let (api, ctx, answer) = (shell.api.clone(), shell.ctx.clone(), self.batch_done.clone());
+        shell.runtime.spawn(async move {
+            let mut failed = Vec::new();
+            for (id, name) in &videos {
+                let body = serde_json::json!({ "name": name, "kind": "video", "reason": "a music video that didn't import" });
+                if let Err(err) = api.send_json::<serde_json::Value>(reqwest::Method::POST, &format!("/api/ingest-problems/{id}/extra"), Some(body)).await {
+                    failed.push(format!("{name}: {}", err.message));
+                }
+                done.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                ctx.request_repaint();
+            }
+            let kept = videos.len() - failed.len();
+            let mut text = format!("{kept} videos kept as music videos (Review: “Unlinked extras” to link them).");
+            if !failed.is_empty() {
+                text.push_str(&format!(" Not these: {}", failed.join("; ")));
+            }
+            *answer.lock().unwrap() = Some(text);
+            ctx.request_repaint();
+        });
+    }
+
     /// The original filename to send: the name, if it's said to be an original file.
     fn og(&self) -> Option<String> {
         Some(self.og_name.trim().to_string()).filter(|n| self.is_og && !n.is_empty())
@@ -474,6 +547,11 @@ fn guess_kind(filename: &str) -> &'static str {
     }
 }
 
+/// A video file (by its name).
+fn is_video(filename: &str) -> bool {
+    std::path::Path::new(filename).extension().and_then(|e| e.to_str()).is_some_and(|e| matches!(e.to_lowercase().as_str(), "mp4" | "m4v" | "mkv" | "webm" | "mov" | "avi"))
+}
+
 /// A WAV file (by its name): nearly always an artist's own file, not a rip.
 fn is_wav(filename: &str) -> bool {
     std::path::Path::new(filename).extension().and_then(|e| e.to_str()).is_some_and(|e| matches!(e.to_lowercase().as_str(), "wav" | "wave"))
@@ -524,6 +602,7 @@ mod tests {
         assert_eq!(searchable_name("no extension"), "no extension");
         assert_eq!(folder("/music/some artist/song.flac"), "some artist");
         assert!(is_wav("MASTER.WAV") && is_wav("a.wav") && !is_wav("a.flac") && !is_wav("wav"));
+        assert!(is_video("Clip (Official Video).MP4") && is_video("a.mkv") && !is_video("a.m4a"));
         assert_eq!(guess_kind("Glass Harbor (Acapella).wav"), "vocals");
         assert_eq!(guess_kind("song_VOX_dry.wav"), "vocals");
         assert_eq!(guess_kind("song (Instrumental).flac"), "instrumental");

@@ -104,7 +104,7 @@ pub struct Changed {
 }
 
 /// The singles `track` is the only track of: in a grouping, they go with it.
-async fn singles_of(conn: &mut PgConnection, track: Uuid) -> sqlx::Result<Vec<Uuid>> {
+pub(crate) async fn singles_of(conn: &mut PgConnection, track: Uuid) -> sqlx::Result<Vec<Uuid>> {
     sqlx::query_scalar!(
         r#"SELECT a.id FROM album_tracks at
            JOIN albums a ON a.id = at.album_id AND a.kind = 'single' AND a.merged_into IS NULL
@@ -118,7 +118,7 @@ async fn singles_of(conn: &mut PgConnection, track: Uuid) -> sqlx::Result<Vec<Uu
 }
 
 /// A single's only track: it goes with it.
-async fn only_track_of(conn: &mut PgConnection, album: Uuid) -> sqlx::Result<Option<Uuid>> {
+pub(crate) async fn only_track_of(conn: &mut PgConnection, album: Uuid) -> sqlx::Result<Option<Uuid>> {
     let tracks = sqlx::query_scalar!(
         r#"SELECT x.track_id FROM album_tracks x
            JOIN albums a ON a.id = x.album_id AND a.kind = 'single'

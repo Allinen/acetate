@@ -12,6 +12,7 @@ mod navidrome;
 mod storage;
 mod user_commands;
 mod verify_command;
+mod videos_command;
 
 use std::path::PathBuf;
 
@@ -82,6 +83,18 @@ enum Command {
         /// Write the paths of the files that aren't to this file.
         #[arg(long)]
         list_missing: Option<PathBuf>,
+    },
+    /// Import music videos from a folder here (no upload limit): each one an extra of
+    /// kind "video", named after its file and linked to nothing yet (link them from their
+    /// pages). Files already stored are skipped. Never changes anything in <dir>.
+    Videos {
+        dir: PathBuf,
+        /// The kind they get.
+        #[arg(long, default_value = "video")]
+        kind: String,
+        /// Only say what would be added.
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Merge the "possible duplicate" pairs from review flags that have exactly the same
     /// title and about the same length. The older track is kept (its metadata and covers),
@@ -407,6 +420,7 @@ async fn main() -> anyhow::Result<()> {
             let options = ingest_options(&args, Groups::Local(&pool, &store)).await?;
             ingest_command::run(ingest_command::Target::Local { pool: &pool, store: &store }, &args.dir, options).await
         }
+        Command::Videos { dir, kind, dry_run } => videos_command::run(&pool, &store, &dir, &kind, dry_run).await,
         Command::Verify { dir, blobs, list_ok, list_missing } => match (dir, blobs) {
             (None, true) => verify_command::verify_blobs(&pool, &store).await,
             (Some(dir), false) => {

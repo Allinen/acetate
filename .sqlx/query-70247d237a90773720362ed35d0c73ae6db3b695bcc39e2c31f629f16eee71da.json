@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE extra_files SET container = COALESCE($2, container), codec = COALESCE($3, codec), sample_rate = COALESCE($4, sample_rate),\n                  channels = COALESCE($5, channels), duration_ms = COALESCE($6, duration_ms), width = $7, height = $8, frame_rate = $9,\n                  video_codec = $10, thumb_sha256 = $11\n           WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text",
+        "Int4",
+        "Int2",
+        "Int8",
+        "Int4",
+        "Int4",
+        "Float4",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "70247d237a90773720362ed35d0c73ae6db3b695bcc39e2c31f629f16eee71da"
+}

@@ -222,12 +222,17 @@ pub async fn image_by_hash(conn: &mut PgConnection, hash: &str) -> sqlx::Result<
     sqlx::query_as!(
         Image,
         r#"
-        SELECT c.blob_sha256, c.mime
+        SELECT c.blob_sha256 AS "blob_sha256!", c.mime
         FROM covers c
         WHERE c.blob_sha256 LIKE $1 || '%'
           AND (EXISTS (SELECT 1 FROM tracks t WHERE t.id = c.track_id)
                OR EXISTS (SELECT 1 FROM album_tracks at JOIN tracks t ON t.id = at.track_id
                           WHERE at.album_id = c.album_id))
+        UNION ALL
+        -- A video's thumbnail (an extra's file: seen with the extra).
+        SELECT f.thumb_sha256, 'image/jpeg'
+        FROM extra_files f
+        WHERE f.thumb_sha256 LIKE $1 || '%'
         LIMIT 1
         "#,
         hash

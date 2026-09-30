@@ -9,7 +9,7 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 /// The catalog format this client reads (the server's `FORMAT`).
-pub const FORMAT: u32 = 6;
+pub const FORMAT: u32 = 7;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -154,9 +154,21 @@ pub struct Extra {
     /// Its first file (by name), to play, and its length.
     pub first_file: Option<Uuid>,
     pub duration_ms: Option<i64>,
+    /// Its first video file (to watch), and that video's thumbnail.
+    #[serde(default)]
+    pub video: Option<Uuid>,
+    #[serde(default)]
+    pub thumb_key: Option<String>,
 }
 
-const EXTRA_COLUMNS: &[&str] = &["id", "name", "kind", "is_restricted", "hidden", "links", "files", "first_file", "duration_ms"];
+impl Extra {
+    /// Its video's thumbnail, as a cover to show.
+    pub fn thumb(&self) -> Option<Cover> {
+        Some(Cover { id: self.video?, key: CoverKey::from_hex(self.thumb_key.as_deref()?)? })
+    }
+}
+
+const EXTRA_COLUMNS: &[&str] = &["id", "name", "kind", "is_restricted", "hidden", "links", "files", "first_file", "duration_ms", "video", "thumb_key"];
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Artist {

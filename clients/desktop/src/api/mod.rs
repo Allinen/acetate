@@ -140,6 +140,13 @@ impl Api {
     }
 
     /// A request to the server with the session's token, and the server's address.
+    /// A path's full address and the header that logs in to it, for something that fetches
+    /// it itself (the video player).
+    pub fn address_and_auth(&self, path: &str) -> Option<(String, String)> {
+        let session = self.session()?;
+        Some((format!("{}{path}", session.server), format!("Authorization: Bearer {}", session.token)))
+    }
+
     fn request(&self, method: reqwest::Method, path: &str) -> Result<(reqwest::RequestBuilder, String), ApiError> {
         let session = self.session().ok_or_else(|| ApiError {
             status: None,

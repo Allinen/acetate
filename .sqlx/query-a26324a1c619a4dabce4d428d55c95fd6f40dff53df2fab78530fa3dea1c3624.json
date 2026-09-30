@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT sha256 AS \"sha256!\" FROM files WHERE purged_at IS NULL\n        UNION SELECT blob_sha256 FROM covers\n        UNION SELECT sha256 FROM ingest_problems WHERE resolved_at IS NULL\n        UNION SELECT sha256 FROM extra_files\n        UNION SELECT thumb_sha256 FROM extra_files WHERE thumb_sha256 IS NOT NULL\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "sha256!",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "a26324a1c619a4dabce4d428d55c95fd6f40dff53df2fab78530fa3dea1c3624"
+}
