@@ -28,13 +28,25 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell, player: &PlayerView) {
     }
     if let Some(item) = &current {
         let text_left = cover_rect.right() + 14.0;
-        let width = left.right() - text_left - 44.0;
-        // A star for what plays (Shift+S anywhere); a file that didn't import isn't a track.
-        if item.source == crate::playback::AudioSource::File {
+        // A star and a rating for what plays (Shift+S, + / − anywhere); a file that didn't
+        // import isn't a track.
+        let is_track = item.source == crate::playback::AudioSource::File;
+        const RATING_SIZE: f32 = 14.0;
+        let width = left.right() - text_left - 44.0 - if is_track { RATING_SIZE * 5.0 + 8.0 } else { 0.0 };
+        if is_track {
+            let mark = shell.mark(item.track_id);
             let star_rect = Rect::from_center_size(Pos2::new(left.right() - 22.0, cover_rect.center().y), Vec2::splat(28.0));
             let mut star_ui = ui.new_child(egui::UiBuilder::new().max_rect(star_rect));
-            if widgets::star_button(&mut star_ui, shell.mark(item.track_id).starred, 24.0) {
+            if widgets::star_button(&mut star_ui, mark.starred, 24.0) {
                 shell.act(Action::ToggleStar(Kind::Track, item.track_id));
+            }
+            let rating_rect = Rect::from_center_size(
+                Pos2::new(star_rect.left() - 4.0 - RATING_SIZE * 2.5, cover_rect.center().y),
+                Vec2::new(RATING_SIZE * 5.0, RATING_SIZE),
+            );
+            let mut rating_ui = ui.new_child(egui::UiBuilder::new().max_rect(rating_rect));
+            if let Some(rating) = widgets::rating(&mut rating_ui, mark.rating, RATING_SIZE) {
+                shell.act(Action::Rate(Kind::Track, item.track_id, rating));
             }
         }
         // The title (to its album) and artists (to theirs) are links; the rest of this
