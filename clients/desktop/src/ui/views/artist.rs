@@ -277,179 +277,181 @@ impl ArtistPage {
             return;
         }
 
-        ui.label(RichText::new("ARTIST").font(font(11.0, semibold())).color(P.accent));
-        let name = artist.label();
-        ui.label(RichText::new(name).font(font(40.0, bold())));
-        if names.len() < 2 && !artist.aliases.is_empty() {
-            ui.label(RichText::new(format!("Also credited as {}", artist.aliases.join(", "))).font(font(14.0, medium())).color(P.muted));
-        }
-        if chips_shown {
-            ui.add_space(4.0);
-            name_chips(ui, &mut self.credited_as, &mut self.og_only);
-            ui.add_space(4.0);
-        }
-        // The groupings its tracks are in (collectives it posts under, eras…), most first.
-        let mut in_groupings: Vec<(Uuid, usize)> = Vec::new();
-        for &t in all_tracks {
-            for g in &catalog.tracks[t as usize].groupings {
-                match in_groupings.iter_mut().find(|(id, _)| id == g) {
-                    Some((_, n)) => *n += 1,
-                    None => in_groupings.push((*g, 1)),
+        // One scroll for the whole page (header, edit panels, notes, the previews as tall
+        // as they are): nothing in it scrolls on its own.
+        egui::ScrollArea::vertical().id_salt(("artist-page", id)).auto_shrink([false, false]).show(ui, |ui| {
+            ui.label(RichText::new("ARTIST").font(font(11.0, semibold())).color(P.accent));
+            let name = artist.label();
+            ui.label(RichText::new(name).font(font(40.0, bold())));
+            if names.len() < 2 && !artist.aliases.is_empty() {
+                ui.label(RichText::new(format!("Also credited as {}", artist.aliases.join(", "))).font(font(14.0, medium())).color(P.muted));
+            }
+            if chips_shown {
+                ui.add_space(4.0);
+                name_chips(ui, &mut self.credited_as, &mut self.og_only);
+                ui.add_space(4.0);
+            }
+            // The groupings its tracks are in (collectives it posts under, eras…), most first.
+            let mut in_groupings: Vec<(Uuid, usize)> = Vec::new();
+            for &t in all_tracks {
+                for g in &catalog.tracks[t as usize].groupings {
+                    match in_groupings.iter_mut().find(|(id, _)| id == g) {
+                        Some((_, n)) => *n += 1,
+                        None => in_groupings.push((*g, 1)),
+                    }
                 }
             }
-        }
-        in_groupings.sort_by_key(|g| std::cmp::Reverse(g.1));
-        // Member of: said by hand on the grouping (not worked out from credits).
-        let member_of: Vec<&crate::catalog::model::Grouping> = catalog.groupings.iter().filter(|g| g.artists.contains(&id)).collect();
-        if !member_of.is_empty() {
-            ui.horizontal_wrapped(|ui| {
-                ui.spacing_mut().item_spacing.x = 0.0;
-                ui.label(RichText::new("Member of ").font(font(14.0, medium())).color(P.faint));
-                for (n, g) in member_of.iter().enumerate() {
-                    if n > 0 {
-                        ui.label(RichText::new(", ").font(font(14.0, medium())).color(P.faint));
+            in_groupings.sort_by_key(|g| std::cmp::Reverse(g.1));
+            // Member of: said by hand on the grouping (not worked out from credits).
+            let member_of: Vec<&crate::catalog::model::Grouping> = catalog.groupings.iter().filter(|g| g.artists.contains(&id)).collect();
+            if !member_of.is_empty() {
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing.x = 0.0;
+                    ui.label(RichText::new("Member of ").font(font(14.0, medium())).color(P.faint));
+                    for (n, g) in member_of.iter().enumerate() {
+                        if n > 0 {
+                            ui.label(RichText::new(", ").font(font(14.0, medium())).color(P.faint));
+                        }
+                        if widgets::link(ui, &g.name, font(14.0, medium()), P.text) {
+                            shell.act(Action::Go(Page::Grouping(g.id)));
+                        }
+                        ui.label(RichText::new(format!(" ({})", g.kind)).font(font(14.0, medium())).color(P.faint));
                     }
-                    if widgets::link(ui, &g.name, font(14.0, medium()), P.text) {
-                        shell.act(Action::Go(Page::Grouping(g.id)));
-                    }
-                    ui.label(RichText::new(format!(" ({})", g.kind)).font(font(14.0, medium())).color(P.faint));
-                }
-            });
-        }
-        // Where its tracks are (an era, a collective it isn't a member of…).
-        in_groupings.retain(|(g, _)| !member_of.iter().any(|m| m.id == *g));
-        if !in_groupings.is_empty() {
-            ui.horizontal_wrapped(|ui| {
-                ui.spacing_mut().item_spacing.x = 0.0;
-                ui.label(RichText::new("Its tracks are in ").font(font(14.0, medium())).color(P.faint));
-                for (n, (g, count)) in in_groupings.iter().enumerate() {
-                    let Some(grouping) = catalog.grouping(*g) else { continue };
-                    if n > 0 {
-                        ui.label(RichText::new(", ").font(font(14.0, medium())).color(P.faint));
-                    }
-                    if widgets::link(ui, &grouping.name, font(14.0, medium()), P.text) {
-                        shell.act(Action::Go(Page::Grouping(*g)));
-                    }
-                    ui.label(RichText::new(format!(" ({}, {count})", grouping.kind)).font(font(14.0, medium())).color(P.faint));
-                }
-            });
-        }
-        ui.label(
-            RichText::new(format!("{} tracks · {} releases", thousands(own.len()), thousands(releases.len())))
-                .font(font(14.0, medium()))
-                .color(P.muted),
-        );
-        ui.add_space(12.0);
-        ui.horizontal(|ui| {
-            let (play_rect, _) = ui.allocate_exact_size(Vec2::new(116.0, 42.0), Sense::hover());
-            // Its own tracks (or, with none, everything it's credited on).
-            let to_play = if own.is_empty() { tracks } else { &own[..] };
-            if play_button(ui, "artist-play", play_rect) && !to_play.is_empty() {
-                shell.act(Action::Play { tracks: to_play.to_vec(), start: 0 });
+                });
             }
-            ui.add_space(6.0);
-            super::album::marks(ui, shell, Kind::Artist, id);
-            ui.add_space(8.0);
-            if widgets::chip(ui, "Details", self.details) {
-                self.details = !self.details;
+            // Where its tracks are (an era, a collective it isn't a member of…).
+            in_groupings.retain(|(g, _)| !member_of.iter().any(|m| m.id == *g));
+            if !in_groupings.is_empty() {
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing.x = 0.0;
+                    ui.label(RichText::new("Its tracks are in ").font(font(14.0, medium())).color(P.faint));
+                    for (n, (g, count)) in in_groupings.iter().enumerate() {
+                        let Some(grouping) = catalog.grouping(*g) else { continue };
+                        if n > 0 {
+                            ui.label(RichText::new(", ").font(font(14.0, medium())).color(P.faint));
+                        }
+                        if widgets::link(ui, &grouping.name, font(14.0, medium()), P.text) {
+                            shell.act(Action::Go(Page::Grouping(*g)));
+                        }
+                        ui.label(RichText::new(format!(" ({}, {count})", grouping.kind)).font(font(14.0, medium())).color(P.faint));
+                    }
+                });
             }
-            widgets::share_chip(ui, shell, crate::links::Target::Artist(id));
-            if shell.edit_mode && self.merge.is_none() {
+            ui.label(
+                RichText::new(format!("{} tracks · {} releases", thousands(own.len()), thousands(releases.len())))
+                    .font(font(14.0, medium()))
+                    .color(P.muted),
+            );
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                let (play_rect, _) = ui.allocate_exact_size(Vec2::new(116.0, 42.0), Sense::hover());
+                // Its own tracks (or, with none, everything it's credited on).
+                let to_play = if own.is_empty() { tracks } else { &own[..] };
+                if play_button(ui, "artist-play", play_rect) && !to_play.is_empty() {
+                    shell.act(Action::Play { tracks: to_play.to_vec(), start: 0 });
+                }
+                ui.add_space(6.0);
+                super::album::marks(ui, shell, Kind::Artist, id);
                 ui.add_space(8.0);
-                let tip = "The same artist twice: choose the other one, then see both before merging";
-                if ui.button("Merge into another artist…  (Ctrl+M)").on_hover_text(tip).clicked() {
-                    self.picking_merge = true;
-                    shell.act(Action::Pick { kind: crate::ui::edit::PickKind::Artist, except: Some(id) });
+                if widgets::chip(ui, "Details", self.details) {
+                    self.details = !self.details;
                 }
-                let tip = "It's really an account several artists post under: make it a grouping (its tracks, albums and sources go there, its credits come off). Shows what it would do first.";
-                if shell.account.can("edit_sources") && ui.button("Turn into a collective, or merge into one…").on_hover_text(tip).clicked() {
-                    self.to_collective = Some(super::to_collective::ToCollective::open(shell, id));
-                }
-            }
-        });
-        ui.add_space(22.0);
-
-        // The other artist, picked in the palette (not a new one, not this one).
-        if self.picking_merge
-            && let Some(picked) = shell.picker.take()
-        {
-            self.picking_merge = false;
-            if let (crate::ui::edit::PickKind::Artist, Some(other)) = (picked.kind, picked.id)
-                && other != id
-            {
-                self.merge = Some(super::artist_merge::ArtistMergeView::new(id, other));
-            }
-        }
-        if let Some(view) = self.merge.as_mut() {
-            use super::artist_merge::Outcome;
-            shell.form_dirty = true;
-            match view.show(ui, shell, catalog) {
-                Some(Outcome::Merged { kept, gone }) => {
-                    self.merge = None;
-                    shell.artist_details.refresh(kept);
-                    shell.artist_details.refresh(gone);
-                    shell.flags.refresh(&shell.api, shell.runtime.handle(), &shell.ctx);
-                    shell.act(Action::RefreshLibrary);
-                    if kept != id {
-                        shell.act(Action::Go(Page::Artist(kept)));
+                widgets::share_chip(ui, shell, crate::links::Target::Artist(id));
+                if shell.edit_mode && self.merge.is_none() {
+                    ui.add_space(8.0);
+                    let tip = "The same artist twice: choose the other one, then see both before merging";
+                    if ui.button("Merge into another artist…  (Ctrl+M)").on_hover_text(tip).clicked() {
+                        self.picking_merge = true;
+                        shell.act(Action::Pick { kind: crate::ui::edit::PickKind::Artist, except: Some(id) });
+                    }
+                    let tip = "It's really an account several artists post under: make it a grouping (its tracks, albums and sources go there, its credits come off). Shows what it would do first.";
+                    if shell.account.can("edit_sources") && ui.button("Turn into a collective, or merge into one…").on_hover_text(tip).clicked() {
+                        self.to_collective = Some(super::to_collective::ToCollective::open(shell, id));
                     }
                 }
-                Some(Outcome::Closed) => self.merge = None,
-                None => {}
-            }
-            return;
-        }
-        if self.details {
-            super::album::details_panel(ui, "artist-details", |ui| {
-                let cached = shell.artist_details.get(id);
-                let Some(d) = cached.value.clone() else {
-                    ui.label(RichText::new(if cached.refreshing { "Loading…" } else { "Couldn't load the details" }).color(P.muted));
-                    return;
-                };
-                if d.sources.is_empty() {
-                    ui.label(RichText::new("No sources").color(P.muted));
-                } else {
-                    ui.label(RichText::new(format!("Sources ({})", d.sources.len())).font(font(14.0, semibold())));
-                    super::track::sources(ui, &d.sources);
-                }
             });
-            ui.add_space(12.0);
-        }
+            ui.add_space(22.0);
 
-        // Edit mode: the artist's name, disambiguation and other names.
-        if shell.edit_mode {
-            edit_panel(ui, shell, id);
-            ui.add_space(12.0);
-            if let Some(d) = shell.artist_details.get(id).value.clone() {
-                super::album::details_panel(ui, "artist-sources", |ui| {
-                    ui.label(RichText::new("Sources").font(font(14.0, semibold())));
-                    self.sources.show(ui, shell, crate::ui::edit::sources::Owner::Artist(id), &d.sources);
+            // The other artist, picked in the palette (not a new one, not this one).
+            if self.picking_merge
+                && let Some(picked) = shell.picker.take()
+            {
+                self.picking_merge = false;
+                if let (crate::ui::edit::PickKind::Artist, Some(other)) = (picked.kind, picked.id)
+                    && other != id
+                {
+                    self.merge = Some(super::artist_merge::ArtistMergeView::new(id, other));
+                }
+            }
+            if let Some(view) = self.merge.as_mut() {
+                use super::artist_merge::Outcome;
+                shell.form_dirty = true;
+                match view.show(ui, shell, catalog) {
+                    Some(Outcome::Merged { kept, gone }) => {
+                        self.merge = None;
+                        shell.artist_details.refresh(kept);
+                        shell.artist_details.refresh(gone);
+                        shell.flags.refresh(&shell.api, shell.runtime.handle(), &shell.ctx);
+                        shell.act(Action::RefreshLibrary);
+                        if kept != id {
+                            shell.act(Action::Go(Page::Artist(kept)));
+                        }
+                    }
+                    Some(Outcome::Closed) => self.merge = None,
+                    None => {}
+                }
+                return;
+            }
+            if self.details {
+                super::album::panel(ui, "artist-details", |ui| {
+                    let cached = shell.artist_details.get(id);
+                    let Some(d) = cached.value.clone() else {
+                        ui.label(RichText::new(if cached.refreshing { "Loading…" } else { "Couldn't load the details" }).color(P.muted));
+                        return;
+                    };
+                    if d.sources.is_empty() {
+                        ui.label(RichText::new("No sources").color(P.muted));
+                    } else {
+                        ui.label(RichText::new(format!("Sources ({})", d.sources.len())).font(font(14.0, semibold())));
+                        super::track::sources(ui, &d.sources);
+                    }
                 });
                 ui.add_space(12.0);
             }
-        }
 
-        // Its notes, folded under their titles.
-        if let Some(d) = shell.artist_details.get(id).value.clone()
-            && crate::ui::edit::notes::NotesView::worth_showing(shell, &d.notes)
-        {
-            ui.label(RichText::new("Notes").font(font(16.0, semibold())));
-            self.notes.show(ui, shell, crate::ui::edit::notes::Owner::Artist(id), &d.notes, true, true);
-            ui.add_space(12.0);
-        }
+            // Edit mode: the artist's name, disambiguation and other names.
+            if shell.edit_mode {
+                edit_panel(ui, shell, id);
+                ui.add_space(12.0);
+                if let Some(d) = shell.artist_details.get(id).value.clone() {
+                    super::album::panel(ui, "artist-sources", |ui| {
+                        ui.label(RichText::new("Sources").font(font(14.0, semibold())));
+                        self.sources.show(ui, shell, crate::ui::edit::sources::Owner::Artist(id), &d.sources);
+                    });
+                    ui.add_space(12.0);
+                }
+            }
 
-        if releases.is_empty() && own.is_empty() && featured.is_empty() && produced.is_empty() {
-            let text = if chosen.is_some() { "Nothing credited under this name." } else { "This artist has no tracks yet: go add some (Review, or a track's page in edit mode)." };
-            ui.label(RichText::new(text).color(P.muted));
-            return;
-        }
-        // The first shown takes the keys until another is clicked.
-        let shown = [!own.is_empty(), !featured.is_empty(), !produced.is_empty()];
-        if !shown[self.active] {
-            self.active = shown.iter().position(|s| *s).unwrap_or(0);
-        }
+            // Its notes, folded under their titles.
+            if let Some(d) = shell.artist_details.get(id).value.clone()
+                && crate::ui::edit::notes::NotesView::worth_showing(shell, &d.notes)
+            {
+                ui.label(RichText::new("Notes").font(font(16.0, semibold())));
+                self.notes.show(ui, shell, crate::ui::edit::notes::Owner::Artist(id), &d.notes, true, true);
+                ui.add_space(12.0);
+            }
 
-        egui::ScrollArea::vertical().id_salt(("artist-page", id)).auto_shrink([false, false]).show(ui, |ui| {
+            if releases.is_empty() && own.is_empty() && featured.is_empty() && produced.is_empty() {
+                let text = if chosen.is_some() { "Nothing credited under this name." } else { "This artist has no tracks yet: go add some (Review, or a track's page in edit mode)." };
+                ui.label(RichText::new(text).color(P.muted));
+                return;
+            }
+            // The first shown takes the keys until another is clicked.
+            let shown = [!own.is_empty(), !featured.is_empty(), !produced.is_empty()];
+            if !shown[self.active] {
+                self.active = shown.iter().position(|s| *s).unwrap_or(0);
+            }
+
             // ---- Releases: one row of them (the heading shows all) ----
             if !releases.is_empty() {
                 let fit = (((ui.available_width() + CARD_GAP) / (CARD + CARD_GAP)) as usize).max(1);
@@ -496,7 +498,7 @@ fn edit_panel(ui: &mut egui::Ui, shell: &mut Shell, id: Uuid) {
         ui.label(RichText::new(if cached.refreshing { "Loading the artist to edit…" } else { "Couldn't load the artist to edit" }).color(P.muted));
         return;
     };
-    super::album::details_panel(ui, "artist-edit", |ui| {
+    super::album::panel(ui, "artist-edit", |ui| {
         // Taken out of the shell while it's shown (showing it needs the shell too).
         let Some(mut form) = shell.artist_forms.remove(&id).or_else(|| ArtistForm::from_detail(&d)) else {
             ui.label(RichText::new("This artist has no revision to build on, so it can't be edited here.").color(P.muted));

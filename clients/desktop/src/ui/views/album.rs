@@ -68,191 +68,194 @@ impl AlbumPage {
             return;
         };
         let tracks = catalog.album_tracks(id);
-
-        // Header: a big cover, and what the album is.
-        let header = ui.allocate_exact_size(Vec2::new(ui.available_width(), 232.0), Sense::hover()).0;
-        let cover_rect = Rect::from_min_size(header.min, Vec2::splat(220.0));
-        shell.cover_with_original(ui, album.cover(), album.id, cover_rect, 12, 0.6);
-        // Every track an original file (an og file): it says so, with an amber edge.
-        let og_count = tracks.iter().filter(|&&t| catalog.tracks[t as usize].original_filename.is_some()).count();
-        let all_og = og_count > 0 && og_count == tracks.len();
-        if all_og {
-            widgets::og_edge(ui.painter(), cover_rect, 12, 2.0);
-        }
-        let left = cover_rect.right() + 28.0;
-        let painter = ui.painter();
-        let kind = match (all_og, tracks.len()) {
-            (false, _) => album.kind.to_uppercase(),
-            (true, 1) => format!("{}  ·  ORIGINAL FILE", album.kind.to_uppercase()),
-            (true, _) => format!("{}  ·  ORIGINAL FILES", album.kind.to_uppercase()),
-        };
-        painter.text(Pos2::new(left, cover_rect.top() + 70.0), Align2::LEFT_BOTTOM, kind, font(11.0, semibold()), P.accent);
-        widgets::text_in(painter, Rect::from_min_size(Pos2::new(left, cover_rect.top() + 76.0), Vec2::new(header.right() - left, 44.0)), &album.title, font(36.0, bold()), P.text);
-        let mut facts = Vec::new();
-        if let Some(date) = &album.release_date {
-            facts.push(date.clone());
-        }
-        let count = tracks.len();
-        facts.push(format!("{count} track{}", if count == 1 { "" } else { "s" }));
-        let total: i64 = tracks.iter().filter_map(|&t| catalog.tracks[t as usize].duration_ms).sum();
-        facts.push(widgets::clock(Duration::from_millis(total.max(0) as u64)));
-        painter.text(Pos2::new(left, cover_rect.top() + 150.0), Align2::LEFT_TOP, facts.join("  ·  "), font(14.0, medium()), P.muted);
-
-        // The album's artists, each a link.
-        let artists_rect = Rect::from_min_size(Pos2::new(left, cover_rect.top() + 126.0), Vec2::new(header.right() - left, 20.0));
-        let mut artists_ui = ui.new_child(egui::UiBuilder::new().max_rect(artists_rect).layout(egui::Layout::left_to_right(egui::Align::Center)));
-        super::artist_links(&mut artists_ui, shell, catalog, &album.credits, &album.artist_display, font(15.0, medium()), P.text);
-
-        let play_rect = Rect::from_min_size(Pos2::new(left, cover_rect.bottom() - 44.0), Vec2::new(116.0, 42.0));
-        if play_button(ui, "album-play", play_rect) && !tracks.is_empty() {
-            shell.act(Action::Play { tracks: tracks.to_vec(), start: 0 });
-        }
-        let marks_rect = Rect::from_min_size(Pos2::new(play_rect.right() + 18.0, play_rect.top()), Vec2::new(460.0, play_rect.height()));
-        let mut marks_ui = ui.new_child(egui::UiBuilder::new().max_rect(marks_rect).layout(egui::Layout::left_to_right(egui::Align::Center)));
-        marks(&mut marks_ui, shell, Kind::Album, id);
-        marks_ui.add_space(8.0);
-        if widgets::chip(&mut marks_ui, "Details", self.details) {
-            self.details = !self.details;
-        }
-        marks_ui.add_space(4.0);
-        widgets::share_chip(&mut marks_ui, shell, crate::links::Target::Album(id));
-        // Its original files (og files): a chip that shows only those (`og:` in the filter).
-        if og_count > 0 {
-            marks_ui.add_space(4.0);
-            if widgets::chip(&mut marks_ui, &format!("Original files  {og_count}"), self.list.og_only()) {
-                self.list.toggle_og();
+        // One scroll for the whole page (header, edit panels, notes, the tracks as tall
+        // as they are): nothing in it scrolls on its own.
+        egui::ScrollArea::vertical().id_salt(("album-page", id)).auto_shrink([false, false]).show(ui, |ui| {
+            // Header: a big cover, and what the album is.
+            let header = ui.allocate_exact_size(Vec2::new(ui.available_width(), 232.0), Sense::hover()).0;
+            let cover_rect = Rect::from_min_size(header.min, Vec2::splat(220.0));
+            shell.cover_with_original(ui, album.cover(), album.id, cover_rect, 12, 0.6);
+            // Every track an original file (an og file): it says so, with an amber edge.
+            let og_count = tracks.iter().filter(|&&t| catalog.tracks[t as usize].original_filename.is_some()).count();
+            let all_og = og_count > 0 && og_count == tracks.len();
+            if all_og {
+                widgets::og_edge(ui.painter(), cover_rect, 12, 2.0);
             }
-        }
-        if shell.edit_mode && self.merge.is_none() {
+            let left = cover_rect.right() + 28.0;
+            let painter = ui.painter();
+            let kind = match (all_og, tracks.len()) {
+                (false, _) => album.kind.to_uppercase(),
+                (true, 1) => format!("{}  ·  ORIGINAL FILE", album.kind.to_uppercase()),
+                (true, _) => format!("{}  ·  ORIGINAL FILES", album.kind.to_uppercase()),
+            };
+            painter.text(Pos2::new(left, cover_rect.top() + 70.0), Align2::LEFT_BOTTOM, kind, font(11.0, semibold()), P.accent);
+            widgets::text_in(painter, Rect::from_min_size(Pos2::new(left, cover_rect.top() + 76.0), Vec2::new(header.right() - left, 44.0)), &album.title, font(36.0, bold()), P.text);
+            let mut facts = Vec::new();
+            if let Some(date) = &album.release_date {
+                facts.push(date.clone());
+            }
+            let count = tracks.len();
+            facts.push(format!("{count} track{}", if count == 1 { "" } else { "s" }));
+            let total: i64 = tracks.iter().filter_map(|&t| catalog.tracks[t as usize].duration_ms).sum();
+            facts.push(widgets::clock(Duration::from_millis(total.max(0) as u64)));
+            painter.text(Pos2::new(left, cover_rect.top() + 150.0), Align2::LEFT_TOP, facts.join("  ·  "), font(14.0, medium()), P.muted);
+
+            // The album's artists, each a link.
+            let artists_rect = Rect::from_min_size(Pos2::new(left, cover_rect.top() + 126.0), Vec2::new(header.right() - left, 20.0));
+            let mut artists_ui = ui.new_child(egui::UiBuilder::new().max_rect(artists_rect).layout(egui::Layout::left_to_right(egui::Align::Center)));
+            super::artist_links(&mut artists_ui, shell, catalog, &album.credits, &album.artist_display, font(15.0, medium()), P.text);
+
+            let play_rect = Rect::from_min_size(Pos2::new(left, cover_rect.bottom() - 44.0), Vec2::new(116.0, 42.0));
+            if play_button(ui, "album-play", play_rect) && !tracks.is_empty() {
+                shell.act(Action::Play { tracks: tracks.to_vec(), start: 0 });
+            }
+            let marks_rect = Rect::from_min_size(Pos2::new(play_rect.right() + 18.0, play_rect.top()), Vec2::new(460.0, play_rect.height()));
+            let mut marks_ui = ui.new_child(egui::UiBuilder::new().max_rect(marks_rect).layout(egui::Layout::left_to_right(egui::Align::Center)));
+            marks(&mut marks_ui, shell, Kind::Album, id);
             marks_ui.add_space(8.0);
-            let tip = "The same album twice: choose the other one, then see both before merging";
-            if marks_ui.button("Merge into another album…  (Ctrl+M)").on_hover_text(tip).clicked() {
-                self.picking_merge = true;
-                shell.act(Action::Pick { kind: crate::ui::edit::PickKind::Album, except: Some(id) });
+            if widgets::chip(&mut marks_ui, "Details", self.details) {
+                self.details = !self.details;
             }
-        }
-        ui.add_space(10.0);
-        let groupings = album.groupings.clone();
-        self.part_of.show(ui, shell, catalog, crate::ui::edit::part_of::Member::Album(id), &groupings);
-        ui.add_space(12.0);
-
-        // The other album, picked in the palette (not a new one, not this one).
-        if self.picking_merge
-            && let Some(picked) = shell.picker.take()
-        {
-            self.picking_merge = false;
-            if let (crate::ui::edit::PickKind::Album, Some(other)) = (picked.kind, picked.id)
-                && other != id
-            {
-                self.merge = Some(super::album_merge::AlbumMergeView::new(id, other));
-            }
-        }
-        if let Some(view) = self.merge.as_mut() {
-            use super::album_merge::Outcome;
-            shell.form_dirty = true;
-            match view.show(ui, shell, catalog) {
-                Some(Outcome::Merged { kept, gone }) => {
-                    self.merge = None;
-                    shell.album_details.refresh(kept);
-                    shell.album_details.refresh(gone);
-                    shell.act(Action::RefreshLibrary);
-                    if kept != id {
-                        shell.act(Action::Go(crate::ui::Page::Album(kept)));
-                    }
+            marks_ui.add_space(4.0);
+            widgets::share_chip(&mut marks_ui, shell, crate::links::Target::Album(id));
+            // Its original files (og files): a chip that shows only those (`og:` in the filter).
+            if og_count > 0 {
+                marks_ui.add_space(4.0);
+                if widgets::chip(&mut marks_ui, &format!("Original files  {og_count}"), self.list.og_only()) {
+                    self.list.toggle_og();
                 }
-                Some(Outcome::Closed) => self.merge = None,
-                None => {}
             }
-            return;
-        }
-        if self.details {
-            details_panel(ui, "album-details", |ui| {
-                let cached = shell.album_details.get(id);
-                let Some(d) = cached.value.clone() else {
-                    ui.label(RichText::new(if cached.refreshing { "Loading…" } else { "Couldn't load the details" }).color(P.muted));
-                    return;
-                };
-                if !d.credits.is_empty() {
-                    ui.label(RichText::new("Credits").font(font(14.0, semibold())));
-                    for c in &d.credits {
-                        ui.horizontal(|ui| {
-                            ui.label(RichText::new(&c.role).color(P.faint));
-                            let name = c.alias.clone().unwrap_or_else(|| c.artist_name.clone());
-                            if widgets::link(ui, &name, font(14.0, medium()), P.text) {
-                                shell.act(Action::Go(crate::ui::Page::Artist(c.artist_id)));
+            if shell.edit_mode && self.merge.is_none() {
+                marks_ui.add_space(8.0);
+                let tip = "The same album twice: choose the other one, then see both before merging";
+                if marks_ui.button("Merge into another album…  (Ctrl+M)").on_hover_text(tip).clicked() {
+                    self.picking_merge = true;
+                    shell.act(Action::Pick { kind: crate::ui::edit::PickKind::Album, except: Some(id) });
+                }
+            }
+            ui.add_space(10.0);
+            let groupings = album.groupings.clone();
+            self.part_of.show(ui, shell, catalog, crate::ui::edit::part_of::Member::Album(id), &groupings);
+            ui.add_space(12.0);
+
+            // The other album, picked in the palette (not a new one, not this one).
+            if self.picking_merge
+                && let Some(picked) = shell.picker.take()
+            {
+                self.picking_merge = false;
+                if let (crate::ui::edit::PickKind::Album, Some(other)) = (picked.kind, picked.id)
+                    && other != id
+                {
+                    self.merge = Some(super::album_merge::AlbumMergeView::new(id, other));
+                }
+            }
+            if let Some(view) = self.merge.as_mut() {
+                use super::album_merge::Outcome;
+                shell.form_dirty = true;
+                match view.show(ui, shell, catalog) {
+                    Some(Outcome::Merged { kept, gone }) => {
+                        self.merge = None;
+                        shell.album_details.refresh(kept);
+                        shell.album_details.refresh(gone);
+                        shell.act(Action::RefreshLibrary);
+                        if kept != id {
+                            shell.act(Action::Go(crate::ui::Page::Album(kept)));
+                        }
+                    }
+                    Some(Outcome::Closed) => self.merge = None,
+                    None => {}
+                }
+                return;
+            }
+            if self.details {
+                panel(ui, "album-details", |ui| {
+                    let cached = shell.album_details.get(id);
+                    let Some(d) = cached.value.clone() else {
+                        ui.label(RichText::new(if cached.refreshing { "Loading…" } else { "Couldn't load the details" }).color(P.muted));
+                        return;
+                    };
+                    if !d.credits.is_empty() {
+                        ui.label(RichText::new("Credits").font(font(14.0, semibold())));
+                        for c in &d.credits {
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new(&c.role).color(P.faint));
+                                let name = c.alias.clone().unwrap_or_else(|| c.artist_name.clone());
+                                if widgets::link(ui, &name, font(14.0, medium()), P.text) {
+                                    shell.act(Action::Go(crate::ui::Page::Artist(c.artist_id)));
+                                }
+                            });
+                        }
+                        ui.add_space(8.0);
+                    }
+                    if !d.covers.is_empty() {
+                        ui.label(RichText::new(format!("Covers ({})", d.covers.len())).font(font(14.0, semibold())));
+                        ui.horizontal_wrapped(|ui| {
+                            for c in &d.covers {
+                                let (rect, response) = ui.allocate_exact_size(Vec2::splat(110.0), Sense::click());
+                                shell.cover(ui, c.cover(), c.id, rect, 6, 0.1);
+                                let size = match (c.width, c.height) {
+                                    (Some(w), Some(h)) => format!("{w}×{h} · {}", c.source),
+                                    _ => c.source.clone(),
+                                };
+                                let response = response.on_hover_cursor(egui::CursorIcon::ZoomIn).on_hover_text(format!("{size} · click: the original"));
+                                if response.clicked()
+                                    && let Some(cover) = c.cover()
+                                {
+                                    shell.open_original(ui.ctx(), cover);
+                                }
                             }
                         });
+                        ui.add_space(8.0);
                     }
-                    ui.add_space(8.0);
-                }
-                if !d.covers.is_empty() {
-                    ui.label(RichText::new(format!("Covers ({})", d.covers.len())).font(font(14.0, semibold())));
-                    ui.horizontal_wrapped(|ui| {
-                        for c in &d.covers {
-                            let (rect, response) = ui.allocate_exact_size(Vec2::splat(110.0), Sense::click());
-                            shell.cover(ui, c.cover(), c.id, rect, 6, 0.1);
-                            let size = match (c.width, c.height) {
-                                (Some(w), Some(h)) => format!("{w}×{h} · {}", c.source),
-                                _ => c.source.clone(),
-                            };
-                            let response = response.on_hover_cursor(egui::CursorIcon::ZoomIn).on_hover_text(format!("{size} · click: the original"));
-                            if response.clicked()
-                                && let Some(cover) = c.cover()
-                            {
-                                shell.open_original(ui.ctx(), cover);
-                            }
-                        }
-                    });
-                    ui.add_space(8.0);
-                }
-                if !d.sources.is_empty() {
-                    ui.label(RichText::new(format!("Sources ({})", d.sources.len())).font(font(14.0, semibold())));
-                    super::track::sources(ui, &d.sources);
-                }
-                if !d.merges.is_empty() {
-                    ui.label(RichText::new("Merged into this album").font(font(14.0, semibold())));
-                    let can = shell.account.can("edit_metadata");
-                    self.undo.show(ui, shell, id, &d.merges, can);
-                }
-            });
-            ui.add_space(12.0);
-        }
-
-        // Edit mode: the album's own data (title, kind, date, artists).
-        if shell.edit_mode {
-            // A track or album picked to copy a cover from (before the form takes it).
-            self.covers.take_pick(shell);
-            edit_panel(ui, shell, catalog, id);
-            ui.add_space(12.0);
-            if let Some(d) = shell.album_details.get(id).value.clone() {
-                details_panel(ui, "album-covers", |ui| {
-                    ui.label(RichText::new("Covers").font(font(14.0, semibold())));
-                    self.covers.show(ui, shell, crate::ui::edit::cover_list::Owner::Album(id), &d.covers, true);
-                });
-                ui.add_space(12.0);
-                details_panel(ui, "album-sources", |ui| {
-                    ui.label(RichText::new("Sources").font(font(14.0, semibold())));
-                    self.sources.show(ui, shell, crate::ui::edit::sources::Owner::Album(id), &d.sources);
+                    if !d.sources.is_empty() {
+                        ui.label(RichText::new(format!("Sources ({})", d.sources.len())).font(font(14.0, semibold())));
+                        super::track::sources(ui, &d.sources);
+                    }
+                    if !d.merges.is_empty() {
+                        ui.label(RichText::new("Merged into this album").font(font(14.0, semibold())));
+                        let can = shell.account.can("edit_metadata");
+                        self.undo.show(ui, shell, id, &d.merges, can);
+                    }
                 });
                 ui.add_space(12.0);
             }
-        }
 
-        if tracks.is_empty() {
-            ui.label(RichText::new("No tracks you can see").color(P.muted));
-            return;
-        }
-        let rows = TrackRows { tracks: Some(tracks), added: None };
-        // Its notes, folded under their titles (above the tracks: they're short to pass).
-        if let Some(d) = shell.album_details.get(id).value.clone()
-            && crate::ui::edit::notes::NotesView::worth_showing(shell, &d.notes)
-        {
-            ui.label(RichText::new("Notes").font(font(16.0, semibold())));
-            self.notes.show(ui, shell, crate::ui::edit::notes::Owner::Album(id), &d.notes, true, true);
-            ui.add_space(10.0);
-        }
-        let options = Options { key: "album", columns: ALBUM_COLUMNS, added: None, filter_hint: None, album: Some((id, &album.artist_display)), keys: true, scroll: true };
-        self.list.show(ui, shell, catalog, &rows, shell.generation, player, &options);
+            // Edit mode: the album's own data (title, kind, date, artists).
+            if shell.edit_mode {
+                // A track or album picked to copy a cover from (before the form takes it).
+                self.covers.take_pick(shell);
+                edit_panel(ui, shell, catalog, id);
+                ui.add_space(12.0);
+                if let Some(d) = shell.album_details.get(id).value.clone() {
+                    panel(ui, "album-covers", |ui| {
+                        ui.label(RichText::new("Covers").font(font(14.0, semibold())));
+                        self.covers.show(ui, shell, crate::ui::edit::cover_list::Owner::Album(id), &d.covers, true);
+                    });
+                    ui.add_space(12.0);
+                    panel(ui, "album-sources", |ui| {
+                        ui.label(RichText::new("Sources").font(font(14.0, semibold())));
+                        self.sources.show(ui, shell, crate::ui::edit::sources::Owner::Album(id), &d.sources);
+                    });
+                    ui.add_space(12.0);
+                }
+            }
+
+            if tracks.is_empty() {
+                ui.label(RichText::new("No tracks you can see").color(P.muted));
+                return;
+            }
+            let rows = TrackRows { tracks: Some(tracks), added: None };
+            // Its notes, folded under their titles (above the tracks: they're short to pass).
+            if let Some(d) = shell.album_details.get(id).value.clone()
+                && crate::ui::edit::notes::NotesView::worth_showing(shell, &d.notes)
+            {
+                ui.label(RichText::new("Notes").font(font(16.0, semibold())));
+                self.notes.show(ui, shell, crate::ui::edit::notes::Owner::Album(id), &d.notes, true, true);
+                ui.add_space(10.0);
+            }
+            let options = Options { key: "album", columns: ALBUM_COLUMNS, added: None, filter_hint: None, album: Some((id, &album.artist_display)), keys: true, scroll: false };
+            self.list.show(ui, shell, catalog, &rows, shell.generation, player, &options);
+        });
     }
 }
 
@@ -265,7 +268,7 @@ fn edit_panel(ui: &mut egui::Ui, shell: &mut Shell, catalog: &Arc<Catalog>, id: 
         ui.label(RichText::new(if cached.refreshing { "Loading the album to edit…" } else { "Couldn't load the album to edit" }).color(P.muted));
         return;
     };
-    details_panel(ui, "album-edit", |ui| {
+    panel(ui, "album-edit", |ui| {
         // Taken out of the shell while it's shown (showing it needs the shell too).
         let Some(mut form) = shell.album_forms.remove(&id).or_else(|| AlbumForm::from_detail(&d)) else {
             ui.label(RichText::new("This album has no revision to build on, so it can't be edited here.").color(P.muted));
@@ -293,7 +296,16 @@ pub fn marks(ui: &mut egui::Ui, shell: &mut Shell, kind: Kind, id: Uuid) {
     }
 }
 
-/// A panel for an album's or artist's details: framed, scrolling if long.
+/// A panel on a page that scrolls as a whole (album, artist): framed, as tall as what's in
+/// it (no scrolling of its own, which would catch the page's).
+pub fn panel(ui: &mut egui::Ui, id: &str, add: impl FnOnce(&mut egui::Ui)) {
+    egui::Frame::NONE.fill(P.surface).corner_radius(10).inner_margin(egui::Margin::same(14)).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.push_id(id, add);
+    });
+}
+
+/// A panel for details on a page that doesn't scroll as a whole: framed, scrolling if long.
 pub fn details_panel(ui: &mut egui::Ui, id: &str, add: impl FnOnce(&mut egui::Ui)) {
     egui::Frame::NONE.fill(P.surface).corner_radius(10).inner_margin(egui::Margin::same(14)).show(ui, |ui| {
         ui.set_width(ui.available_width());
