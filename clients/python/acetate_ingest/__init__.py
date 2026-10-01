@@ -13,7 +13,7 @@
     )
     print(report.summary())
 
-See README.md.
+See the project's README.
 """
 
 __version__ = "0.1.0"
