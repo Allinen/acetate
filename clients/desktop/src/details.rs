@@ -299,7 +299,6 @@ pub struct Credit {
 #[derive(Debug, Clone, Deserialize)]
 pub struct AlbumEntry {
     pub album_id: Uuid,
-    pub title: String,
     pub disc_number: Option<i16>,
     pub track_number: Option<i16>,
 }

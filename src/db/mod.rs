@@ -26,6 +26,7 @@ pub mod revisions;
 pub mod shares;
 pub mod sources;
 pub mod state;
+pub mod track_edits;
 pub mod track_files;
 pub mod tracks;
 pub mod problems;
@@ -34,6 +35,8 @@ pub mod users;
 
 #[cfg(test)]
 mod rls_tests;
+#[cfg(test)]
+mod track_edit_tests;
 #[cfg(test)]
 mod tooling_tests;
 #[cfg(test)]

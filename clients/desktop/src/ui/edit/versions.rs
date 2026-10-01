@@ -1,11 +1,11 @@
 //! A track's versions (variants), in edit mode: named sets of metadata ("File tags", "Leak
 //! title"…), one of them shown (the track's title, artists and the rest come from it). The
-//! bar above the track's form says which one the form edits and changes that; makes a new
-//! one (a copy of the one being edited, to change on its own); renames one; makes one the
+//! bar above the track's editor says which one it edits and changes that; makes a new one
+//! (a copy of the one being edited, to change on its own); renames one; makes one the
 //! shown one. Versions aren't removed (nothing is), only no longer shown.
 //!
-//! Switching and copying wait for the form's changes to be saved or discarded: a copy is
-//! of what's saved, and switching would drop what's typed.
+//! Switching and copying wait for the editor's staged changes to be applied or discarded:
+//! a copy is of what's saved, and the changes are for the version they were typed for.
 
 use std::sync::{Arc, Mutex};
 
@@ -13,9 +13,7 @@ use eframe::egui::{self, Key, RichText};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use crate::catalog::Catalog;
 use crate::details::{TrackDetail, Variant};
-use crate::ui::edit::track_form::TrackForm;
 use crate::ui::theme::PALETTE as P;
 use crate::ui::{Action, Shell};
 
@@ -40,7 +38,7 @@ pub struct VersionsBar {
     naming: Option<Naming>,
     busy: bool,
     answer: Arc<Mutex<Option<Result<Done, String>>>>,
-    /// A version just made: the form edits it once the details have it.
+    /// A version just made: the editor edits it once the details have it.
     switch_to: Option<Uuid>,
     error: Option<String>,
 }
@@ -51,7 +49,9 @@ fn name(v: &Variant) -> &str {
 }
 
 impl VersionsBar {
-    pub fn show(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: &Catalog, d: &TrackDetail, form: &mut TrackForm) {
+    /// The bar. `editing`: the version the editor edits; `changed`: it has changes staged.
+    /// Returns the version to edit instead, when one was chosen (or just made).
+    pub fn show(&mut self, ui: &mut egui::Ui, shell: &mut Shell, d: &TrackDetail, editing: Uuid, changed: bool) -> Option<Uuid> {
         if self.track != Some(d.id) {
             *self = VersionsBar { track: Some(d.id), ..Default::default() };
         }
@@ -71,18 +71,17 @@ impl VersionsBar {
                 Err(err) => self.error = Some(err),
             }
         }
+        let mut switch = None;
         if let Some(id) = self.switch_to
             && d.variants.iter().any(|v| v.id == id)
         {
             self.switch_to = None;
-            form.switch_to(d, Some(catalog), id);
+            switch = Some(id);
         }
 
-        let editing = form.variant();
-        let Some(current) = d.variants.iter().find(|v| v.id == editing) else { return };
+        let Some(current) = d.variants.iter().find(|v| v.id == editing) else { return switch };
         let shown = d.primary_variant_id == Some(editing);
-        let changed = form.fields_changed();
-        let wait = "Save or discard your changes first";
+        let wait = "Apply or discard your changes first";
         let can = !self.busy && self.naming.is_none();
 
         ui.horizontal_wrapped(|ui| {
@@ -103,12 +102,12 @@ impl VersionsBar {
                     .on_disabled_hover_text(if changed { wait } else { "The track has only this one" });
             });
             if let Some(id) = chosen {
-                form.switch_to(d, Some(catalog), id);
+                switch = Some(id);
             }
             if shown {
                 ui.label(RichText::new("· shown").color(P.accent));
             } else {
-                ui.label(RichText::new("· not shown: saving changes only this version").color(P.muted));
+                ui.label(RichText::new("· not shown: applying changes only this version").color(P.muted));
                 let button = ui.add_enabled(can && !changed, egui::Button::new("Show this one").small());
                 if button.on_hover_text("The track takes this version's title, artists and the rest").on_disabled_hover_text(wait).clicked() {
                     self.send(shell, reqwest::Method::PUT, format!("/api/tracks/{}/primary-variant", d.id), json!({ "variant_id": editing }), Done::Shown);
@@ -167,6 +166,7 @@ impl VersionsBar {
             ui.label(RichText::new(err.as_str()).color(P.danger));
         }
         ui.add_space(4.0);
+        switch
     }
 
     /// Sends a request answered without a body; `done` says what it did.
@@ -204,7 +204,7 @@ impl VersionsBar {
 mod tests {
     use crate::api::Api;
     use crate::details::TrackDetail;
-    use crate::ui::edit::track_form::TrackForm;
+    use crate::ui::edit::editor::model::Base;
     use uuid::Uuid;
 
     /// A track with two versions, the first shown.
@@ -223,22 +223,14 @@ mod tests {
     }
 
     #[test]
-    fn the_form_edits_the_version_chosen_and_waits_for_changes() {
+    fn the_editor_starts_from_the_version_chosen() {
         let d = two_versions();
-        let mut form = TrackForm::from_detail(&d, None).unwrap();
-        assert_eq!((form.variant(), form.meta.title.as_str()), (Uuid::from_u128(2), "Shown"));
-
-        form.switch_to(&d, None, Uuid::from_u128(4));
-        assert_eq!((form.variant(), form.meta.title.as_str()), (Uuid::from_u128(4), "Leaked"));
-
-        // With a change typed, it stays (nothing typed is dropped).
-        form.meta.title = "Leaked (fixed)".into();
-        form.switch_to(&d, None, Uuid::from_u128(2));
-        assert_eq!((form.variant(), form.meta.title.as_str()), (Uuid::from_u128(4), "Leaked (fixed)"));
-
+        let shown = Base::for_variant(&d, None).unwrap();
+        assert_eq!((shown.variant, shown.variant_base, shown.meta.title.as_str()), (Uuid::from_u128(2), Uuid::from_u128(10), "Shown"));
+        let other = Base::for_variant(&d, Some(Uuid::from_u128(4))).unwrap();
+        assert_eq!((other.variant, other.variant_base, other.meta.title.as_str()), (Uuid::from_u128(4), Uuid::from_u128(20), "Leaked"));
         // A version the details don't have: the shown one.
-        let form = TrackForm::for_variant(&d, None, Some(Uuid::from_u128(99))).unwrap();
-        assert_eq!(form.variant(), Uuid::from_u128(2));
+        assert_eq!(Base::for_variant(&d, Some(Uuid::from_u128(99))).unwrap().variant, Uuid::from_u128(2));
     }
 
     /// Against a running server (a throwaway database: it adds a version to the track and

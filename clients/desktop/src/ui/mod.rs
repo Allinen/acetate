@@ -148,8 +148,9 @@ pub struct Shell {
     pub flags: crate::review::Flags,
     /// Where picks from the palette arrive, for the form that asked.
     pub picker: edit::Picker,
-    /// Track forms, per track: changes not saved yet are kept while you look elsewhere.
-    pub track_forms: std::collections::HashMap<Uuid, edit::track_form::TrackForm>,
+    /// Track editors, per track: changes staged and not applied are kept while you look
+    /// elsewhere.
+    pub track_editors: std::collections::HashMap<Uuid, edit::editor::TrackEditor>,
     /// Album forms, per album, likewise.
     pub album_forms: std::collections::HashMap<Uuid, edit::album_form::AlbumForm>,
     /// Artist forms, per artist, likewise.
@@ -163,6 +164,9 @@ pub struct Shell {
     /// The page uses Esc and Backspace itself (an artist's section shown alone: they go
     /// back to the whole page), so they don't leave it. Set by the page each frame.
     pub page_takes_back: bool,
+    /// The page's own keys are on (the track editor's rows): the app's one-key shortcuts
+    /// (e, r, m…) wait.
+    pub page_takes_keys: bool,
     /// A popup is open (see `modal`): the app's keys wait. Set by the page each frame.
     pub modal_open: bool,
     /// What Ctrl+L links to on a list page (not a track's, album's or artist's): the
@@ -488,7 +492,7 @@ impl Shell {
         self.refresh_asked = Some(Instant::now());
         self.account.fetch(&self.api, self.runtime.handle(), ctx);
         self.edit_mode = false;
-        self.track_forms.clear();
+        self.track_editors.clear();
         self.album_forms.clear();
         self.artist_forms.clear();
         self.flags.reset(Some(self.data_dir.join(format!("review-{}.json", store::key(&session)))));
@@ -649,7 +653,7 @@ impl App {
             edit_mode: false,
             picker: edit::Picker::default(),
             flags: Default::default(),
-            track_forms: Default::default(),
+            track_editors: Default::default(),
             album_forms: Default::default(),
             artist_forms: Default::default(),
             form_dirty: false,
@@ -657,6 +661,7 @@ impl App {
             modal_open: false,
             modal_was_open: false,
             page_takes_back: false,
+            page_takes_keys: false,
             list_target: None,
             palette_open: false,
             runtime,
@@ -970,7 +975,7 @@ impl App {
                     self.shell.album_details.reset(None);
                     self.shell.artist_details.reset(None);
                     self.shell.grouping_details.reset(None);
-                    self.shell.track_forms.clear();
+                    self.shell.track_editors.clear();
                     self.shell.album_forms.clear();
                     self.shell.artist_forms.clear();
                     self.shell.flags.reset(None);
@@ -1065,8 +1070,9 @@ impl App {
             }
         }
 
-        // Outside text fields (there the arrows and letters are for the text).
-        if ctx.egui_wants_keyboard_input() {
+        // Outside text fields (there the arrows and letters are for the text), and when the
+        // page doesn't take the keys itself.
+        if ctx.egui_wants_keyboard_input() || self.shell.page_takes_keys {
             return;
         }
         if m.ctrl && key(Key::ArrowLeft) {
@@ -1211,6 +1217,7 @@ impl eframe::App for App {
                 self.shell.form_dirty = false;
                 self.shell.page_takes_space = false;
                 self.shell.page_takes_back = false;
+                self.shell.page_takes_keys = false;
                 self.shell.modal_was_open = self.shell.modal_open;
                 self.shell.list_target = None;
                 self.shell.modal_open = false;

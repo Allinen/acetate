@@ -69,9 +69,11 @@ pub async fn settle_ambiguous(conn: &mut PgConnection, flags: &[Uuid], artist: U
             done.skipped += 1;
             continue;
         };
-        let resolution = if meta.credits[at].artist_id == artist {
-            format!("\"{name}\" was right")
+        // Settled first, in these words: the edit below would settle it too, more vaguely.
+        if meta.credits[at].artist_id == artist {
+            super::review::resolve(conn, flag, &format!("\"{name}\" was right")).await?;
         } else {
+            super::review::resolve(conn, flag, &format!("credited \"{name}\" ({artist}) instead")).await?;
             let role = meta.credits[at].role.clone();
             // Credited already in that role (under another name of the tags): once is enough.
             if meta.credits.iter().enumerate().any(|(i, c)| i != at && c.artist_id == artist && c.role == role) {
@@ -81,9 +83,7 @@ pub async fn settle_ambiguous(conn: &mut PgConnection, flags: &[Uuid], artist: U
             }
             revisions::write_internal(conn, row.track_id, variant, None, &meta, Source::Edit, &reason, false).await?;
             done.changed += 1;
-            format!("credited \"{name}\" ({artist}) instead")
-        };
-        super::review::resolve(conn, flag, &resolution).await?;
+        }
         done.settled += 1;
     }
     Ok(done)

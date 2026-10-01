@@ -357,3 +357,36 @@ pub async fn use_file(
     tx.commit().await?;
     Ok(Json(switched))
 }
+
+#[derive(Debug, Deserialize)]
+pub struct EditTracks {
+    #[serde(flatten)]
+    edit: db::track_edits::Edit,
+    /// Only say what would happen (nothing is kept).
+    #[serde(default)]
+    preview: bool,
+}
+
+/// `POST /api/tracks/edit`, JSON `{"tracks": [{"track_id", "meta": {"variant_id",
+/// "base_revision_id", "data"}, "facts": {"base_revision_id", "status", "albums",
+/// "relations"}, "along": true}], "new_artists": [{"id", "name"}], "new_albums": [{"id",
+/// "title", "kind", …}], "reason", "preview"}`: many tracks' new metadata and facts, each
+/// track all or nothing, with the albums they're alone on along and their review flags
+/// after (see `db::track_edits`). `preview`: the same, answered and not kept.
+pub async fn edit_many(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Json(body): Json<EditTracks>,
+) -> Result<Json<db::track_edits::Edited>, AppError> {
+    if body.edit.tracks.len() > db::track_edits::MAX_TRACKS {
+        return Err(AppError::BadRequest(format!("at most {} tracks at once", db::track_edits::MAX_TRACKS)));
+    }
+    let mut tx = state.db(&user).await?;
+    let edited = db::track_edits::edit(&mut tx, &body.edit, user.has(Permission::EditRelations), super::failure).await?;
+    if body.preview {
+        tx.rollback().await?;
+    } else {
+        tx.commit().await?;
+    }
+    Ok(Json(edited))
+}

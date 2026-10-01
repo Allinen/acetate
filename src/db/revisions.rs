@@ -243,6 +243,11 @@ pub async fn write_internal(
 
     if track.primary_variant_id == Some(variant_id) {
         apply_internal(conn, track_id, &stored).await?;
+        // Someone chose the credits: an ambiguous artist name they settle is settled.
+        if source == Source::Edit {
+            let before = latest.map(|l| serde_json::from_value::<TrackMetadata>(l.data)).transpose()?.map(|m| m.credits).unwrap_or_default();
+            super::review::settle_ambiguous_by_edit(conn, track_id, &before, &stored.credits).await?;
+        }
     }
     Ok(Written {
         revision_id,

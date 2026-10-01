@@ -155,6 +155,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/review/resolve", require(&[EditMetadata], post(review::resolve_many)))
         .route("/api/review/ambiguous", require(&[EditMetadata], post(review::settle_ambiguous)))
         .route("/api/tracks/singles", require(&[EditMetadata], post(review::make_singles)))
+        .route("/api/tracks/edit", require(&[EditMetadata], post(tracks::edit_many)))
         // Files that didn't import: whoever uploaded them (admins: all).
         .route("/api/ingest-problems", require(&[Upload], get(problems::list)))
         .route("/api/ingest-problems/{id}/resolve", require(&[Upload], post(problems::resolve)))
@@ -413,38 +414,49 @@ impl IntoResponse for AppError {
             AppError::Forbidden(msg) => (StatusCode::FORBIDDEN, "forbidden", msg),
             AppError::Conflict(msg) => (StatusCode::CONFLICT, "conflict", msg),
             AppError::Gone(msg) => (StatusCode::GONE, "purged", msg),
-            AppError::Internal(err) => {
-                if let Some(rejected) = err.downcast_ref::<Rejected>() {
-                    // Refused input (bad file, missing tags...): the client's problem.
-                    let (status, code) = match rejected {
-                        Rejected::TrackNotFound(_) => (StatusCode::NOT_FOUND, "not_found"),
-                        Rejected::AlreadyStored { .. } => (StatusCode::CONFLICT, "already_stored"),
-                        _ => (StatusCode::UNPROCESSABLE_ENTITY, "rejected"),
-                    };
-                    (status, code, rejected.to_string())
-                } else if let Some(rejected) = err.downcast_ref::<EditRejected>() {
-                    let (status, code) = match rejected {
-                        EditRejected::Stale { .. } => (StatusCode::CONFLICT, "stale"),
-                        EditRejected::Invalid(_) => (StatusCode::BAD_REQUEST, "invalid"),
-                        EditRejected::NotFound(_) => (StatusCode::NOT_FOUND, "not_found"),
-                    };
-                    (status, code, rejected.to_string())
-                } else if let Some(invalid) = err.downcast_ref::<InvalidSource>() {
-                    (StatusCode::UNPROCESSABLE_ENTITY, "invalid_source", invalid.to_string())
-                } else if let Some(msg) = foreign_key_violation(&err) {
-                    (StatusCode::BAD_REQUEST, "invalid_reference", msg)
-                } else if is_row_security_violation(&err) {
-                    // A write that row-level security refused: normally the code checks
-                    // first and says why, so this is the safety net.
-                    (StatusCode::FORBIDDEN, "forbidden", "not allowed".to_string())
-                } else {
-                    tracing::error!("internal error: {err:#}");
-                    (StatusCode::INTERNAL_SERVER_ERROR, "internal", "internal error".to_string())
-                }
-            }
+            AppError::Internal(err) => internal_parts(&err),
         };
         let message = human_message(code, &detail);
         (status, Json(json!({ "code": code, "message": message }))).into_response()
+    }
+}
+
+/// What a track that couldn't be written in a many-track edit says: the same `code` and
+/// `message` as the error would have as a response.
+pub(crate) fn failure(err: anyhow::Error) -> db::track_edits::Failure {
+    let (_, code, detail) = internal_parts(&err);
+    db::track_edits::Failure { code: code.to_string(), message: human_message(code, &detail) }
+}
+
+/// An error from below the API (the database, a refused edit…): its status, code and
+/// detail.
+fn internal_parts(err: &anyhow::Error) -> (StatusCode, &'static str, String) {
+    if let Some(rejected) = err.downcast_ref::<Rejected>() {
+        // Refused input (bad file, missing tags...): the client's problem.
+        let (status, code) = match rejected {
+            Rejected::TrackNotFound(_) => (StatusCode::NOT_FOUND, "not_found"),
+            Rejected::AlreadyStored { .. } => (StatusCode::CONFLICT, "already_stored"),
+            _ => (StatusCode::UNPROCESSABLE_ENTITY, "rejected"),
+        };
+        (status, code, rejected.to_string())
+    } else if let Some(rejected) = err.downcast_ref::<EditRejected>() {
+        let (status, code) = match rejected {
+            EditRejected::Stale { .. } => (StatusCode::CONFLICT, "stale"),
+            EditRejected::Invalid(_) => (StatusCode::BAD_REQUEST, "invalid"),
+            EditRejected::NotFound(_) => (StatusCode::NOT_FOUND, "not_found"),
+        };
+        (status, code, rejected.to_string())
+    } else if let Some(invalid) = err.downcast_ref::<InvalidSource>() {
+        (StatusCode::UNPROCESSABLE_ENTITY, "invalid_source", invalid.to_string())
+    } else if let Some(msg) = foreign_key_violation(err) {
+        (StatusCode::BAD_REQUEST, "invalid_reference", msg)
+    } else if is_row_security_violation(err) {
+        // A write that row-level security refused: normally the code checks
+        // first and says why, so this is the safety net.
+        (StatusCode::FORBIDDEN, "forbidden", "not allowed".to_string())
+    } else {
+        tracing::error!("internal error: {err:#}");
+        (StatusCode::INTERNAL_SERVER_ERROR, "internal", "internal error".to_string())
     }
 }
 

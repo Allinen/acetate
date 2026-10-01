@@ -8,8 +8,8 @@
 
 pub mod album_form;
 pub mod artist_form;
-pub mod bulk;
 pub mod cover_list;
+pub mod editor;
 pub mod credits;
 pub mod inline_search;
 pub mod og_file;
@@ -19,7 +19,6 @@ pub mod lyrics;
 pub mod lyrics_sync;
 pub mod part_of;
 pub mod sources;
-pub mod track_form;
 pub mod versions;
 
 use std::sync::{Arc, Mutex};

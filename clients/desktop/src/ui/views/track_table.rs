@@ -18,7 +18,7 @@
 //! which takes the state of the row it starts from (so ranges unmark too); Ctrl+A marks
 //! everything shown; Esc clears. Marks are kept by track, so sorting and filtering don't
 //! lose them (nor leaving edit mode: they're there again when it's back). Ctrl+E (or the
-//! button) opens the change for all of them, in a popup (see `edit::bulk`). Ctrl+M with
+//! button) opens the change for all of them, in a popup (see `edit::editor`). Ctrl+M with
 //! two marked compares them side by side, to merge (see `merge`), in a popup too. (All of
 //! it is `marking`'s, shared with Review's list.)
 

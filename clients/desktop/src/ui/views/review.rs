@@ -23,13 +23,14 @@
 //! Marking many, as in a track table (`marking`, the same tools): the box in front of a
 //! row, `x`, or Ctrl+click marks or unmarks one; Shift+click or Shift+↑/↓ a range; Ctrl+A
 //! everything shown; Esc clears. While any are marked, the change for all of them
-//! (`edit::bulk`) takes the place of the one track's form (Ctrl+E: the cursor in it;
+//! (`edit::editor`) takes the place of the one track's form (Ctrl+E: the cursor in it;
 //! Ctrl+Enter is its own then); Ctrl+M merges the two marked. Marking doesn't change
-//! which track is selected (a plain click does): unmarking them all brings its form back. A marked track that leaves the list for good (fixed, marked done, merged
-//! away) leaves the marks too; one only hidden by a chip or the filter stays marked.
+//! which track is selected (a plain click does): unmarking them all brings its form back.
+//! A marked track that leaves the list for good (fixed, marked done, merged away) leaves
+//! the marks too; one only hidden by a chip or the filter stays marked.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use eframe::egui::{self, Key, Modifiers, RichText, Sense, Vec2};
 use uuid::Uuid;
@@ -39,7 +40,7 @@ use crate::account::Vocab;
 use crate::catalog::Catalog;
 use crate::playback::PlayerView;
 use crate::review::Flag;
-use crate::ui::edit::track_form::TrackForm;
+use crate::ui::edit::editor::TrackEditor;
 use crate::ui::theme::{bold, font, medium, semibold, PALETTE as P};
 use crate::ui::{playing_track, widgets, Action, Shell};
 
@@ -107,13 +108,8 @@ pub struct Review {
     selected_at: usize,
     /// Scroll the list to the selected track.
     scroll_to_selected: bool,
-    /// Put the cursor in the first field to fix, once the form is there.
+    /// Put the line that fixes the first thing missing in the editor (once it's there).
     focus_first: bool,
-    /// A Ctrl+Enter save is running for this track: when it's done, the server is asked
-    /// what it's still missing.
-    advance_after_save: Option<Uuid>,
-    /// The server's answer: a track's open automatic flags after a save.
-    still_missing: Arc<Mutex<Option<(Uuid, Result<Vec<Flag>, String>)>>>,
     /// Tracks fixed or marked done here, this session.
     done: usize,
     notice: Option<String>,
@@ -126,14 +122,8 @@ pub struct Review {
     /// Tracks merged away here: gone from the list and from other flags' suggestions at
     /// once (the server's lists catch up a moment later).
     merged_away: std::collections::HashSet<Uuid>,
-    /// An ambiguous artist's candidate chosen (a click or `a`): (the flag, the artist,
-    /// its name), put in the form once it's there.
-    ambiguous_pick: Option<(Uuid, Uuid, String)>,
     /// `a` was pressed: the next candidate of the first ambiguous artist.
     cycle_ambiguous: bool,
-    /// Ambiguous-artist flags settled by the form's next save: flag → (track, what was
-    /// done).
-    settle_on_save: HashMap<Uuid, (Uuid, String)>,
     /// The bulk tools, open.
     bulk: Option<super::review_bulk::ReviewBulk>,
     /// Marked tracks, and the tools for them (as in a track table).
@@ -177,7 +167,6 @@ impl Review {
             self.not_imported.refresh(shell);
         }
         self.not_imported.poll(shell);
-        self.after_save(shell, catalog);
         self.build(shell, catalog);
         // The bulk popup first: while it's open, the page's keys wait.
         if let Some(bulk) = &mut self.bulk
@@ -477,57 +466,42 @@ impl Review {
         }
     }
 
-    /// After a Ctrl+Enter save: asks the server what the track still misses (its open
-    /// automatic flags, checked when the save committed); nothing: "fix later" is marked
-    /// done and the next track comes; else it says what's left.
-    fn ask_still_missing(&mut self, shell: &Shell, track: Uuid) {
-        let (api, answer, ctx) = (shell.api.clone(), self.still_missing.clone(), shell.ctx.clone());
-        shell.runtime.spawn(async move {
-            let path = format!("/api/review?automatic=true&track={track}");
-            let result = api.send_json::<Vec<Flag>>(reqwest::Method::GET, &path, None).await.map_err(|err| err.message);
-            *answer.lock().unwrap() = Some((track, result));
-            ctx.request_repaint();
-        });
-    }
-
-    fn after_save(&mut self, shell: &mut Shell, catalog: &Catalog) {
-        let Some((track, answer)) = self.still_missing.lock().unwrap().take() else { return };
+    /// An edit of `track` was applied, leaving it these flags (the server's, checked as
+    /// it was written): nothing missing anymore, "fix later" is marked done and the next
+    /// track comes; else it says what's left.
+    fn after_saved(&mut self, shell: &mut Shell, catalog: &Catalog, track: Uuid, flags: Vec<String>) {
         let vocab = shell.account.vocab.clone().unwrap_or_default();
-        match answer {
-            Ok(open) if open.is_empty() => {
-                // Counted even when it had no "fix later" (only something missing).
-                let fix_later = catalog.issues.get(&track).is_some_and(|f| f.iter().any(|(_, k)| k == "fix_later"));
-                if !fix_later {
-                    self.done += 1;
-                }
-                self.mark_done(shell, catalog, track, "fixed", true);
+        let missing: Vec<&String> = flags.iter().filter(|k| vocab.is_automatic(k)).collect();
+        if missing.is_empty() {
+            // Counted even when it had no "fix later" (only something missing).
+            let fix_later = catalog.issues.get(&track).is_some_and(|f| f.iter().any(|(_, k)| k == "fix_later"));
+            if !fix_later {
+                self.done += 1;
             }
-            Ok(open) => {
-                let names: Vec<&str> = open.iter().map(|f| vocab.review_kind_name(&f.kind)).collect();
-                self.notice = Some(format!("Saved. Still: {}.", names.join(", ")));
-                self.focus_first = true;
-            }
-            Err(err) => self.notice = Some(format!("Saved, but couldn't ask what's still missing: {err}")),
+            self.mark_done(shell, catalog, track, "fixed", true);
+        } else {
+            let names: Vec<&str> = missing.iter().map(|k| vocab.review_kind_name(k)).collect();
+            self.notice = Some(format!("Saved. Still: {}.", names.join(", ")));
+            self.focus_first = true;
         }
     }
 
     /// An ambiguous artist: the name from the tags matched several artists; the one
-    /// credited is marked. Choosing another credits it instead (in the form, saved with
-    /// it); choosing the credited one says it was right.
-    fn ambiguous(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: &Catalog, track: Uuid, flag: &Flag) {
+    /// credited is marked. Choosing another stages crediting it instead (in the editor;
+    /// applying it settles the flag, on the server); choosing the credited one says it was
+    /// right.
+    #[allow(clippy::too_many_arguments)]
+    fn ambiguous(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: &Catalog, track: Uuid, flag: &Flag, editor: &mut TrackEditor) {
         let name = flag.related.get("name").and_then(|n| n.as_str()).unwrap_or("?");
         ui.label(RichText::new(format!("“{name}” in the tags is which of these?  (a: the next one, then Ctrl+Enter)")).color(P.text));
-        // Which are credited now (as the form has it, or the library before it's opened),
-        // worked out before drawing: drawing needs the shell too.
-        let credited: Vec<Uuid> = candidates(flag)
-            .into_iter()
-            .map(|c| c.0)
-            .filter(|&artist| match shell.track_forms.get(&track) {
-                Some(form) => form.credits_artist(artist),
-                None => catalog.track_index(track).is_some_and(|i| catalog.tracks[i as usize].credits.iter().any(|c| c.0 == artist)),
-            })
-            .collect();
-        let pending = self.settle_on_save.contains_key(&flag.id);
+        // Which are credited: as the editor's changes leave it, and as it is now.
+        let in_library = |artist: Uuid| catalog.track_index(track).is_some_and(|i| catalog.tracks[i as usize].credits.iter().any(|c| c.0 == artist));
+        let after = editor.credits_after(track);
+        let credited = |artist: Uuid| match &after {
+            Some(credits) => credits.iter().any(|c| c.artist_id == artist),
+            None => in_library(artist),
+        };
+        let pending = candidates(flag).iter().any(|(id, _)| credited(*id) != in_library(*id));
         let mut chosen = None;
         ui.horizontal_wrapped(|ui| {
             for (id, artist) in candidates(flag) {
@@ -544,9 +518,9 @@ impl Review {
                         .unwrap_or_default();
                     format!("{artist}{dis}")
                 });
-                let on = credited.contains(&id);
+                let on = credited(id);
                 if widgets::chip(ui, &format!("{label}{size}"), on) {
-                    chosen = Some((id, artist.clone(), on));
+                    chosen = Some((id, on));
                 }
                 if widgets::link(ui, "page", font(11.5, medium()), P.faint) {
                     chosen = None;
@@ -556,17 +530,30 @@ impl Review {
         });
         match chosen {
             // The one credited is right: nothing to change.
-            Some((_, _, true)) if !pending => {
+            Some((_, true)) if !pending => {
                 shell.flags.resolve(&shell.api, shell.runtime.handle(), &[flag.id], "the credited artist was right");
                 self.done += 1;
             }
-            Some((id, artist, _)) => self.ambiguous_pick = Some((flag.id, id, artist)),
-            None => {}
+            Some((to, false)) => self.credit_instead(catalog, track, flag, to, editor),
+            _ => {}
         }
         if pending {
-            ui.label(RichText::new("Changed in the form: saving settles this.").color(P.muted).small());
+            ui.label(RichText::new("Changed in the editor: applying it settles this.").color(P.muted).small());
         } else {
             ui.label(RichText::new("Clicking the credited one says it was right.").color(P.faint).small());
+        }
+    }
+
+    /// Stages crediting `to` where the flag's candidate credited now is.
+    fn credit_instead(&mut self, catalog: &Catalog, track: Uuid, flag: &Flag, to: Uuid, editor: &mut TrackEditor) {
+        let Some(credits) = editor.credits_after(track) else {
+            self.notice = Some("The track is still loading: try again in a moment.".into());
+            return;
+        };
+        match candidates(flag).into_iter().find(|(id, _)| credits.iter().any(|c| c.artist_id == *id)) {
+            Some((from, _)) if from != to => editor.replace_artist(catalog, track, from, to),
+            Some(_) => {}
+            None => self.notice = Some("None of the candidates is credited now (taken off?): add the right one with artist:…".into()),
         }
     }
 
@@ -661,26 +648,21 @@ impl Review {
             shell.form_dirty = true;
             return;
         }
-        // (With tracks marked, Ctrl+Enter is the change's: the form isn't shown.)
-        let save = self.marking.is_empty() && ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Enter));
-        if save && let Some(id) = self.selected {
-            // (Taken out of the shell to save it: saving needs the shell too.)
-            match shell.track_forms.remove(&id) {
-                Some(mut form) if form.dirty() => {
-                    form.save(shell);
-                    shell.track_forms.insert(id, form);
-                    self.advance_after_save = Some(id);
-                }
-                // Nothing changed: it was checked and is fine as it is.
-                form => {
-                    if let Some(form) = form {
-                        shell.track_forms.insert(id, form);
-                    }
-                    self.mark_done(shell, catalog, id, "checked: fine as it is", true);
-                }
-            }
+        // Ctrl+Enter with nothing to change: it was checked and is fine as it is. (With
+        // changes, it's the editor's: it applies them. With tracks marked, the change for
+        // them is shown instead.)
+        let editor = self.selected.and_then(|id| shell.track_editors.get(&id));
+        let blank = editor.is_none_or(|e| e.is_blank() && !e.applying_or_applied());
+        let rows = editor.is_some_and(|e| e.takes_keys());
+        if self.marking.is_empty()
+            && blank
+            && let Some(id) = self.selected
+            && ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Enter))
+        {
+            self.mark_done(shell, catalog, id, "checked: fine as it is", true);
         }
-        if ctx.egui_wants_keyboard_input() {
+        // In a text field, or on the editor's rows: the keys are theirs.
+        if ctx.egui_wants_keyboard_input() || rows {
             return;
         }
         let key = |k: Key| ctx.input(|i| i.key_pressed(k) && i.modifiers.is_none());
@@ -775,7 +757,7 @@ impl Review {
                         let text_left = mark.right() + 10.0 - rect.left();
                         let title = if t.title.trim().is_empty() { "(no title)" } else { &t.title };
                         let color = if playing == Some(t.id) { P.accent } else { P.text };
-                        let unsaved = shell.track_forms.get(&t.id).is_some_and(|f| f.dirty());
+                        let unsaved = shell.track_editors.get(&t.id).is_some_and(|e| e.has_changes());
                         let title = if unsaved { format!("● {title}") } else { title.to_string() };
                         widgets::text_in_og(painter, egui::Rect::from_min_size(rect.min + Vec2::new(text_left, 6.0), Vec2::new(rect.width() - text_left - 10.0, 18.0)), &title, font(13.5, medium()), color, t.original_filename.is_some());
                         let mut sub: Vec<String> = Vec::new();
@@ -824,6 +806,9 @@ impl Review {
         let path = flags.iter().find_map(|f| f.imported_from.clone());
         let cached = shell.track_details.get(id);
         let (detail, error) = (cached.value.clone(), cached.error.clone());
+        // Taken out of the shell while it's shown (showing it needs the shell too).
+        let mut ed = shell.track_editors.remove(&id).unwrap_or_default();
+        let editor = &mut ed;
 
         egui::ScrollArea::vertical().id_salt(("review-editor", id)).auto_shrink([false, false]).show(ui, |ui| {
             // ---- What it is, and what's wrong ----
@@ -862,7 +847,7 @@ impl Review {
                 ui.label(RichText::new(line).color(P.muted));
                 related(ui, shell, f);
                 if f.kind == "ambiguous_artist" {
-                    self.ambiguous(ui, shell, catalog, id, f);
+                    self.ambiguous(ui, shell, catalog, id, f, editor);
                 }
                 if f.kind == "possible_duplicate" {
                     let others = self.duplicates(f, catalog);
@@ -894,7 +879,7 @@ impl Review {
                             "Merged. Undo is on the kept track's page.".into()
                         });
                         shell.track_details.refresh(kept);
-                        shell.track_forms.remove(&gone);
+                        shell.track_editors.remove(&gone);
                         shell.flags.refresh(&shell.api, shell.runtime.handle(), &shell.ctx);
                         shell.act(Action::RefreshLibrary);
                     }
@@ -923,31 +908,16 @@ impl Review {
                 ui.label(RichText::new(text).color(P.faint));
                 return;
             };
-            let Some(mut form) = shell.track_forms.remove(&id).or_else(|| TrackForm::from_detail(&d, Some(catalog))) else {
-                ui.label(RichText::new("This track has no version to edit.").color(P.muted));
-                return;
-            };
 
-            // An ambiguous artist's other candidate, credited instead (saved with the form).
-            if self.cycle_ambiguous {
-                self.cycle_ambiguous = false;
-                let next = flags.iter().filter(|f| f.kind == "ambiguous_artist").find_map(|f| {
-                    let candidates = candidates(f);
-                    let at = candidates.iter().position(|c| form.credits_artist(c.0))?;
-                    let (to, name) = candidates[(at + 1) % candidates.len()].clone();
-                    Some((f.id, to, name))
-                });
-                self.ambiguous_pick = next;
-            }
-            if let Some((flag, to, name)) = self.ambiguous_pick.take() {
-                let current = flags.iter().find(|f| f.id == flag).map(candidates).unwrap_or_default().into_iter().find(|c| form.credits_artist(c.0));
-                match current {
-                    Some((from, _)) if from == to => {}
-                    Some((from, _)) => {
-                        form.replace_artist(from, to, name.clone());
-                        self.settle_on_save.insert(flag, (id, format!("credited {name} ({to}) instead")));
-                    }
-                    None => self.notice = Some("None of the candidates is credited now (removed?): add the right one in Artists.".into()),
+            // `a`: the next candidate of an ambiguous artist, credited instead.
+            if std::mem::take(&mut self.cycle_ambiguous)
+                && let Some(f) = flags.iter().find(|f| f.kind == "ambiguous_artist")
+                && let Some(credits) = editor.credits_after(id)
+            {
+                let list = candidates(f);
+                if let Some(at) = list.iter().position(|c| credits.iter().any(|x| x.artist_id == c.0)) {
+                    let next = list[(at + 1) % list.len()].0;
+                    self.credit_instead(catalog, id, f, next, editor);
                 }
             }
 
@@ -962,7 +932,7 @@ impl Review {
                 .collect();
             ui.add_space(6.0);
             if missing.is_empty() {
-                ui.label(RichText::new("Nothing missing. Ctrl+Enter saves and goes on (or d: done as it is).").color(P.accent));
+                ui.label(RichText::new("Nothing missing. Ctrl+Enter: done as it is (or apply what's staged, and go on).").color(P.accent));
             } else {
                 let names: Vec<&str> = missing.iter().map(|k| vocab.review_kind_name(k)).collect();
                 ui.label(RichText::new(names.join(" · ")).font(font(15.0, semibold())).color(P.danger));
@@ -970,20 +940,25 @@ impl Review {
             if let Some(notice) = &self.notice {
                 ui.label(RichText::new(notice).color(P.muted));
             }
-            ui.label(RichText::new("Ctrl+Enter save and next · Ctrl+↓/↑ next/previous · Esc leaves a field; then j/k, Space play, u skip, d done").color(P.faint).small());
+            ui.label(RichText::new("Ctrl+Enter apply and next · Ctrl+↓/↑ next/previous · Esc leaves the line; then j/k, Space play, u skip, d done").color(P.faint).small());
             ui.add_space(8.0);
 
-            // The cursor in the first field to fix (once, when the track is shown).
-            if self.focus_first {
-                self.focus_first = false;
-                if let Some(field) = missing.iter().find_map(|k| TrackForm::field_for(k)) {
-                    ui.ctx().memory_mut(|m| m.request_focus(egui::Id::new(field)));
+            // The line that fixes the first thing missing (once, when the track is shown).
+            if std::mem::take(&mut self.focus_first) {
+                let line = missing.iter().find_map(|k| crate::ui::edit::editor::line_for(k, &track.title));
+                match line {
+                    Some(line) if editor.is_blank() => editor.prefill(&line),
+                    _ => editor.opened(),
                 }
             }
 
-            // A track or album picked to copy a cover from (before the form takes it).
+            editor.show(ui, shell, catalog, &[id], None);
+            if let Some(flags_after) = editor.take_saved() {
+                self.after_saved(shell, catalog, id, flags_after);
+            }
+
+            // A track or album picked to copy a cover from.
             self.covers.take_pick(shell);
-            form.show(ui, shell, Some(catalog), &d);
             ui.add_space(14.0);
             ui.label(RichText::new("Cover").font(font(14.0, semibold())));
             self.covers.show(ui, shell, crate::ui::edit::cover_list::Owner::Track(id), &d.covers, true);
@@ -991,27 +966,12 @@ impl Review {
             ui.label(RichText::new("Sources").font(font(14.0, semibold())));
             self.sources.show(ui, shell, crate::ui::edit::sources::Owner::Track(id), &d.sources);
 
-            // A save finished: ambiguous artists fixed in it are settled; and after
-            // Ctrl+Enter, on to the next when nothing's left.
-            let saved = form.take_saved();
-            if saved {
-                let settled: Vec<(Uuid, String)> = self.settle_on_save.iter().filter(|(_, (t, _))| *t == id).map(|(f, (_, r))| (*f, r.clone())).collect();
-                for (flag, resolution) in settled {
-                    self.settle_on_save.remove(&flag);
-                    shell.flags.resolve(&shell.api, shell.runtime.handle(), &[flag], &resolution);
-                }
-            }
-            if saved && self.advance_after_save == Some(id) {
-                self.advance_after_save = None;
-                self.ask_still_missing(shell, id);
-            }
-
             // The file's own tags, to fix from: a click puts one in its field.
             let tags = d.file.embedded_tags.clone();
             if let Some(tags) = tags.as_object().filter(|t| !t.is_empty()) {
                 ui.add_space(12.0);
                 ui.label(RichText::new("Tags in the file").font(font(14.0, bold())));
-                ui.label(RichText::new("Click one to use it: a title, an artist or an album goes in its field.").color(P.faint).small());
+                ui.label(RichText::new("Click one to use it: it goes in the editor's line (title:…, artist:…, album:…, date:…).").color(P.faint).small());
                 egui::Grid::new(("review-tags", id)).num_columns(2).spacing([16.0, 4.0]).show(ui, |ui| {
                     for (name, value) in tags {
                         let text = match value {
@@ -1026,20 +986,21 @@ impl Review {
                         if let Some(field) = field
                             && response.on_hover_text(format!("Use as the {field}")).clicked()
                         {
-                            match field {
-                                "title" => form.meta.title = text.clone(),
-                                "release date" => form.meta.release_date = text.clone(),
-                                "artist" => form.suggest_artist(&text, shell),
-                                "album" => form.suggest_album(&text, shell),
-                                _ => {}
-                            }
+                            let key = match field {
+                                "release date" => "date",
+                                other => other,
+                            };
+                            editor.prefill(&format!("{key}:{}", crate::ui::edit::editor::quoted(&text)));
                         }
                         ui.end_row();
                     }
                 });
             }
-            shell.track_forms.insert(id, form);
         });
+        // (Not back if it was merged away meanwhile.)
+        if !self.merged_away.contains(&id) {
+            shell.track_editors.insert(id, ed);
+        }
     }
 }
 

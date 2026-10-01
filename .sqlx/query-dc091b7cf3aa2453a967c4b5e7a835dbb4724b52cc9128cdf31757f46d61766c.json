@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id, related FROM review_flags WHERE track_id = $1 AND kind = 'ambiguous_artist' AND resolved_at IS NULL",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "review_flags",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "related",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "review_flags",
+            "name": "related"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "dc091b7cf3aa2453a967c4b5e7a835dbb4724b52cc9128cdf31757f46d61766c"
+}

@@ -15,7 +15,6 @@ use super::album::{marks, play_button};
 use crate::catalog::marks::Kind;
 use crate::catalog::Catalog;
 use crate::details::{Source, TrackDetail};
-use crate::ui::edit::track_form::TrackForm;
 use crate::lyrics;
 use crate::playback::PlayerView;
 use crate::ui::theme::{bold, font, medium, semibold, PALETTE as P};
@@ -379,7 +378,7 @@ impl TrackPage {
             Some(Outcome::Merged { kept, gone }) => {
                 self.merge = None;
                 shell.track_details.refresh(kept);
-                shell.track_forms.remove(&gone);
+                shell.track_editors.remove(&gone);
                 shell.flags.refresh(&shell.api, shell.runtime.handle(), &shell.ctx);
                 shell.act(Action::RefreshLibrary);
                 if kept != d.id {
@@ -622,18 +621,24 @@ fn section(ui: &mut egui::Ui, title: &str, open: bool, add: impl FnOnce(&mut egu
     ui.add_space(6.0);
 }
 
-/// The track's form (edit mode), under the bar choosing which version it edits. Kept in
-/// the shell per track, so changes not saved yet are still there after looking elsewhere.
+/// The track's editor (edit mode), under the bar choosing which version it edits. Kept in
+/// the shell per track, so changes not applied yet are still there after looking elsewhere.
 fn edit(ui: &mut egui::Ui, shell: &mut Shell, catalog: &Arc<Catalog>, d: &TrackDetail, versions: &mut crate::ui::edit::versions::VersionsBar) {
     // Taken out of the shell while it's shown (showing it needs the shell too: Rust
     // allows only one mutable borrow of it at a time), then put back.
-    let Some(mut form) = shell.track_forms.remove(&d.id).or_else(|| TrackForm::from_detail(d, Some(catalog))) else {
-        ui.label(RichText::new("This track has no version to edit.").color(P.muted));
-        return;
-    };
-    versions.show(ui, shell, catalog, d, &mut form);
-    form.show(ui, shell, Some(catalog), d);
-    shell.track_forms.insert(d.id, form);
+    let mut editor = shell.track_editors.remove(&d.id).unwrap_or_default();
+    // Ctrl+E: the cursor to its line (as the tables' Ctrl+E opens it).
+    if !shell.palette_open && ui.ctx().input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::E)) {
+        editor.opened();
+    }
+    let editing = editor.variant().filter(|v| d.variants.iter().any(|x| x.id == *v)).or(d.primary_variant_id).or_else(|| d.variants.first().map(|v| v.id));
+    if let Some(editing) = editing
+        && let Some(other) = versions.show(ui, shell, d, editing, editor.has_changes())
+    {
+        editor.set_variant(other);
+    }
+    editor.show(ui, shell, catalog, &[d.id], None);
+    shell.track_editors.insert(d.id, editor);
 }
 
 /// Every credit, by role: the artist (a link) and the name it's credited under.

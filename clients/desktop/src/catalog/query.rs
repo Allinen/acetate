@@ -11,7 +11,7 @@
 //! and a word with a colon that isn't a key is a plain word.
 //!
 //! What a key does depends on where it's typed: a track list filters by it, the palette
-//! searches only artists for `artist:`, the bulk change sets it (see `edit::bulk`).
+//! searches only artists for `artist:`, the track editor sets it (see `edit::editor`).
 
 use super::model::Track;
 use super::Catalog;
@@ -20,7 +20,7 @@ use super::Catalog;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Key {
     Artist,
-    /// Credited as featured (the bulk change; elsewhere the same as `artist`).
+    /// Credited as featured (the track editor; elsewhere the same as `artist`).
     Featured,
     Album,
     Title,
@@ -32,7 +32,7 @@ pub enum Key {
     /// An album's kind (album, ep, single…).
     Kind,
     Disc,
-    /// Track numbers (the bulk change: from this number).
+    /// Track numbers (the track editor: this number, or `N+` in order from it).
     Number,
     /// A grouping it's in (a collective, era, project…), by name.
     Group,

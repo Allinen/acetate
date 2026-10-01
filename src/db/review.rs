@@ -9,6 +9,8 @@ use serde_json::json;
 use sqlx::PgConnection;
 use uuid::Uuid;
 
+use crate::model::Credit;
+
 /// How similar a title must be (pg_trgm `similarity`, 0 to 1) to count as a possible
 /// duplicate. "Northbound" vs "Northbound (Live)" is about 0.6.
 const DUPLICATE_SIMILARITY: f32 = 0.5;
@@ -35,6 +37,38 @@ pub async fn flag_ambiguous_artist(
     )
     .execute(conn)
     .await?;
+    Ok(())
+}
+
+/// A hand edit changed how a track credits the candidates of its open ambiguous-artist
+/// flags (`before` → `after`: its shown version's credits): someone decided who the name
+/// is, so each such flag is settled, saying who's credited now. Edits that leave the
+/// candidates' credits as they were (a producer added) leave the flags open.
+pub async fn settle_ambiguous_by_edit(conn: &mut PgConnection, track_id: Uuid, before: &[Credit], after: &[Credit]) -> sqlx::Result<()> {
+    let flags = sqlx::query!(
+        "SELECT id, related FROM review_flags WHERE track_id = $1 AND kind = 'ambiguous_artist' AND resolved_at IS NULL",
+        track_id
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    for flag in flags {
+        let candidates: Vec<Uuid> = flag.related["artists"].as_array().into_iter().flatten().filter_map(|a| a.as_str()?.parse().ok()).collect();
+        let of = |credits: &[Credit]| -> Vec<Credit> { credits.iter().filter(|c| candidates.contains(&c.artist_id)).cloned().collect() };
+        let now = of(after);
+        if of(before) == now {
+            continue;
+        }
+        let ids: Vec<Uuid> = now.iter().map(|c| c.artist_id).collect();
+        let names = sqlx::query_scalar!("SELECT name FROM artists WHERE id = ANY($1) ORDER BY array_position($1, id)", &ids)
+            .fetch_all(&mut *conn)
+            .await?;
+        let resolution = if names.is_empty() {
+            "credits edited: none of its artists credited".to_string()
+        } else {
+            format!("credits edited: \"{}\" credited", names.join("\", \""))
+        };
+        resolve(conn, flag.id, &resolution).await?;
+    }
     Ok(())
 }
 

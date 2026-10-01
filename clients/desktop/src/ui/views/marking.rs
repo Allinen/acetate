@@ -7,7 +7,7 @@
 //! Shift+click or Shift+↑/↓ a range, which takes the state of the row it starts from (so
 //! ranges unmark too); Ctrl+A marks everything shown; Esc clears. Marks are kept by
 //! track, so sorting and filtering don't lose them. Ctrl+E (or the button) opens the
-//! change for all of them, in a popup (see `edit::bulk`); or, on a page that shows it
+//! change for all of them, in a popup (see `edit::editor`); or, on a page that shows it
 //! in place (`change_in_place`: Review, instead of its one track's form), Ctrl+E puts
 //! the cursor in it. Ctrl+M with two marked compares them side by side, to merge (see
 //! `merge`), in a popup.
@@ -31,7 +31,7 @@ pub struct Marking {
     /// this row's state.
     anchor: Option<usize>,
     /// Changing the marked tracks, and whether its popup is open.
-    bulk: crate::ui::edit::bulk::BulkEditor,
+    bulk: crate::ui::edit::editor::TrackEditor,
     bulk_open: bool,
     /// The change is shown in the page (`change`), not in a popup.
     in_place: bool,
@@ -164,9 +164,9 @@ impl Marking {
         let Some(catalog) = shell.catalog.value.clone() else { return };
         let marked = self.ordered(len, id_at);
         ui.label(RichText::new(format!("Change {} tracks", thousands(marked.len()))).font(font(22.0, bold())));
-        ui.label(RichText::new("Ctrl+E: what to change · Ctrl+Enter: preview, then apply · Esc (outside a field): unmark them all").color(P.faint).small());
+        ui.label(RichText::new("Ctrl+E: the line · Ctrl+Enter: apply the preview · Esc (outside the line): discard the changes, then unmark them all").color(P.faint).small());
         ui.add_space(8.0);
-        if self.bulk.show(ui, shell, &catalog, &marked, album) {
+        if show_editor(&mut self.bulk, ui, shell, &catalog, &marked, album) {
             self.clear();
         }
     }
@@ -185,10 +185,6 @@ impl Marking {
                 Err(err) => err,
             };
             shell.playlists.notice = Some((text, std::time::Instant::now()));
-        }
-        // A bulk change just finished (the popup open or not): the lists catch up.
-        if self.bulk.take_finished() {
-            shell.act(Action::RefreshLibrary);
         }
         if self.merge.is_some() {
             self.merge_popup(ctx, shell, player);
@@ -220,7 +216,7 @@ impl Marking {
             };
             let mut done = false;
             let closed = crate::ui::modal::show(ctx, "bulk-edit", &title, Vec2::new(1180.0, 760.0), |ui| {
-                done = self.bulk.show(ui, shell, &catalog, &marked, album);
+                done = show_editor(&mut self.bulk, ui, shell, &catalog, &marked, album);
             });
             if closed || done {
                 self.bulk_open = false;
@@ -258,7 +254,7 @@ impl Marking {
             (
                 i.key_pressed(egui::Key::X) && i.modifiers.is_none(),
                 i.consume_key(egui::Modifiers::COMMAND, egui::Key::A),
-                !self.marked.is_empty() && i.consume_key(egui::Modifiers::NONE, egui::Key::Escape),
+                !self.marked.is_empty() && !self.bulk.has_changes() && i.consume_key(egui::Modifiers::NONE, egui::Key::Escape),
                 !self.marked.is_empty() && i.consume_key(egui::Modifiers::COMMAND, egui::Key::E),
             )
         });
@@ -350,7 +346,7 @@ impl Marking {
             Some(Outcome::Merged { kept, gone }) => {
                 self.clear();
                 shell.track_details.refresh(kept);
-                shell.track_forms.remove(&gone);
+                shell.track_editors.remove(&gone);
                 shell.flags.refresh(&shell.api, shell.runtime.handle(), &shell.ctx);
                 shell.act(Action::RefreshLibrary);
                 shell.playlists.notice = Some(("Merged.".into(), std::time::Instant::now()));
@@ -366,6 +362,16 @@ impl Marking {
         if outcome.is_some() || closed {
             self.merge = None;
         }
+    }
+}
+
+/// The editor for `tracks`. One track's is laid out top to bottom, for a page that
+/// scrolls: here it scrolls on its own.
+fn show_editor(editor: &mut crate::ui::edit::editor::TrackEditor, ui: &mut egui::Ui, shell: &mut Shell, catalog: &std::sync::Arc<Catalog>, tracks: &[Uuid], album: Option<Uuid>) -> bool {
+    if tracks.len() == 1 {
+        egui::ScrollArea::vertical().id_salt("marked-editor").auto_shrink([false, false]).show(ui, |ui| editor.show(ui, shell, catalog, tracks, album)).inner
+    } else {
+        editor.show(ui, shell, catalog, tracks, album)
     }
 }
 
