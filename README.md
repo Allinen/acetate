@@ -70,6 +70,7 @@ When listening, you won't accidentally change something you didn't mean to; adva
 - Built in **synced lyric editor** - supports headers like [Intro] and [Verse 1: Artist] even in synced lyrics
 
 <p align="center"><img src="assets/screenshots/lyric-editor.webp" alt="Timing lyrics in the synced lyric editor" width="820"></p>
+
 - **Artists have IDs and disambiguation**. Supporting multiple artists with the same name is a given
 
 ## Can you trust Acetate with your library?
