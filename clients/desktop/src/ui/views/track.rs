@@ -37,7 +37,10 @@ pub struct TrackPage {
     covers: crate::ui::edit::cover_list::CoverList,
     /// The groupings it's in.
     part_of: crate::ui::edit::part_of::PartOf,
-    /// Which version the form edits, and making, renaming and showing versions.
+    /// The track the editor's line was last given the cursor for (in edit mode: once per
+    /// track shown, and again when edit mode comes back on).
+    editor_opened: Option<Uuid>,
+    /// Which version the editor edits, and making, renaming and showing versions.
     versions: crate::ui::edit::versions::VersionsBar,
     /// Its lyrics entries, one open in a form (edit mode).
     lyrics_editor: crate::ui::edit::lyrics::LyricsEditor,
@@ -204,7 +207,16 @@ impl TrackPage {
             if shell.edit_mode && self.merge_with(ui, shell, catalog, &d, player) {
                 return;
             }
+            if !shell.edit_mode {
+                self.editor_opened = None;
+            }
             if shell.edit_mode {
+                // The cursor in the editor's line, the first time it's shown for this track.
+                let open = self.editor_opened != Some(d.id);
+                self.editor_opened = Some(d.id);
+                if open {
+                    shell.track_editors.entry(d.id).or_default().opened();
+                }
                 // Ctrl+Enter in the lyrics saves them, not the track's form (shown first).
                 self.lyrics_editor.take_keys(ui.ctx());
                 // A track or album picked to copy a cover from (before the form takes it).
@@ -627,8 +639,11 @@ fn edit(ui: &mut egui::Ui, shell: &mut Shell, catalog: &Arc<Catalog>, d: &TrackD
     // Taken out of the shell while it's shown (showing it needs the shell too: Rust
     // allows only one mutable borrow of it at a time), then put back.
     let mut editor = shell.track_editors.remove(&d.id).unwrap_or_default();
-    // Ctrl+E: the cursor to its line (as the tables' Ctrl+E opens it).
-    if !shell.palette_open && ui.ctx().input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::E)) {
+    // Enter (outside a field) or Ctrl+E: the cursor to its line.
+    let ctx = ui.ctx().clone();
+    let free = !shell.palette_open && !shell.modal_was_open && !editor.takes_keys();
+    let enter = free && !ctx.egui_wants_keyboard_input() && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
+    if enter || (free && ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::E))) {
         editor.opened();
     }
     let editing = editor.variant().filter(|v| d.variants.iter().any(|x| x.id == *v)).or(d.primary_variant_id).or_else(|| d.variants.first().map(|v| v.id));

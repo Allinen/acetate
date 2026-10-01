@@ -293,3 +293,35 @@ async fn editing_the_credits_settles_an_ambiguous_artist(_: PgPoolOptions, conne
     assert_eq!(resolution.as_deref(), Some("credits edited: \"X\" credited"));
     Ok(())
 }
+
+/// A single whose title isn't its only track's: `along:on` with nothing else changed makes
+/// it match (as Review's "a single for each" made it, then renamed by hand).
+#[sqlx::test]
+async fn a_single_made_to_match_with_nothing_else_changed(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
+    let lib = setup(connect).await?;
+    let mut tx = db::begin(&lib.owner, None).await?;
+    let made = db::review_bulk::make_singles(&mut tx, &[lib.o], "").await?;
+    tx.commit().await?;
+    let single = made.made[0].album_id;
+    let mut tx = db::begin(&lib.owner, None).await?;
+    let data = AlbumData { title: "Old Single Name".into(), kind: "single".into(), ..Default::default() };
+    db::revisions::write_album(&mut tx, single, None, &data, Source::Edit, "renamed by hand").await?;
+    tx.commit().await?;
+
+    let sync = TrackEdit { track_id: lib.o, meta: None, facts: None, along: true, sync: true };
+    let edited = run(&lib, lib.bob, &edit(vec![sync]), true).await?;
+    assert!(edited.tracks[0].error.is_none(), "{:?}", edited.tracks[0].error);
+    assert_eq!(edited.tracks[0].along.len(), 1);
+    assert_eq!(title(&lib, "albums", single).await?, "Other");
+    let credited: Vec<Uuid> = sqlx::query_scalar("SELECT artist_id FROM album_credits WHERE album_id = $1").bind(single).fetch_all(&lib.owner).await?;
+    assert_eq!(credited, [lib.both]);
+
+    // Without sync, nothing changed: nothing goes along.
+    let mut tx = db::begin(&lib.owner, None).await?;
+    db::revisions::write_album(&mut tx, single, None, &data, Source::Edit, "renamed again").await?;
+    tx.commit().await?;
+    let plain = TrackEdit { track_id: lib.o, meta: None, facts: None, along: true, sync: false };
+    assert!(run(&lib, lib.bob, &edit(vec![plain]), true).await?.tracks[0].along.is_empty());
+    assert_eq!(title(&lib, "albums", single).await?, "Old Single Name");
+    Ok(())
+}

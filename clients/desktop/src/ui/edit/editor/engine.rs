@@ -679,6 +679,21 @@ mod tests {
         assert_eq!(body["tracks"][0]["facts"]["albums"][0]["album_id"], json!(id(18)));
     }
 
+    /// `along:on` with nothing else changed: the track is still sent, to be made to match.
+    #[test]
+    fn a_track_to_match_is_sent_with_nothing_else() {
+        let change = Change { ops: vec![Op::Sync], new_artists: vec![], new_albums: vec![], along: true, sync: true, why: String::new() };
+        let mut r = ready(0, &[], None);
+        r.meta = r.base.meta.clone();
+        r.sync = true;
+        assert!(!r.writes() && r.sends() && r.changes());
+        let (body, refused) = body(&[(id(1), r)], &change, &HashMap::new(), true);
+        assert!(refused.is_empty());
+        let track = &body["tracks"][0];
+        assert_eq!((track["sync"].clone(), track["along"].clone()), (json!(true), json!(true)));
+        assert!(track.get("meta").is_none() && track.get("facts").is_none());
+    }
+
     #[test]
     fn reads_the_servers_answer() {
         let answer = json!({

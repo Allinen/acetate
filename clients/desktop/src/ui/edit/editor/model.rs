@@ -128,7 +128,8 @@ pub enum Op {
     Group(Uuid),
     /// Whether albums it's alone on change along (the last one says).
     Along(bool),
-    /// Albums it's alone on are made to match it, changed or not (title, date, performers).
+    /// Albums it's alone on are made to match it, changed or not (title, date, performers):
+    /// `along:on` typed (left out, they follow only what changes).
     Sync,
     /// Why (the last one says): kept with every revision.
     Why(String),
@@ -245,7 +246,7 @@ pub fn along(ops: &[Op]) -> bool {
     }).unwrap_or(true)
 }
 
-/// Whether the albums are made to match (an `along:sync` not turned off after it).
+/// Whether the albums are made to match (an `along:on` not turned off after it).
 pub fn sync(ops: &[Op]) -> bool {
     ops.iter().rev().find_map(|op| match op {
         Op::Sync => Some(true),
@@ -341,6 +342,5 @@ mod tests {
         // Made to match: along, until turned off.
         assert!(sync(&[Op::Sync]) && along(&[Op::Along(false), Op::Sync]));
         assert!(!sync(&[Op::Sync, Op::Along(false)]) && !sync(&[]));
-        assert!(sync(&[Op::Sync, Op::Along(true)]), "on doesn't undo making them match");
     }
 }
