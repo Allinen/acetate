@@ -805,6 +805,9 @@ impl TrackEditor {
             return;
         }
         let mut clicked = None;
+        // The value gets the room the key and the flags leave (a grid's cells are only as
+        // wide as they're told: text in them wraps after a word or two otherwise).
+        let value_width = (ui.available_width() - 90.0 - 220.0).max(240.0);
         egui::Grid::new(("track-editor-rows", self.id)).num_columns(3).spacing([12.0, 4.0]).show(ui, |ui| {
             for (n, row) in rows.iter().enumerate() {
                 let lit = self.row == Some(n);
@@ -813,6 +816,8 @@ impl TrackEditor {
                     clicked = Some(n);
                 }
                 ui.horizontal_wrapped(|ui| {
+                    ui.set_min_width(value_width);
+                    ui.set_max_width(value_width);
                     let add = matches!(row.kind, RowKind::AddArtist | RowKind::AddAlbum | RowKind::AddRelated);
                     let text = if row.value.is_empty() && add { "+ add".to_string() } else if row.value.is_empty() { "—".to_string() } else { row.value.clone() };
                     let color = if row.was.is_some() { P.accent } else if add { P.faint } else { P.text };
@@ -829,6 +834,7 @@ impl TrackEditor {
                     }
                 });
                 ui.horizontal_wrapped(|ui| {
+                    ui.set_min_width(200.0);
                     for (kind, state) in &row.flags {
                         let name = vocab.review_kind_name(kind).to_lowercase();
                         let (text, color) = match state {
@@ -1109,12 +1115,15 @@ fn state(ui: &mut egui::Ui, engine: &Engine, catalog: &Catalog, names: &Names) {
         ("related", Box::new(|_, f| f.relations.iter().map(|r| format!("{} “{}”", r.kind.replace('_', " "), track(r.track_id))).collect::<Vec<_>>().join(", "))),
         ("comment", Box::new(|m, _| m.comment.clone().unwrap_or_default())),
     ];
+    let value_width = (ui.available_width() - 90.0).max(200.0);
     egui::Grid::new("track-editor-state-grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
         for (key, value) in &fields {
             let before = summary(ready.iter().map(|r| value(&r.base.meta, &r.base.facts)));
             let after = summary(ready.iter().map(|r| value(&r.meta, &r.facts)));
             ui.label(RichText::new(format!("{key}:")).color(P.faint));
             ui.vertical(|ui| {
+                ui.set_min_width(value_width);
+                ui.set_max_width(value_width);
                 if before == after {
                     ui.label(RichText::new(&before).color(P.text));
                 } else {
