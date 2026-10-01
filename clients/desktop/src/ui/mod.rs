@@ -622,12 +622,14 @@ impl App {
     pub fn new(cc: &eframe::CreationContext, link: Option<String>) -> App {
         theme::apply(&cc.egui_ctx);
         let runtime = Runtime::new().expect("a tokio runtime");
-        let data_dir = app_dir(dirs::data_dir());
+        // Local: on Windows, not the roaming folder (the library kept here is hundreds of
+        // MB); elsewhere the same as `data_dir`.
+        let data_dir = app_dir(dirs::data_local_dir());
         let cache_dir = app_dir(dirs::cache_dir());
         let api = Api::new(data_dir.clone());
         let controller = runtime.block_on(async { Controller::new(api.clone(), cc.egui_ctx.clone()) });
         runtime.spawn(controller.clone().monitor());
-        controller.attach_media_keys(runtime.handle().clone(), cache_dir.clone());
+        controller.attach_media_keys(runtime.handle().clone(), cache_dir.clone(), window_handle(cc));
         let covers = Covers::new(api.clone(), runtime.handle().clone(), cache_dir.clone());
         let playlists = crate::playlists::Playlists::new(api.clone(), runtime.handle().clone(), cc.egui_ctx.clone());
         let details = |kind| (kind, api.clone(), runtime.handle().clone(), cc.egui_ctx.clone());
@@ -1238,6 +1240,24 @@ fn app_dir(base: Option<PathBuf>) -> PathBuf {
         eprintln!("couldn't move {} to {}: {err}", old.display(), dir.display());
     }
     dir
+}
+
+/// The window's handle, for the system's media controls (Windows ties them to a window;
+/// None elsewhere).
+fn window_handle(cc: &eframe::CreationContext) -> Option<*mut std::ffi::c_void> {
+    #[cfg(windows)]
+    {
+        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        match cc.window_handle().ok()?.as_raw() {
+            RawWindowHandle::Win32(handle) => Some(handle.hwnd.get() as *mut std::ffi::c_void),
+            _ => None,
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = cc;
+        None
+    }
 }
 
 /// A track (a position in the catalog) as the queue keeps it.

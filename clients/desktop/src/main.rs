@@ -16,6 +16,9 @@
 // Answers from background work arrive in shared slots (`Arc<Mutex<Option<…>>>`), which
 // clippy counts as "very complex types"; drawing code takes many plain arguments.
 #![allow(clippy::type_complexity, clippy::too_many_arguments)]
+// Windows: a window app, not a console one (a release build opens no console window; a
+// debug build keeps it, for what's printed).
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod account;
 mod api;
@@ -41,6 +44,7 @@ fn main() -> eframe::Result {
     {
         return Ok(());
     }
+    std::thread::spawn(links::register_if_unclaimed);
     // The simple logo (the full one is for the README, used sparingly).
     let icon = eframe::icon_data::from_png_bytes(include_bytes!("../../../assets/brand/acetate-simple.jpg")).expect("the app icon");
     let options = eframe::NativeOptions {

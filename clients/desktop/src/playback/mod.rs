@@ -464,9 +464,10 @@ impl Controller {
         }
     }
 
-    /// Connects the system's media keys to this controller.
-    pub fn attach_media_keys(self: &Arc<Self>, runtime: tokio::runtime::Handle, covers: std::path::PathBuf) {
-        if let Some(keys) = media_keys::MediaKeys::start(self, runtime, covers) {
+    /// Connects the system's media keys to this controller (`window`: the window's handle,
+    /// which Windows needs).
+    pub fn attach_media_keys(self: &Arc<Self>, runtime: tokio::runtime::Handle, covers: std::path::PathBuf, window: Option<*mut std::ffi::c_void>) {
+        if let Some(keys) = media_keys::MediaKeys::start(self, runtime, covers, window) {
             let _ = self.media.set(keys);
         }
     }

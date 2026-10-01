@@ -74,7 +74,7 @@ const NAMES: &[&str] = if cfg!(target_os = "windows") {
 /// What to install, said when mpv isn't there.
 pub fn missing_text() -> &'static str {
     if cfg!(target_os = "windows") {
-        "Videos need mpv's library: put libmpv-2.dll next to the app."
+        "Videos need mpv's library, libmpv-2.dll, next to the app (the Windows download has it)."
     } else if cfg!(target_os = "macos") {
         "Videos need mpv's library (brew install mpv)."
     } else {

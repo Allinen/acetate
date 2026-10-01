@@ -66,7 +66,8 @@ fn fonts(ctx: &egui::Context) {
     for (name, bytes) in inter {
         fonts.font_data.insert(name.into(), Arc::new(FontData::from_static(bytes)));
     }
-    let cjk = ["/usr/share/fonts/google-droid-sans-fonts/DroidSansFallbackFull.ttf"]
+    // Windows: Microsoft YaHei (Chinese, and most Japanese), else Yu Gothic.
+    let cjk = ["/usr/share/fonts/google-droid-sans-fonts/DroidSansFallbackFull.ttf", r"C:\Windows\Fonts\msyh.ttc", r"C:\Windows\Fonts\YuGothR.ttc"]
         .into_iter()
         .find_map(|path| std::fs::read(path).ok());
     let has_cjk = cjk.is_some();

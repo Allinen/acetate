@@ -18,9 +18,8 @@ pub struct SettingsPage {
     /// The size of the kept covers (small, standard, and an earlier version's no longer
     /// used), measured in the background: (files, bytes) each.
     covers_size: Arc<Mutex<Option<[(usize, u64); 3]>>>,
-    /// Which app opens acetate:// links (the system's answer; empty: none), asked in
-    /// the background.
-    links_handler: Arc<Mutex<Option<String>>>,
+    /// Which app opens acetate:// links (the system's answer), asked in the background.
+    links_handler: Arc<Mutex<Option<crate::links::Handler>>>,
     /// What the server stores on each volume (`GET /api/storage`, admins), asked when the
     /// page opens.
     storage: Arc<Mutex<Option<Result<Vec<StorageVolume>, String>>>>,
@@ -66,10 +65,7 @@ impl SettingsPage {
         let outputs = self.outputs.clone();
         shell.runtime.spawn_blocking(move || *outputs.lock().unwrap() = Some(crate::playback::engine::outputs()));
         let handler = self.links_handler.clone();
-        shell.runtime.spawn_blocking(move || {
-            let answer = std::process::Command::new("xdg-mime").args(["query", "default", "x-scheme-handler/acetate"]).output();
-            *handler.lock().unwrap() = Some(answer.map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default());
-        });
+        shell.runtime.spawn_blocking(move || *handler.lock().unwrap() = Some(crate::links::handler()));
         let (size, dir) = (self.covers_size.clone(), shell.cache_dir.clone());
         shell.runtime.spawn_blocking(move || {
             let measure = |name: &str| {
@@ -236,18 +232,27 @@ impl SettingsPage {
             hint(ui, "The library shown is the copy kept here: it's there at once, and the server is asked for changes in the background (the server's copy wins).");
 
             section(ui, "Links");
-            match self.links_handler.lock().unwrap().clone() {
-                Some(handler) if handler == "acetate.desktop" => {
+            use crate::links::Handler;
+            let how = if crate::links::CAN_REGISTER { "“Open links here” sets that up" } else { "clients/desktop/install.sh sets that up" };
+            let handler = self.links_handler.lock().unwrap().clone();
+            match &handler {
+                Some(Handler::Here) => {
                     ui.label(RichText::new("Links to tracks, albums and artists open here.").color(P.text));
                 }
-                Some(handler) if !handler.is_empty() => {
-                    ui.label(RichText::new(format!("Links to tracks, albums and artists open in {handler}, not here: run clients/desktop/install.sh again.")).color(P.danger));
+                Some(Handler::Other(other)) => {
+                    ui.label(RichText::new(format!("Links to tracks, albums and artists open in {other}, not here: {how}.")).color(P.danger));
                 }
-                Some(_) => {
-                    ui.label(RichText::new("Links to tracks, albums and artists don't open here yet: clients/desktop/install.sh sets that up.").color(P.muted));
+                Some(Handler::Nobody) => {
+                    ui.label(RichText::new(format!("Links to tracks, albums and artists don't open here yet: {how}.")).color(P.muted));
                 }
                 None => {
                     ui.label(RichText::new("Checking…").color(P.faint));
+                }
+            }
+            if crate::links::CAN_REGISTER && matches!(handler, Some(Handler::Other(_) | Handler::Nobody)) && ui.small_button("Open links here").clicked() {
+                match crate::links::register() {
+                    Ok(()) => *self.links_handler.lock().unwrap() = Some(crate::links::handler()),
+                    Err(err) => shell.controller.report(err),
                 }
             }
             hint(ui, "Ctrl+L (or “Share” on a page) copies a link to the track, album or artist shown, for someone with an account here; Ctrl+Shift+L (or Shift+click “Share”) makes a share link anyone can open. Opened by someone logged in, either one goes to the app (or the web UI, if the app doesn't take it).");

@@ -47,7 +47,7 @@ async function open() {
       window.close();
     } else {
       status.textContent = `Didn't the app open? Open the ${kind} in the browser instead.`;
-      hint.textContent = "For links to open in the app, it has to be set up for them: its install.sh does it (Settings in the app says whether it is).";
+      hint.textContent = "For links to open in the app, it has to be set up for them: on Windows it does that itself when it starts, on Linux its install.sh does (Settings → Links in the app says whether it is).";
     }
   }, 1500);
 }

@@ -19,6 +19,7 @@ pub struct MediaKeys {
     controls: Mutex<MediaControls>,
     /// What the system was last told: (track, playing, paused), so it's only told changes.
     told: Mutex<Option<(Option<Uuid>, bool, bool)>>,
+    #[cfg(all(unix, not(any(target_os = "macos", target_os = "ios", target_os = "android"))))]
     told_volume: Mutex<Option<f32>>,
     /// The cover it was told (a file's address; None: none yet, as it wasn't on disk), and
     /// when the disk was last looked at for a better one.
@@ -29,13 +30,18 @@ pub struct MediaKeys {
 
 impl MediaKeys {
     /// Connects to the system's media controls. None if there are none (or it failed:
-    /// the app works without them).
-    pub fn start(controller: &Arc<Controller>, runtime: Handle, covers: PathBuf) -> Option<MediaKeys> {
+    /// the app works without them). `window`: the window's handle; Windows ties the
+    /// controls to a window, and has none without it.
+    pub fn start(controller: &Arc<Controller>, runtime: Handle, covers: PathBuf, window: Option<*mut std::ffi::c_void>) -> Option<MediaKeys> {
+        if cfg!(windows) && window.is_none() {
+            eprintln!("no media keys: no window handle");
+            return None;
+        }
         // One name per running app (the MPRIS spec's way for several instances:
         // `org.mpris.MediaPlayer2.acetate.instance<pid>`). A plain "acetate" is taken
         // when Acetate is already running, and souvlaki then panics in its own thread.
         let dbus_name = format!("acetate.instance{}", std::process::id());
-        let config = PlatformConfig { display_name: "Acetate", dbus_name: &dbus_name, hwnd: None };
+        let config = PlatformConfig { display_name: "Acetate", dbus_name: &dbus_name, hwnd: window };
         let mut controls = match MediaControls::new(config) {
             Ok(controls) => controls,
             Err(err) => {
@@ -71,6 +77,7 @@ impl MediaKeys {
         Some(MediaKeys {
             controls: Mutex::new(controls),
             told: Mutex::new(None),
+            #[cfg(all(unix, not(any(target_os = "macos", target_os = "ios", target_os = "android"))))]
             told_volume: Mutex::new(None),
             told_cover: Mutex::new((None, std::time::Instant::now())),
             covers,
@@ -88,19 +95,19 @@ impl MediaKeys {
 
     /// Tells the system what plays, when it changed.
     pub fn update(&self, view: &PlayerView) {
-        let volume = if view.muted { 0.0 } else { view.volume };
-        let mut told_volume = self.told_volume.lock().unwrap();
-        if *told_volume != Some(volume) {
-            *told_volume = Some(volume);
-            let _ = self.controls.lock().unwrap().set_volume(volume as f64);
+        // The volume: MPRIS has one (Windows' and macOS's controls don't).
+        #[cfg(all(unix, not(any(target_os = "macos", target_os = "ios", target_os = "android"))))]
+        {
+            let volume = if view.muted { 0.0 } else { view.volume };
+            let mut told_volume = self.told_volume.lock().unwrap();
+            if *told_volume != Some(volume) {
+                *told_volume = Some(volume);
+                let _ = self.controls.lock().unwrap().set_volume(volume as f64);
+            }
         }
-        drop(told_volume);
         let current = view.current();
         let state = (current.map(|c| c.track_id), view.playing, view.paused);
         let mut told = self.told.lock().unwrap();
-        if *told == Some(state) {
-            return;
-        }
         // The cover is on disk only once it's been shown (loaded in the background): until
         // the bigger copy is there, look again now and then, and tell the system when it
         // is.
