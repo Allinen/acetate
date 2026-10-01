@@ -9,15 +9,23 @@
 #
 # Everything goes into your home folder (~/.local), nothing system-wide. Run it again
 # after pulling changes. To take it out again, remove the three files it lists.
+#
+# From a release (package-linux.sh: the program is next to this script) it installs that;
+# from the sources it builds it first.
 set -eu
 cd "$(dirname "$0")"
 
-cargo build --release
+if [ -f acetate-desktop ]; then
+    built=acetate-desktop
+else
+    cargo build --release
+    built=target/release/acetate-desktop
+fi
 bin="$HOME/.local/bin/acetate-desktop"
 icon="$HOME/.local/share/icons/hicolor/512x512/apps/acetate.jpg"
 entry="$HOME/.local/share/applications/acetate.desktop"
 mkdir -p "$(dirname "$bin")" "$(dirname "$icon")" "$(dirname "$entry")"
-install -m 755 target/release/acetate-desktop "$bin"
+install -m 755 "$built" "$bin"
 install -m 644 assets/acetate-512.jpg "$icon"
 # The entry runs the installed program by its full path (~/.local/bin may not be on PATH).
 # `%u`: the link the app is opened for, if any.

@@ -6,7 +6,7 @@
 #
 # Needs: the Rust target (rustup target add x86_64-pc-windows-gnu), MinGW (Fedora:
 # mingw64-gcc mingw64-winpthreads-static; Debian/Ubuntu: mingw-w64), 7z (p7zip) and zip.
-# The CI workflow runs this same script.
+# The release workflow (.github/workflows/release.yml) runs this same script.
 #
 # libmpv is shinchiro's build (github.com/shinchiro/mpv-winbuild-cmake), one DLL with
 # everything in it, pinned by its checksum; it's downloaded once into target/windows.

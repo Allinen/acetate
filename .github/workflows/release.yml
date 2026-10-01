@@ -1,0 +1,90 @@
+# The desktop app's releases. Pushing a version tag (v1.2.3) on a commit that's on main
+# builds it for Linux and Windows (clients/desktop/package-*.sh, the same scripts as
+# locally) and makes a GitHub release with both. The tag has to match the version in
+# clients/desktop/Cargo.toml.
+#
+# Run by hand ("Run workflow"), it builds both from the branch chosen and keeps them as
+# the run's artifacts, without a release.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: The tag is on main and says the app's version
+        if: github.ref_type == 'tag'
+        run: |
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main \
+            || { echo "::error::$GITHUB_REF_NAME isn't on main"; exit 1; }
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' clients/desktop/Cargo.toml | head -1)
+          [ "$GITHUB_REF_NAME" = "v$version" ] \
+            || { echo "::error::the tag is $GITHUB_REF_NAME, clients/desktop/Cargo.toml says $version"; exit 1; }
+
+  linux:
+    needs: check
+    # The oldest glibc the program needs is this system's (2.39).
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev pkg-config
+          rustup toolchain install stable --profile minimal
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: clients/desktop
+      - name: Build and pack
+        run: clients/desktop/package-linux.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: clients/desktop/target/linux/Acetate-linux-x86_64.tar.gz
+
+  windows:
+    needs: check
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mingw-w64 p7zip-full zip
+          rustup toolchain install stable --profile minimal --target x86_64-pc-windows-gnu
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: clients/desktop
+      - name: Build and pack
+        run: clients/desktop/package-windows.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: clients/desktop/target/windows/Acetate-windows-x86_64.zip
+
+  release:
+    if: github.ref_type == 'tag'
+    needs: [linux, windows]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag=$GITHUB_REF_NAME
+          mv Acetate-linux-x86_64.tar.gz "Acetate-$tag-linux-x86_64.tar.gz"
+          mv Acetate-windows-x86_64.zip "Acetate-$tag-windows-x86_64.zip"
+          gh release create "$tag" --repo "$GITHUB_REPOSITORY" --title "Acetate $tag" --generate-notes \
+            "Acetate-$tag-linux-x86_64.tar.gz" "Acetate-$tag-windows-x86_64.zip"
