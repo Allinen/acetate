@@ -1,6 +1,8 @@
 /target
 /data
 /test-audio
+/demo-audio
+/demo-data
 .env
 .idea/workspace.xml
 .idea/shelf/
