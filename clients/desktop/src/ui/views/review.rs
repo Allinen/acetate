@@ -19,6 +19,14 @@
 //! marks its flags done (of the chip's kind, if one's chosen). Ctrl+M compares a possible
 //! duplicate side by side (to merge), and closes it again. b (or "Bulk…"), with a chip
 //! chosen: the bulk tools for what's shown (`review_bulk`).
+//!
+//! Marking many, as in a track table (`marking`, the same tools): the box in front of a
+//! row, `x`, or Ctrl+click marks or unmarks one; Shift+click or Shift+↑/↓ a range; Ctrl+A
+//! everything shown; Esc clears. While any are marked, the change for all of them
+//! (`edit::bulk`) takes the place of the one track's form (Ctrl+E: the cursor in it;
+//! Ctrl+Enter is its own then); Ctrl+M merges the two marked. Marking doesn't change
+//! which track is selected (a plain click does): unmarking them all brings its form back. A marked track that leaves the list for good (fixed, marked done, merged
+//! away) leaves the marks too; one only hidden by a chip or the filter stays marked.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -128,6 +136,8 @@ pub struct Review {
     settle_on_save: HashMap<Uuid, (Uuid, String)>,
     /// The bulk tools, open.
     bulk: Option<super::review_bulk::ReviewBulk>,
+    /// Marked tracks, and the tools for them (as in a track table).
+    marking: super::marking::Marking,
     /// Files that didn't import, and whether they're shown (in place of the list).
     not_imported: super::not_imported::NotImported,
     showing_not_imported: bool,
@@ -153,6 +163,7 @@ impl Review {
         if !self.started {
             self.started = true;
             self.only = Some("fix_later".into());
+            self.marking.change_in_place();
         }
         for err in shell.flags.poll() {
             shell.controller.report(err);
@@ -174,6 +185,10 @@ impl Review {
         {
             self.bulk = None;
         }
+        // The marked tracks' popups, before the keys too.
+        let entries = &self.entries;
+        let id_at = |n: usize| entries.get(n).map(|e| catalog.tracks[e.track as usize].id);
+        self.marking.popups(&ui.ctx().clone(), shell, player, entries.len(), id_at, None);
         // (Files that didn't import have their own keys.)
         if !self.showing_not_imported && !self.showing_unlinked && !self.showing_unused {
             self.keys(ui.ctx(), shell, catalog, player);
@@ -286,6 +301,9 @@ impl Review {
             }
         });
         ui.add_space(6.0);
+        let entries = &self.entries;
+        let id_at = |n: usize| entries.get(n).map(|e| catalog.tracks[e.track as usize].id);
+        self.marking.bar(ui, shell, catalog, entries.len(), id_at, "review");
 
         // ---- The list, and the selected track ----
         let rest = ui.available_rect_before_wrap();
@@ -294,7 +312,13 @@ impl Review {
         let mut list_ui = ui.new_child(egui::UiBuilder::new().max_rect(list_rect));
         self.list(&mut list_ui, shell, catalog, player, &vocab);
         let mut editor_ui = ui.new_child(egui::UiBuilder::new().max_rect(editor_rect));
-        self.editor(&mut editor_ui, shell, catalog, player, &vocab);
+        // Tracks marked: the change for all of them instead of the one track's form.
+        if self.marking.is_empty() {
+            self.editor(&mut editor_ui, shell, catalog, player, &vocab);
+        } else {
+            let entries = &self.entries;
+            self.marking.change(&mut editor_ui, shell, entries.len(), |n| entries.get(n).map(|e| catalog.tracks[e.track as usize].id), None);
+        }
         ui.allocate_rect(rest, Sense::hover());
     }
 
@@ -340,6 +364,9 @@ impl Review {
             })
             .collect();
         flagged.sort_by_key(|f| std::cmp::Reverse(f.0));
+        // Marked tracks that left the list for good aren't marked anymore.
+        let still: std::collections::HashSet<u32> = flagged.iter().map(|f| f.1).collect();
+        self.marking.retain(|id| catalog.track_index(*id).is_some_and(|i| still.contains(&i)));
 
         // Words (in the title, artists, album or the file's path) and `key:value` parts.
         let query = crate::catalog::query::Query::parse(&self.filter);
@@ -603,6 +630,11 @@ impl Review {
         if shell.palette_open || shell.modal_open {
             return;
         }
+        // The marks' keys first (Ctrl+M is theirs while tracks are marked).
+        let at = self.selected.and_then(|id| self.position(catalog, id)).unwrap_or(self.selected_at);
+        let entries = &self.entries;
+        let id_at = |n: usize| entries.get(n).map(|e| catalog.tracks[e.track as usize].id);
+        self.marking.keys(ctx, shell, at, entries.len(), id_at);
         let (next, previous, merge) = ctx.input_mut(|i| {
             (
                 i.consume_key(Modifiers::COMMAND, Key::ArrowDown),
@@ -629,7 +661,8 @@ impl Review {
             shell.form_dirty = true;
             return;
         }
-        let save = ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Enter));
+        // (With tracks marked, Ctrl+Enter is the change's: the form isn't shown.)
+        let save = self.marking.is_empty() && ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Enter));
         if save && let Some(id) = self.selected {
             // (Taken out of the shell to save it: saving needs the shell too.)
             match shell.track_forms.remove(&id) {
@@ -651,14 +684,24 @@ impl Review {
             return;
         }
         let key = |k: Key| ctx.input(|i| i.key_pressed(k) && i.modifiers.is_none());
+        let shift = |k: Key| ctx.input(|i| i.key_pressed(k) && i.modifiers.matches_exact(Modifiers::SHIFT));
         let mut acted = true;
-        if key(Key::J) || key(Key::ArrowDown) {
+        if shift(Key::ArrowDown) || shift(Key::ArrowUp) {
+            // A range: the rows passed over take the starting row's state.
+            self.step(shell, catalog, if shift(Key::ArrowDown) { 1 } else { -1 });
+            // (The cursor stays out of the form: the next Shift+↓/↑ goes on.)
+            self.focus_first = false;
+            let to = self.selected.and_then(|id| self.position(catalog, id)).unwrap_or(at);
+            let entries = &self.entries;
+            self.marking.range_to(at, to, |n| entries.get(n).map(|e| catalog.tracks[e.track as usize].id));
+        } else if key(Key::J) || key(Key::ArrowDown) {
             self.step(shell, catalog, 1);
         } else if key(Key::K) || key(Key::ArrowUp) {
             self.step(shell, catalog, -1);
         } else if key(Key::U) {
             self.step(shell, catalog, 1);
         } else if key(Key::D)
+            && self.marking.is_empty()
             && let Some(id) = self.selected
         {
             self.mark_done(shell, catalog, id, "done", false);
@@ -706,7 +749,7 @@ impl Review {
             }
         }
         let playing = playing_track(player);
-        let mut clicked = None;
+        let (mut clicked, mut boxed) = (None, None);
         area.show_rows(ui, ROW, self.rows.len(), |ui, range| {
             ui.spacing_mut().item_spacing.y = 0.0;
             for r in range {
@@ -725,11 +768,16 @@ impl Review {
                         } else if response.hovered() {
                             painter.rect_filled(rect, 8, P.surface);
                         }
+                        // The mark's box, in front.
+                        let mark = egui::Rect::from_min_size(rect.min + Vec2::new(8.0, (ROW - 18.0) / 2.0), Vec2::splat(18.0));
+                        let on_box = |pos: Option<egui::Pos2>| pos.is_some_and(|p| mark.expand(4.0).contains(p));
+                        super::marking::paint_box(painter, mark, self.marking.contains(&t.id), on_box(response.hover_pos()));
+                        let text_left = mark.right() + 10.0 - rect.left();
                         let title = if t.title.trim().is_empty() { "(no title)" } else { &t.title };
                         let color = if playing == Some(t.id) { P.accent } else { P.text };
                         let unsaved = shell.track_forms.get(&t.id).is_some_and(|f| f.dirty());
                         let title = if unsaved { format!("● {title}") } else { title.to_string() };
-                        widgets::text_in_og(painter, egui::Rect::from_min_size(rect.min + Vec2::new(10.0, 6.0), Vec2::new(rect.width() - 20.0, 18.0)), &title, font(13.5, medium()), color, t.original_filename.is_some());
+                        widgets::text_in_og(painter, egui::Rect::from_min_size(rect.min + Vec2::new(text_left, 6.0), Vec2::new(rect.width() - text_left - 10.0, 18.0)), &title, font(13.5, medium()), color, t.original_filename.is_some());
                         let mut sub: Vec<String> = Vec::new();
                         if !t.artist_display.is_empty() {
                             sub.push(t.artist_display.clone());
@@ -740,17 +788,31 @@ impl Review {
                         if !issues.is_empty() {
                             sub.push(issues.join(", "));
                         }
-                        widgets::text_in(painter, egui::Rect::from_min_size(rect.min + Vec2::new(10.0, 25.0), Vec2::new(rect.width() - 20.0, 16.0)), &sub.join("  ·  "), font(12.0, medium()), P.muted);
+                        widgets::text_in(painter, egui::Rect::from_min_size(rect.min + Vec2::new(text_left, 25.0), Vec2::new(rect.width() - text_left - 10.0, 16.0)), &sub.join("  ·  "), font(12.0, medium()), P.muted);
                         if response.clicked() {
-                            clicked = Some(*n);
+                            if on_box(response.interact_pointer_pos()) {
+                                boxed = Some(*n);
+                            } else {
+                                clicked = Some(*n);
+                            }
                         }
                     }
                 }
             }
         });
-        if let Some(n) = clicked {
-            self.select(catalog, n);
-            self.scroll_to_selected = false;
+        // Marking leaves the form as it is; a plain click opens the track.
+        let modifiers = ui.input(|i| i.modifiers);
+        let from = self.selected.and_then(|id| self.position(catalog, id)).unwrap_or(self.selected_at);
+        let entries = &self.entries;
+        let id_at = |n: usize| entries.get(n).map(|e| catalog.tracks[e.track as usize].id);
+        if let Some(n) = boxed {
+            self.marking.toggle(n, id_at);
+        } else if let Some(n) = clicked {
+            self.marking.click(n, from, modifiers, id_at);
+            if !modifiers.command && !modifiers.shift {
+                self.select(catalog, n);
+                self.scroll_to_selected = false;
+            }
         }
     }
 

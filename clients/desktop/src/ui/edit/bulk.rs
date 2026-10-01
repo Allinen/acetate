@@ -793,6 +793,11 @@ impl BulkEditor {
         closed
     }
 
+    /// Applying, or applied and its outcome not closed yet.
+    pub fn applying_or_applied(&self) -> bool {
+        matches!(self.job.lock().unwrap().phase, Phase::Applying | Phase::Finished)
+    }
+
     /// The popup opened: the cursor goes to "What to change".
     pub fn opened(&mut self) {
         self.focus_next = Some("picker");

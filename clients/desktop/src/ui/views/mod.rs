@@ -23,6 +23,7 @@ pub mod review_bulk;
 pub mod credited_as;
 pub mod extra;
 pub mod mark_og;
+pub mod marking;
 pub mod not_imported;
 pub mod settings;
 pub mod sidebar;
