@@ -40,7 +40,6 @@ use crate::account::Vocab;
 use crate::catalog::Catalog;
 use crate::playback::PlayerView;
 use crate::review::Flag;
-use crate::ui::edit::editor::TrackEditor;
 use crate::ui::theme::{bold, font, medium, semibold, PALETTE as P};
 use crate::ui::{playing_track, widgets, Action, Shell};
 
@@ -122,8 +121,9 @@ pub struct Review {
     /// Tracks merged away here: gone from the list and from other flags' suggestions at
     /// once (the server's lists catch up a moment later).
     merged_away: std::collections::HashSet<Uuid>,
-    /// `a` was pressed: the next candidate of the first ambiguous artist.
-    cycle_ambiguous: bool,
+    /// Just applied: (the track, its automatic flags then, the library's generation then).
+    /// What it's missing until the library catches up (the library's flags are older).
+    fresh: Option<(Uuid, Vec<String>, u64)>,
     /// The bulk tools, open.
     bulk: Option<super::review_bulk::ReviewBulk>,
     /// Marked tracks, and the tools for them (as in a track table).
@@ -482,78 +482,8 @@ impl Review {
         } else {
             let names: Vec<&str> = missing.iter().map(|k| vocab.review_kind_name(k)).collect();
             self.notice = Some(format!("Saved. Still: {}.", names.join(", ")));
+            self.fresh = Some((track, missing.into_iter().cloned().collect(), shell.generation));
             self.focus_first = true;
-        }
-    }
-
-    /// An ambiguous artist: the name from the tags matched several artists; the one
-    /// credited is marked. Choosing another stages crediting it instead (in the editor;
-    /// applying it settles the flag, on the server); choosing the credited one says it was
-    /// right.
-    #[allow(clippy::too_many_arguments)]
-    fn ambiguous(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: &Catalog, track: Uuid, flag: &Flag, editor: &mut TrackEditor) {
-        let name = flag.related.get("name").and_then(|n| n.as_str()).unwrap_or("?");
-        ui.label(RichText::new(format!("“{name}” in the tags is which of these?  (a: the next one, then Ctrl+Enter)")).color(P.text));
-        // Which are credited: as the editor's changes leave it, and as it is now.
-        let in_library = |artist: Uuid| catalog.track_index(track).is_some_and(|i| catalog.tracks[i as usize].credits.iter().any(|c| c.0 == artist));
-        let after = editor.credits_after(track);
-        let credited = |artist: Uuid| match &after {
-            Some(credits) => credits.iter().any(|c| c.artist_id == artist),
-            None => in_library(artist),
-        };
-        let pending = candidates(flag).iter().any(|(id, _)| credited(*id) != in_library(*id));
-        let mut chosen = None;
-        ui.horizontal_wrapped(|ui| {
-            for (id, artist) in candidates(flag) {
-                let size = catalog.artist(id).map(|a| format!(" · {} tracks", a.track_count)).unwrap_or_default();
-                // As the artist is now (the flag's copy is from when the flags were fetched).
-                let label = catalog.artist_label(id).unwrap_or_else(|| {
-                    let dis = flag
-                        .related_artists
-                        .as_array()
-                        .and_then(|a| a.iter().find(|x| x.get("id").and_then(|v| v.as_str()) == Some(id.to_string().as_str())))
-                        .and_then(|x| x.get("disambiguation")?.as_str())
-                        .filter(|d| !d.is_empty())
-                        .map(|d| format!(" ({d})"))
-                        .unwrap_or_default();
-                    format!("{artist}{dis}")
-                });
-                let on = credited(id);
-                if widgets::chip(ui, &format!("{label}{size}"), on) {
-                    chosen = Some((id, on));
-                }
-                if widgets::link(ui, "page", font(11.5, medium()), P.faint) {
-                    chosen = None;
-                    shell.act(Action::Go(crate::ui::Page::Artist(id)));
-                }
-            }
-        });
-        match chosen {
-            // The one credited is right: nothing to change.
-            Some((_, true)) if !pending => {
-                shell.flags.resolve(&shell.api, shell.runtime.handle(), &[flag.id], "the credited artist was right");
-                self.done += 1;
-            }
-            Some((to, false)) => self.credit_instead(catalog, track, flag, to, editor),
-            _ => {}
-        }
-        if pending {
-            ui.label(RichText::new("Changed in the editor: applying it settles this.").color(P.muted).small());
-        } else {
-            ui.label(RichText::new("Clicking the credited one says it was right.").color(P.faint).small());
-        }
-    }
-
-    /// Stages crediting `to` where the flag's candidate credited now is.
-    fn credit_instead(&mut self, catalog: &Catalog, track: Uuid, flag: &Flag, to: Uuid, editor: &mut TrackEditor) {
-        let Some(credits) = editor.credits_after(track) else {
-            self.notice = Some("The track is still loading: try again in a moment.".into());
-            return;
-        };
-        match candidates(flag).into_iter().find(|(id, _)| credits.iter().any(|c| c.artist_id == *id)) {
-            Some((from, _)) if from != to => editor.replace_artist(catalog, track, from, to),
-            Some(_) => {}
-            None => self.notice = Some("None of the candidates is credited now (taken off?): add the right one with artist:…".into()),
         }
     }
 
@@ -687,8 +617,6 @@ impl Review {
             && let Some(id) = self.selected
         {
             self.mark_done(shell, catalog, id, "done", false);
-        } else if key(Key::A) {
-            self.cycle_ambiguous = true;
         } else if key(Key::B) && self.only.is_some() && !self.entries.is_empty() {
             self.open_bulk(shell, catalog);
         } else if key(Key::Space)
@@ -847,7 +775,8 @@ impl Review {
                 ui.label(RichText::new(line).color(P.muted));
                 related(ui, shell, f);
                 if f.kind == "ambiguous_artist" {
-                    self.ambiguous(ui, shell, catalog, id, f, editor);
+                    let name = f.related.get("name").and_then(|n| n.as_str()).unwrap_or("?");
+                    ui.label(RichText::new(format!("Which artist “{name}” is: on its credit below (click one, or c on the row).")).color(P.faint).small());
                 }
                 if f.kind == "possible_duplicate" {
                     let others = self.duplicates(f, catalog);
@@ -909,27 +838,19 @@ impl Review {
                 return;
             };
 
-            // `a`: the next candidate of an ambiguous artist, credited instead.
-            if std::mem::take(&mut self.cycle_ambiguous)
-                && let Some(f) = flags.iter().find(|f| f.kind == "ambiguous_artist")
-                && let Some(credits) = editor.credits_after(id)
-            {
-                let list = candidates(f);
-                if let Some(at) = list.iter().position(|c| credits.iter().any(|x| x.artist_id == c.0)) {
-                    let next = list[(at + 1) % list.len()].0;
-                    self.credit_instead(catalog, id, f, next, editor);
-                }
-            }
-
-            // What it's missing, as the server says (its open automatic flags).
-            let missing: Vec<String> = catalog
-                .issues
-                .get(&id)
-                .into_iter()
-                .flatten()
-                .filter(|(flag, kind)| vocab.is_automatic(kind) && !shell.flags.done.contains(flag))
-                .map(|(_, kind)| kind.clone())
-                .collect();
+            // What it's missing, as the server says (its open automatic flags): as the edit
+            // just applied left it, until the library has caught up.
+            let missing: Vec<String> = match &self.fresh {
+                Some((track, fresh, generation)) if *track == id && *generation == shell.generation => fresh.clone(),
+                _ => catalog
+                    .issues
+                    .get(&id)
+                    .into_iter()
+                    .flatten()
+                    .filter(|(flag, kind)| vocab.is_automatic(kind) && !shell.flags.done.contains(flag))
+                    .map(|(_, kind)| kind.clone())
+                    .collect(),
+            };
             ui.add_space(6.0);
             if missing.is_empty() {
                 ui.label(RichText::new("Nothing missing. Ctrl+Enter: done as it is (or apply what's staged, and go on).").color(P.accent));
@@ -943,9 +864,13 @@ impl Review {
             ui.label(RichText::new("Ctrl+Enter apply and next · Ctrl+↓/↑ next/previous · Esc leaves the line; then j/k, Space play, u skip, d done").color(P.faint).small());
             ui.add_space(8.0);
 
-            // The line that fixes the first thing missing (once, when the track is shown).
-            if std::mem::take(&mut self.focus_first) {
-                let line = missing.iter().find_map(|k| crate::ui::edit::editor::line_for(k, &track.title));
+            // The line that fixes the first thing missing (once, when the track is shown),
+            // once the editor has the track as it is (its title, not the library's older one).
+            if self.focus_first
+                && let Some(title) = editor.title(id)
+            {
+                self.focus_first = false;
+                let line = missing.iter().find_map(|k| crate::ui::edit::editor::line_for(k, &title));
                 match line {
                     Some(line) if editor.is_blank() => editor.prefill(&line),
                     _ => editor.opened(),
@@ -1112,15 +1037,6 @@ fn unlinked_extras(ui: &mut egui::Ui, shell: &mut Shell, catalog: &Catalog, filt
             }
         }
     });
-}
-
-/// An ambiguous artist's candidates: (id, name), in the flag's order.
-fn candidates(flag: &Flag) -> Vec<(Uuid, String)> {
-    let artists = flag.related_artists.as_array().cloned().unwrap_or_default();
-    artists
-        .iter()
-        .filter_map(|a| Some((a.get("id")?.as_str()?.parse().ok()?, a.get("name")?.as_str()?.to_string())))
-        .collect()
 }
 
 /// The tracks a duplicate flag names.

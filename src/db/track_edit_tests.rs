@@ -40,13 +40,13 @@ async fn state(conn: &mut PgConnection, track: Uuid) -> anyhow::Result<(Uuid, Uu
 async fn meta_edit(conn: &mut PgConnection, track: Uuid, change: impl FnOnce(&mut TrackMetadata)) -> anyhow::Result<TrackEdit> {
     let (variant, base, mut data, _, _) = state(conn, track).await?;
     change(&mut data);
-    Ok(TrackEdit { track_id: track, meta: Some(MetaEdit { variant_id: variant, base_revision_id: base, data }), facts: None, along: true })
+    Ok(TrackEdit { track_id: track, meta: Some(MetaEdit { variant_id: variant, base_revision_id: base, data }), facts: None, along: true, sync: false })
 }
 
 async fn facts_edit(conn: &mut PgConnection, track: Uuid, change: impl FnOnce(&mut TrackFacts)) -> anyhow::Result<TrackEdit> {
     let (_, _, _, base, mut data) = state(conn, track).await?;
     change(&mut data);
-    Ok(TrackEdit { track_id: track, meta: None, facts: Some(FactsEdit { base_revision_id: base, data }), along: true })
+    Ok(TrackEdit { track_id: track, meta: None, facts: Some(FactsEdit { base_revision_id: base, data }), along: true, sync: false })
 }
 
 fn edit(tracks: Vec<TrackEdit>) -> Edit {
@@ -184,6 +184,15 @@ async fn albums_its_alone_on_change_along_with_what_changed(_: PgPoolOptions, co
     assert_eq!(title(&lib, "albums", ep).await?, "Other Thing");
     let date: Option<String> = sqlx::query_scalar("SELECT release_date FROM albums WHERE id = $1").bind(ep).fetch_one(&lib.owner).await?;
     assert_eq!(date.as_deref(), Some("2018"));
+
+    // Synced, with nothing else changing: the EP matches the track (its own date goes:
+    // the track has none).
+    let sync = TrackEdit { track_id: lib.o, meta: None, facts: None, along: true, sync: true };
+    let edited = run(&lib, lib.bob, &edit(vec![sync]), false).await?;
+    let along = &edited.tracks[0].along;
+    assert_eq!(along.len(), 1, "{:?}", edited.tracks[0]);
+    assert_eq!((along[0].after.title.as_str(), along[0].after.release_date.as_deref()), ("Other Thing", None));
+    assert_eq!(along[0].after.credits.iter().map(|c| c.artist_id).collect::<Vec<_>>(), [lib.both]);
 
     // Turned off: the track alone.
     let mut quiet = meta_edit(&mut conn, lib.o, |m| m.title = "Other Again".into()).await?;

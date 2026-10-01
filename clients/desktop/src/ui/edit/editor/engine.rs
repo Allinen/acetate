@@ -63,6 +63,8 @@ pub struct Ready {
     pub lines: Vec<String>,
     /// The groupings it goes in (it isn't in them yet).
     pub joins: Vec<Uuid>,
+    /// Its albums are made to match it (whether they need it, the server says).
+    pub sync: bool,
 }
 
 impl Ready {
@@ -79,8 +81,13 @@ impl Ready {
         self.meta_changed() || self.facts_changed()
     }
 
+    /// Something for the server: a revision, or its albums to match.
+    pub fn sends(&self) -> bool {
+        self.writes() || self.sync
+    }
+
     pub fn changes(&self) -> bool {
-        self.writes() || !self.joins.is_empty()
+        self.sends() || !self.joins.is_empty()
     }
 }
 
@@ -180,6 +187,8 @@ pub struct Change {
     pub new_artists: Vec<(Uuid, String)>,
     pub new_albums: Vec<(Uuid, String, String)>,
     pub along: bool,
+    /// Albums it's alone on made to match, changed or not.
+    pub sync: bool,
     pub why: String,
 }
 
@@ -187,7 +196,8 @@ impl Change {
     pub fn of(ops: Vec<Op>, names: &Names) -> Change {
         let along = model::along(&ops);
         let why = model::why(&ops);
-        Change { ops, new_artists: names.new_artists.clone(), new_albums: names.new_albums.clone(), along, why }
+        let sync = model::sync(&ops);
+        Change { ops, new_artists: names.new_artists.clone(), new_albums: names.new_albums.clone(), along, sync, why }
     }
 }
 
@@ -199,7 +209,7 @@ impl Engine {
         self.load(shell, targets);
         let version = self.loaded.lock().unwrap().version;
         let mut hasher = std::hash::DefaultHasher::new();
-        (targets, format!("{:?}", change.ops), names.version, version, shell.generation, change.along, &change.why, variant).hash(&mut hasher);
+        (targets, format!("{:?}", change.ops), names.version, version, shell.generation, change.along, change.sync, &change.why, variant).hash(&mut hasher);
         let key = hasher.finish();
         if key != self.plan_key {
             self.plans = self.plan(catalog, targets, &change.ops, names, variant);
@@ -304,6 +314,11 @@ impl Engine {
         self.plans.iter().find(|p| p.track == track).and_then(|p| if let PlanState::Ready(r) = &p.state { Some(&**r) } else { None })
     }
 
+    /// The loaded details of a target.
+    pub fn detail(&self, track: Uuid) -> Option<Arc<TrackDetail>> {
+        self.loaded.lock().unwrap().details.get(&track).and_then(|d| d.as_ref().ok().cloned())
+    }
+
     /// How many targets are loaded.
     pub fn loaded_count(&self, targets: &[Uuid]) -> usize {
         let loaded = self.loaded.lock().unwrap();
@@ -343,7 +358,7 @@ impl Engine {
                                     let name = catalog.grouping(*g).map(|g| g.name.clone()).unwrap_or_default();
                                     lines.push(format!("grouping: + “{name}” (and a single it's alone on)"));
                                 }
-                                PlanState::Ready(Box::new(Ready { position, base, meta, facts, lines, joins }))
+                                PlanState::Ready(Box::new(Ready { position, base, meta, facts, lines, joins, sync: model::sync(ops) }))
                             }
                         }
                     }
@@ -355,7 +370,7 @@ impl Engine {
 
     fn ask_preview(&self, shell: &Shell, key: u64, change: &Change) {
         let ready: Vec<(Uuid, Ready)> = self.plans.iter().filter_map(|p| match &p.state {
-            PlanState::Ready(r) if r.writes() => Some((p.track, (**r).clone())),
+            PlanState::Ready(r) if r.sends() => Some((p.track, (**r).clone())),
             _ => None,
         }).collect();
         {
@@ -398,7 +413,7 @@ impl Engine {
             PlanState::Ready(r) if r.changes() => Some((p.track, (**r).clone())),
             _ => None,
         }).collect();
-        let writes: Vec<(Uuid, Ready)> = ready.iter().filter(|(_, r)| r.writes()).cloned().collect();
+        let writes: Vec<(Uuid, Ready)> = ready.iter().filter(|(_, r)| r.sends()).cloned().collect();
         let joins: Vec<(Uuid, Vec<Uuid>)> = ready.iter().filter(|(_, r)| !r.joins.is_empty()).map(|(t, r)| (*t, r.joins.clone())).collect();
         {
             let mut applied = self.applied.lock().unwrap();
@@ -425,14 +440,14 @@ impl Engine {
                     Ok(d) => match Base::for_variant(&d, variant) {
                         Some(base) => {
                             let (meta, facts) = model::apply(&change.ops, &base.meta, &base.facts, position);
-                            Ok(Ready { position, base, meta, facts, lines: Vec::new(), joins: Vec::new() })
+                            Ok(Ready { position, base, meta, facts, lines: Vec::new(), joins: Vec::new(), sync: change.sync })
                         }
                         None => Err("it has no version to edit".to_string()),
                     },
                     Err(err) => Err(err.message),
                 };
                 let outcome = match again {
-                    Ok(r) if !r.writes() => Ok(()),
+                    Ok(r) if !r.sends() => Ok(()),
                     Ok(r) => match send(&api, &[(track, r)], &change, &mut ids, &applied).await.pop() {
                         Some((_, _, outcome)) => outcome,
                         None => Err("no answer".into()),
@@ -541,7 +556,7 @@ fn body(chunk: &[(Uuid, Ready)], change: &Change, ids: &HashMap<Uuid, Uuid>, pre
             refused.push((*track, "it has no facts revision to build on yet, so its status, albums and related tracks can't change".into()));
             continue;
         }
-        let mut entry = json!({ "track_id": track, "along": change.along });
+        let mut entry = json!({ "track_id": track, "along": change.along, "sync": change.sync });
         if r.meta_changed() {
             let mut meta = r.meta.clone();
             for c in &mut meta.credits {
@@ -639,13 +654,13 @@ mod tests {
         if let Some(a) = album {
             facts.albums.push(Membership { album_id: id(a), disc_number: None, track_number: None });
         }
-        Ready { position, base, meta, facts, lines: vec![], joins: vec![] }
+        Ready { position, base, meta, facts, lines: vec![], joins: vec![], sync: false }
     }
 
     #[test]
     fn requests_name_new_things_once_and_use_their_real_ids_after() {
         // A new artist (9) on both tracks, a new EP (8) both go on; only 9 credited on both.
-        let change = Change { ops: vec![], new_artists: vec![(id(9), "New".into())], new_albums: vec![(id(8), "EP".into(), "ep".into())], along: true, why: "why".into() };
+        let change = Change { ops: vec![], new_artists: vec![(id(9), "New".into())], new_albums: vec![(id(8), "EP".into(), "ep".into())], along: true, sync: false, why: "why".into() };
         let chunk = vec![(id(1), ready(0, &[9, 5], Some(8))), (id(2), ready(1, &[9], Some(8)))];
         let (body, refused) = body(&chunk, &change, &HashMap::new(), true);
         assert!(refused.is_empty());

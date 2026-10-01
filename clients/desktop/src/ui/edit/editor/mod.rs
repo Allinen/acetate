@@ -182,6 +182,11 @@ impl TrackEditor {
         self.saved.take()
     }
 
+    /// One track's title as it is (loaded by the editor), once it's there.
+    pub fn title(&self, track: Uuid) -> Option<String> {
+        self.engine.ready(track).map(|r| r.base.meta.title.clone())
+    }
+
     /// One track's credits as the staged changes leave them.
     pub fn credits_after(&self, track: Uuid) -> Option<Vec<model::Credit>> {
         self.engine.ready(track).map(|r| r.meta.credits.clone())
@@ -313,7 +318,28 @@ impl TrackEditor {
                 let done = &shell.flags.done;
                 let now: Vec<String> = catalog.issues.get(&track).map(|f| f.iter().filter(|(id, _)| !done.contains(id)).map(|(_, k)| k.clone()).collect()).unwrap_or_default();
                 let after = self.after_flags(track);
-                panel::rows(r, catalog, &self.names.stand_ins(), &now, after.as_deref())
+                // The names credits are under: the track's own, and those of artists chosen here.
+                let mut aliases: std::collections::HashMap<Uuid, String> = std::collections::HashMap::new();
+                if let Some(d) = self.engine.detail(track) {
+                    aliases.extend(d.credits.iter().filter_map(|c| Some((c.alias_id?, c.alias.clone()?))));
+                    aliases.extend(d.alias_names.iter().map(|(k, v)| (*k, v.clone())));
+                }
+                let unnamed: Vec<Uuid> = r.meta.credits.iter().filter(|c| c.alias_id.is_some_and(|a| !aliases.contains_key(&a))).map(|c| c.artist_id).collect();
+                for artist in unnamed {
+                    if let Some(a) = shell.artist_details.get(artist).value.as_ref() {
+                        aliases.extend(a.aliases.iter().map(|x| (x.id, x.name.clone())));
+                    }
+                }
+                let ambiguous: Vec<(Uuid, Vec<Uuid>)> = shell
+                    .flags
+                    .list
+                    .iter()
+                    .filter(|f| f.track_id == track && f.kind == "ambiguous_artist" && !done.contains(&f.id))
+                    .map(|f| (f.id, f.candidates().into_iter().map(|c| c.0).collect()))
+                    .collect();
+                let names = self.names.stand_ins();
+                let know = panel::Know { catalog, names: &names, aliases: &aliases, ambiguous: &ambiguous };
+                panel::rows(r, &know, &now, after.as_deref())
             }
             _ => Vec::new(),
         };
@@ -380,7 +406,21 @@ impl TrackEditor {
             && let Some(r) = targets.first().and_then(|t| self.engine.ready(*t)).cloned()
         {
             let pressed = |k: Key, m: Modifiers| ctx.input_mut(|i| i.consume_key(m, k));
-            if pressed(Key::ArrowDown, Modifiers::NONE) || pressed(Key::J, Modifiers::NONE) {
+            // Alt first: a key asked for without Alt matches with it too.
+            let earlier = pressed(Key::ArrowUp, Modifiers::ALT) || pressed(Key::K, Modifiers::ALT);
+            let later = !earlier && (pressed(Key::ArrowDown, Modifiers::ALT) || pressed(Key::J, Modifiers::ALT));
+            if earlier || later {
+                ctx.input_mut(|i| i.events.retain(|e| !matches!(e, egui::Event::Text(_))));
+                self.row_key(row.kind, if earlier { RowKey::Earlier } else { RowKey::Later }, &r, shell, &here);
+                // The cursor goes with the artist moved (credits are rows next to each other).
+                if let RowKind::Credit(at) = row.kind {
+                    if earlier && at > 0 {
+                        self.row = Some(n - 1);
+                    } else if later && at + 1 < r.meta.credits.len() {
+                        self.row = Some(n + 1);
+                    }
+                }
+            } else if pressed(Key::ArrowDown, Modifiers::NONE) || pressed(Key::J, Modifiers::NONE) {
                 self.row = Some((n + 1).min(rows.len() - 1));
             } else if pressed(Key::ArrowUp, Modifiers::NONE) || pressed(Key::K, Modifiers::NONE) {
                 if n == 0 {
@@ -401,17 +441,25 @@ impl TrackEditor {
                     Some(RowKey::Alias)
                 } else if pressed(Key::Delete, Modifiers::NONE) {
                     Some(RowKey::Remove)
-                } else if pressed(Key::ArrowUp, Modifiers::ALT) {
-                    Some(RowKey::Earlier)
-                } else if pressed(Key::ArrowDown, Modifiers::ALT) {
-                    Some(RowKey::Later)
+                } else if pressed(Key::C, Modifiers::NONE) {
+                    Some(RowKey::Next)
                 } else {
                     None
                 };
                 if let Some(action) = action {
                     // The letter typed is still in this frame's input: not into the line.
                     ctx.input_mut(|i| i.events.retain(|e| !matches!(e, egui::Event::Text(_))));
-                    self.row_key(row.kind, action, &r, shell, &here);
+                    if action == RowKey::Next {
+                        // An ambiguous name: its next candidate credited instead.
+                        if let (Some((_, candidates)), Some(from)) = (&row.choose, row.artist)
+                            && let Some(at) = candidates.iter().position(|c| *c == from)
+                        {
+                            let to = candidates[(at + 1) % candidates.len()];
+                            self.replace_artist(catalog, targets[0], from, to);
+                        }
+                    } else {
+                        self.row_key(row.kind, action, &r, shell, &here);
+                    }
                 }
             }
         }
@@ -555,7 +603,7 @@ impl TrackEditor {
         // ---- State and preview ----
         let mut closed = false;
         if single {
-            self.rows_view(ui, &rows, &vocab);
+            self.rows_view(ui, shell, catalog, targets[0], &rows, &vocab);
             ui.add_space(10.0);
             closed = self.preview(ui, shell, catalog, &change, ctrl_enter, variant, true);
         } else {
@@ -795,7 +843,7 @@ impl TrackEditor {
 
     /// One track's rows: each field (the one the keys are on lit), its value as it will be
     /// (what it was, struck through), and the flags about it.
-    fn rows_view(&mut self, ui: &mut egui::Ui, rows: &[Row], vocab: &Vocab) {
+    fn rows_view(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: &Catalog, track: Uuid, rows: &[Row], vocab: &Vocab) {
         if rows.is_empty() {
             let text = match self.engine.plans.first().map(|p| &p.state) {
                 Some(PlanState::Failed(err)) => err.clone(),
@@ -805,6 +853,8 @@ impl TrackEditor {
             return;
         }
         let mut clicked = None;
+        // An ambiguous name's candidate clicked: (the flag, the one credited, the one clicked).
+        let mut chosen: Option<(Uuid, Uuid, Uuid)> = None;
         // The value gets the room the key and the flags leave (a grid's cells are only as
         // wide as they're told: text in them wraps after a word or two otherwise).
         let value_width = (ui.available_width() - 90.0 - 220.0).max(240.0);
@@ -818,19 +868,37 @@ impl TrackEditor {
                 ui.horizontal_wrapped(|ui| {
                     ui.set_min_width(value_width);
                     ui.set_max_width(value_width);
-                    let add = matches!(row.kind, RowKind::AddArtist | RowKind::AddAlbum | RowKind::AddRelated);
-                    let text = if row.value.is_empty() && add { "+ add".to_string() } else if row.value.is_empty() { "—".to_string() } else { row.value.clone() };
-                    let color = if row.was.is_some() { P.accent } else if add { P.faint } else { P.text };
-                    let mut value = RichText::new(text).color(color);
+                    let empty = matches!(row.kind, RowKind::AddArtist | RowKind::AddAlbum | RowKind::AddRelated);
+                    let mut value = if row.kind == RowKind::Removed {
+                        // Taken off by the staged changes.
+                        RichText::new(row.was.clone().unwrap_or_default()).color(P.faint).strikethrough()
+                    } else {
+                        let text = if row.value.is_empty() { "—".to_string() } else { row.value.clone() };
+                        let color = if row.was.is_some() { P.accent } else if empty || row.kind == RowKind::Other { P.faint } else { P.text };
+                        RichText::new(text).color(color)
+                    };
                     if lit {
                         value = value.background_color(P.surface_hi);
                     }
                     if ui.add(egui::Label::new(value).sense(egui::Sense::click())).clicked() {
                         clicked = Some(n);
                     }
-                    if let Some(was) = row.was.as_ref().filter(|w| *w != "new") {
+                    if row.kind == RowKind::Removed {
+                        ui.label(RichText::new("taken off").color(P.faint).small());
+                    } else if let Some(was) = row.was.as_ref().filter(|w| *w != "new") {
                         let was = if was.is_empty() { "—" } else { was.as_str() };
                         ui.label(RichText::new(was).color(P.faint).strikethrough());
+                    }
+                    // An ambiguous name: which of its artists it is (the credited one lit).
+                    if let (Some((flag, candidates)), Some(credited)) = (&row.choose, row.artist) {
+                        ui.label(RichText::new("which:").color(P.faint).small());
+                        for c in candidates {
+                            let label = catalog.artist_label(*c).unwrap_or_else(|| "(an artist)".into());
+                            let size = catalog.artist(*c).map(|a| format!(" · {} tracks", a.track_count)).unwrap_or_default();
+                            if ui.selectable_label(*c == credited, RichText::new(format!("{label}{size}")).small()).clicked() {
+                                chosen = Some((*flag, credited, *c));
+                            }
+                        }
                     }
                 });
                 ui.horizontal_wrapped(|ui| {
@@ -853,8 +921,22 @@ impl TrackEditor {
             self.row = Some(n);
             ui.ctx().memory_mut(|m| m.surrender_focus(self.line_id()));
         }
+        match chosen {
+            // The one credited, as it is now: it was right.
+            Some((flag, credited, c)) if c == credited && !self.has_changes() => {
+                shell.flags.resolve(&shell.api, shell.runtime.handle(), &[flag], "the credited artist was right");
+            }
+            Some((_, credited, c)) if c != credited => self.replace_artist(catalog, track, credited, c),
+            _ => {}
+        }
         if self.row.is_some() {
-            ui.label(RichText::new("Enter edits it · on an artist: r role, a credited as, Alt+↑/↓ its place · Delete takes it off · Esc back to the line").color(P.faint).small());
+            ui.label(
+                RichText::new("Enter edits it · on an artist: r role, a credited as, Alt+↑/↓ (or Alt+k/j) its place, c the next of an ambiguous name's artists · Delete takes it off · Esc back to the line")
+                    .color(P.faint)
+                    .small(),
+            );
+        } else if rows.iter().any(|r| r.choose.is_some()) {
+            ui.label(RichText::new("An ambiguous name: click which artist it is (the one credited, as it is: it was right).").color(P.faint).small());
         }
     }
 
@@ -997,8 +1079,13 @@ impl TrackEditor {
                 for line in &lines {
                     ui.label(RichText::new(format!("{indent}{line}")).color(P.muted));
                 }
-                if let Some(err) = err {
+                if let Some(err) = &err {
                     ui.label(RichText::new(format!("{indent}{err}")).color(P.danger));
+                }
+                // Made to match, and nothing to change: said so (once the server has).
+                let answered = applied_answers.contains_key(&plan.track) || answers.contains_key(&plan.track);
+                if change.sync && lines.is_empty() && err.is_none() && answered {
+                    ui.label(RichText::new(format!("{indent}its albums match it already (or it's alone on none)")).color(P.faint));
                 }
                 // Its flags (with one track the rows say them).
                 let answer = applied_answers.get(&plan.track).or_else(|| answers.get(&plan.track));
@@ -1058,6 +1145,8 @@ enum RowKey {
     Remove,
     Earlier,
     Later,
+    /// An ambiguous name's next candidate.
+    Next,
 }
 
 /// A list under the line: (label, what tells it apart), the chosen one lit. A click sets

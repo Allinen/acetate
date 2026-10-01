@@ -46,6 +46,12 @@ impl Flag {
     pub fn note(&self) -> &str {
         self.related.get("note").and_then(|n| n.as_str()).unwrap_or("")
     }
+
+    /// An ambiguous artist's candidates: (id, name), in the flag's order.
+    pub fn candidates(&self) -> Vec<(Uuid, String)> {
+        let artists = self.related_artists.as_array().cloned().unwrap_or_default();
+        artists.iter().filter_map(|a| Some((a.get("id")?.as_str()?.parse().ok()?, a.get("name")?.as_str()?.to_string()))).collect()
+    }
 }
 
 const PAGE: usize = 500;

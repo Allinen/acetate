@@ -13,7 +13,9 @@
 //!   singles. Only albums it was already alone on: a track put on a new album doesn't
 //!   rename it. Counting what the user can see means an album whose other tracks are all
 //!   hidden from them looks like it has one track; that's the price of not telling them
-//!   hidden tracks are there. (Their tracks themselves are never touched.)
+//!   hidden tracks are there. (Their tracks themselves are never touched.) `sync` makes
+//!   them match the track whatever the edit changes (nothing, even): its title, date and
+//!   performers, as the track's shown version has them once the edit is written.
 //! * **The flags after it**: each track's open review flags once the checks have run
 //!   (they're deferred to the commit; see migration 0030), so a preview says exactly what
 //!   would still be missing.
@@ -71,6 +73,9 @@ pub struct TrackEdit {
     /// Change the albums it's alone on along with it (see the module's notes).
     #[serde(default = "yes")]
     pub along: bool,
+    /// Make the albums it's alone on match it, changed by this edit or not.
+    #[serde(default)]
+    pub sync: bool,
 }
 
 fn yes() -> bool {
@@ -237,15 +242,27 @@ async fn edit_track(
         done.facts = Some(revisions::write_external(conn, track, Some(f.base_revision_id), &data, Source::Edit, reason).await?);
     }
 
-    // The albums along: what changed on the track, if it's still on them.
-    if let (Some(before), Some(m)) = (before, &edit.meta) {
-        let after = TrackMetadata { credits: real_credits(&m.data.credits, artists), ..m.data.clone() };
+    // The albums along, if it's still on them: what changed on the track, or (`sync`) all
+    // of it, as its shown version is now.
+    let synced = match (edit.sync && edit.along && !alone_on.is_empty(), shown) {
+        (true, Some(shown)) => latest_meta(conn, shown).await?,
+        _ => None,
+    };
+    let changed = match (before, &edit.meta) {
+        (Some(before), Some(m)) => Some((before, TrackMetadata { credits: real_credits(&m.data.credits, artists), ..m.data.clone() })),
+        _ => None,
+    };
+    if synced.is_some() || changed.is_some() {
         let still_on: Vec<Uuid> = sqlx::query_scalar!("SELECT album_id FROM album_tracks WHERE track_id = $1", track)
             .fetch_all(&mut *conn)
             .await?;
         for album in alone_on.into_iter().filter(|a| still_on.contains(a)) {
             let Some((base, old)) = latest_album(conn, album).await? else { continue };
-            let new = along(&old, &before, &after);
+            let new = match (&synced, &changed) {
+                (Some(now), _) => matching(&old, now),
+                (None, Some((before, after))) => along(&old, before, after),
+                (None, None) => continue,
+            };
             if new != old {
                 revisions::write_album(conn, album, Some(base), &new, Source::Edit, &along_reason(reason)).await?;
                 done.along.push(Along { album_id: album, before: old, after: new });
@@ -269,6 +286,11 @@ pub fn along(album: &AlbumData, before: &TrackMetadata, after: &TrackMetadata) -
         new.credits = performers(&after.credits);
     }
     new
+}
+
+/// The album matching the track: its title, release date and performers.
+pub fn matching(album: &AlbumData, track: &TrackMetadata) -> AlbumData {
+    AlbumData { title: track.title.clone(), release_date: track.release_date.clone(), credits: performers(&track.credits), ..album.clone() }
 }
 
 /// Primary and featured credits, in order: what an album credits.

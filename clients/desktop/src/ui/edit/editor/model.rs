@@ -128,6 +128,8 @@ pub enum Op {
     Group(Uuid),
     /// Whether albums it's alone on change along (the last one says).
     Along(bool),
+    /// Albums it's alone on are made to match it, changed or not (title, date, performers).
+    Sync,
     /// Why (the last one says): kept with every revision.
     Why(String),
 }
@@ -187,7 +189,7 @@ pub fn apply(ops: &[Op], meta: &Meta, facts: &Facts, position: usize) -> (Meta, 
             }
             Op::Unrelate(track) => facts.relations.retain(|r| r.track_id != *track),
             Op::NoRelations => facts.relations.clear(),
-            Op::Group(_) | Op::Along(_) | Op::Why(_) => {}
+            Op::Group(_) | Op::Along(_) | Op::Sync | Op::Why(_) => {}
         }
     }
     (meta, facts)
@@ -236,7 +238,20 @@ pub fn groupings(ops: &[Op]) -> Vec<Uuid> {
 /// Whether albums change along (on unless an `along:off` says otherwise, the last one
 /// winning).
 pub fn along(ops: &[Op]) -> bool {
-    ops.iter().rev().find_map(|op| if let Op::Along(on) = op { Some(*on) } else { None }).unwrap_or(true)
+    ops.iter().rev().find_map(|op| match op {
+        Op::Along(on) => Some(*on),
+        Op::Sync => Some(true),
+        _ => None,
+    }).unwrap_or(true)
+}
+
+/// Whether the albums are made to match (an `along:sync` not turned off after it).
+pub fn sync(ops: &[Op]) -> bool {
+    ops.iter().rev().find_map(|op| match op {
+        Op::Sync => Some(true),
+        Op::Along(false) => Some(false),
+        _ => None,
+    }).unwrap_or(false)
 }
 
 /// The reason given (the last `why:`), or empty.
@@ -323,5 +338,9 @@ mod tests {
         assert!(!along(&ops));
         assert_eq!(why(&ops), "b");
         assert!(along(&[]));
+        // Made to match: along, until turned off.
+        assert!(sync(&[Op::Sync]) && along(&[Op::Along(false), Op::Sync]));
+        assert!(!sync(&[Op::Sync, Op::Along(false)]) && !sync(&[]));
+        assert!(sync(&[Op::Sync, Op::Along(true)]), "on doesn't undo making them match");
     }
 }

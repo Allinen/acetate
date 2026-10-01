@@ -414,7 +414,8 @@ fn unit(
             match value.to_lowercase().as_str() {
                 "on" | "yes" | "" => done("albums it's alone on: change along".into(), vec![Op::Along(true)]),
                 "off" | "no" => done("albums it's alone on: left as they are".into(), vec![Op::Along(false)]),
-                _ => Err("along: on or off".into()),
+                "sync" | "all" | "match" => done("albums it's alone on: made to match it (title, date, performers), changed or not".into(), vec![Op::Sync]),
+                _ => Err("along: on, off, or sync".into()),
             }
         }
         K::Role | K::As | K::Kind => Err(format!("{}: goes after what it's about (artist:… role:…)", main.key.name())),
@@ -633,7 +634,14 @@ pub fn candidates(
                 }
             }
         }
-        K::Along => out = simple(&["on".to_string(), "off".to_string()], &|s| if s == "on" { "on: albums it's alone on change along".into() } else { "off: only the tracks".into() }),
+        K::Along => {
+            let label = |s: &str| match s {
+                "on" => "on: albums it's alone on change along with what changes".to_string(),
+                "sync" => "sync: albums it's alone on made to match it, changed or not".to_string(),
+                _ => "off: only the tracks".to_string(),
+            };
+            out = simple(&["on".to_string(), "sync".to_string(), "off".to_string()], &label);
+        }
         _ => {}
     }
     out.truncate(10);
@@ -660,6 +668,7 @@ pub fn actions(words: &str, ctx: &Ctx) -> Vec<(String, String)> {
         ("Track numbers in order from…".into(), "track:1+".into()),
         ("Why (kept with the change)…".into(), "why:".into()),
         ("Albums it's alone on: leave them".into(), "along:off".into()),
+        ("Albums it's alone on: make them match it".into(), "along:sync".into()),
     ];
     for status in &ctx.vocab.statuses {
         all.push((format!("Status: {status}"), format!("status:{status}")));
@@ -740,6 +749,7 @@ mod tests {
         assert_eq!(ops("date:none -genre"), [Op::Date(None), Op::NoGenres]);
         assert_eq!(ops("group:crew"), [Op::Group(id("00000000-0000-7000-8000-0000000000c1"))]);
         assert_eq!(ops("along:off why:fixing tags"), [Op::Along(false), Op::Why("fixing tags".into())]);
+        assert_eq!(ops("along:sync"), [Op::Sync]);
     }
 
     #[test]
