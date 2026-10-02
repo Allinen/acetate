@@ -40,8 +40,8 @@ pub const GROUPING_COLUMNS: &[&str] = &["id", "kind", "name", "track_count", "al
 
 /// `aliases`: the names it's listed as credited under (hidden ones, taken off it, aren't).
 /// Extras (stems, samples…; `db::extras`) the user can see, to search and to list on the
-/// pages they're linked to. `links`: `[["track" | "album" | "artist", id], …]` (only those
-/// seen). `files`: how many (not taken off); `first_file`/`duration_ms`: the first audio
+/// pages they're linked to. `links`: `[["track" | "album" | "artist" | "grouping", id], …]`
+/// (only those seen). `files`: how many (not taken off); `first_file`/`duration_ms`: the first audio
 /// one's (by name), to play (none: no audio). `video`: its first video file (to watch);
 /// `thumb_key`: that video's thumbnail (`GET /api/images/{key}`). `hidden`: taken off (a delta sends it so the client drops it).
 pub const EXTRA_COLUMNS: &[&str] = &["id", "name", "kind", "is_restricted", "hidden", "links", "files", "first_file", "duration_ms", "video", "thumb_key"];
@@ -53,9 +53,10 @@ pub async fn extras_json(conn: &mut PgConnection, ids: Option<&[Uuid]>) -> sqlx:
         SELECT COALESCE(json_agg(json_build_array(
                    e.id, e.name, e.kind, e.is_restricted, e.hidden_at IS NOT NULL,
                    COALESCE((SELECT json_agg(json_build_array(
-                                 CASE WHEN l.track_id IS NOT NULL THEN 'track' WHEN l.album_id IS NOT NULL THEN 'album' ELSE 'artist' END,
+                                 CASE WHEN l.track_id IS NOT NULL THEN 'track' WHEN l.album_id IS NOT NULL THEN 'album'
+                                      WHEN l.artist_id IS NOT NULL THEN 'artist' ELSE 'grouping' END,
                                  -- (A track merged since: the one it went into.)
-                                 COALESCE(final_track(l.track_id), l.album_id, l.artist_id)) ORDER BY l.id)
+                                 COALESCE(final_track(l.track_id), l.album_id, l.artist_id, l.grouping_id)) ORDER BY l.id)
                              FROM extra_links l WHERE l.extra_id = e.id), '[]'::json),
                    (SELECT count(*) FROM extra_files f WHERE f.extra_id = e.id AND f.hidden_at IS NULL),
                    first.id, first.duration_ms, video.id, left(video.thumb_sha256, 16)

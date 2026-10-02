@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE extra_links SET artist_id = NULL, grouping_id = $2 WHERE artist_id = $1 RETURNING extra_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "extra_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "extra_links",
+            "name": "extra_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "0584a2db44f3ac79b0896eebcad9f95462e890bdc3067a017cc924adedb31a96"
+}

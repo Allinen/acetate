@@ -436,6 +436,7 @@ impl Palette {
                 let belongs = extra.links.iter().find_map(|(kind, id)| match kind.as_str() {
                     "track" => c.track_index(*id).map(|t| c.tracks[t as usize].title.clone()),
                     "album" => c.album(*id).map(|a| a.title.clone()),
+                    "grouping" => c.grouping(*id).map(|g| g.name.clone()),
                     _ => c.artist(*id).map(|a| a.name.clone()),
                 });
                 let files = crate::ui::edit::extras::files_text(extra.files as usize);

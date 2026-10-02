@@ -57,6 +57,10 @@ pub struct TrackPage {
     lyrics: usize,
     /// The synced line last scrolled to (so it scrolls when the line changes, not always).
     followed_line: Option<usize>,
+    /// A section the editor's line asked for (a verb: `lyrics`, `history`…): opened and
+    /// scrolled to next frame (`revealing` then).
+    reveal: Option<&'static str>,
+    revealing: Option<&'static str>,
 }
 
 impl TrackPage {
@@ -208,6 +212,7 @@ impl TrackPage {
             if !shell.edit_mode {
                 self.editor_opened = None;
             }
+            self.revealing = self.reveal.take();
             if shell.edit_mode {
                 // The cursor in the editor's line, the first time it's shown for this track.
                 let open = self.editor_opened != Some(d.id);
@@ -229,7 +234,9 @@ impl TrackPage {
                     ui.horizontal_top(|ui| {
                         ui.allocate_ui_with_layout(Vec2::new(left_width, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
                             ui.set_width(left_width);
-                            section(ui, "Edit", true, |ui| edit(ui, shell, catalog, &d, &mut self.versions));
+                            let mut verb = None;
+                            section(ui, "Edit", true, |ui| verb = edit(ui, shell, catalog, &d, &mut self.versions));
+                            self.verb(shell, &d, verb);
                             self.edit_lyrics(ui, shell, catalog, &d, player);
                         });
                         ui.add_space(gap);
@@ -239,7 +246,9 @@ impl TrackPage {
                         });
                     });
                 } else {
-                    section(ui, "Edit", true, |ui| edit(ui, shell, catalog, &d, &mut self.versions));
+                    let mut verb = None;
+                    section(ui, "Edit", true, |ui| verb = edit(ui, shell, catalog, &d, &mut self.versions));
+                    self.verb(shell, &d, verb);
                     self.edit_lyrics(ui, shell, catalog, &d, player);
                     self.view_sections(ui, shell, catalog, &d, is_playing, player);
                 }
@@ -250,10 +259,31 @@ impl TrackPage {
         });
     }
 
+    /// A tool the editor's line asked for (a verb): opened here.
+    fn verb(&mut self, shell: &mut Shell, d: &TrackDetail, verb: Option<crate::ui::edit::editor::Verb>) {
+        use crate::ui::edit::editor::Verb;
+        match verb {
+            Some(Verb::Merge) => {
+                self.picking_merge = true;
+                shell.act(Action::Pick { kind: crate::ui::edit::PickKind::Track, except: Some(d.id) });
+            }
+            Some(Verb::Extra) => self.to_extra = Some(super::to_extra::ToExtra::open(d.id, &d.title)),
+            Some(Verb::Lyrics) => {
+                self.reveal = Some("Edit lyrics");
+                self.lyrics_editor.focus();
+            }
+            Some(Verb::Notes) => self.reveal = Some("Notes"),
+            Some(Verb::History) => self.reveal = Some("History"),
+            Some(Verb::File) => self.reveal = Some("File"),
+            Some(Verb::MergeTwo | Verb::CreditedAs | Verb::MarkOriginal) | None => {}
+        }
+    }
+
     /// Edit mode: its lyrics entries, one open in a form.
     fn edit_lyrics(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: &Catalog, d: &TrackDetail, player: &PlayerView) {
         let open = self.lyrics_editor.dirty() || d.lyrics.is_empty();
-        section(ui, &format!("Edit lyrics ({})", d.lyrics.len()), open, |ui| self.lyrics_editor.show(ui, shell, catalog, d, player));
+        let reveal = self.revealing == Some("Edit lyrics");
+        section_at(ui, &format!("Edit lyrics ({})", d.lyrics.len()), open, reveal, |ui| self.lyrics_editor.show(ui, shell, catalog, d, player));
     }
 
     /// The sections that are for looking at: lyrics, credits, relations, the file,
@@ -265,7 +295,7 @@ impl TrackPage {
         }
         if crate::ui::edit::notes::NotesView::worth_showing(shell, &d.notes) {
             let count = d.notes.iter().filter(|n| !n.hidden).count();
-            section(ui, &format!("Notes ({count})"), true, |ui| self.notes.show(ui, shell, crate::ui::edit::notes::Owner::Track(d.id), &d.notes, false, true));
+            section_at(ui, &format!("Notes ({count})"), true, self.revealing == Some("Notes"), |ui| self.notes.show(ui, shell, crate::ui::edit::notes::Owner::Track(d.id), &d.notes, false, true));
         }
         if crate::ui::edit::extras::ExtrasView::worth_showing(shell, &d.extras) {
             let count = d.extras.iter().filter(|e| !e.hidden).count();
@@ -278,7 +308,7 @@ impl TrackPage {
         if !d.relations.is_empty() {
             section(ui, "Related tracks", true, |ui| relations(ui, shell, d));
         }
-        section(ui, "File", true, |ui| {
+        section_at(ui, "File", true, self.revealing == Some("File"), |ui| {
             file(ui, shell, d);
             if shell.edit_mode {
                 self.origin.show(ui, shell, d);
@@ -329,7 +359,7 @@ impl TrackPage {
         }
         if let Some(revisions) = d.revisions.as_ref().filter(|r| !r.is_empty()) {
             let open = shell.edit_mode;
-            section(ui, &format!("History ({})", revisions.len()), open, |ui| self.history.show(ui, shell, catalog, d));
+            section_at(ui, &format!("History ({})", revisions.len()), open, self.revealing == Some("History"), |ui| self.history.show(ui, shell, catalog, d));
         }
     }
 
@@ -605,20 +635,35 @@ fn artist_named(ctx: &egui::Context, shell: &Shell, name: &str) -> Option<Uuid> 
 
 /// A section with a heading; closed ones open on a click.
 fn section(ui: &mut egui::Ui, title: &str, open: bool, add: impl FnOnce(&mut egui::Ui)) {
-    egui::CollapsingHeader::new(RichText::new(title).font(font(17.0, bold())))
-        .id_salt(title.split(" (").next().unwrap_or(title))
-        .default_open(open)
-        .show(ui, |ui| {
-            ui.add_space(4.0);
-            add(ui);
-            ui.add_space(8.0);
-        });
+    section_at(ui, title, open, false, add);
+}
+
+/// A section; `reveal`: opened (if it was closed) and scrolled to.
+fn section_at(ui: &mut egui::Ui, title: &str, open: bool, reveal: bool, add: impl FnOnce(&mut egui::Ui)) {
+    let salt = title.split(" (").next().unwrap_or(title);
+    if reveal {
+        // (The id the header keeps its state under.)
+        let id = ui.make_persistent_id(egui::IdSalt::new(salt));
+        let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, open);
+        state.set_open(true);
+        state.store(ui.ctx());
+    }
+    let shown = egui::CollapsingHeader::new(RichText::new(title).font(font(17.0, bold()))).id_salt(salt).default_open(open).show(ui, |ui| {
+        ui.add_space(4.0);
+        add(ui);
+        ui.add_space(8.0);
+    });
+    if reveal {
+        shown.header_response.scroll_to_me(Some(egui::Align::Min));
+    }
     ui.add_space(6.0);
 }
 
 /// The track's editor (edit mode), under the bar choosing which version it edits. Kept in
 /// the shell per track, so changes not applied yet are still there after looking elsewhere.
-fn edit(ui: &mut egui::Ui, shell: &mut Shell, catalog: &Arc<Catalog>, d: &TrackDetail, versions: &mut crate::ui::edit::versions::VersionsBar) {
+/// Returns the tool its line asked for (a verb), to open here.
+fn edit(ui: &mut egui::Ui, shell: &mut Shell, catalog: &Arc<Catalog>, d: &TrackDetail, versions: &mut crate::ui::edit::versions::VersionsBar) -> Option<crate::ui::edit::editor::Verb> {
+    use crate::ui::edit::editor::Verb;
     // Taken out of the shell while it's shown (showing it needs the shell too: Rust
     // allows only one mutable borrow of it at a time), then put back.
     let mut editor = shell.track_editors.remove(&d.id).unwrap_or_default();
@@ -635,8 +680,19 @@ fn edit(ui: &mut egui::Ui, shell: &mut Shell, catalog: &Arc<Catalog>, d: &TrackD
     {
         editor.set_variant(other);
     }
+    // The tools this page has (the sections shown in edit mode).
+    let mut verbs = vec![Verb::Merge, Verb::Extra, Verb::Lyrics, Verb::File];
+    if crate::ui::edit::notes::NotesView::worth_showing(shell, &d.notes) {
+        verbs.push(Verb::Notes);
+    }
+    if d.revisions.as_ref().is_some_and(|r| !r.is_empty()) {
+        verbs.push(Verb::History);
+    }
+    editor.offer(&verbs);
     editor.show(ui, shell, catalog, &[d.id], None);
+    let verb = editor.take_verb();
     shell.track_editors.insert(d.id, editor);
+    verb
 }
 
 /// Every credit, by role: the artist (a link) and the name it's credited under.

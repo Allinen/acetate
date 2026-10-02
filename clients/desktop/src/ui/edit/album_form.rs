@@ -1,6 +1,6 @@
 //! Editing an album (its page, in edit mode): title, kind, release date and credits,
 //! saved as one album revision (`PUT /api/albums/{id}`) with the revision the form was
-//! filled from, like the track form: a change someone made in between is refused
+//! filled from: a change someone made in between is refused
 //! (`stale`) instead of undone, and "Load theirs, keep mine" takes theirs with only the
 //! fields you changed put back. Ctrl+Enter saves; Esc (outside a field) asks, and a
 //! second Esc discards. New artists typed in the credits are made when it's saved.

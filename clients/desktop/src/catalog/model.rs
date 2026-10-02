@@ -152,7 +152,7 @@ pub struct Extra {
     pub is_restricted: bool,
     /// Taken off: left out.
     pub hidden: bool,
-    /// What it belongs to: ("track" | "album" | "artist", id).
+    /// What it belongs to: ("track" | "album" | "artist" | "grouping", id).
     pub links: Vec<(String, Uuid)>,
     /// How many files it has.
     pub files: i64,

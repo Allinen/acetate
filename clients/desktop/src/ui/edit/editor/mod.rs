@@ -22,6 +22,9 @@
 //!   the track as the edit leaves it; a track on an album already gets one too, said in
 //!   the preview), `group:` puts it in a grouping (or a new one, `kind:` after it), and
 //!   `-group:` takes it out.
+//! * **Verbs**: plain words also find the tools that stay separate, where the page around
+//!   the editor has them (`offer`): `merge`, `extra`, `lyrics`, `history`… Taking one hands
+//!   it to the page (`take_verb`), which opens its tool.
 //! * **Covers and sources** are changes like the rest, applied with them: `cover:paste`
 //!   (or Ctrl+V with an image, or an image dropped, anywhere in the editor), `cover:file`,
 //!   `cover:<album or track>` (a copy of its cover), `cover:#3 #1`, `-cover:#2`;
@@ -70,6 +73,45 @@ struct Staged {
     /// Its text can be typed back (Backspace puts it in the line). Not for changes made
     /// for you whose names alone wouldn't say which artist (ambiguous names).
     editable: bool,
+}
+
+/// A tool that stays separate, opened from the line (plain words find it) by the page around
+/// the editor, which says which it has (`TrackEditor::offer`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verb {
+    /// Another track picked, then both side by side, to merge (the track page's Ctrl+M).
+    Merge,
+    /// The two marked tracks side by side, to merge.
+    MergeTwo,
+    /// Turn the track into an extra of another.
+    Extra,
+    /// Its lyrics: the open entry's text (a new entry if it has none).
+    Lyrics,
+    Notes,
+    History,
+    /// The file: whether it's an original file, where it came from, earlier files.
+    File,
+    /// An artist's name on the marked tracks and their albums.
+    CreditedAs,
+    /// The marked tracks' files marked as original files.
+    MarkOriginal,
+}
+
+impl Verb {
+    /// How the list says it (the words that find it are in it).
+    pub fn label(self) -> &'static str {
+        match self {
+            Verb::Merge => "Merge with another track…  (Ctrl+M)",
+            Verb::MergeTwo => "Merge the two marked tracks…  (Ctrl+M)",
+            Verb::Extra => "Turn into an extra… (vocals, a stem, a clip of another song)",
+            Verb::Lyrics => "Lyrics: edit them, or add some",
+            Verb::Notes => "Notes: write one",
+            Verb::History => "History: its changes (restore one)",
+            Verb::File => "File: original file or not, where it came from, earlier files",
+            Verb::CreditedAs => "Credited as… (an artist's name on these tracks and their albums)",
+            Verb::MarkOriginal => "Mark as original files… (og files whose tags didn't say so)",
+        }
+    }
 }
 
 /// What resolving a line needs, apart from the editor itself.
@@ -127,6 +169,9 @@ pub struct TrackEditor {
     chosen_at: Option<usize>,
     /// A source being corrected (one track): its place, and the form.
     correcting: Option<(usize, crate::ui::edit::sources::Form)>,
+    /// The tools the page around it has, and the one asked for (taken by the page).
+    verbs: Vec<Verb>,
+    verb: Option<Verb>,
 }
 
 impl Default for TrackEditor {
@@ -155,6 +200,8 @@ impl Default for TrackEditor {
             chosen: Arc::default(),
             chosen_at: None,
             correcting: None,
+            verbs: Vec::new(),
+            verb: None,
         }
     }
 }
@@ -234,6 +281,19 @@ impl TrackEditor {
         if self.staged.is_empty() {
             self.variant = Some(variant);
         }
+    }
+
+    /// The tools the page around it has (`Verb`), found by plain words in the line. Said
+    /// before each `show`.
+    pub fn offer(&mut self, verbs: &[Verb]) {
+        if self.verbs != verbs {
+            self.verbs = verbs.to_vec();
+        }
+    }
+
+    /// The tool asked for in the line, for the page to open (once).
+    pub fn take_verb(&mut self) -> Option<Verb> {
+        self.verb.take()
     }
 
     /// The flags after a one-track edit just applied (once).
@@ -366,6 +426,8 @@ impl TrackEditor {
                 _ => Vec::new(),
             };
             let actions = if words { resolve::actions(&parsed.words.join(" "), &rctx) } else { Vec::new() };
+            let typed = parsed.words.join(" ");
+            let verbs: Vec<Verb> = if words { self.verbs.iter().copied().filter(|v| crate::catalog::query::loosely_in(&typed, v.label())).collect() } else { Vec::new() };
             let key = {
                 use std::hash::{Hash, Hasher};
                 let mut h = std::hash::DefaultHasher::new();
@@ -380,9 +442,10 @@ impl TrackEditor {
                     units
                 }
             };
-            (candidates, actions, units)
+            (candidates, (verbs, actions), units)
         };
-        let choices = if words { actions.len() } else { candidates.len() };
+        let (verbs, actions) = actions;
+        let choices = if words { verbs.len() + actions.len() } else { candidates.len() };
         self.highlighted = self.highlighted.min(choices.saturating_sub(1));
 
         // One track's rows (and the flags on them).
@@ -596,8 +659,10 @@ impl TrackEditor {
 
         // A choice taken (Tab, Enter or a click).
         let mut clicked = None;
-        if words && !actions.is_empty() {
-            list(ui, actions.iter().map(|(label, insert)| (label.clone(), insert.clone())).collect(), self.highlighted, &mut clicked);
+        if words && (!actions.is_empty() || !verbs.is_empty()) {
+            // The tools first: a word that names one means it.
+            let rows = verbs.iter().map(|v| (v.label().to_string(), "opens it".to_string())).chain(actions.iter().map(|(label, insert)| (label.clone(), insert.clone()))).collect();
+            list(ui, rows, self.highlighted, &mut clicked);
         } else if !candidates.is_empty() {
             list(ui, candidates.iter().map(|c| (c.label.clone(), c.sub.clone())).collect(), self.highlighted, &mut clicked);
         }
@@ -606,7 +671,11 @@ impl TrackEditor {
         }
         if let Some((n, next)) = take {
             if words {
-                if let Some((_, insert)) = actions.get(n) {
+                if let Some(verb) = verbs.get(n) {
+                    self.verb = Some(*verb);
+                    self.line.clear();
+                    stage = false;
+                } else if let Some((_, insert)) = actions.get(n - verbs.len()) {
                     self.line = insert.clone();
                     self.cursor_to_end(&ctx);
                     stage = false;
@@ -618,7 +687,12 @@ impl TrackEditor {
                 }
             }
             self.highlighted = 0;
-            self.focus_line = true;
+            // (A tool asked for gets the cursor, not the line.)
+            if self.verb.is_none() {
+                self.focus_line = true;
+            } else {
+                ctx.memory_mut(|m| m.surrender_focus(line_id));
+            }
         }
         if stage {
             let line = std::mem::take(&mut self.line);
@@ -628,7 +702,7 @@ impl TrackEditor {
         }
 
         // What Enter would do (or why it can't), when no list is in the way.
-        if candidates.is_empty() && actions.is_empty() && !self.line.trim().is_empty() {
+        if candidates.is_empty() && actions.is_empty() && verbs.is_empty() && !self.line.trim().is_empty() {
             egui::Frame::NONE.fill(P.bg).corner_radius(8).inner_margin(egui::Margin::same(6)).show(ui, |ui| {
                 for u in &units {
                     match &u.result {
@@ -845,6 +919,14 @@ impl TrackEditor {
             let Ok(r) = u.result else { continue };
             if let Some((id, kind)) = &r.new_kind {
                 self.names.set_kind(*id, kind);
+            }
+            // The aliases it credits, named (for the preview's words).
+            for op in &r.ops {
+                if let Op::Credit { artist, alias: Some(Some(alias)), .. } = op
+                    && let Some(a) = shell.artist_details.get(*artist).value.as_ref().and_then(|d| d.aliases.iter().find(|x| x.id == *alias)).cloned()
+                {
+                    self.names.alias(a.id, &a.name);
+                }
             }
             match r.want {
                 Some(Want::Paste { at }) => match crate::ui::edit::cover_list::clipboard_image() {
@@ -1641,5 +1723,24 @@ impl Lookup {
             self.want = Some(key);
         }
         self.hits.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Verb;
+    use crate::catalog::query::loosely_in;
+
+    /// Plain words find the tools as the line lists them (by their label).
+    #[test]
+    fn words_find_the_tools() {
+        let all = [Verb::Merge, Verb::Extra, Verb::Lyrics, Verb::Notes, Verb::History, Verb::File, Verb::CreditedAs, Verb::MarkOriginal];
+        let found = |typed: &str| all.iter().copied().filter(|v| loosely_in(typed, v.label())).collect::<Vec<_>>();
+        assert_eq!(found("merge"), [Verb::Merge]);
+        assert_eq!(found("lyr"), [Verb::Lyrics]);
+        assert_eq!(found("credited"), [Verb::CreditedAs]);
+        assert!(found("extra").contains(&Verb::Extra));
+        assert!(found("history").contains(&Verb::History));
+        assert!(found("og").contains(&Verb::MarkOriginal));
     }
 }

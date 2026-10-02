@@ -167,8 +167,40 @@ impl Marking {
         ui.label(RichText::new(format!("Change {} tracks", thousands(marked.len()))).font(font(22.0, bold())));
         ui.label(RichText::new("Ctrl+E: the line · Ctrl+Enter: apply the preview · Esc (outside the line): discard the changes, then unmark them all (once applied: close, unmarking them)").color(P.faint).small());
         ui.add_space(8.0);
+        let verbs = self.verbs(shell);
+        self.bulk.offer(&verbs);
         if show_editor(&mut self.bulk, ui, shell, &catalog, &marked, album) {
             self.clear();
+        }
+        if let Some(verb) = self.bulk.take_verb() {
+            self.open_verb(shell, verb, marked);
+        }
+    }
+
+    /// The marked tracks' tools, as the editor's line offers them (verbs).
+    fn verbs(&self, shell: &Shell) -> Vec<crate::ui::edit::editor::Verb> {
+        use crate::ui::edit::editor::Verb;
+        if self.quick.is_some() {
+            return Vec::new();
+        }
+        let mut verbs = vec![Verb::CreditedAs];
+        if self.marked.len() == 2 {
+            verbs.insert(0, Verb::MergeTwo);
+        }
+        if shell.account.can("edit_files") {
+            verbs.push(Verb::MarkOriginal);
+        }
+        verbs
+    }
+
+    /// A tool the editor's line asked for, for the marked tracks (in the order shown).
+    fn open_verb(&mut self, shell: &Shell, verb: crate::ui::edit::editor::Verb, marked: Vec<Uuid>) {
+        use crate::ui::edit::editor::Verb;
+        match verb {
+            Verb::MergeTwo if marked.len() == 2 => self.merge = Some(super::merge::MergeView::new(marked[0], marked[1]).in_popup()),
+            Verb::CreditedAs => self.credited_as = Some(super::credited_as::CreditedAs::open(marked)),
+            Verb::MarkOriginal => self.mark_og = Some(super::mark_og::MarkOg::open(shell, marked)),
+            _ => {}
         }
     }
 
@@ -216,9 +248,17 @@ impl Marking {
                 }
             };
             let mut done = false;
+            let verbs = self.verbs(shell);
+            self.bulk.offer(&verbs);
             let closed = crate::ui::modal::show(ctx, "bulk-edit", &title, Vec2::new(1180.0, 760.0), |ui| {
                 done = show_editor(&mut self.bulk, ui, shell, &catalog, &marked, album);
             });
+            // A tool asked for in the line: its own popup instead (the changes stay: Ctrl+E).
+            if let Some(verb) = self.bulk.take_verb() {
+                self.bulk_open = false;
+                self.open_verb(shell, verb, marked);
+                return;
+            }
             if closed || done {
                 // Closed after applying (Esc, ×): done with it, as Close is.
                 if self.bulk.applied() {

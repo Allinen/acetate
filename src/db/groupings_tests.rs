@@ -243,6 +243,51 @@ async fn an_artist_is_merged_into_an_existing_collective(_: PgPoolOptions, conne
     Ok(())
 }
 
+/// Its extras go to the collective too: those the user can't see as well (the preview
+/// lists the ones they can), and one linked to both keeps a single link.
+#[sqlx::test]
+async fn an_artists_extras_move_to_its_collective(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
+    use crate::db::extras::{About, Access, Link};
+    let lib = setup(connect).await?;
+    let dir = tempfile::tempdir()?;
+    let store = BlobStore::open(dir.path())?;
+    let first = ingest_glass_harbor(&lib.owner, &store, "01 - Glass Harbor.flac", 1, 10).await?;
+    let mira = first.artists[0].id.unwrap();
+    let track = first.track_id.unwrap();
+
+    let mut tx = db::begin(&lib.owner, None).await?;
+    let crew = db::groupings::create(&mut tx, "collective", "Tide Crew", "", "").await?;
+    let (stems, _) = db::extras::create(&mut tx, "Stems", "stems", &About::default(), &[Link::Artist(mira), Link::Track(track)], None, "").await?;
+    let (both, _) = db::extras::create(&mut tx, "Both", "sample", &About::default(), &[Link::Artist(mira), Link::Grouping(crew)], None, "").await?;
+    let friends_only = Some(Access { restricted: true, groups: vec![lib.friends] });
+    let (demo, _) = db::extras::create(&mut tx, "Demo", "clip", &About::default(), &[Link::Artist(mira)], friends_only, "").await?;
+    tx.commit().await?;
+
+    // Carol (not in friends) sees two of them move.
+    let mut tx = db::begin(&lib.app, Some(lib.carol)).await?;
+    let preview = db::groupings::collective_preview(&mut tx, mira, Some(crew)).await?;
+    assert_eq!(preview.extras.iter().map(|e| e.title.as_str()).collect::<Vec<_>>(), ["Both", "Stems"]);
+    db::groupings::turn_into_collective(&mut tx, mira, Some(crew), "").await?;
+    let shown = db::groupings::detail(&mut tx, crew).await?.unwrap();
+    assert_eq!(shown.extras.iter().map(|e| e.id).collect::<Vec<_>>(), [both, stems]);
+    let logged = shown.changes.iter().find(|c| c.action == "from_artist").unwrap();
+    let mut said: Vec<Uuid> = serde_json::from_value(logged.detail["extras"].clone())?;
+    said.sort();
+    let mut all = vec![stems, both, demo];
+    all.sort();
+    assert_eq!(said, all, "the log has the one she can't see too");
+    tx.commit().await?;
+
+    let mut tx = db::begin(&lib.owner, None).await?;
+    assert!(db::extras::linked_to(&mut tx, Link::Artist(mira)).await?.is_empty(), "none left on the artist");
+    assert_eq!(db::extras::linked_to(&mut tx, Link::Grouping(crew)).await?.len(), 3, "the restricted one moved too");
+    let kinds = |e: db::extras::Extra| e.links.into_iter().map(|l| l.kind).collect::<Vec<_>>();
+    assert_eq!(kinds(db::extras::get(&mut tx, both).await?.unwrap()), ["grouping"], "linked once");
+    assert_eq!(kinds(db::extras::get(&mut tx, stems).await?.unwrap()), ["grouping", "track"], "the link kept its place");
+    assert_eq!(db::extras::history(&mut tx, stems).await?[0].what, "moved to the collective");
+    Ok(())
+}
+
 #[sqlx::test]
 async fn undoing_a_merge_takes_the_kept_track_back_out(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
     let lib = setup(connect).await?;

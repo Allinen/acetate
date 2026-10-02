@@ -1,5 +1,5 @@
-//! Extras (vocals, stems, samples, clips, project files: not tracks) on a track's, album's
-//! or artist's page: each with its files (audio plays, anything can be saved), who sees
+//! Extras (vocals, stems, samples, clips, project files: not tracks) on a track's, album's,
+//! artist's or grouping's page: each with its files (audio plays, anything can be saved), who sees
 //! it, and a link to its own page. In edit mode: "Attach extra…" (a name, a kind, files
 //! chosen, pasted or dropped; seen like the track it's attached to), linking one that's
 //! there already, adding files, unlinking, taking one off (kept: "Taken off" brings it
@@ -28,6 +28,7 @@ pub enum Owner {
     Track(Uuid),
     Album(Uuid),
     Artist(Uuid),
+    Grouping(Uuid),
 }
 
 impl Owner {
@@ -37,6 +38,7 @@ impl Owner {
             Owner::Track(id) => serde_json::json!({ "kind": "track", "id": id }),
             Owner::Album(id) => serde_json::json!({ "kind": "album", "id": id }),
             Owner::Artist(id) => serde_json::json!({ "kind": "artist", "id": id }),
+            Owner::Grouping(id) => serde_json::json!({ "kind": "grouping", "id": id }),
         }
     }
 
@@ -45,6 +47,7 @@ impl Owner {
             Owner::Track(_) => "track",
             Owner::Album(_) => "album",
             Owner::Artist(_) => "artist",
+            Owner::Grouping(_) => "grouping",
         }
     }
 
@@ -54,6 +57,7 @@ impl Owner {
             Owner::Track(id) => shell.track_details.refresh(id),
             Owner::Album(id) => shell.album_details.refresh(id),
             Owner::Artist(id) => shell.artist_details.refresh(id),
+            Owner::Grouping(id) => shell.grouping_details.refresh(id),
         }
     }
 }

@@ -91,6 +91,8 @@ pub struct LyricsEditor {
     removed_open: bool,
     /// Timing the lines (in place of the text field), if on.
     sync: Option<Sync>,
+    /// The cursor to the text, the next time it's shown (the editor's `lyrics`).
+    focus_asked: bool,
 }
 
 /// An entry's name: official or not, the language, synced or not.
@@ -108,6 +110,12 @@ fn name(l: &Lyrics, n: usize) -> String {
 impl LyricsEditor {
     pub fn dirty(&self) -> bool {
         self.open.is_some() && self.fields != self.was
+    }
+
+    /// The cursor goes to the text the next time it's shown (a new entry's, if it has
+    /// none).
+    pub fn focus(&mut self) {
+        self.focus_asked = true;
     }
 
     /// Ctrl+Enter in one of the fields, or while timing (outside any field): a save of
@@ -192,6 +200,10 @@ impl LyricsEditor {
             }
             Some(Open::New) => {}
         }
+        let focus = std::mem::take(&mut self.focus_asked);
+        if focus && self.open.is_none() {
+            self.fill(Open::New, None);
+        }
         let dirty = self.dirty();
         if dirty {
             shell.form_dirty = true;
@@ -257,7 +269,7 @@ impl LyricsEditor {
             self.sync_popup(shell, catalog, d, player);
         }
         // (While timing, the text follows what the popup does.)
-        ui.add_enabled(
+        let body = ui.add_enabled(
             self.sync.is_none(),
             egui::TextEdit::multiline(&mut self.fields.body)
                 .id(egui::Id::new(BODY_ID))
@@ -266,6 +278,10 @@ impl LyricsEditor {
                 .desired_rows(14)
                 .desired_width(f32::INFINITY),
         );
+        if focus {
+            body.request_focus();
+            body.scroll_to_me(Some(egui::Align::Center));
+        }
         ui.add(egui::TextEdit::singleline(&mut self.reason).id(egui::Id::new(REASON_ID)).hint_text("Why (optional: kept with the change)").desired_width(420.0));
         let can_save = dirty && !self.saving && !self.fields.body.trim().is_empty();
         ui.horizontal(|ui| {

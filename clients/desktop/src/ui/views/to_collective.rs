@@ -4,8 +4,8 @@
 //! is already (the same collective, whose account on another platform made another
 //! artist of it). A popup shows the server's preview first, changing
 //! nothing: the sources (accounts) that move to the collective, how many tracks and albums
-//! go in it and lose the artist's credit, and which are left with no one credited (the
-//! server flags those for Review). Then the button. See the server's
+//! go in it and lose the artist's credit, which are left with no one credited (the
+//! server flags those for Review), and the extras that move to it. Then the button. See the server's
 //! `db::groupings::turn_into_collective`.
 
 use std::sync::{Arc, Mutex};
@@ -32,6 +32,8 @@ struct Preview {
     albums: i64,
     tracks_left_without_primary: Vec<Named>,
     albums_left_without_artists: Vec<Named>,
+    #[serde(default)]
+    extras: Vec<Named>,
 }
 
 pub struct ToCollective {
@@ -150,6 +152,11 @@ impl ToCollective {
                     thousands(preview.tracks as usize),
                     thousands(preview.albums as usize)
                 ));
+                if !preview.extras.is_empty() {
+                    let names: Vec<&str> = preview.extras.iter().take(30).map(|e| e.title.as_str()).collect();
+                    let more = if preview.extras.len() > 30 { format!(" and {} more", preview.extras.len() - 30) } else { String::new() };
+                    ui.label(format!("• Its extras ({}) belong to the collective instead: {}{more}.", thousands(preview.extras.len()), names.join(", ")));
+                }
                 ui.label("• The artist stays (nothing's deleted), credited nowhere.");
                 if !preview.tracks_left_without_primary.is_empty() {
                     ui.add_space(8.0);

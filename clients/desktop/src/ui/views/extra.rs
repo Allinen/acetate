@@ -1,8 +1,8 @@
 //! An extra's page (vocals, stems, a sample…): its files (audio plays, anything can be
 //! saved), what it belongs to, who sees it. In edit mode: its name and kind, who sees it
 //! (`manage_access`), files added (chosen, pasted or dropped) or taken off, linked to a
-//! track, album or artist (or not anymore), the extra taken off or brought back, and what
-//! was done to it (`view_history`). See the server's `db::extras`.
+//! track, album, artist or grouping (or not anymore), the extra taken off or brought back,
+//! and what was done to it (`view_history`). See the server's `db::extras`.
 
 use std::path::PathBuf;
 use std::sync::atomic::AtomicUsize;
@@ -202,6 +202,7 @@ impl ExtraPage {
                         let page = match l.kind.as_str() {
                             "track" => Page::Track(l.id),
                             "album" => Page::Album(l.id),
+                            "grouping" => Page::Grouping(l.id),
                             _ => Page::Artist(l.id),
                         };
                         if widgets::link(ui, &format!("{} ({})", l.title, l.kind), font(14.0, medium()), P.text) {
@@ -302,14 +303,30 @@ impl ExtraPage {
         }
         ui.add_space(10.0);
 
-        // Linking it to a track, album or artist.
+        // Linking it to a track, album, artist (found by typing) or grouping (there are few).
+        let mut to_grouping = None;
         ui.horizontal(|ui| {
             for (part, text) in [(Part::Tracks, "Link to a track…"), (Part::Albums, "Link to an album…"), (Part::Artists, "Link to an artist…")] {
                 if ui.button(text).clicked() {
                     self.linking = Some((part, InlineSearch::new(part)));
                 }
             }
+            let catalog = shell.catalog.value.clone();
+            let groupings: Vec<_> = catalog.iter().flat_map(|c| c.groupings.iter()).filter(|g| !extra.links.iter().any(|l| l.id == g.id)).collect();
+            if !groupings.is_empty() {
+                egui::ComboBox::from_id_salt(("extra-link-grouping", id)).selected_text("Link to a grouping…").show_ui(ui, |ui| {
+                    for g in groupings {
+                        if ui.selectable_label(false, format!("{} · {}", g.name, g.kind)).clicked() {
+                            to_grouping = Some(g.id);
+                        }
+                    }
+                });
+            }
         });
+        if let Some(grouping) = to_grouping {
+            let body = serde_json::json!({ "link": { "kind": "grouping", "id": grouping } });
+            self.send(shell, format!("/api/extras/{id}/links"), body, "Linked.".into());
+        }
         if let Some((part, search)) = self.linking.as_mut() {
             let catalog = shell.catalog.value.clone();
             let hit = search.show(ui, shell, catalog.as_deref(), egui::Id::new("extra-link"), "type its name", &[]);

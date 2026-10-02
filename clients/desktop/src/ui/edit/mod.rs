@@ -1,4 +1,6 @@
-//! Edit mode's pieces: forms that keep the revision they were filled from, save on
+//! Edit mode's pieces: the track editor (`editor`: one or many tracks, typed changes, a
+//! preview, applied in one request); for albums and artists, forms that keep the
+//! revision they were filled from, save on
 //! Ctrl+Enter (one revision, with an optional reason), discard on Esc, and handle a
 //! stale save (someone else saved in between) by loading theirs and keeping your
 //! changes on top; and pickers for artists, albums and tracks (fields that search as you

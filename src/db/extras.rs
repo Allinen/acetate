@@ -1,8 +1,8 @@
 //! Extras (migration 0040): audio and other files that aren't tracks (vocals, stems,
 //! samples, clips, project files), with a name, a kind, their files, and links to the
-//! tracks, albums and artists they belong to. Restricted like tracks. Nothing is deleted:
-//! an extra or a file is taken off (hidden) and brought back; links are made and undone;
-//! everything is logged (`extra_log`).
+//! tracks, albums, artists and groupings (0055) they belong to. Restricted like tracks.
+//! Nothing is deleted: an extra or a file is taken off (hidden) and brought back; links
+//! are made and undone; everything is logged (`extra_log`).
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -19,14 +19,17 @@ pub enum Link {
     Track(Uuid),
     Album(Uuid),
     Artist(Uuid),
+    /// A collective, an era, a project…
+    Grouping(Uuid),
 }
 
 impl Link {
-    fn ids(self) -> (Option<Uuid>, Option<Uuid>, Option<Uuid>) {
+    fn ids(self) -> (Option<Uuid>, Option<Uuid>, Option<Uuid>, Option<Uuid>) {
         match self {
-            Link::Track(id) => (Some(id), None, None),
-            Link::Album(id) => (None, Some(id), None),
-            Link::Artist(id) => (None, None, Some(id)),
+            Link::Track(id) => (Some(id), None, None, None),
+            Link::Album(id) => (None, Some(id), None, None),
+            Link::Artist(id) => (None, None, Some(id), None),
+            Link::Grouping(id) => (None, None, None, Some(id)),
         }
     }
 
@@ -35,6 +38,7 @@ impl Link {
             Link::Track(_) => "track",
             Link::Album(_) => "album",
             Link::Artist(_) => "artist",
+            Link::Grouping(_) => "grouping",
         }
     }
 }
@@ -330,11 +334,11 @@ async fn along(conn: &mut PgConnection, with: Link) -> sqlx::Result<Vec<Link>> {
     Ok(match with {
         Link::Track(track) => super::groupings::singles_of(conn, track).await?.into_iter().map(Link::Album).collect(),
         Link::Album(album) => super::groupings::only_track_of(conn, album).await?.map(Link::Track).into_iter().collect(),
-        Link::Artist(_) => Vec::new(),
+        Link::Artist(_) | Link::Grouping(_) => Vec::new(),
     })
 }
 
-/// Links it to a track, album or artist (there, and not merged away), and what goes along
+/// Links it to a track, album, artist or grouping (there, and not merged away), and what goes along
 /// (a track's single it's alone on, a single's only track). False: linked already.
 pub async fn link(conn: &mut PgConnection, extra: Uuid, to: Link, reason: &str) -> anyhow::Result<bool> {
     let made = link_one(conn, extra, to, reason).await?;
@@ -349,19 +353,22 @@ async fn link_one(conn: &mut PgConnection, extra: Uuid, to: Link, reason: &str) 
         Link::Track(id) => sqlx::query_scalar!("SELECT merged_into IS NOT NULL AS \"m!\" FROM tracks WHERE id = $1", id).fetch_optional(&mut *conn).await?,
         Link::Album(id) => sqlx::query_scalar!("SELECT merged_into IS NOT NULL AS \"m!\" FROM albums WHERE id = $1", id).fetch_optional(&mut *conn).await?,
         Link::Artist(id) => sqlx::query_scalar!("SELECT merged_into IS NOT NULL AS \"m!\" FROM artists WHERE id = $1", id).fetch_optional(&mut *conn).await?,
+        // (Never merged.)
+        Link::Grouping(id) => sqlx::query_scalar!("SELECT false AS \"m!\" FROM groupings WHERE id = $1", id).fetch_optional(&mut *conn).await?,
     };
     match merged {
         None => return Err(EditRejected::NotFound(to.name()).into()),
         Some(true) => return Err(EditRejected::Invalid(format!("that {} was merged into another: link that one", to.name())).into()),
         Some(false) => {}
     }
-    let (track, album, artist) = to.ids();
+    let (track, album, artist, grouping) = to.ids();
     let made = sqlx::query!(
-        "INSERT INTO extra_links (extra_id, track_id, album_id, artist_id) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING",
+        "INSERT INTO extra_links (extra_id, track_id, album_id, artist_id, grouping_id) VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING",
         extra,
         track,
         album,
-        artist
+        artist,
+        grouping
     )
     .execute(&mut *conn)
     .await?
@@ -384,17 +391,19 @@ pub async fn unlink(conn: &mut PgConnection, extra: Uuid, from: Link, reason: &s
 }
 
 async fn unlink_one(conn: &mut PgConnection, extra: Uuid, from: Link, reason: &str) -> anyhow::Result<bool> {
-    let (track, album, artist) = from.ids();
+    let (track, album, artist, grouping) = from.ids();
     // A track's link: also one made to a track merged into it since.
     let gone = sqlx::query!(
         r#"DELETE FROM extra_links WHERE extra_id = $1
            AND (($2::uuid IS NOT NULL AND track_id IS NOT NULL AND (track_id = $2 OR final_track(track_id) = $2))
                 OR ($3::uuid IS NOT NULL AND album_id = $3)
-                OR ($4::uuid IS NOT NULL AND artist_id = $4))"#,
+                OR ($4::uuid IS NOT NULL AND artist_id = $4)
+                OR ($5::uuid IS NOT NULL AND grouping_id = $5))"#,
         extra,
         track,
         album,
-        artist
+        artist,
+        grouping
     )
     .execute(&mut *conn)
     .await?
@@ -404,6 +413,33 @@ async fn unlink_one(conn: &mut PgConnection, extra: Uuid, from: Link, reason: &s
         log(conn, extra, "unlinked", json!({ "from": from }), reason).await?;
     }
     Ok(gone)
+}
+
+/// An artist turned into a collective (`db::groupings::turn_into_collective`): the extras
+/// linked to it are linked to the grouping instead (the link changes sides; one linked to
+/// both already loses the artist's), each logged. Only those the user sees, unless run as
+/// the system. Returns the extras, in order.
+pub async fn move_to_grouping(conn: &mut PgConnection, artist: Uuid, grouping: Uuid, name: &str, reason: &str) -> anyhow::Result<Vec<Uuid>> {
+    let mut moved = sqlx::query_scalar!(
+        r#"DELETE FROM extra_links l WHERE l.artist_id = $1
+           AND EXISTS (SELECT 1 FROM extra_links o WHERE o.extra_id = l.extra_id AND o.grouping_id = $2)
+           RETURNING l.extra_id"#,
+        artist,
+        grouping
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    moved.extend(
+        sqlx::query_scalar!("UPDATE extra_links SET artist_id = NULL, grouping_id = $2 WHERE artist_id = $1 RETURNING extra_id", artist, grouping)
+            .fetch_all(&mut *conn)
+            .await?,
+    );
+    moved.sort();
+    for &extra in &moved {
+        let details = json!({ "from": Link::Artist(artist), "to": Link::Grouping(grouping), "artist": name });
+        log(conn, extra, "moved to the collective", details, reason).await?;
+    }
+    Ok(moved)
 }
 
 /// A file (its bytes stored already, and registered) added to an extra.
@@ -515,21 +551,23 @@ pub async fn get(conn: &mut PgConnection, id: Uuid) -> sqlx::Result<Option<Extra
     }))
 }
 
-/// The extras linked to a track, album or artist (taken-off ones too, flagged), by name.
+/// The extras linked to a track, album, artist or grouping (taken-off ones too, flagged), by name.
 /// A track's include those linked to tracks merged into it (links stay where they were
 /// made: undoing the merge needs nothing).
 pub async fn linked_to(conn: &mut PgConnection, to: Link) -> sqlx::Result<Vec<Extra>> {
-    let (track, album, artist) = to.ids();
+    let (track, album, artist, grouping) = to.ids();
     let ids = sqlx::query_scalar!(
         r#"SELECT e.id FROM extras e
            WHERE EXISTS (SELECT 1 FROM extra_links l WHERE l.extra_id = e.id
                          AND (($1::uuid IS NOT NULL AND l.track_id IS NOT NULL AND final_track(l.track_id) = $1)
                               OR ($2::uuid IS NOT NULL AND l.album_id = $2)
-                              OR ($3::uuid IS NOT NULL AND l.artist_id = $3)))
+                              OR ($3::uuid IS NOT NULL AND l.artist_id = $3)
+                              OR ($4::uuid IS NOT NULL AND l.grouping_id = $4)))
            ORDER BY lower(e.name), e.id"#,
         track,
         album,
-        artist
+        artist,
+        grouping
     )
     .fetch_all(&mut *conn)
     .await?;
@@ -577,17 +615,19 @@ async fn links(conn: &mut PgConnection, extra: Uuid) -> sqlx::Result<Vec<Linked>
     sqlx::query_as!(
         Linked,
         r#"SELECT s.kind AS "kind!", s.id AS "id!", s.title AS "title!" FROM (
-               SELECT DISTINCT ON (COALESCE(t.id, l.album_id, l.artist_id))
-                      CASE WHEN l.track_id IS NOT NULL THEN 'track' WHEN l.album_id IS NOT NULL THEN 'album' ELSE 'artist' END AS kind,
-                      COALESCE(t.id, l.album_id, l.artist_id) AS id,
-                      COALESCE(t.title, al.title, a.name) AS title, l.id AS link
+               SELECT DISTINCT ON (COALESCE(t.id, l.album_id, l.artist_id, l.grouping_id))
+                      CASE WHEN l.track_id IS NOT NULL THEN 'track' WHEN l.album_id IS NOT NULL THEN 'album'
+                           WHEN l.artist_id IS NOT NULL THEN 'artist' ELSE 'grouping' END AS kind,
+                      COALESCE(t.id, l.album_id, l.artist_id, l.grouping_id) AS id,
+                      COALESCE(t.title, al.title, a.name, g.name) AS title, l.id AS link
                FROM extra_links l
                -- A track merged since: the one it went into.
                LEFT JOIN tracks t ON t.id = final_track(l.track_id)
                LEFT JOIN albums al ON al.id = l.album_id
                LEFT JOIN artists a ON a.id = l.artist_id
-               WHERE l.extra_id = $1 AND COALESCE(t.id, al.id, a.id) IS NOT NULL
-               ORDER BY COALESCE(t.id, l.album_id, l.artist_id), l.id
+               LEFT JOIN groupings g ON g.id = l.grouping_id
+               WHERE l.extra_id = $1 AND COALESCE(t.id, al.id, a.id, g.id) IS NOT NULL
+               ORDER BY COALESCE(t.id, l.album_id, l.artist_id, l.grouping_id), l.id
            ) s ORDER BY s.link"#,
         extra
     )

@@ -75,13 +75,13 @@ impl Section {
 /// Rows a track section's preview shows.
 const PREVIEW_ROWS: usize = 5;
 /// Extras the page shows before "All N".
-const PREVIEW_EXTRAS: usize = 3;
+pub(super) const PREVIEW_EXTRAS: usize = 3;
 /// The releases' cards.
 const CARD: f32 = 150.0;
 const CARD_GAP: f32 = 18.0;
 
 /// A section's heading, a link to see all of it: true when clicked.
-fn section_heading(ui: &mut egui::Ui, title: &str, count: usize, more: bool) -> bool {
+pub(super) fn section_heading(ui: &mut egui::Ui, title: &str, count: usize, more: bool) -> bool {
     let text = if more { format!("{title}  {}  ›", thousands(count)) } else { format!("{title}  {}", thousands(count)) };
     let response = ui.add(egui::Label::new(RichText::new(text).font(font(18.0, bold()))).sense(Sense::click()));
     let response = response.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text("All of it, on its own (Esc: back)");

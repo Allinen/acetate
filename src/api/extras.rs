@@ -1,5 +1,5 @@
 //! Extras (see `db::extras`): vocals, stems, samples, clips, project files. Listed with the
-//! tracks, albums and artists they're linked to; made, changed and filled here.
+//! tracks, albums, artists and groupings they're linked to; made, changed and filled here.
 
 use axum::Json;
 use axum::extract::{Multipart, Path, Request, State};

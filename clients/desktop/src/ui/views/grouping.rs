@@ -1,8 +1,9 @@
 //! A grouping's page: a collective (an account several artists post under), an era, a
 //! project… Its members (said by hand: being credited on one of its songs isn't enough),
-//! its releases (a row; the heading shows them all) and its tracks. In edit mode: members
-//! added (from the palette, or one of those credited on its songs) and taken out; its
-//! kind, name and description; its sources (the accounts: ingest puts songs from them in
+//! its releases (a row; the heading shows them all), its extras (the first few; the heading
+//! shows them all) and its tracks. In edit mode: members added (from the palette, or one of
+//! those credited on its songs) and taken out; its kind, name and description; extras
+//! attached, linked and unlinked; its sources (the accounts: ingest puts songs from them in
 //! it, see the server's `db::groupings`); every change made to it.
 
 use std::sync::{Arc, Mutex};
@@ -12,9 +13,11 @@ use serde_json::json;
 use uuid::Uuid;
 
 use super::album::play_button;
+use super::artist::{section_heading, PREVIEW_EXTRAS};
 use super::track_table::{Options, TrackTable};
 use crate::catalog::index::TrackRows;
 use crate::catalog::Catalog;
+use crate::ui::edit::extras::{ExtrasView, Owner};
 use crate::playback::PlayerView;
 use crate::ui::theme::{bold, font, medium, semibold, PALETTE as P};
 use crate::ui::{thousands, widgets, Action, Page, Shell};
@@ -35,6 +38,9 @@ pub struct GroupingPage {
     list: TrackTable,
     /// All its releases shown, alone.
     all_releases: bool,
+    /// All its extras shown, alone.
+    all_extras: bool,
+    extras: ExtrasView,
     sources: crate::ui::edit::sources::SourcesEditor,
     /// Edit mode: what's typed, and what it was filled from.
     fields: Option<(Fields, Fields)>,
@@ -57,6 +63,7 @@ impl GroupingPage {
         let detail = shell.grouping_details.get(id).value.clone();
         let tracks = catalog.grouping_tracks(id).to_vec();
         let releases = catalog.grouping_albums(id).to_vec();
+        let extras = detail.as_ref().map(|d| d.extras.clone()).unwrap_or_default();
 
         // ---- All its releases, alone ----
         if self.all_releases {
@@ -74,6 +81,26 @@ impl GroupingPage {
             }
             egui::ScrollArea::vertical().id_salt(("grouping-releases", id)).auto_shrink([false, false]).show(ui, |ui| {
                 super::artist::release_cards(ui, shell, catalog, &releases);
+            });
+            return;
+        }
+
+        // ---- All its extras, alone ----
+        if self.all_extras {
+            shell.page_takes_back = true;
+            let ctx = ui.ctx().clone();
+            let mut back = !ctx.egui_wants_keyboard_input() && ctx.input(|i| i.key_pressed(egui::Key::Escape) || i.key_pressed(egui::Key::Backspace));
+            ui.horizontal(|ui| {
+                back |= ui.button(format!("‹ {}", grouping.name)).on_hover_text("Back to the whole page (Esc)").clicked();
+                ui.label(RichText::new(format!("Extras  {}", thousands(extras.iter().filter(|e| !e.hidden).count()))).font(font(22.0, bold())));
+            });
+            ui.add_space(10.0);
+            if back {
+                self.all_extras = false;
+                return;
+            }
+            egui::ScrollArea::vertical().id_salt(("grouping-extras", id)).auto_shrink([false, false]).show(ui, |ui| {
+                self.extras.show(ui, shell, Owner::Grouping(id), &extras, false, true);
             });
             return;
         }
@@ -112,6 +139,21 @@ impl GroupingPage {
             }
             ui.add_space(8.0);
             super::artist::release_cards(ui, shell, catalog, &releases[..releases.len().min(fit)]);
+            ui.add_space(18.0);
+        }
+
+        // ---- Its extras (a collective's stems, an era's clips…): the first few ----
+        if detail.is_some() && ExtrasView::worth_showing(shell, &extras) {
+            let shown = extras.iter().filter(|e| !e.hidden).count();
+            if section_heading(ui, "Extras", shown, shown > PREVIEW_EXTRAS) {
+                self.all_extras = true;
+            }
+            // The first few shown (and those taken off, for edit mode's "Taken off").
+            let preview: Vec<crate::details::Extra> = extras.iter().filter(|e| !e.hidden).take(PREVIEW_EXTRAS).chain(extras.iter().filter(|e| e.hidden)).cloned().collect();
+            self.extras.show(ui, shell, Owner::Grouping(id), &preview, false, true);
+            if shown > PREVIEW_EXTRAS && ui.small_button(format!("All {} ›", thousands(shown))).clicked() {
+                self.all_extras = true;
+            }
             ui.add_space(18.0);
         }
 
@@ -319,7 +361,7 @@ impl GroupingPage {
                         let name = c.artist_id.and_then(|a| catalog.as_ref()?.artist(a).map(|a| a.name.clone())).unwrap_or_else(|| "an artist".into());
                         if c.action == "member_added" { format!("{name} is a member") } else { format!("{name} isn't a member") }
                     }
-                    "from_artist" => "made from an artist (its credits, tracks and sources)".to_string(),
+                    "from_artist" => "made from an artist (its credits, tracks, sources and extras)".to_string(),
                     other => other.to_string(),
                 };
                 let by = c.by.as_deref().map(|b| format!(" by {b}")).unwrap_or_default();

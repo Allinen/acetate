@@ -176,6 +176,7 @@ impl Catalog {
                     .filter_map(|(kind, id)| match kind.as_str() {
                         "track" => track_by_id.get(id).map(|&i| tracks[i as usize].title.as_str()),
                         "album" => album_by_id.get(id).map(|&i| albums[i as usize].title.as_str()),
+                        "grouping" => raw.groupings.rows.iter().find(|g| g.id == *id).map(|g| g.name.as_str()),
                         _ => artist_by_id.get(id).map(|&i| artists[i as usize].name.as_str()),
                     })
                     .collect();

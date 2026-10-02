@@ -427,6 +427,8 @@ pub struct Detail {
     /// members unless someone says so.
     pub credited: Vec<Member>,
     pub sources: Vec<super::sources::Source>,
+    /// Extras linked to it (vocals, stems…; taken-off ones too, flagged).
+    pub extras: Vec<super::extras::Extra>,
     /// Newest first.
     pub changes: Vec<Change>,
 }
@@ -481,6 +483,7 @@ pub async fn detail(conn: &mut PgConnection, id: Uuid) -> sqlx::Result<Option<De
     members.sort_by(|a, b| b.tracks.cmp(&a.tracks).then(a.name.cmp(&b.name)));
     let credited: Vec<Member> = credited_all.into_iter().filter(|c| !members.iter().any(|m| m.artist_id == c.artist_id)).collect();
     let sources = super::sources::list_for(conn, id).await?;
+    let extras = super::extras::linked_to(conn, super::extras::Link::Grouping(id)).await?;
     let changes = sqlx::query_as!(
         Change,
         r#"SELECT l.at, u.username AS "by?", l.action, l.track_id, l.album_id, l.artist_id, l.detail, l.reason
@@ -490,7 +493,7 @@ pub async fn detail(conn: &mut PgConnection, id: Uuid) -> sqlx::Result<Option<De
     )
     .fetch_all(&mut *conn)
     .await?;
-    Ok(Some(Detail { id: g.id, kind: g.kind, name: g.name, description: g.description, created_at: g.created_at, tracks, albums, members, credited, sources, changes }))
+    Ok(Some(Detail { id: g.id, kind: g.kind, name: g.name, description: g.description, created_at: g.created_at, tracks, albums, members, credited, sources, extras, changes }))
 }
 
 // ---- An artist that is really a collective ----
@@ -519,6 +522,8 @@ pub struct CollectivePreview {
     /// those with nothing left as missing artists, for Review.
     pub tracks_left_without_primary: Vec<Named>,
     pub albums_left_without_artists: Vec<Named>,
+    /// Extras linked to it (taken-off ones too): they're linked to the collective instead.
+    pub extras: Vec<Named>,
 }
 
 /// The latest data of each version (and album) crediting `artist`: what's rewritten.
@@ -610,16 +615,26 @@ pub async fn collective_preview(conn: &mut PgConnection, artist: Uuid, into: Opt
         albums: albums.len() as i64,
         tracks_left_without_primary: left,
         albums_left_without_artists: albums_left,
+        extras: sqlx::query_as!(
+            Named,
+            r#"SELECT e.id, e.name AS title FROM extras e
+               WHERE EXISTS (SELECT 1 FROM extra_links l WHERE l.extra_id = e.id AND l.artist_id = $1)
+               ORDER BY lower(e.name), e.id"#,
+            artist
+        )
+        .fetch_all(&mut *conn)
+        .await?,
     })
 }
 
 /// Turns an artist that is really a collective into one: a grouping of kind `collective`
 /// with its name; its sources move there (so ingest puts new songs from those accounts in
 /// it); every track and album crediting it goes in, and its credit comes off them (a new
-/// revision each, restorable). The artist stays, credited nowhere. Returns the grouping.
+/// revision each, restorable); its extras are linked to the collective instead. The artist
+/// stays, credited nowhere. Returns the grouping.
 ///
-/// Tracks and albums the user can't see change too (as for an artist merge), or they'd
-/// keep crediting it: that part runs as the system.
+/// Tracks, albums and extras the user can't see change too (as for an artist merge), or
+/// they'd stay with it: that part runs as the system.
 ///
 /// `into`: an existing collective it goes into instead of a new one (the same collective,
 /// as another platform's account made another artist of it): its sources join that one's
@@ -665,7 +680,8 @@ pub async fn turn_into_collective(conn: &mut PgConnection, artist: Uuid, into: O
     }
     // Its accounts are the collective's now (one it has already joins that one).
     let sources = super::sources::move_all(conn, crate::model::sources::SourceOwner::Artist(artist), crate::model::sources::SourceOwner::Grouping(grouping)).await?;
-    let detail = serde_json::json!({ "artist_id": artist, "name": name, "sources": sources, "tracks": tracks, "albums": album_ids, "into_existing": into.is_some() });
+    let extras = super::extras::move_to_grouping(conn, artist, grouping, &name, &reason).await?;
+    let detail = serde_json::json!({ "artist_id": artist, "name": name, "sources": sources, "tracks": tracks, "albums": album_ids, "extras": extras, "into_existing": into.is_some() });
     log(conn, grouping, "from_artist", None, None, detail, &reason).await?;
     system.end(conn).await?;
     Ok(grouping)

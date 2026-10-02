@@ -446,6 +446,9 @@ pub struct GroupingDetail {
     pub credited: Vec<GroupingMember>,
     #[serde(default)]
     pub sources: Vec<Source>,
+    /// Extras linked to it (taken-off ones too, flagged).
+    #[serde(default)]
+    pub extras: Vec<Extra>,
     /// Every change, newest first.
     #[serde(default)]
     pub changes: Vec<GroupingChange>,

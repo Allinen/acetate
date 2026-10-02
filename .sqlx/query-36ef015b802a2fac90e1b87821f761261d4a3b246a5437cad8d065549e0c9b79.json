@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM extra_links l WHERE l.artist_id = $1\n           AND EXISTS (SELECT 1 FROM extra_links o WHERE o.extra_id = l.extra_id AND o.grouping_id = $2)\n           RETURNING l.extra_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "extra_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "extra_links",
+            "name": "extra_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "36ef015b802a2fac90e1b87821f761261d4a3b246a5437cad8d065549e0c9b79"
+}

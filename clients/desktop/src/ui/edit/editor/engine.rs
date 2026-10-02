@@ -365,6 +365,11 @@ impl Engine {
                         if title.is_empty() {
                             title = d.title.clone();
                         }
+                        // The names its credits can be under: its own aliases, and those chosen.
+                        let mut stand_ins = stand_ins.clone();
+                        stand_ins.extend(d.credits.iter().filter_map(|c| Some((c.alias_id?, c.alias.clone()?))));
+                        stand_ins.extend(d.alias_names.iter().map(|(k, v)| (*k, v.clone())));
+                        stand_ins.extend(names.aliases.iter().cloned());
                         match Base::for_variant(d, variant) {
                             None => PlanState::Failed("it has no version to edit".into()),
                             Some(mut base) => {

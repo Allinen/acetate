@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM extra_links WHERE extra_id = $1\n           AND (($2::uuid IS NOT NULL AND track_id IS NOT NULL AND (track_id = $2 OR final_track(track_id) = $2))\n                OR ($3::uuid IS NOT NULL AND album_id = $3)\n                OR ($4::uuid IS NOT NULL AND artist_id = $4)\n                OR ($5::uuid IS NOT NULL AND grouping_id = $5))",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c7ea73c2c3a251bbd74519ff3133d595794f912c0793fcc9750b7bf45e085b8d"
+}

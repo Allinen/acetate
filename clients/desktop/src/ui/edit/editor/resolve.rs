@@ -41,6 +41,8 @@ pub struct Names {
     pub new_albums: Vec<(Uuid, String, String)>,
     /// Stand-in id → (name, kind).
     pub new_groupings: Vec<(Uuid, String, String)>,
+    /// Aliases credited by the staged changes: id → name (for the preview's words).
+    pub aliases: Vec<(Uuid, String)>,
     next: u128,
     /// Changes whenever something here does.
     pub version: u64,
@@ -83,6 +85,14 @@ impl Names {
         let id = self.stand_in();
         self.new_albums.push((id, title.to_string(), "album".into()));
         id
+    }
+
+    /// An alias the staged changes credit, named.
+    pub fn alias(&mut self, id: Uuid, name: &str) {
+        if !self.aliases.iter().any(|a| a.0 == id) {
+            self.aliases.push((id, name.to_string()));
+            self.version += 1;
+        }
     }
 
     /// A new grouping called `name` (the same one for the same name); a collective until

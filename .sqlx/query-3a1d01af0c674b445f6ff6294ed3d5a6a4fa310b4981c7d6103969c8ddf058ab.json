@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT e.id, e.name AS title FROM extras e\n               WHERE EXISTS (SELECT 1 FROM extra_links l WHERE l.extra_id = e.id AND l.artist_id = $1)\n               ORDER BY lower(e.name), e.id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "extras",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "title",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "extras",
+            "name": "name"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "3a1d01af0c674b445f6ff6294ed3d5a6a4fa310b4981c7d6103969c8ddf058ab"
+}

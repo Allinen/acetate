@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT COALESCE(json_agg(json_build_array(\n                   e.id, e.name, e.kind, e.is_restricted, e.hidden_at IS NOT NULL,\n                   COALESCE((SELECT json_agg(json_build_array(\n                                 CASE WHEN l.track_id IS NOT NULL THEN 'track' WHEN l.album_id IS NOT NULL THEN 'album'\n                                      WHEN l.artist_id IS NOT NULL THEN 'artist' ELSE 'grouping' END,\n                                 -- (A track merged since: the one it went into.)\n                                 COALESCE(final_track(l.track_id), l.album_id, l.artist_id, l.grouping_id)) ORDER BY l.id)\n                             FROM extra_links l WHERE l.extra_id = e.id), '[]'::json),\n                   (SELECT count(*) FROM extra_files f WHERE f.extra_id = e.id AND f.hidden_at IS NULL),\n                   first.id, first.duration_ms, video.id, left(video.thumb_sha256, 16)\n               ) ORDER BY e.id), '[]'::json)::text AS \"rows!\"\n        FROM extras e\n        LEFT JOIN LATERAL (\n            SELECT f.id, f.duration_ms FROM extra_files f\n            WHERE f.extra_id = e.id AND f.hidden_at IS NULL AND (f.codec IS NOT NULL OR f.duration_ms IS NOT NULL) AND f.width IS NULL\n            ORDER BY lower(f.name), f.id LIMIT 1\n        ) first ON true\n        LEFT JOIN LATERAL (\n            SELECT f.id, f.thumb_sha256 FROM extra_files f\n            WHERE f.extra_id = e.id AND f.hidden_at IS NULL AND f.width IS NOT NULL\n            ORDER BY lower(f.name), f.id LIMIT 1\n        ) video ON true\n        WHERE $1::uuid[] IS NULL OR e.id = ANY($1)\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "rows!",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "UuidArray"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "f827cb882f2503b32242106a7deb6612b6379fb0abb768e7f16b5a25d65827a8"
+}

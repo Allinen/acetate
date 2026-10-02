@@ -285,3 +285,27 @@ async fn extras_follow_a_track_merge(_: PgPoolOptions, connect: PgConnectOptions
     assert!(db::extras::linked_to(&mut tx, Link::Track(lib.v)).await?.is_empty());
     Ok(())
 }
+
+/// Linked to a grouping (a collective's stems, say): on its page, in the catalog, undone.
+#[sqlx::test]
+async fn extras_are_linked_to_groupings(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
+    let lib = setup(connect).await?;
+    let mut tx = db::begin(&lib.app, Some(lib.carol)).await?;
+    let crew = db::groupings::create(&mut tx, "collective", "Tide Crew", "", "").await?;
+    let (id, access) = db::extras::create(&mut tx, "Crew stems", "stems", &About::default(), &[Link::Grouping(crew)], None, "").await?;
+    assert_eq!(access, Access::default(), "no track: seen by everyone");
+    assert!(!db::extras::link(&mut tx, id, Link::Grouping(crew), "").await?, "once");
+    assert!(db::extras::link(&mut tx, id, Link::Grouping(uuid::Uuid::now_v7()), "").await.is_err(), "a grouping that's there");
+
+    let extra = db::extras::get(&mut tx, id).await?.unwrap();
+    assert_eq!(extra.links, [db::extras::Linked { kind: "grouping".into(), id: crew, title: "Tide Crew".into() }]);
+    let on_crew = db::groupings::detail(&mut tx, crew).await?.unwrap().extras;
+    assert_eq!(on_crew.iter().map(|e| e.id).collect::<Vec<_>>(), [id]);
+    let rows: Vec<Vec<serde_json::Value>> = serde_json::from_str(&db::library::extras_json(&mut tx, None).await?)?;
+    let links = db::library::EXTRA_COLUMNS.iter().position(|c| *c == "links").unwrap();
+    assert_eq!(rows[0][links], serde_json::json!([["grouping", crew]]));
+
+    assert!(db::extras::unlink(&mut tx, id, Link::Grouping(crew), "").await?);
+    assert!(db::extras::linked_to(&mut tx, Link::Grouping(crew)).await?.is_empty());
+    Ok(())
+}
