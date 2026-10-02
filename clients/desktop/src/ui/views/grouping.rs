@@ -105,78 +105,80 @@ impl GroupingPage {
             return;
         }
 
-        // ---- What it is ----
-        ui.label(RichText::new(grouping.kind.to_uppercase()).font(font(11.0, semibold())).color(P.accent));
-        ui.label(RichText::new(&grouping.name).font(font(40.0, bold())));
-        if let Some(d) = detail.as_ref().filter(|d| !d.description.is_empty()) {
-            ui.label(RichText::new(&d.description).font(font(14.0, medium())).color(P.muted));
-        }
-        ui.label(RichText::new(format!("{} tracks · {} releases", thousands(tracks.len()), thousands(releases.len()))).font(font(14.0, medium())).color(P.muted));
-        // Who's in it (said by hand), and in edit mode who else is credited on its songs.
-        if let Some(d) = detail.as_ref() {
-            self.members(ui, shell, id, d);
-        }
-        ui.add_space(12.0);
-        let (play_rect, _) = ui.allocate_exact_size(Vec2::new(116.0, 42.0), Sense::hover());
-        if play_button(ui, "grouping-play", play_rect) && !tracks.is_empty() {
-            shell.act(Action::Play { tracks: tracks.clone(), start: 0 });
-        }
-        ui.add_space(18.0);
-
-        if shell.edit_mode {
-            self.edit_panel(ui, shell, id, &grouping, detail.as_deref());
+        // One scroll for the whole page (header, edit panels, releases, extras, the tracks as
+        // tall as they are): nothing in it scrolls on its own.
+        egui::ScrollArea::vertical().id_salt(("grouping-page", id)).auto_shrink([false, false]).show(ui, |ui| {
+            // ---- What it is ----
+            ui.label(RichText::new(grouping.kind.to_uppercase()).font(font(11.0, semibold())).color(P.accent));
+            ui.label(RichText::new(&grouping.name).font(font(40.0, bold())));
+            if let Some(d) = detail.as_ref().filter(|d| !d.description.is_empty()) {
+                ui.label(RichText::new(&d.description).font(font(14.0, medium())).color(P.muted));
+            }
+            ui.label(RichText::new(format!("{} tracks · {} releases", thousands(tracks.len()), thousands(releases.len()))).font(font(14.0, medium())).color(P.muted));
+            // Who's in it (said by hand), and in edit mode who else is credited on its songs.
+            if let Some(d) = detail.as_ref() {
+                self.members(ui, shell, id, d);
+            }
             ui.add_space(12.0);
-        }
-
-        // ---- Its releases: a row of them (the heading shows all) ----
-        if !releases.is_empty() {
-            let fit = (((ui.available_width() + 18.0) / 168.0) as usize).max(1);
-            let more = releases.len() > fit;
-            let heading = if more { format!("Releases  {}  ›", thousands(releases.len())) } else { format!("Releases  {}", thousands(releases.len())) };
-            let response = ui.add(egui::Label::new(RichText::new(heading).font(font(18.0, bold()))).sense(Sense::click()));
-            if more && response.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-                self.all_releases = true;
-            }
-            ui.add_space(8.0);
-            super::artist::release_cards(ui, shell, catalog, &releases[..releases.len().min(fit)]);
-            ui.add_space(18.0);
-        }
-
-        // ---- Its extras (a collective's stems, an era's clips…): the first few ----
-        if detail.is_some() && ExtrasView::worth_showing(shell, &extras) {
-            let shown = extras.iter().filter(|e| !e.hidden).count();
-            if section_heading(ui, "Extras", shown, shown > PREVIEW_EXTRAS) {
-                self.all_extras = true;
-            }
-            // The first few shown (and those taken off, for edit mode's "Taken off").
-            let preview: Vec<crate::details::Extra> = extras.iter().filter(|e| !e.hidden).take(PREVIEW_EXTRAS).chain(extras.iter().filter(|e| e.hidden)).cloned().collect();
-            self.extras.show(ui, shell, Owner::Grouping(id), &preview, false, true);
-            if shown > PREVIEW_EXTRAS && ui.small_button(format!("All {} ›", thousands(shown))).clicked() {
-                self.all_extras = true;
+            let (play_rect, _) = ui.allocate_exact_size(Vec2::new(116.0, 42.0), Sense::hover());
+            if play_button(ui, "grouping-play", play_rect) && !tracks.is_empty() {
+                shell.act(Action::Play { tracks: tracks.clone(), start: 0 });
             }
             ui.add_space(18.0);
-        }
 
-        // ---- Its tracks ----
-        if tracks.is_empty() && releases.is_empty() {
-            ui.label(RichText::new("Nothing in it yet: add tracks or albums from their pages (edit mode, “Part of”).").color(P.muted));
-            return;
-        }
-        if !tracks.is_empty() {
-            ui.label(RichText::new(format!("Tracks  {}", thousands(tracks.len()))).font(font(18.0, bold())));
-            ui.add_space(8.0);
-            let rows = TrackRows { tracks: Some(&tracks), added: None };
-            let options = Options {
-                key: "grouping",
-                columns: super::tracks::LIBRARY_COLUMNS,
-                added: None,
-                filter_hint: Some("Filter: words, or artist:… album:… year:…"),
-                album: None,
-                keys: true,
-                scroll: true,
-            };
-            self.list.show(ui, shell, catalog, &rows, shell.generation, player, &options);
-        }
+            if shell.edit_mode {
+                self.edit_panel(ui, shell, id, &grouping, detail.as_deref());
+                ui.add_space(12.0);
+            }
+
+            // ---- Its releases: a row of them (the heading shows all) ----
+            if !releases.is_empty() {
+                let fit = (((ui.available_width() + 18.0) / 168.0) as usize).max(1);
+                let more = releases.len() > fit;
+                let heading = if more { format!("Releases  {}  ›", thousands(releases.len())) } else { format!("Releases  {}", thousands(releases.len())) };
+                let response = ui.add(egui::Label::new(RichText::new(heading).font(font(18.0, bold()))).sense(Sense::click()));
+                if more && response.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                    self.all_releases = true;
+                }
+                ui.add_space(8.0);
+                super::artist::release_cards(ui, shell, catalog, &releases[..releases.len().min(fit)]);
+                ui.add_space(18.0);
+            }
+
+            // ---- Its extras (a collective's stems, an era's clips…): the first few ----
+            if detail.is_some() && ExtrasView::worth_showing(shell, &extras) {
+                let shown = extras.iter().filter(|e| !e.hidden).count();
+                if section_heading(ui, "Extras", shown, shown > PREVIEW_EXTRAS) {
+                    self.all_extras = true;
+                }
+                // The first few shown (and those taken off, for edit mode's "Taken off").
+                let preview: Vec<crate::details::Extra> = extras.iter().filter(|e| !e.hidden).take(PREVIEW_EXTRAS).chain(extras.iter().filter(|e| e.hidden)).cloned().collect();
+                self.extras.show(ui, shell, Owner::Grouping(id), &preview, false, true);
+                if shown > PREVIEW_EXTRAS && ui.small_button(format!("All {} ›", thousands(shown))).clicked() {
+                    self.all_extras = true;
+                }
+                ui.add_space(18.0);
+            }
+
+            // ---- Its tracks ----
+            if tracks.is_empty() && releases.is_empty() {
+                ui.label(RichText::new("Nothing in it yet: add tracks or albums from their pages (edit mode, “Part of”).").color(P.muted));
+            } else if !tracks.is_empty() {
+                ui.label(RichText::new(format!("Tracks  {}", thousands(tracks.len()))).font(font(18.0, bold())));
+                ui.add_space(8.0);
+                let rows = TrackRows { tracks: Some(&tracks), added: None };
+                let options = Options {
+                    key: "grouping",
+                    columns: super::tracks::LIBRARY_COLUMNS,
+                    added: None,
+                    filter_hint: Some("Filter: words, or artist:… album:… year:…"),
+                    album: None,
+                    keys: true,
+                    scroll: false,
+                };
+                self.list.show(ui, shell, catalog, &rows, shell.generation, player, &options);
+            }
+        });
     }
 
     /// Its members, as links (with on how many of its tracks each is credited). In edit
