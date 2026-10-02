@@ -84,6 +84,33 @@ async fn upload(
     Ok(Json(AddedCover { id }))
 }
 
+#[derive(Debug, Serialize)]
+pub struct StagedCover {
+    blob_sha256: String,
+    width: Option<i32>,
+    height: Option<i32>,
+}
+
+/// `POST /api/covers/staged`, multipart with one image file: stores it as an image the
+/// user may make covers of with `POST /api/tracks/edit` (by its hash), without making one
+/// yet. Shown at `GET /api/images/{hash}` to them alone until then.
+pub async fn stage(State(state): State<AppState>, user: CurrentUser, mut multipart: Multipart) -> Result<Json<StagedCover>, AppError> {
+    let bad_request = |err: axum::extract::multipart::MultipartError| AppError::BadRequest(err.to_string());
+    let Some(field) = multipart.next_field().await.map_err(bad_request)? else {
+        return Err(AppError::BadRequest("send the image as a file field".to_string()));
+    };
+    let bytes = field.bytes().await.map_err(bad_request)?;
+    let Some(image) = crate::model::image_info(&bytes) else {
+        return Err(AppError::BadRequest("not a JPEG, PNG, WebP or GIF image".to_string()));
+    };
+    let sha256 = state.store.put_bytes(&bytes).await?;
+    let mut tx = state.db(&user).await?;
+    db::blobs::register(&mut tx, &sha256, state.store.default_volume(), Some(bytes.len() as i64)).await?;
+    db::covers::stage(&mut tx, &sha256, Some(image.mime), image.width, image.height).await?;
+    tx.commit().await?;
+    Ok(Json(StagedCover { blob_sha256: sha256, width: image.width, height: image.height }))
+}
+
 #[derive(Debug, Deserialize)]
 pub struct CopyCover {
     cover_id: Uuid,

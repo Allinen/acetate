@@ -369,10 +369,13 @@ pub struct EditTracks {
 
 /// `POST /api/tracks/edit`, JSON `{"tracks": [{"track_id", "meta": {"variant_id",
 /// "base_revision_id", "data"}, "facts": {"base_revision_id", "status", "albums",
-/// "relations"}, "along": true}], "new_artists": [{"id", "name"}], "new_albums": [{"id",
-/// "title", "kind", …}], "reason", "preview"}`: many tracks' new metadata and facts, each
-/// track all or nothing, with the albums they're alone on along and their review flags
-/// after (see `db::track_edits`). `preview`: the same, answered and not kept.
+/// "relations"}, "along": true, "covers": {"base": [ids], "covers": [{"id"} | {"copy_of"} |
+/// {"staged": hash}]}, "sources": {"add": [{"id", "platform", "data"}], "correct":
+/// [{"source_id", "platform", "data"}], "trash": [ids], "origin"}}], "new_artists": [{"id",
+/// "name"}], "new_albums": [{"id", "title", "kind", …}], "reason", "preview"}`: many tracks'
+/// new metadata, facts, covers and sources, each track all or nothing, with the albums
+/// they're alone on along and their review flags after (see `db::track_edits`). Sources
+/// need `edit_sources`. `preview`: the same, answered and not kept.
 pub async fn edit_many(
     State(state): State<AppState>,
     user: CurrentUser,
@@ -382,7 +385,8 @@ pub async fn edit_many(
         return Err(AppError::BadRequest(format!("at most {} tracks at once", db::track_edits::MAX_TRACKS)));
     }
     let mut tx = state.db(&user).await?;
-    let edited = db::track_edits::edit(&mut tx, &body.edit, user.has(Permission::EditRelations), super::failure).await?;
+    let may = db::track_edits::May { relations: user.has(Permission::EditRelations), sources: user.has(Permission::EditSources) };
+    let edited = db::track_edits::edit(&mut tx, &body.edit, may, super::failure).await?;
     if body.preview {
         tx.rollback().await?;
     } else {

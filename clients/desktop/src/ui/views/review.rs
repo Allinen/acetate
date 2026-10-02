@@ -86,10 +86,6 @@ enum Row {
 
 #[derive(Default)]
 pub struct Review {
-    /// The track's covers (a pasted or dropped image is added at once).
-    covers: crate::ui::edit::cover_list::CoverList,
-    /// The track's sources (a source that says too little is fixed here).
-    sources: crate::ui::edit::sources::SourcesEditor,
     group: Group,
     /// Only tracks with a flag of this kind (a chip); None: every track with any.
     only: Option<String>,
@@ -882,14 +878,6 @@ impl Review {
                 self.after_saved(shell, catalog, id, flags_after);
             }
 
-            // A track or album picked to copy a cover from.
-            self.covers.take_pick(shell);
-            ui.add_space(14.0);
-            ui.label(RichText::new("Cover").font(font(14.0, semibold())));
-            self.covers.show(ui, shell, crate::ui::edit::cover_list::Owner::Track(id), &d.covers, true);
-            ui.add_space(14.0);
-            ui.label(RichText::new("Sources").font(font(14.0, semibold())));
-            self.sources.show(ui, shell, crate::ui::edit::sources::Owner::Track(id), &d.sources);
 
             // The file's own tags, to fix from: a click puts one in its field.
             let tags = d.file.embedded_tags.clone();

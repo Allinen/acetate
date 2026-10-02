@@ -1,5 +1,5 @@
-//! Editing where a track, album or artist is from (its sources), in edit mode, with the
-//! `edit_sources` permission:
+//! Editing where an album, artist or grouping is from (its sources), in edit mode, with the
+//! `edit_sources` permission (a track's are changed in its editor: `source:`):
 //!
 //! * **Add** one: the platform first, then its fields, as the server describes them
 //!   (`GET /api/source-shapes`: whole numbers, text, or lists of text, one per line; the
@@ -12,7 +12,8 @@
 //! * **Trash** one (asks first). A source a file came from can't go (the server says
 //!   which file); adding the same data again takes one back out of the trash.
 //!
-//! And on a track, which of its sources its file came from (see `OriginPicker`).
+//! A track's sources are changed in its editor (`source:`, `origin:`); here only the
+//! changes of where its file came from (see `OriginChanges`).
 
 use std::sync::{Arc, Mutex};
 
@@ -28,7 +29,6 @@ use crate::ui::Shell;
 /// Whose sources.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Owner {
-    Track(Uuid),
     Album(Uuid),
     Artist(Uuid),
     /// A grouping (a collective's accounts: shaped like an artist's).
@@ -38,7 +38,6 @@ pub enum Owner {
 impl Owner {
     fn kind(self) -> &'static str {
         match self {
-            Owner::Track(_) => "track",
             Owner::Album(_) => "album",
             Owner::Artist(_) | Owner::Grouping(_) => "artist",
         }
@@ -46,7 +45,6 @@ impl Owner {
 
     fn path(self) -> String {
         match self {
-            Owner::Track(id) => format!("/api/tracks/{id}/sources"),
             Owner::Album(id) => format!("/api/albums/{id}/sources"),
             Owner::Artist(id) => format!("/api/artists/{id}/sources"),
             Owner::Grouping(id) => format!("/api/groupings/{id}/sources"),
@@ -56,7 +54,6 @@ impl Owner {
     /// Its details again (the sources changed).
     fn refresh(self, shell: &mut Shell) {
         match self {
-            Owner::Track(id) => shell.track_details.refresh(id),
             Owner::Album(id) => shell.album_details.refresh(id),
             Owner::Artist(id) => shell.artist_details.refresh(id),
             Owner::Grouping(id) => shell.grouping_details.refresh(id),
@@ -65,10 +62,10 @@ impl Owner {
 }
 
 /// A source being added or corrected.
-struct Form {
+pub struct Form {
     /// Correcting this source (its platform and id stay).
-    correcting: Option<Uuid>,
-    platform: String,
+    pub correcting: Option<Uuid>,
+    pub platform: String,
     /// Each field of the platform's shape, as typed (lists: one item per line).
     values: Vec<(String, String)>,
     link: String,
@@ -203,37 +200,7 @@ impl SourcesEditor {
                 ui.label(RichText::new(format!("Correcting it: a new snapshot of this {} source, the old ones kept.", form.platform)).color(P.muted));
             }
             let Some(shape) = shapes.iter().find(|s| s.platform == form.platform) else { return };
-            egui::Grid::new("source-fields").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
-                for (name, text) in form.values.iter_mut() {
-                    let Some(field) = shape.fields.iter().find(|f| f.name == *name) else { continue };
-                    let is_id = shape.id_field.as_deref() == Some(name.as_str());
-                    let mut label = name.replace('_', " ");
-                    if is_id {
-                        label.push_str(" (its id)");
-                    }
-                    if field.required {
-                        label.push_str(" *");
-                    }
-                    ui.label(RichText::new(label).color(if is_id { P.text } else { P.faint }));
-                    let hint = match field.kind.as_str() {
-                        "int" => "a number",
-                        "strs" => "one per line",
-                        _ => "",
-                    };
-                    // A corrected source keeps its id: another id is another source.
-                    let locked = is_id && form.correcting.is_some();
-                    let edit = if field.kind == "strs" {
-                        egui::TextEdit::multiline(text).desired_rows(2)
-                    } else {
-                        egui::TextEdit::singleline(text)
-                    };
-                    let response = ui.add_enabled(!locked, edit.hint_text(hint).desired_width(360.0));
-                    if locked {
-                        response.on_disabled_hover_text("Another id is another source: add that one, and put this one in the trash.");
-                    }
-                    ui.end_row();
-                }
-            });
+            form.fields(ui, shape);
             ui.horizontal(|ui| {
                 save = ui.button(if form.correcting.is_some() { "Save the correction" } else { "Add it" }).clicked();
                 cancel = ui.button("Cancel").clicked();
@@ -273,11 +240,16 @@ impl SourcesEditor {
 impl Form {
     /// Filled with the source's newest snapshot.
     fn correcting(s: &Source, shapes: &[SourceShape]) -> Form {
-        let mut form = Form { correcting: Some(s.id), platform: String::new(), values: Vec::new(), link: String::new() };
-        form.set_platform(&s.platform, shapes);
-        let data = s.snapshots.first().map(|snapshot| &snapshot.data);
+        let data = s.snapshots.first().map(|snapshot| snapshot.data.clone()).unwrap_or_default();
+        Form::for_data(s.id, &s.platform, &data, shapes)
+    }
+
+    /// Correcting source `id`, filled with `data`.
+    pub fn for_data(id: Uuid, platform: &str, data: &Value, shapes: &[SourceShape]) -> Form {
+        let mut form = Form { correcting: Some(id), platform: String::new(), values: Vec::new(), link: String::new() };
+        form.set_platform(platform, shapes);
         for (name, text) in form.values.iter_mut() {
-            *text = match data.and_then(|d| d.get(name.as_str())) {
+            *text = match data.get(name.as_str()) {
                 Some(Value::String(v)) => v.clone(),
                 Some(Value::Array(items)) => items.iter().map(|i| i.as_str().map(str::to_string).unwrap_or_else(|| i.to_string())).collect::<Vec<_>>().join("\n"),
                 Some(Value::Null) | None => String::new(),
@@ -301,25 +273,67 @@ impl Form {
     }
 
     /// The data as the server takes it: only the fields filled in, as their type says.
-    fn data(&self, shape: &SourceShape) -> Result<Value, String> {
-        let mut data = serde_json::Map::new();
-        for field in &shape.fields {
-            let text = self.values.iter().find(|(n, _)| *n == field.name).map(|(_, v)| v.trim()).unwrap_or("");
-            if text.is_empty() {
-                if field.required {
-                    return Err(format!("{} is needed.", field.name.replace('_', " ")));
-                }
-                continue;
-            }
-            let value = match field.kind.as_str() {
-                "int" => Value::from(text.parse::<i64>().map_err(|_| format!("{} is a whole number.", field.name.replace('_', " ")))?),
-                "strs" => Value::from(text.lines().map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>()),
-                _ => Value::from(text),
-            };
-            data.insert(field.name.clone(), value);
-        }
-        Ok(Value::Object(data))
+    pub fn data(&self, shape: &SourceShape) -> Result<Value, String> {
+        data_from(shape, &self.values)
     }
+
+    /// The platform's fields, to fill in (a corrected source's id can't change).
+    pub fn fields(&mut self, ui: &mut egui::Ui, shape: &SourceShape) {
+        let correcting = self.correcting.is_some();
+        egui::Grid::new(("source-fields", self.correcting)).num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+            for (name, text) in self.values.iter_mut() {
+                let Some(field) = shape.fields.iter().find(|f| f.name == *name) else { continue };
+                let is_id = shape.id_field.as_deref() == Some(name.as_str());
+                let mut label = name.replace('_', " ");
+                if is_id {
+                    label.push_str(" (its id)");
+                }
+                if field.required {
+                    label.push_str(" *");
+                }
+                ui.label(RichText::new(label).color(if is_id { P.text } else { P.faint }));
+                let hint = match field.kind.as_str() {
+                    "int" => "a number",
+                    "strs" => "one per line",
+                    _ => "",
+                };
+                // A corrected source keeps its id: another id is another source.
+                let locked = is_id && correcting;
+                let edit = if field.kind == "strs" {
+                    egui::TextEdit::multiline(text).desired_rows(2)
+                } else {
+                    egui::TextEdit::singleline(text)
+                };
+                let response = ui.add_enabled(!locked, edit.hint_text(hint).desired_width(360.0));
+                if locked {
+                    response.on_disabled_hover_text("Another id is another source: add that one, and put this one in the trash.");
+                }
+                ui.end_row();
+            }
+        });
+    }
+}
+
+/// A source's data as the server takes it, from its fields as typed (`values`: name,
+/// text; lists one item per line): only the fields filled in, as their type says.
+pub fn data_from(shape: &SourceShape, values: &[(String, String)]) -> Result<Value, String> {
+    let mut data = serde_json::Map::new();
+    for field in &shape.fields {
+        let text = values.iter().find(|(n, _)| *n == field.name).map(|(_, v)| v.trim()).unwrap_or("");
+        if text.is_empty() {
+            if field.required {
+                return Err(format!("{} is needed.", field.name.replace('_', " ")));
+            }
+            continue;
+        }
+        let value = match field.kind.as_str() {
+            "int" => Value::from(text.parse::<i64>().map_err(|_| format!("{} is a whole number.", field.name.replace('_', " ")))?),
+            "strs" => Value::from(text.lines().map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>()),
+            _ => Value::from(text),
+        };
+        data.insert(field.name.clone(), value);
+    }
+    Ok(Value::Object(data))
 }
 
 /// What a link says, for a `kind` of source ("track", "album", "artist"): the platform
@@ -369,16 +383,17 @@ pub fn from_link(link: &str, kind: &str) -> Option<(String, Vec<(String, String)
     }
 }
 
-/// Which of the track's sources its file came from, and the changes of that (each with
-/// who, when and why; the newest can be undone). Needs `edit_sources`.
+/// The changes of where a track's file came from (each with who, when and why; the newest
+/// can be undone, with `edit_sources`). Which source it came from is chosen in the track's
+/// editor (`origin:#N`).
 #[derive(Default)]
-pub struct OriginPicker {
+pub struct OriginChanges {
     busy: bool,
     answer: Arc<Mutex<Option<Result<(), String>>>>,
     error: Option<String>,
 }
 
-impl OriginPicker {
+impl OriginChanges {
     pub fn show(&mut self, ui: &mut egui::Ui, shell: &mut Shell, d: &crate::details::TrackDetail) {
         if let Some(result) = self.answer.lock().unwrap().take() {
             self.busy = false;
@@ -390,30 +405,8 @@ impl OriginPicker {
                 Err(err) => self.error = Some(err),
             }
         }
-        let current = d.file.origin.as_ref().map(|o| o.source_id);
-        let name = |s: &Source| format!("{}{}", s.platform, s.external_id.as_deref().map(|i| format!(" · {i}")).unwrap_or_default());
-        let shown = match (&d.file.origin, d.sources.iter().find(|s| Some(s.id) == current)) {
-            (_, Some(s)) => name(s),
-            (Some(o), None) => o.platform.clone(),
-            (None, None) => "not known".into(),
-        };
         let can = shell.account.can("edit_sources") && !self.busy;
         let mut chosen = None;
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("The file came from").color(P.faint));
-            ui.add_enabled_ui(can, |ui| {
-                egui::ComboBox::from_id_salt(("file-origin", d.id)).selected_text(shown).show_ui(ui, |ui| {
-                    for s in &d.sources {
-                        if ui.selectable_label(Some(s.id) == current, name(s)).clicked() && Some(s.id) != current {
-                            chosen = Some(serde_json::json!({ "source_id": s.id }));
-                        }
-                    }
-                });
-            });
-            if self.busy {
-                ui.label(RichText::new("…").color(P.muted));
-            }
-        });
         let changes: &[OriginChange] = d.origin_changes.as_deref().unwrap_or_default();
         for (n, c) in changes.iter().enumerate() {
             let named = |o: &Option<crate::details::OriginRef>| match o {

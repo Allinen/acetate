@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO staged_covers (blob_sha256, mime, width, height) VALUES ($1, $2, $3, $4)\n        ON CONFLICT (user_id, blob_sha256) DO UPDATE SET staged_at = now()\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Int4",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b0567b3abc4a892a2e9d58a20f12c37d8f71dc7f0b31cb93107a0cd001e3b954"
+}

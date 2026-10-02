@@ -6,12 +6,15 @@
 //! taken from what was chosen in the list (`Names::pin`: the same text is then always that
 //! one, even with others named alike), or new ones chosen there ("New artist “…”"), made
 //! when the edit is applied.
+//!
+//! Some parts ask for something first (`Want`): the image in the clipboard or a file's
+//! (uploaded, then staged), or the form correcting a source.
 
 use std::collections::HashMap;
 
 use uuid::Uuid;
 
-use super::model::{Numbers, Op};
+use super::model::{Image, Numbers, Op};
 use super::parse::{self, Part, K};
 use crate::account::Vocab;
 use crate::catalog::query::loosely_in;
@@ -47,8 +50,13 @@ impl Names {
     }
 
     fn pinned(&self, kind: PinKind, text: &str) -> Option<Uuid> {
+        self.pinned_any(&[kind], text).map(|p| p.1)
+    }
+
+    /// The last of `kinds` chosen for `text`.
+    fn pinned_any(&self, kinds: &[PinKind], text: &str) -> Option<(PinKind, Uuid)> {
         let text = text.trim().to_lowercase();
-        self.pins.iter().rev().find(|(k, t, _)| *k == kind && *t == text).map(|p| p.2)
+        self.pins.iter().rev().find(|(k, t, _)| kinds.contains(k) && *t == text).map(|p| (p.0, p.2))
     }
 
     /// A new artist called `name` (the same one for the same name).
@@ -111,6 +119,27 @@ pub struct Ctx<'a> {
     pub staged_album: Option<Uuid>,
     pub names: &'a Names,
     pub may_relate: bool,
+    /// `edit_sources`: sources, and where the file came from.
+    pub may_source: bool,
+}
+
+/// What resolving looks up in the library's details (None: still loading).
+pub trait Lookups {
+    /// An artist's other names.
+    fn aliases(&mut self, artist: Uuid) -> Option<Vec<AliasInfo>>;
+    /// A track's or album's covers, in order: (id, image hash).
+    fn covers(&mut self, kind: PinKind, id: Uuid) -> Option<Vec<(Uuid, String)>>;
+}
+
+/// What a part asks for before it's a change.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Want {
+    /// The image in the clipboard, as a new cover (`at`: its place; None: last).
+    Paste { at: Option<usize> },
+    /// An image chosen in the file dialog.
+    File { at: Option<usize> },
+    /// The form correcting the source in this place (one track).
+    Correct(usize),
 }
 
 /// One thing the line does: the parts it was typed as, and what it means.
@@ -129,12 +158,13 @@ pub struct Resolved {
     pub warning: Option<String>,
     /// A new album's kind, set when it's staged.
     pub album_kind: Option<(Uuid, String)>,
+    /// What it asks for first (it's staged once that's there).
+    pub want: Option<Want>,
 }
 
 /// The line's parts as units (a part with the `role:`, `as:`, `kind:` after it), each
-/// resolved. `aliases`: an artist's aliases (None while they load). Also says whether
-/// something was still loading (then it's worth asking again).
-pub fn resolve(line: &str, ctx: &Ctx, aliases: &mut dyn FnMut(Uuid) -> Option<Vec<AliasInfo>>) -> (Vec<Unit>, bool) {
+/// resolved. Also says whether something was still loading (then it's worth asking again).
+pub fn resolve(line: &str, ctx: &Ctx, look: &mut dyn Lookups) -> (Vec<Unit>, bool) {
     let parsed = parse::parse(line);
     let mut units = Vec::new();
     let mut waiting = false;
@@ -151,7 +181,7 @@ pub fn resolve(line: &str, ctx: &Ctx, aliases: &mut dyn FnMut(Uuid) -> Option<Ve
         let text = line[start..end].trim().to_string();
         // A line album for `disc:` / `track:` after it.
         let line_album = parsed.parts[..i].iter().rev().find(|p| p.key == K::Album && !p.minus).and_then(|p| album(&p.value, ctx).ok()).map(|a| a.0);
-        let result = unit(main, mods, ctx, line_album, aliases, &mut waiting);
+        let result = unit(main, mods, ctx, line_album, look, &mut waiting);
         units.push(Unit { text, result });
         i = j;
     }
@@ -163,7 +193,7 @@ fn unit(
     mods: &[Part],
     ctx: &Ctx,
     line_album: Option<Uuid>,
-    aliases: &mut dyn FnMut(Uuid) -> Option<Vec<AliasInfo>>,
+    look: &mut dyn Lookups,
     waiting: &mut bool,
 ) -> Result<Resolved, String> {
     let value = main.value.trim();
@@ -259,7 +289,7 @@ fn unit(
                     if ctx.names.is_new(id) {
                         return Err(format!("a new artist has no other names yet (as: {})", p.value));
                     }
-                    match aliases(id) {
+                    match look.aliases(id) {
                         None => {
                             *waiting = true;
                             return Err(format!("looking up {name}'s names…"));
@@ -289,7 +319,7 @@ fn unit(
                 None => label.push_str(" (primary if it has none, else featured)"),
             }
             if let Some(Some(alias)) = alias {
-                let shown = aliases(id).and_then(|l| l.into_iter().find(|a| a.id == alias)).map(|a| a.name).unwrap_or_default();
+                let shown = look.aliases(id).and_then(|l| l.into_iter().find(|a| a.id == alias)).map(|a| a.name).unwrap_or_default();
                 label.push_str(&format!(", credited as “{shown}”"));
             }
             if let Some(at) = at {
@@ -337,7 +367,7 @@ fn unit(
                 Numbers::At { disc: None, number: Some(n) } => label.push_str(&format!(", track {n}")),
                 _ => {}
             }
-            Ok(Resolved { label, ops: vec![Op::Album { album: id, numbers }], warning: None, album_kind: kind.map(|k| (id, k)) })
+            Ok(Resolved { label, ops: vec![Op::Album { album: id, numbers }], album_kind: kind.map(|k| (id, k)), ..Default::default() })
         }
         K::Disc | K::Number => {
             only(&[])?;
@@ -418,8 +448,181 @@ fn unit(
                 _ => Err("along: on (made to match) or off".into()),
             }
         }
+        K::Cover => {
+            only(&[])?;
+            let warning = many.then(|| format!("each of the {} tracks gets this cover", ctx.targets));
+            if main.minus {
+                return match (main.colon, main.hashes.as_slice()) {
+                    (false, _) => done("covers → none (to the trash)".into(), vec![Op::NoCovers]),
+                    (true, [h]) if value.is_empty() => {
+                        let n = place(h, "cover")?;
+                        done(format!("cover #{} → the trash", n + 1), vec![Op::NoCover(n)])
+                    }
+                    _ => Err("-cover:#N puts the Nth in the trash; -cover alone, all of them".into()),
+                };
+            }
+            let lower = value.to_lowercase();
+            match lower.as_str() {
+                "" => match main.hashes.as_slice() {
+                    [from, to] => {
+                        let (from, to) = (place(from, "cover")?, place(to, "cover")?);
+                        done(format!("cover #{}{}", from + 1, goes(Some(to))), vec![Op::MoveCover { from, to }])
+                    }
+                    _ => Err("cover: paste, file, or a track or album to copy one of its covers from (cover:#3 #1 makes the third the main one)".into()),
+                },
+                "paste" | "clipboard" | "file" | "browse" => {
+                    let at = match main.hashes.as_slice() {
+                        [] => None,
+                        [h] => Some(place(h, "cover")?),
+                        _ => return Err("one # after it: where it goes".into()),
+                    };
+                    let (what, want) = match lower.as_str() {
+                        "paste" | "clipboard" => ("the image in the clipboard", Want::Paste { at }),
+                        _ => ("an image from a file (choose it next)", Want::File { at }),
+                    };
+                    Ok(Resolved { label: format!("cover: + {what}{}", goes(at)), warning, want: Some(want), ..Default::default() })
+                }
+                _ => {
+                    let name = if lower.starts_with("from:") { value[5..].trim() } else { value };
+                    let (kind, id, title) = cover_owner(name, ctx)?;
+                    let (which, at) = match main.hashes.as_slice() {
+                        [] => (0, None),
+                        [which] => (place(which, "cover")?, None),
+                        [which, at] => (place(which, "cover")?, Some(place(at, "cover")?)),
+                        _ => return Err("cover:… #which #where".into()),
+                    };
+                    let whose = match kind {
+                        PinKind::Album => format!("the album “{title}”"),
+                        _ => format!("the track “{title}”"),
+                    };
+                    let Some(covers) = look.covers(kind, id) else {
+                        *waiting = true;
+                        return Err(format!("looking up {whose}'s covers…"));
+                    };
+                    let Some((cover, sha)) = covers.get(which).cloned() else {
+                        return Err(match covers.len() {
+                            0 => format!("{whose} has no covers of its own"),
+                            n => format!("{whose} has {n} covers"),
+                        });
+                    };
+                    let which = if covers.len() > 1 { format!(" {}", which + 1) } else { String::new() };
+                    Ok(Resolved {
+                        label: format!("cover: + {whose}'s cover{which}{}", goes(at)),
+                        ops: vec![Op::Cover { image: Image::CopyOf(cover), sha, at }],
+                        warning,
+                        ..Default::default()
+                    })
+                }
+            }
+        }
+        K::Source => {
+            only(&[])?;
+            if !ctx.may_source {
+                return Err("sources need the edit_sources permission".into());
+            }
+            if main.minus {
+                return match (main.colon, main.hashes.as_slice()) {
+                    (false, _) => done("sources → none (to the trash)".into(), vec![Op::NoSources]),
+                    (true, [h]) if value.is_empty() => {
+                        let n = place(h, "source")?;
+                        done(format!("source #{} → the trash", n + 1), vec![Op::NoSource(n)])
+                    }
+                    _ => Err("-source:#N puts the Nth in the trash; -source alone, all of them".into()),
+                };
+            }
+            if value.is_empty() {
+                return match main.hashes.as_slice() {
+                    [h] if !many => {
+                        let n = place(h, "source")?;
+                        Ok(Resolved { label: format!("source #{}: correct it (its form opens)", n + 1), want: Some(Want::Correct(n)), ..Default::default() })
+                    }
+                    [_] => Err("correcting a source is one track's".into()),
+                    _ => Err("source: a link, or custom and where it's from (custom vk, sent by a friend)".into()),
+                };
+            }
+            let lower = value.to_lowercase();
+            let (platform, values) = if lower == "custom" || lower.starts_with("custom ") {
+                let rest = value[6..].trim();
+                let (label, description) = rest.split_once(',').map(|(l, d)| (l.trim(), d.trim())).unwrap_or((rest, ""));
+                if label.is_empty() {
+                    return Err("source:custom and where it's from (a label: custom vk), then a comma and more if there's more".into());
+                }
+                ("custom".to_string(), vec![("label".to_string(), label.to_string()), ("description".to_string(), description.to_string())])
+            } else {
+                crate::ui::edit::sources::from_link(value, "track").ok_or_else(|| "source: a link (https://…), or custom and where it's from".to_string())?
+            };
+            let shape = ctx.vocab.source_shapes.iter().find(|s| s.platform == platform && s.kind == "track").ok_or_else(|| format!("no {platform} sources for tracks"))?;
+            let data = crate::ui::edit::sources::data_from(shape, &values)?;
+            let text = |v: &serde_json::Value| v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string());
+            let name = match &shape.id_field {
+                Some(field) => data.get(field).map(text).unwrap_or_default(),
+                None => data.get("label").map(text).unwrap_or_default(),
+            };
+            let id = {
+                use std::hash::{Hash, Hasher};
+                let mut h = std::hash::DefaultHasher::new();
+                (&platform, data.to_string()).hash(&mut h);
+                Uuid::from_u128(0xACE7_5000_0000_4000_8000_0000_0000_0000 | h.finish() as u128)
+            };
+            let shown = super::model::Src { id, new: true, platform: platform.clone(), name: name.clone(), data: data.clone(), corrected: false }.label();
+            let warning = many.then(|| format!("every one of the {} tracks gets this source; usually it's one track's", ctx.targets));
+            Ok(Resolved { label: format!("source: + {shown}"), ops: vec![Op::Source { id, platform, name, data }], warning, ..Default::default() })
+        }
+        K::Origin => {
+            only(&[])?;
+            if !ctx.may_source {
+                return Err("where a file came from needs the edit_sources permission".into());
+            }
+            if many {
+                return Err("where a file came from is one track's".into());
+            }
+            match main.hashes.as_slice() {
+                [h] if value.is_empty() && !main.minus => {
+                    let n = place(h, "source")?;
+                    done(format!("the file came from source #{}", n + 1), vec![Op::Origin(n)])
+                }
+                _ => Err("origin:#N: the file came from its Nth source".into()),
+            }
+        }
         K::Role | K::As | K::Kind => Err(format!("{}: goes after what it's about (artist:… role:…)", main.key.name())),
         K::Other(k) => Err(format!("{}: not something to change here", k.name())),
+    }
+}
+
+/// `#N` as a place from 0.
+fn place(hash: &str, what: &str) -> Result<usize, String> {
+    hash.parse::<usize>().ok().filter(|n| *n >= 1).map(|n| n - 1).ok_or_else(|| format!("#{hash}: a {what}'s place is a number from 1"))
+}
+
+/// Where a cover goes, in words (None: last).
+fn goes(at: Option<usize>) -> String {
+    match at {
+        None => String::new(),
+        Some(0) => " as the main one".into(),
+        Some(n) => format!(" as #{}", n + 1),
+    }
+}
+
+/// The track or album to copy a cover from: the one chosen, else the best album, then
+/// track, by that name.
+fn cover_owner(value: &str, ctx: &Ctx) -> Result<(PinKind, Uuid, String), String> {
+    let title = |kind: PinKind, id: Uuid| match kind {
+        PinKind::Album => album_title(ctx, id),
+        _ => ctx.catalog.track_index(id).map(|i| ctx.catalog.tracks[i as usize].title.clone()).unwrap_or_else(|| value.to_string()),
+    };
+    if let Some((kind, id)) = ctx.names.pinned_any(&[PinKind::Album, PinKind::Track], value) {
+        return Ok((kind, id, title(kind, id)));
+    }
+    if let Some(i) = Search::default().run_part(ctx.catalog, value, SearchPart::Albums, 1).first().map(|h| h.0) {
+        let a = &ctx.catalog.albums[i as usize];
+        return Ok((PinKind::Album, a.id, a.title.clone()));
+    }
+    match Search::default().run_part(ctx.catalog, value, SearchPart::Tracks, 1).first().map(|h| h.0) {
+        Some(i) => {
+            let t = &ctx.catalog.tracks[i as usize];
+            Ok((PinKind::Track, t.id, t.title.clone()))
+        }
+        None => Err(format!("no album or track like “{value}” to copy a cover from")),
     }
 }
 
@@ -536,25 +739,31 @@ pub enum Pick {
     NewAlbum,
 }
 
-/// Which library search the part being typed needs, if any.
+/// Which library search the part being typed needs, if any (a cover's: albums, and
+/// tracks too, see `cover_value`).
 pub fn search_for(part: &Part) -> Option<SearchPart> {
     match part.key {
         K::Artist | K::Featured => Some(SearchPart::Artists),
         K::Album => Some(SearchPart::Albums),
         K::Related => Some(SearchPart::Tracks),
+        K::Cover if cover_value(part).is_some() => Some(SearchPart::Albums),
         _ => None,
     }
 }
 
+/// A cover's value when it names a track or album to copy from (not `paste`, `file`, a
+/// `#`…).
+pub fn cover_value(part: &Part) -> Option<String> {
+    let value = part.value.trim();
+    let value = if value.to_lowercase().starts_with("from:") { value[5..].trim() } else { value };
+    let word = ["paste", "clipboard", "file", "browse"].iter().any(|w| w.starts_with(&value.to_lowercase()));
+    (part.key == K::Cover && !part.minus && !value.is_empty() && !word && part.hash.is_none()).then(|| value.to_string())
+}
+
 /// The choices for the last part of the line. `owner`: the part it goes with (`role:`
-/// after `artist:`…); `hits`: the library's matches for its value (see `search_for`).
-pub fn candidates(
-    part: &Part,
-    owner: Option<&Part>,
-    ctx: &Ctx,
-    hits: &[u32],
-    aliases: &mut dyn FnMut(Uuid) -> Option<Vec<AliasInfo>>,
-) -> Vec<Candidate> {
+/// after `artist:`…); `hits`: the library's matches for its value (see `search_for`);
+/// `track_hits`: tracks' too, for a cover.
+pub fn candidates(part: &Part, owner: Option<&Part>, ctx: &Ctx, hits: &[u32], track_hits: &[u32], look: &mut dyn Lookups) -> Vec<Candidate> {
     let value = part.value.trim();
     let simple = |list: &[String], label: &dyn Fn(&str) -> String| -> Vec<Candidate> {
         list.iter()
@@ -603,7 +812,7 @@ pub fn candidates(
             if let Some((id, name)) = artist {
                 let mut names = vec![name.clone()];
                 if !ctx.names.is_new(id) {
-                    names.extend(aliases(id).unwrap_or_default().into_iter().map(|a| a.name));
+                    names.extend(look.aliases(id).unwrap_or_default().into_iter().map(|a| a.name));
                 }
                 out = simple(&names, &|s| if s == name { format!("{s} (its own name)") } else { s.to_string() });
                 for c in &mut out {
@@ -633,6 +842,27 @@ pub fn candidates(
                     c.sub = g.kind.clone();
                 }
             }
+        }
+        K::Cover if !part.minus && part.hash.is_none() => {
+            let words = [("paste", "the image in the clipboard (or Ctrl+V anywhere here)"), ("file", "choose an image file")];
+            for (word, sub) in words {
+                if value.is_empty() || word.starts_with(&value.to_lowercase()) {
+                    out.push(Candidate { label: word.into(), sub: sub.into(), text: word.into(), pick: None, next: Some("#") });
+                }
+            }
+            for &i in hits.iter().take(5) {
+                let (title, sub) = crate::ui::edit::inline_search::describe(ctx.catalog, SearchPart::Albums, i);
+                let a = &ctx.catalog.albums[i as usize];
+                out.push(Candidate { label: format!("its cover: {title}"), sub, text: a.title.clone(), pick: Some(Pick::Pin(PinKind::Album, a.id)), next: Some("#") });
+            }
+            for &i in track_hits.iter().take(5) {
+                let (title, sub) = crate::ui::edit::inline_search::describe(ctx.catalog, SearchPart::Tracks, i);
+                let t = &ctx.catalog.tracks[i as usize];
+                out.push(Candidate { label: format!("its cover: {title}"), sub, text: t.title.clone(), pick: Some(Pick::Pin(PinKind::Track, t.id)), next: Some("#") });
+            }
+        }
+        K::Source if !part.minus && part.hash.is_none() && "custom".starts_with(&value.to_lowercase()) && ctx.may_source => {
+            out.push(Candidate { label: "custom".into(), sub: "where it's from, then a comma and more: custom vk, sent by a friend".into(), text: "custom".into(), pick: None, next: None });
         }
         K::Along => {
             let label = |s: &str| match s {
@@ -674,6 +904,19 @@ pub fn actions(words: &str, ctx: &Ctx) -> Vec<(String, String)> {
     }
     if ctx.may_relate {
         all.push(("Related track…".into(), "related:".into()));
+    }
+    all.extend([
+        ("Cover: paste the copied image".to_string(), "cover:paste".to_string()),
+        ("Cover: an image file…".into(), "cover:file".into()),
+        ("Cover: copy another album's or track's…".into(), "cover:".into()),
+        ("Covers: none (to the trash)".into(), "-cover".into()),
+    ]);
+    if ctx.may_source {
+        all.extend([
+            ("Source: add a link…".to_string(), "source:".to_string()),
+            ("Source: custom (where it's from)…".into(), "source:custom ".into()),
+            ("Source: the file came from… (origin)".into(), "origin:#".into()),
+        ]);
     }
     for g in &ctx.catalog.groupings {
         all.push((format!("Grouping: into “{}” ({})", g.name, g.kind), format!("group:{}", parse::quoted(&g.name))));
@@ -730,9 +973,21 @@ mod tests {
     /// The line's units (ops, or the error), for `targets` tracks.
     fn run(line: &str, names: &Names, targets: usize) -> Vec<Result<(Vec<Op>, Option<String>), String>> {
         let (catalog, vocab) = (catalog(), vocab());
-        let ctx = Ctx { catalog: &catalog, vocab: &vocab, targets, context_album: None, staged_album: None, names, may_relate: true };
-        let mut no_aliases = |_: Uuid| Some(Vec::new());
-        resolve(line, &ctx, &mut no_aliases).0.into_iter().map(|u| u.result.map(|r| (r.ops, r.warning))).collect()
+        let ctx = Ctx { catalog: &catalog, vocab: &vocab, targets, context_album: None, staged_album: None, names, may_relate: true, may_source: true };
+        resolve(line, &ctx, &mut Known).0.into_iter().map(|u| u.result.map(|r| (r.ops, r.warning))).collect()
+    }
+
+    /// No aliases; Long Player's covers: two.
+    struct Known;
+
+    impl Lookups for Known {
+        fn aliases(&mut self, _: Uuid) -> Option<Vec<AliasInfo>> {
+            Some(Vec::new())
+        }
+
+        fn covers(&mut self, _: PinKind, id: Uuid) -> Option<Vec<(Uuid, String)>> {
+            Some(if id == self::id(LP) { vec![(Uuid::from_u128(1), "1".repeat(64)), (Uuid::from_u128(2), "2".repeat(64))] } else { Vec::new() })
+        }
     }
 
     fn ops(line: &str) -> Vec<Op> {
@@ -808,11 +1063,55 @@ mod tests {
     }
 
     #[test]
+    fn covers_copied_moved_and_trashed() {
+        let copy = |n: u128, at| Op::Cover { image: Image::CopyOf(Uuid::from_u128(n)), sha: n.to_string().repeat(64), at };
+        assert_eq!(ops("cover:long player"), [copy(1, None)]);
+        assert_eq!(ops("cover:from:Long Player #2 #1"), [copy(2, Some(0))]);
+        assert_eq!(ops("cover:#3 #1 -cover:#2 -cover"), [Op::MoveCover { from: 2, to: 0 }, Op::NoCover(1), Op::NoCovers]);
+        assert!(run("cover:long player #3", &Names::default(), 1)[0].is_err(), "it has two");
+        assert!(run("cover:other song", &Names::default(), 1)[0].is_err(), "no covers of its own");
+        // Pasted, and from a file: asked for first.
+        let (catalog, vocab, names) = (catalog(), vocab(), Names::default());
+        let ctx = Ctx { catalog: &catalog, vocab: &vocab, targets: 2, context_album: None, staged_album: None, names: &names, may_relate: true, may_source: true };
+        let (units, _) = resolve("cover:paste #1 cover:file", &ctx, &mut Known);
+        let r = units[0].result.as_ref().unwrap();
+        assert_eq!((r.want.clone(), r.ops.is_empty(), r.warning.is_some()), (Some(Want::Paste { at: Some(0) }), true, true));
+        assert_eq!(units[1].result.as_ref().unwrap().want, Some(Want::File { at: None }));
+    }
+
+    #[test]
+    fn sources_from_links_custom_ones_and_the_origin() {
+        let mut vocab = vocab();
+        let field = |name: &str, kind: &str, required| crate::account::ShapeField { name: name.into(), kind: kind.into(), required };
+        vocab.source_shapes = vec![
+            crate::account::SourceShape { platform: "netease".into(), kind: "track".into(), id_field: Some("song_id".into()), fields: vec![field("song_id", "int", true)] },
+            crate::account::SourceShape {
+                platform: "custom".into(),
+                kind: "track".into(),
+                id_field: None,
+                fields: vec![field("label", "str", true), field("description", "str", false), field("url", "str", false)],
+            },
+        ];
+        let (catalog, names) = (catalog(), Names::default());
+        let ctx = Ctx { catalog: &catalog, vocab: &vocab, targets: 1, context_album: None, staged_album: None, names: &names, may_relate: true, may_source: true };
+        let (units, _) = resolve("source:https://music.163.com/#/song?id=123 source:custom vk, sent by a friend origin:#2 -source:#1", &ctx, &mut Known);
+        let ops: Vec<Op> = units.iter().flat_map(|u| u.result.clone().unwrap().ops).collect();
+        let [Op::Source { platform, name, data, .. }, Op::Source { data: custom, .. }, Op::Origin(1), Op::NoSource(0)] = ops.as_slice() else { panic!("{ops:?}") };
+        assert_eq!((platform.as_str(), name.as_str(), data.clone()), ("netease", "123", serde_json::json!({ "song_id": 123 })));
+        assert_eq!(custom, &serde_json::json!({ "label": "vk", "description": "sent by a friend" }));
+        assert_eq!(resolve("source:#1", &ctx, &mut Known).0[0].result.as_ref().unwrap().want, Some(Want::Correct(0)));
+        // Not a link; and without the permission.
+        assert!(resolve("source:somewhere", &ctx, &mut Known).0[0].result.is_err());
+        let ctx = Ctx { may_source: false, ..ctx };
+        assert!(resolve("origin:#1", &ctx, &mut Known).0[0].result.is_err());
+    }
+
+    #[test]
     fn units_keep_their_text_to_type_back() {
         let (catalog, vocab) = (catalog(), vocab());
         let names = Names::default();
-        let ctx = Ctx { catalog: &catalog, vocab: &vocab, targets: 1, context_album: None, staged_album: None, names: &names, may_relate: true };
-        let (units, _) = resolve("status:demo artist:Bo role:featured #2", &ctx, &mut |_| Some(Vec::new()));
+        let ctx = Ctx { catalog: &catalog, vocab: &vocab, targets: 1, context_album: None, staged_album: None, names: &names, may_relate: true, may_source: true };
+        let (units, _) = resolve("status:demo artist:Bo role:featured #2", &ctx, &mut Known);
         let texts: Vec<&str> = units.iter().map(|u| u.text.as_str()).collect();
         assert_eq!(texts, ["status:demo", "artist:Bo role:featured #2"]);
     }

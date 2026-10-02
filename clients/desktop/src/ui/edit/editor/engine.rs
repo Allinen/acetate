@@ -1,6 +1,6 @@
 //! The editor's work in the background: the targets' details loaded, each track's plan
-//! (its new metadata and facts from the staged changes, and what changes, in the
-//! history's words), the server's preview of it (`POST /api/tracks/edit` with
+//! (its new metadata, facts, covers and sources from the staged changes, and what
+//! changes, in the history's words), the server's preview of it (`POST /api/tracks/edit` with
 //! `preview`: the albums that change along, each track's flags after it, why a track
 //! can't be written), and applying it.
 //!
@@ -19,7 +19,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use super::model::{self, Base, Facts, Meta, Op};
+use super::model::{self, Attached, Base, Facts, Image, Meta, Op};
 use super::resolve::Names;
 use crate::api::Api;
 use crate::catalog::Catalog;
@@ -59,6 +59,7 @@ pub struct Ready {
     pub base: Base,
     pub meta: Meta,
     pub facts: Facts,
+    pub attached: Attached,
     /// What changes, in the history's words (empty: nothing).
     pub lines: Vec<String>,
     /// The groupings it goes in (it isn't in them yet).
@@ -76,9 +77,17 @@ impl Ready {
         self.facts != self.base.facts
     }
 
-    /// A revision to write.
+    pub fn covers_changed(&self) -> bool {
+        self.attached.covers != self.base.attached.covers
+    }
+
+    pub fn sources_changed(&self) -> bool {
+        self.attached.sources != self.base.attached.sources || self.attached.origin != self.base.attached.origin
+    }
+
+    /// Something to write: a revision, covers, sources.
     pub fn writes(&self) -> bool {
-        self.meta_changed() || self.facts_changed()
+        self.meta_changed() || self.facts_changed() || self.covers_changed() || self.sources_changed()
     }
 
     /// Something for the server: a revision, or its albums to match.
@@ -113,6 +122,9 @@ pub struct Failure {
 pub struct Along {
     pub before: Value,
     pub after: Value,
+    /// How many of the track's new covers it gets.
+    #[serde(default)]
+    pub covers: usize,
 }
 
 #[derive(Debug, Deserialize)]
@@ -346,6 +358,7 @@ impl Engine {
                             None => PlanState::Failed("it has no version to edit".into()),
                             Some(base) => {
                                 let (meta, facts) = model::apply(ops, &base.meta, &base.facts, position);
+                                let attached = model::attach(ops, &base.attached);
                                 let mut lines = Vec::new();
                                 if meta != base.meta {
                                     lines.extend(diff(&base.meta, &meta, catalog, &stand_ins));
@@ -353,12 +366,13 @@ impl Engine {
                                 if facts != base.facts {
                                     lines.extend(diff(&base.facts, &facts, catalog, &stand_ins));
                                 }
+                                lines.extend(attached_lines(&base.attached, &attached));
                                 let joins: Vec<Uuid> = groupings.iter().filter(|g| in_catalog.is_none_or(|t| !t.groupings.contains(g))).copied().collect();
                                 for g in &joins {
                                     let name = catalog.grouping(*g).map(|g| g.name.clone()).unwrap_or_default();
                                     lines.push(format!("grouping: + “{name}” (and a single it's alone on)"));
                                 }
-                                PlanState::Ready(Box::new(Ready { position, base, meta, facts, lines, joins, sync: model::sync(ops) }))
+                                PlanState::Ready(Box::new(Ready { position, base, meta, facts, attached, lines, joins, sync: model::sync(ops) }))
                             }
                         }
                     }
@@ -440,7 +454,8 @@ impl Engine {
                     Ok(d) => match Base::for_variant(&d, variant) {
                         Some(base) => {
                             let (meta, facts) = model::apply(&change.ops, &base.meta, &base.facts, position);
-                            Ok(Ready { position, base, meta, facts, lines: Vec::new(), joins: Vec::new(), sync: change.sync })
+                            let attached = model::attach(&change.ops, &base.attached);
+                            Ok(Ready { position, base, meta, facts, attached, lines: Vec::new(), joins: Vec::new(), sync: change.sync })
                         }
                         None => Err("it has no version to edit".to_string()),
                     },
@@ -575,6 +590,29 @@ fn body(chunk: &[(Uuid, Ready)], change: &Change, ids: &HashMap<Uuid, Uuid>, pre
             f["base_revision_id"] = json!(r.base.facts_base);
             entry["facts"] = f;
         }
+        if r.covers_changed() {
+            let base: Vec<Uuid> = r.base.attached.covers.iter().filter_map(|p| if let Image::Own(id) = p.image { Some(id) } else { None }).collect();
+            let covers: Vec<Value> = r
+                .attached
+                .covers
+                .iter()
+                .map(|p| match &p.image {
+                    Image::Own(id) => json!({ "id": id }),
+                    Image::CopyOf(id) => json!({ "copy_of": id }),
+                    Image::Staged => json!({ "staged": p.sha }),
+                })
+                .collect();
+            entry["covers"] = json!({ "base": base, "covers": covers });
+        }
+        if r.sources_changed() {
+            let (before, after) = (&r.base.attached, &r.attached);
+            let add: Vec<Value> = after.sources.iter().filter(|s| s.new).map(|s| json!({ "id": s.id, "platform": s.platform, "data": s.data })).collect();
+            let correct: Vec<Value> =
+                after.sources.iter().filter(|s| s.corrected && !s.new).map(|s| json!({ "source_id": s.id, "platform": s.platform, "data": s.data })).collect();
+            let trash: Vec<Uuid> = before.sources.iter().filter(|b| !after.sources.iter().any(|s| s.id == b.id)).map(|b| b.id).collect();
+            let origin = (after.origin != before.origin).then_some(after.origin).flatten();
+            entry["sources"] = json!({ "add": add, "correct": correct, "trash": trash, "origin": origin });
+        }
         tracks.push(entry);
     }
     // New albums: credited to the primary artists all their tracks share.
@@ -625,10 +663,55 @@ fn diff<T: serde::Serialize>(before: &T, after: &T, catalog: &Catalog, names: &H
 /// The words for an album changed along: "album “X”: title: “A” → “B”".
 pub fn along_lines(along: &Along, catalog: &Catalog) -> Vec<String> {
     let title = along.before.get("title").and_then(|t| t.as_str()).unwrap_or("its album");
-    crate::ui::views::history::changes_named(Some(&along.before), &along.after, catalog, &HashMap::new())
-        .into_iter()
-        .map(|line| format!("album “{title}” along · {line}"))
-        .collect()
+    let mut lines = crate::ui::views::history::changes_named(Some(&along.before), &along.after, catalog, &HashMap::new());
+    match along.covers {
+        0 => {}
+        1 => lines.push("cover: + the new one".into()),
+        n => lines.push(format!("covers: + the {n} new ones")),
+    }
+    lines.into_iter().map(|line| format!("album “{title}” along · {line}")).collect()
+}
+
+/// What changes in a track's covers and sources, in words.
+pub fn attached_lines(before: &Attached, after: &Attached) -> Vec<String> {
+    let mut lines = Vec::new();
+    let what = |p: &model::Pic| match p.image {
+        Image::Own(_) => "it",
+        Image::CopyOf(_) => "a copy of another's",
+        Image::Staged => "a new image",
+    };
+    for (n, p) in after.covers.iter().enumerate() {
+        if !before.covers.iter().any(|b| b.sha == p.sha) {
+            let place = if n == 0 { "the main one".to_string() } else { format!("#{}", n + 1) };
+            lines.push(format!("cover: + {} as {place}", what(p)));
+        }
+    }
+    for (n, b) in before.covers.iter().enumerate() {
+        if !after.covers.iter().any(|p| p.sha == b.sha) {
+            lines.push(format!("cover: − #{} (to the trash)", n + 1));
+        }
+    }
+    let kept_before: Vec<&String> = before.covers.iter().map(|p| &p.sha).filter(|sha| after.covers.iter().any(|p| p.sha == **sha)).collect();
+    let kept_after: Vec<&String> = after.covers.iter().map(|p| &p.sha).filter(|sha| before.covers.iter().any(|p| p.sha == **sha)).collect();
+    if kept_before != kept_after {
+        let main = after.covers.first().and_then(|p| before.covers.iter().position(|b| b.sha == p.sha)).map(|n| format!(" (the main one: what was #{})", n + 1)).unwrap_or_default();
+        lines.push(format!("covers: in a new order{main}"));
+    }
+    for s in &after.sources {
+        if s.new {
+            lines.push(format!("source: + {}", s.label()));
+        } else if s.corrected {
+            lines.push(format!("source: {} corrected (a new snapshot)", s.label()));
+        }
+    }
+    for b in before.sources.iter().filter(|b| !after.sources.iter().any(|s| s.id == b.id)) {
+        lines.push(format!("source: − {} (to the trash)", b.label()));
+    }
+    if after.origin != before.origin {
+        let named = after.origin.and_then(|o| after.sources.iter().find(|s| s.id == o)).map(|s| s.label()).unwrap_or_else(|| "(a source it won't have)".into());
+        lines.push(format!("the file came from: → {named}"));
+    }
+    lines
 }
 
 #[cfg(test)]
@@ -647,6 +730,7 @@ mod tests {
             meta: Meta { title: "T".into(), ..Default::default() },
             facts_base: Some(id(300 + position as u128)),
             facts: Facts { status: "released".into(), albums: vec![], relations: vec![] },
+            attached: Attached::default(),
         };
         let mut meta = base.meta.clone();
         meta.credits = primary.iter().map(|n| Credit { artist_id: id(*n), role: "primary".into(), alias_id: None }).collect();
@@ -654,7 +738,8 @@ mod tests {
         if let Some(a) = album {
             facts.albums.push(Membership { album_id: id(a), disc_number: None, track_number: None });
         }
-        Ready { position, base, meta, facts, lines: vec![], joins: vec![], sync: false }
+        let attached = base.attached.clone();
+        Ready { position, base, meta, facts, attached, lines: vec![], joins: vec![], sync: false }
     }
 
     #[test]
@@ -692,6 +777,35 @@ mod tests {
         let track = &body["tracks"][0];
         assert_eq!((track["sync"].clone(), track["along"].clone()), (json!(true), json!(true)));
         assert!(track.get("meta").is_none() && track.get("facts").is_none());
+    }
+
+    #[test]
+    fn covers_and_sources_go_as_the_server_takes_them() {
+        use crate::ui::edit::editor::model::{Pic, Src};
+        let change = Change { ops: vec![], new_artists: vec![], new_albums: vec![], along: true, sync: false, why: String::new() };
+        let mut r = ready(0, &[], None);
+        r.meta = r.base.meta.clone();
+        let src = |n: u128, new: bool| Src { id: id(n), new, platform: "custom".into(), name: "x".into(), data: json!({ "label": "x" }), corrected: false };
+        r.base.attached = Attached { covers: vec![Pic { image: Image::Own(id(1)), sha: "a".into() }], sources: vec![src(5, false)], origin: Some(id(5)) };
+        // A staged image as main, a copy, its own last; the old source to the trash, a new one the origin.
+        r.attached = Attached {
+            covers: vec![Pic { image: Image::Staged, sha: "b".into() }, Pic { image: Image::CopyOf(id(2)), sha: "c".into() }, Pic { image: Image::Own(id(1)), sha: "a".into() }],
+            sources: vec![src(6, true)],
+            origin: Some(id(6)),
+        };
+        assert!(r.writes() && !r.meta_changed() && !r.facts_changed());
+        let (body, _) = body(&[(id(9), r.clone())], &change, &HashMap::new(), true);
+        let track = &body["tracks"][0];
+        assert_eq!(track["covers"], json!({ "base": [id(1)], "covers": [{ "staged": "b" }, { "copy_of": id(2) }, { "id": id(1) }] }));
+        assert_eq!(track["sources"]["add"], json!([{ "id": id(6), "platform": "custom", "data": { "label": "x" } }]));
+        assert_eq!((track["sources"]["trash"].clone(), track["sources"]["origin"].clone()), (json!([id(5)]), json!(id(6))));
+        let lines = attached_lines(&r.base.attached, &r.attached);
+        assert_eq!(lines[0], "cover: + a new image as the main one");
+        assert!(lines.contains(&"source: − custom “x” (to the trash)".to_string()), "{lines:?}");
+        // Nothing changed: nothing sent of them.
+        r.attached = r.base.attached.clone();
+        let (body, _) = super::body(&[(id(9), r)], &change, &HashMap::new(), true);
+        assert!(body["tracks"][0].get("covers").is_none() && body["tracks"][0].get("sources").is_none());
     }
 
     #[test]

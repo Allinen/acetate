@@ -1,7 +1,7 @@
-//! A track's or album's covers, in edit mode: in order, the first being the main one (the
-//! one shown everywhere). Each can be made the main one, moved earlier or later, looked at
-//! in full (a click: the original), or moved to the trash (asks first; the Trash page
-//! brings it back). An album's cover can be put on all its tracks.
+//! An album's covers, in edit mode: in order, the first being the main one (the one shown
+//! everywhere). Each can be made the main one, moved earlier or later, looked at in full
+//! (a click: the original), or moved to the trash (asks first; the Trash page brings it
+//! back), or put on all its tracks. (A track's are changed in its editor: `cover:`.)
 //!
 //! New ones: copied from another track or album (picked in the palette, then one of its
 //! covers chosen: the same image, stored once), or an image pasted (Ctrl+V) or dropped on
@@ -23,21 +23,18 @@ use crate::ui::{Action, Shell};
 /// Whose covers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Owner {
-    Track(Uuid),
     Album(Uuid),
 }
 
 impl Owner {
     fn path(self) -> String {
         match self {
-            Owner::Track(id) => format!("/api/tracks/{id}/covers"),
             Owner::Album(id) => format!("/api/albums/{id}/covers"),
         }
     }
 
     fn refresh(self, shell: &mut Shell) {
         match self {
-            Owner::Track(id) => shell.track_details.refresh(id),
             Owner::Album(id) => shell.album_details.refresh(id),
         }
         // What a track or album shows comes from its covers: the lists catch up.
@@ -182,7 +179,7 @@ impl CoverList {
         ui.add_space(6.0);
         ui.horizontal_wrapped(|ui| {
             let except = match owner {
-                Owner::Track(id) | Owner::Album(id) => Some(id),
+                Owner::Album(id) => Some(id),
             };
             if ui.add_enabled(can, egui::Button::new("Copy from a track…")).clicked() {
                 self.picking = true;
@@ -288,6 +285,32 @@ fn moved(covers: &[Cover], from: usize, to: usize) -> Vec<Uuid> {
     ids
 }
 
+/// The image in the clipboard (an image, or a copied image file), as for a new cover: its
+/// bytes and a file name. None: there's none.
+pub fn clipboard_image() -> Option<Result<(Vec<u8>, String), String>> {
+    let mut clipboard = arboard::Clipboard::new().ok()?;
+    if let Ok(image) = clipboard.get_image() {
+        let rgba = image::RgbaImage::from_raw(image.width as u32, image.height as u32, image.bytes.into_owned())?;
+        let mut png = Vec::new();
+        return Some(rgba.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).map(|()| (png, "pasted.png".to_string())).map_err(|err| err.to_string()));
+    }
+    let files = clipboard.get().file_list().ok()?;
+    let path = files.into_iter().map(|p| std::path::PathBuf::from(p.to_string_lossy().trim_end_matches(['\r', '\n']))).find(|p| {
+        crate::ui::files::IMAGES.contains(&crate::ui::files::extension(p).as_str())
+    })?;
+    Some(read_image(&path))
+}
+
+/// An image file's bytes and name. Err: it couldn't be read, or isn't an image this can use.
+fn read_image(path: &std::path::Path) -> Result<(Vec<u8>, String), String> {
+    let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    match std::fs::read(path) {
+        Ok(bytes) if image::guess_format(&bytes).is_ok() => Ok((bytes, name)),
+        Ok(_) => Err(format!("“{name}” isn't an image this can read (JPEG, PNG, WebP or GIF).")),
+        Err(err) => Err(format!("Couldn't read “{name}”: {err}")),
+    }
+}
+
 /// An image for a new cover: `chosen` in the file dialog, or (`taking`) pasted this frame
 /// (Ctrl+V: an image in the clipboard, or a copied image file) or dropped on the window.
 /// Its bytes and a file name. Err: an image file that couldn't be read or isn't one this
@@ -315,12 +338,7 @@ pub fn take_image(ctx: &egui::Context, taking: bool, chosen: Vec<std::path::Path
         files.extend(crate::ui::files::given(ctx));
     }
     for path in files.into_iter().filter(|p| crate::ui::files::IMAGES.contains(&crate::ui::files::extension(p).as_str())) {
-        let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-        found = Some(match std::fs::read(&path) {
-            Ok(bytes) if image::guess_format(&bytes).is_ok() => Ok((bytes, name)),
-            Ok(_) => Err(format!("“{name}” isn't an image this can read (JPEG, PNG, WebP or GIF).")),
-            Err(err) => Err(format!("Couldn't read “{name}”: {err}")),
-        });
+        found = Some(read_image(&path));
     }
     found
 }
@@ -364,21 +382,20 @@ mod tests {
             let mut png = Vec::new();
             image.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).unwrap();
 
-            let owner = Owner::Track(track.parse().unwrap());
+            let path = |id: &str| format!("/api/tracks/{id}/covers");
             let before = detail(track.clone()).await.covers.len();
-            api.upload::<Value>(&owner.path(), png, "test.png").await.unwrap();
+            api.upload::<Value>(&path(&track), png, "test.png").await.unwrap();
             let covers = detail(track.clone()).await.covers;
             assert_eq!(covers.len(), before + 1);
             let new = covers.last().unwrap().clone();
 
             // Made the main one, as "Main" sends it.
             let order = moved(&covers, covers.len() - 1, 0);
-            api.send(reqwest::Method::PUT, &format!("{}/order", owner.path()), Some(json!({ "cover_ids": order }))).await.unwrap();
+            api.send(reqwest::Method::PUT, &format!("{}/order", path(&track)), Some(json!({ "cover_ids": order }))).await.unwrap();
             assert_eq!(detail(track.clone()).await.covers[0].id, new.id);
 
             // Copied to the other track: the same image.
-            let to = Owner::Track(other.parse().unwrap());
-            api.send(reqwest::Method::POST, &format!("{}/copy", to.path()), Some(json!({ "cover_id": new.id }))).await.unwrap();
+            api.send(reqwest::Method::POST, &format!("{}/copy", path(&other)), Some(json!({ "cover_id": new.id }))).await.unwrap();
             let copy = detail(other.clone()).await.covers.into_iter().find(|c| c.blob_sha256 == new.blob_sha256).expect("copied");
 
             // Both to the trash.

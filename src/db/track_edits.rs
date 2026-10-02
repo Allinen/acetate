@@ -16,6 +16,13 @@
 //!   hidden tracks are there. (Their tracks themselves are never touched.) `sync` makes
 //!   them match the track whatever the edit changes (nothing, even): its title, date and
 //!   performers, as the track's shown version has them once the edit is written.
+//! * **Covers and sources** with the rest of the track, in the same savepoint: its covers as
+//!   they're to be (kept, copied from other covers, or images staged before, see
+//!   `POST /api/covers/staged`; the ones left out go to the trash), sources added,
+//!   corrected (a new snapshot) or put in the trash, and which one its file came from.
+//!   The covers are stale like a revision: if they've changed since the client loaded
+//!   them, nothing of the track is written. New covers go along too, to the albums it's
+//!   alone on that haven't got that image (the track's new main cover becomes theirs).
 //! * **The flags after it**: each track's open review flags once the checks have run
 //!   (they're deferred to the commit; see migration 0030), so a preview says exactly what
 //!   would still be missing.
@@ -28,7 +35,9 @@ use serde::{Deserialize, Serialize};
 use sqlx::{Connection, PgConnection};
 use uuid::Uuid;
 
+use super::covers::{self, CoverOwner};
 use super::revisions::{self, EditRejected, Source, Written};
+use crate::model::sources::{self as source_shapes, Kind, NewSource, SourceOwner};
 use crate::model::{AlbumData, ArtistData, Credit, TrackFacts, TrackMetadata, diff_relations};
 
 /// At most this many tracks per request.
@@ -76,10 +85,77 @@ pub struct TrackEdit {
     /// Make the albums it's alone on match it, changed by this edit or not.
     #[serde(default)]
     pub sync: bool,
+    /// Its covers as they're to be (None: left as they are).
+    #[serde(default)]
+    pub covers: Option<CoversEdit>,
+    /// Its sources' changes, and where its file came from (None: none).
+    #[serde(default)]
+    pub sources: Option<SourcesEdit>,
 }
 
 fn yes() -> bool {
     true
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CoversEdit {
+    /// Its covers as the client had them, in order: if they've changed since, the track is
+    /// stale.
+    pub base: Vec<Uuid>,
+    /// Its covers to be, in order (the first is the main one). One it has that isn't here
+    /// goes to the trash.
+    pub covers: Vec<CoverItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(untagged)]
+pub enum CoverItem {
+    /// One it has.
+    Kept { id: Uuid },
+    /// A copy of another cover the user can see (a track's or an album's): the same image.
+    Copy { copy_of: Uuid },
+    /// An image the user staged (by its hash).
+    Staged { staged: String },
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct SourcesEdit {
+    #[serde(default)]
+    pub add: Vec<AddSource>,
+    /// New snapshots of sources it has.
+    #[serde(default)]
+    pub correct: Vec<CorrectSource>,
+    /// Sources of its to put in the trash.
+    #[serde(default)]
+    pub trash: Vec<Uuid>,
+    /// Its file came from this source: one of its own, or one added here (its stand-in).
+    #[serde(default)]
+    pub origin: Option<Uuid>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AddSource {
+    /// A stand-in id, for `origin`.
+    #[serde(default)]
+    pub id: Option<Uuid>,
+    pub platform: String,
+    pub data: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CorrectSource {
+    pub source_id: Uuid,
+    pub platform: String,
+    pub data: serde_json::Value,
+}
+
+/// What the user may change besides metadata and facts.
+#[derive(Debug, Clone, Copy)]
+pub struct May {
+    /// `edit_relations`: related tracks.
+    pub relations: bool,
+    /// `edit_sources`: sources, and where a file came from.
+    pub sources: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -135,18 +211,20 @@ pub struct Along {
     pub album_id: Uuid,
     pub before: AlbumData,
     pub after: AlbumData,
+    /// How many of the track's new covers it got.
+    pub covers: usize,
 }
 
 /// Runs the edit on `conn` (a transaction acting as the user). `describe` turns a track's
-/// error into what the client is told. `may_edit_relations`: the user has
-/// `edit_relations` (else a track whose relations change fails).
+/// error into what the client is told. `may`: what the user may change besides metadata
+/// and facts (a track changing something else it may not fails).
 ///
 /// Errors only for what stops everything (making the new artists or albums); a track's own
 /// error is in its result.
 pub async fn edit(
     conn: &mut PgConnection,
     edit: &Edit,
-    may_edit_relations: bool,
+    may: May,
     describe: impl Fn(anyhow::Error) -> Failure,
 ) -> anyhow::Result<Edited> {
     let reason = edit.reason.trim();
@@ -164,7 +242,7 @@ pub async fn edit(
     let mut tracks = Vec::new();
     for track in &edit.tracks {
         let mut savepoint = conn.begin().await?;
-        let result = edit_track(&mut savepoint, track, &artists, &albums, reason, may_edit_relations).await;
+        let result = edit_track(&mut savepoint, track, &artists, &albums, reason, may).await;
         let done = match result {
             Ok(done) => {
                 savepoint.commit().await?;
@@ -205,7 +283,7 @@ async fn edit_track(
     artists: &HashMap<Uuid, Uuid>,
     albums: &HashMap<Uuid, Uuid>,
     reason: &str,
-    may_edit_relations: bool,
+    may: May,
 ) -> anyhow::Result<TrackEdited> {
     let track = edit.track_id;
     let shown = sqlx::query_scalar!("SELECT primary_variant_id FROM tracks WHERE id = $1 AND merged_into IS NULL", track)
@@ -232,7 +310,7 @@ async fn edit_track(
                 membership.album_id = *real;
             }
         }
-        if !may_edit_relations {
+        if !may.relations {
             let current = revisions::current_relations(conn, track).await?;
             let (added, removed) = diff_relations(&current, &data.relations);
             if !added.is_empty() || !removed.is_empty() {
@@ -242,8 +320,19 @@ async fn edit_track(
         done.facts = Some(revisions::write_external(conn, track, Some(f.base_revision_id), &data, Source::Edit, reason).await?);
     }
 
+    let new_covers = match &edit.covers {
+        Some(c) => write_covers(conn, track, c).await?,
+        None => Vec::new(),
+    };
+    if let Some(s) = &edit.sources {
+        if !may.sources {
+            return Err(EditRejected::Invalid("changing sources needs the `edit_sources` permission".into()).into());
+        }
+        write_sources(conn, track, s, reason).await?;
+    }
+
     // The albums along, if it's still on them: what changed on the track, or (`sync`) all
-    // of it, as its shown version is now.
+    // of it, as its shown version is now; and its new covers.
     let synced = match (edit.sync && edit.along && !alone_on.is_empty(), shown) {
         (true, Some(shown)) => latest_meta(conn, shown).await?,
         _ => None,
@@ -252,7 +341,7 @@ async fn edit_track(
         (Some(before), Some(m)) => Some((before, TrackMetadata { credits: real_credits(&m.data.credits, artists), ..m.data.clone() })),
         _ => None,
     };
-    if synced.is_some() || changed.is_some() {
+    if !alone_on.is_empty() && (synced.is_some() || changed.is_some() || !new_covers.is_empty()) {
         let still_on: Vec<Uuid> = sqlx::query_scalar!("SELECT album_id FROM album_tracks WHERE track_id = $1", track)
             .fetch_all(&mut *conn)
             .await?;
@@ -261,11 +350,14 @@ async fn edit_track(
             let new = match (&synced, &changed) {
                 (Some(now), _) => matching(&old, now),
                 (None, Some((before, after))) => along(&old, before, after),
-                (None, None) => continue,
+                (None, None) => old.clone(),
             };
             if new != old {
                 revisions::write_album(conn, album, Some(base), &new, Source::Edit, &along_reason(reason)).await?;
-                done.along.push(Along { album_id: album, before: old, after: new });
+            }
+            let covers = covers_along(conn, album, &new_covers).await?;
+            if new != old || covers > 0 {
+                done.along.push(Along { album_id: album, before: old, after: new, covers });
             }
         }
     }
@@ -296,6 +388,115 @@ pub fn matching(album: &AlbumData, track: &TrackMetadata) -> AlbumData {
 /// Primary and featured credits, in order: what an album credits.
 fn performers(credits: &[Credit]) -> Vec<Credit> {
     credits.iter().filter(|c| c.role == "primary" || c.role == "featured").cloned().collect()
+}
+
+/// The track's covers made as `edit` says: the ones left out to the trash, the new ones
+/// made, all in the order given. Returns the new ones: (id, whether it's the main one).
+async fn write_covers(conn: &mut PgConnection, track: Uuid, edit: &CoversEdit) -> anyhow::Result<Vec<(Uuid, bool)>> {
+    let current = sqlx::query_scalar!("SELECT id FROM covers WHERE track_id = $1 AND trashed_at IS NULL ORDER BY position, id FOR UPDATE", track)
+        .fetch_all(&mut *conn)
+        .await?;
+    if current != edit.base {
+        return Err(EditRejected::Stale { latest: None }.into());
+    }
+    let mut kept = Vec::new();
+    for item in &edit.covers {
+        if let CoverItem::Kept { id } = item {
+            if !current.contains(id) || kept.contains(id) {
+                return Err(EditRejected::Invalid("each cover kept must be one of its own, listed once".into()).into());
+            }
+            kept.push(*id);
+        }
+    }
+    for gone in current.iter().filter(|c| !kept.contains(c)) {
+        covers::trash(conn, *gone).await?;
+    }
+    let owner = CoverOwner::Track(track);
+    let (mut order, mut new) = (Vec::new(), Vec::new());
+    for (n, item) in edit.covers.iter().enumerate() {
+        let id = match item {
+            CoverItem::Kept { id } => *id,
+            CoverItem::Copy { copy_of } => covers::copy(conn, owner, *copy_of).await?,
+            CoverItem::Staged { staged } => covers::add_staged(conn, owner, staged).await?,
+        };
+        if !matches!(item, CoverItem::Kept { .. }) {
+            new.push((id, n == 0));
+        }
+        order.push(id);
+    }
+    if order != current {
+        covers::set_order(conn, owner, &order).await?;
+    }
+    Ok(new)
+}
+
+/// The track's new covers on an album it's alone on, where it hasn't got that image (the
+/// track's new main cover becomes the album's too). How many it got.
+async fn covers_along(conn: &mut PgConnection, album: Uuid, new: &[(Uuid, bool)]) -> anyhow::Result<usize> {
+    let mut added = 0;
+    for (cover, main) in new {
+        let has_it = sqlx::query_scalar!(
+            r#"SELECT EXISTS (SELECT 1 FROM covers c JOIN covers n ON n.id = $2 AND n.blob_sha256 = c.blob_sha256
+                              WHERE c.album_id = $1 AND c.trashed_at IS NULL) AS "e!""#,
+            album,
+            cover
+        )
+        .fetch_one(&mut *conn)
+        .await?;
+        if has_it {
+            continue;
+        }
+        let copy = covers::copy(conn, CoverOwner::Album(album), *cover).await?;
+        added += 1;
+        if *main {
+            let mut order = sqlx::query_scalar!("SELECT id FROM covers WHERE album_id = $1 AND trashed_at IS NULL ORDER BY position, id", album)
+                .fetch_all(&mut *conn)
+                .await?;
+            order.retain(|c| *c != copy);
+            order.insert(0, copy);
+            covers::set_order(conn, CoverOwner::Album(album), &order).await?;
+        }
+    }
+    Ok(added)
+}
+
+/// The track's sources changed as `edit` says: corrected, added, where its file came from,
+/// then the ones to go in the trash (after: its file may have come from one of them).
+async fn write_sources(conn: &mut PgConnection, track: Uuid, edit: &SourcesEdit, reason: &str) -> anyhow::Result<()> {
+    let owner = SourceOwner::Track(track);
+    let source = |platform: &str, source_id: Option<Uuid>, data: &serde_json::Value| {
+        source_shapes::validate(Kind::Track, NewSource { platform: platform.to_string(), source_id, captured_at: None, data: data.clone() })
+    };
+    let own = async |conn: &mut PgConnection, id: Uuid| -> anyhow::Result<()> {
+        let own = sqlx::query_scalar!(r#"SELECT EXISTS (SELECT 1 FROM sources WHERE id = $1 AND track_id = $2) AS "e!""#, id, track)
+            .fetch_one(&mut *conn)
+            .await?;
+        if own { Ok(()) } else { Err(EditRejected::Invalid("that source isn't one of its own".into()).into()) }
+    };
+    for c in &edit.correct {
+        own(conn, c.source_id).await?;
+        super::sources::add_snapshot(conn, owner, &source(&c.platform, Some(c.source_id), &c.data)?).await?;
+    }
+    let mut made = HashMap::new();
+    for a in &edit.add {
+        let added = super::sources::add_snapshot(conn, owner, &source(&a.platform, None, &a.data)?).await?;
+        if let Some(id) = a.id {
+            made.insert(id, added.source_id);
+        }
+    }
+    if let Some(origin) = edit.origin {
+        let origin = made.get(&origin).copied().unwrap_or(origin);
+        let file = sqlx::query_scalar!("SELECT file_id FROM tracks WHERE id = $1", track)
+            .fetch_one(&mut *conn)
+            .await?
+            .ok_or_else(|| EditRejected::Invalid("it has no file to have come from somewhere".into()))?;
+        super::sources::set_file_origin(conn, file, super::sources::OriginTarget::Source(origin), reason).await?;
+    }
+    for gone in &edit.trash {
+        own(conn, *gone).await?;
+        super::sources::trash(conn, *gone).await?;
+    }
+    Ok(())
 }
 
 fn along_reason(reason: &str) -> String {
@@ -358,7 +559,9 @@ mod tests {
                 "meta": { "variant_id": Uuid::from_u128(2), "base_revision_id": Uuid::from_u128(3),
                           "data": { "title": "T", "credits": [{ "artist_id": Uuid::from_u128(9), "role": "featured" }] } },
                 "facts": { "status": "demo", "albums": [{ "album_id": Uuid::from_u128(8), "disc_number": 1 }], "base_revision_id": Uuid::from_u128(4) },
-            }, { "track_id": Uuid::from_u128(5), "along": true }],
+            }, { "track_id": Uuid::from_u128(5), "along": true,
+                 "covers": { "base": [Uuid::from_u128(6)], "covers": [{ "staged": "ab" }, { "id": Uuid::from_u128(6) }, { "copy_of": Uuid::from_u128(7) }] },
+                 "sources": { "add": [{ "id": Uuid::from_u128(10), "platform": "custom", "data": { "label": "vk" } }], "trash": [Uuid::from_u128(11)], "origin": Uuid::from_u128(10) } }],
             "new_artists": [{ "id": Uuid::from_u128(9), "name": "New" }],
             "new_albums": [{ "id": Uuid::from_u128(8), "title": "EP", "kind": "ep", "release_date": null,
                              "credits": [{ "artist_id": Uuid::from_u128(9), "role": "primary", "alias_id": null }] }],
@@ -372,6 +575,14 @@ mod tests {
         assert_eq!((facts.base_revision_id, facts.data.status.as_str()), (Uuid::from_u128(4), "demo"));
         assert_eq!(facts.data.albums[0].disc_number, Some(1));
         assert!(edit.tracks[1].meta.is_none() && edit.tracks[1].facts.is_none());
+        assert!(t.covers.is_none() && t.sources.is_none());
+        let covers = edit.tracks[1].covers.as_ref().unwrap();
+        assert_eq!(
+            covers.covers,
+            [CoverItem::Staged { staged: "ab".into() }, CoverItem::Kept { id: Uuid::from_u128(6) }, CoverItem::Copy { copy_of: Uuid::from_u128(7) }]
+        );
+        let sources = edit.tracks[1].sources.as_ref().unwrap();
+        assert_eq!((sources.add[0].id, sources.trash.clone(), sources.origin), (Some(Uuid::from_u128(10)), vec![Uuid::from_u128(11)], Some(Uuid::from_u128(10))));
         assert_eq!((edit.new_albums[0].data.kind.as_str(), edit.new_albums[0].data.credits.len()), ("ep", 1));
         assert_eq!(edit.new_artists[0].name, "New");
     }

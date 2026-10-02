@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT EXISTS (SELECT 1 FROM covers c JOIN covers n ON n.id = $2 AND n.blob_sha256 = c.blob_sha256\n                              WHERE c.album_id = $1 AND c.trashed_at IS NULL) AS \"e!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "e!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "6c7489979afd57bb8862aaab8fea5d5e61461d459e8379b893374dd964b5edaa"
+}

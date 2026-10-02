@@ -30,11 +30,9 @@ pub struct TrackPage {
     to_extra: Option<super::to_extra::ToExtra>,
     /// The history section's state (restoring asks first).
     history: super::history::History,
-    /// Its sources, and which one its file came from (edit mode).
-    sources: crate::ui::edit::sources::SourcesEditor,
-    origin: crate::ui::edit::sources::OriginPicker,
-    /// Its covers: order, trash, copies (edit mode).
-    covers: crate::ui::edit::cover_list::CoverList,
+    /// The changes of where its file came from (edit mode; which source it is, is the
+    /// editor's `origin:`).
+    origin: crate::ui::edit::sources::OriginChanges,
     /// The groupings it's in.
     part_of: crate::ui::edit::part_of::PartOf,
     /// The track the editor's line was last given the cursor for (in edit mode: once per
@@ -219,8 +217,6 @@ impl TrackPage {
                 }
                 // Ctrl+Enter in the lyrics saves them, not the track's form (shown first).
                 self.lyrics_editor.take_keys(ui.ctx());
-                // A track or album picked to copy a cover from (before the form takes it).
-                self.covers.take_pick(shell);
                 // Two columns on a wide window: editing on the left, what's for looking at
                 // (lyrics, the file, sources, history…) on the right.
                 let full = ui.available_width();
@@ -233,8 +229,6 @@ impl TrackPage {
                             ui.set_width(left_width);
                             section(ui, "Edit", true, |ui| edit(ui, shell, catalog, &d, &mut self.versions));
                             self.edit_lyrics(ui, shell, catalog, &d, player);
-                            self.edit_covers(ui, shell, &d);
-                            self.edit_sources(ui, shell, &d);
                         });
                         ui.add_space(gap);
                         ui.allocate_ui_with_layout(Vec2::new(right_width, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
@@ -245,8 +239,6 @@ impl TrackPage {
                 } else {
                     section(ui, "Edit", true, |ui| edit(ui, shell, catalog, &d, &mut self.versions));
                     self.edit_lyrics(ui, shell, catalog, &d, player);
-                    self.edit_covers(ui, shell, &d);
-                    self.edit_sources(ui, shell, &d);
                     self.view_sections(ui, shell, catalog, &d, is_playing, player);
                 }
             } else {
@@ -260,22 +252,6 @@ impl TrackPage {
     fn edit_lyrics(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: &Catalog, d: &TrackDetail, player: &PlayerView) {
         let open = self.lyrics_editor.dirty() || d.lyrics.is_empty();
         section(ui, &format!("Edit lyrics ({})", d.lyrics.len()), open, |ui| self.lyrics_editor.show(ui, shell, catalog, d, player));
-    }
-
-    /// Edit mode: its covers (a pasted or dropped image is added at once).
-    fn edit_covers(&mut self, ui: &mut egui::Ui, shell: &mut Shell, d: &TrackDetail) {
-        let owner = crate::ui::edit::cover_list::Owner::Track(d.id);
-        section(ui, &format!("Edit covers ({})", d.covers.len()), d.covers.is_empty(), |ui| self.covers.show(ui, shell, owner, &d.covers, true));
-    }
-
-    /// Edit mode: its sources, and which one its file came from.
-    fn edit_sources(&mut self, ui: &mut egui::Ui, shell: &mut Shell, d: &TrackDetail) {
-        let title = format!("Sources ({})", d.sources.len());
-        section(ui, &title, true, |ui| {
-            self.sources.show(ui, shell, crate::ui::edit::sources::Owner::Track(d.id), &d.sources);
-            ui.add_space(8.0);
-            self.origin.show(ui, shell, d);
-        });
     }
 
     /// The sections that are for looking at: lyrics, credits, relations, the file,
@@ -300,7 +276,12 @@ impl TrackPage {
         if !d.relations.is_empty() {
             section(ui, "Related tracks", true, |ui| relations(ui, shell, d));
         }
-        section(ui, "File", true, |ui| file(ui, shell, d));
+        section(ui, "File", true, |ui| {
+            file(ui, shell, d);
+            if shell.edit_mode {
+                self.origin.show(ui, shell, d);
+            }
+        });
         if d.variants.len() > 1 {
             section(ui, &format!("Versions ({})", d.variants.len()), false, |ui| {
                 for v in &d.variants {

@@ -562,5 +562,12 @@ async fn cover_images_by_hash_follow_what_you_can_see(_: PgPoolOptions, connect:
     assert_eq!(found(lib.bob, hidden.clone()).await?, Some(hidden), "bob sees H");
     assert_eq!(found(lib.carol, "a".repeat(15)).await?, None, "too short to say");
     assert_eq!(found(lib.carol, "%".repeat(16)).await?, None, "not hex");
+    // An image staged (not a cover yet): its stager's alone.
+    let staged = "c".repeat(64);
+    let mut tx = db::begin(&lib.app, Some(lib.carol)).await?;
+    db::covers::stage(&mut tx, &staged, Some("image/png"), None, None).await?;
+    tx.commit().await?;
+    assert_eq!(found(lib.carol, staged.clone()).await?, Some(staged.clone()), "carol staged it");
+    assert_eq!(found(lib.bob, staged).await?, None, "not bob's");
     Ok(())
 }

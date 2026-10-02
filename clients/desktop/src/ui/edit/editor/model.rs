@@ -4,7 +4,8 @@
 //! An edit is a list of operations, not a form's fields: the same list goes on each
 //! target track's own current state, which is how one edit changes one track or a
 //! thousand, and how a track someone changed meanwhile gets the edit again on their
-//! version. `apply` is the only place an operation means something.
+//! version. `apply` (metadata and facts) and `attach` (covers and sources, which aren't
+//! revisions) are the only places an operation means something.
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -59,8 +60,62 @@ pub struct Relation {
     pub track_id: Uuid,
 }
 
+/// A track's covers and sources, and which source its file came from: not revisions, but
+/// changed with the rest of it (the server's `CoversEdit`, `SourcesEdit`).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Attached {
+    /// In order: the first is the main one.
+    pub covers: Vec<Pic>,
+    pub sources: Vec<Src>,
+    /// The source its file came from.
+    pub origin: Option<Uuid>,
+}
+
+/// A cover, and what it'll be made from.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Pic {
+    pub image: Image,
+    /// Its image's SHA-256 (to draw it, and to know the same image again).
+    pub sha: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Image {
+    /// A cover the track has (its id).
+    Own(Uuid),
+    /// A copy of another track's or album's cover (its id).
+    CopyOf(Uuid),
+    /// An image uploaded for this edit (`POST /api/covers/staged`): its hash says which.
+    Staged,
+}
+
+/// A source.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Src {
+    /// Its id; a new one's stand-in (the server says which source it became).
+    pub id: Uuid,
+    pub new: bool,
+    pub platform: String,
+    /// What tells it apart: its id on the platform, or a custom one's label.
+    pub name: String,
+    /// Its newest data (corrected: as corrected).
+    pub data: serde_json::Value,
+    pub corrected: bool,
+}
+
+impl Src {
+    /// "netease 123", "custom “vk”".
+    pub fn label(&self) -> String {
+        match (self.platform.as_str(), self.name.as_str()) {
+            (p, "") => p.to_string(),
+            ("custom", name) => format!("custom “{name}”"),
+            (p, name) => format!("{p} {name}"),
+        }
+    }
+}
+
 /// A track as the editor starts from it: its shown version (id, latest revision,
-/// metadata) and its facts (latest revision).
+/// metadata), its facts (latest revision), and its covers and sources.
 #[derive(Debug, Clone)]
 pub struct Base {
     pub variant: Uuid,
@@ -68,6 +123,7 @@ pub struct Base {
     pub meta: Meta,
     pub facts_base: Option<Uuid>,
     pub facts: Facts,
+    pub attached: Attached,
 }
 
 impl Base {
@@ -84,7 +140,20 @@ impl Base {
             albums: d.albums.iter().map(|a| Membership { album_id: a.album_id, disc_number: a.disc_number, track_number: a.track_number }).collect(),
             relations: d.relations.iter().map(|r| Relation { kind: r.kind.clone(), track_id: r.track_id }).collect(),
         };
-        Some(Base { variant: v.id, variant_base: v.revision_id, meta, facts_base: d.external_revision_id, facts })
+        let attached = Attached {
+            covers: d.covers.iter().map(|c| Pic { image: Image::Own(c.id), sha: c.blob_sha256.clone() }).collect(),
+            sources: d
+                .sources
+                .iter()
+                .map(|s| {
+                    let data = s.snapshots.first().map(|x| x.data.clone()).unwrap_or_default();
+                    let name = s.external_id.clone().or_else(|| data.get("label").and_then(|l| l.as_str()).map(str::to_string)).unwrap_or_default();
+                    Src { id: s.id, new: false, platform: s.platform.clone(), name, data, corrected: false }
+                })
+                .collect(),
+            origin: d.file.origin.as_ref().map(|o| o.source_id),
+        };
+        Some(Base { variant: v.id, variant_base: v.revision_id, meta, facts_base: d.external_revision_id, facts, attached })
     }
 }
 
@@ -133,6 +202,25 @@ pub enum Op {
     Sync,
     /// Why (the last one says): kept with every revision.
     Why(String),
+    /// A cover: a new image, or a copy of another cover. `at`: its place (0: the main one;
+    /// None: last). A track with that image already: it's moved there (if `at` says).
+    Cover { image: Image, sha: String, at: Option<usize> },
+    /// A cover moved (places from 0).
+    MoveCover { from: usize, to: usize },
+    /// A cover to the trash (its place).
+    NoCover(usize),
+    NoCovers,
+    /// A source added: `id` its stand-in, `name` what tells it apart (see `Src`). One with
+    /// the same platform id there already gets the data, as a correction (the server
+    /// makes it a snapshot of that one).
+    Source { id: Uuid, platform: String, name: String, data: serde_json::Value },
+    /// A new snapshot of a source it has.
+    CorrectSource { id: Uuid, data: serde_json::Value },
+    /// A source to the trash (its place among them).
+    NoSource(usize),
+    NoSources,
+    /// The file came from the source in this place.
+    Origin(usize),
 }
 
 /// `ops` on a track's metadata and facts. `position`: its place among the targets (for
@@ -191,9 +279,77 @@ pub fn apply(ops: &[Op], meta: &Meta, facts: &Facts, position: usize) -> (Meta, 
             Op::Unrelate(track) => facts.relations.retain(|r| r.track_id != *track),
             Op::NoRelations => facts.relations.clear(),
             Op::Group(_) | Op::Along(_) | Op::Sync | Op::Why(_) => {}
+            Op::Cover { .. } | Op::MoveCover { .. } | Op::NoCover(_) | Op::NoCovers => {}
+            Op::Source { .. } | Op::CorrectSource { .. } | Op::NoSource(_) | Op::NoSources | Op::Origin(_) => {}
         }
     }
     (meta, facts)
+}
+
+/// `ops` on a track's covers and sources.
+pub fn attach(ops: &[Op], attached: &Attached) -> Attached {
+    let mut a = attached.clone();
+    let moved = |list: &mut Vec<Pic>, from: usize, to: usize| {
+        if from < list.len() {
+            let pic = list.remove(from);
+            list.insert(to.min(list.len()), pic);
+        }
+    };
+    for op in ops {
+        match op {
+            Op::Cover { image, sha, at } => match a.covers.iter().position(|p| p.sha == *sha) {
+                Some(there) => {
+                    if let Some(at) = at {
+                        moved(&mut a.covers, there, *at);
+                    }
+                }
+                None => {
+                    let pic = Pic { image: image.clone(), sha: sha.clone() };
+                    let at = at.unwrap_or(a.covers.len()).min(a.covers.len());
+                    a.covers.insert(at, pic);
+                }
+            },
+            Op::MoveCover { from, to } => moved(&mut a.covers, *from, *to),
+            Op::NoCover(at) => {
+                if *at < a.covers.len() {
+                    a.covers.remove(*at);
+                }
+            }
+            Op::NoCovers => a.covers.clear(),
+            Op::Source { id, platform, name, data } => {
+                let same = a.sources.iter_mut().find(|s| s.platform == *platform && !name.is_empty() && s.name == *name && platform != "custom");
+                match same {
+                    Some(s) => {
+                        s.data = data.clone();
+                        s.corrected = !s.new;
+                    }
+                    None => a.sources.push(Src { id: *id, new: true, platform: platform.clone(), name: name.clone(), data: data.clone(), corrected: false }),
+                }
+            }
+            Op::CorrectSource { id, data } => {
+                if let Some(s) = a.sources.iter_mut().find(|s| s.id == *id) {
+                    s.data = data.clone();
+                    s.corrected = !s.new;
+                    if s.platform == "custom" {
+                        s.name = data.get("label").and_then(|l| l.as_str()).unwrap_or_default().to_string();
+                    }
+                }
+            }
+            Op::NoSource(at) => {
+                if *at < a.sources.len() {
+                    a.sources.remove(*at);
+                }
+            }
+            Op::NoSources => a.sources.clear(),
+            Op::Origin(at) => {
+                if let Some(s) = a.sources.get(*at) {
+                    a.origin = Some(s.id);
+                }
+            }
+            _ => {}
+        }
+    }
+    a
 }
 
 fn credit(credits: &mut Vec<Credit>, artist: Uuid, role: Option<&str>, alias: Option<Option<Uuid>>, at: Option<usize>) {
@@ -316,6 +472,42 @@ mod tests {
         // Only on another one: clear, then add.
         let ops = [Op::NoAlbums, Op::Album { album: id(9), numbers: Numbers::Keep }];
         assert_eq!(apply(&ops, &meta, &on, 0).1.albums, [Membership { album_id: id(9), disc_number: None, track_number: None }]);
+    }
+
+    fn pic(n: u128) -> Pic {
+        Pic { image: Image::Own(id(n)), sha: format!("{n:064x}") }
+    }
+
+    #[test]
+    fn covers_added_moved_and_trashed() {
+        let base = Attached { covers: vec![pic(1), pic(2)], ..Default::default() };
+        let staged = |n: u128, at| Op::Cover { image: Image::Staged, sha: format!("{n:064x}"), at };
+        // A new one as the main one; another last; one it has already: only moved.
+        let a = attach(&[staged(3, Some(0)), staged(4, None), staged(2, Some(0))], &base);
+        let shas: Vec<String> = a.covers.iter().map(|p| p.sha.clone()).collect();
+        assert_eq!(shas, [2, 3, 1, 4].map(|n: u128| format!("{n:064x}")));
+        assert_eq!(a.covers[1].image, Image::Staged);
+        // Moved, then the second to the trash; past the end: nothing.
+        let a = attach(&[Op::MoveCover { from: 1, to: 0 }, Op::NoCover(1), Op::NoCover(5)], &base);
+        assert_eq!(a.covers, [pic(2)]);
+        assert!(attach(&[Op::NoCovers], &base).covers.is_empty());
+    }
+
+    #[test]
+    fn sources_added_corrected_trashed_and_the_origin() {
+        let src = |n: u128, platform: &str, name: &str| Src { id: id(n), new: false, platform: platform.into(), name: name.into(), data: serde_json::json!({}), corrected: false };
+        let base = Attached { sources: vec![src(1, "custom", "vk"), src(2, "netease", "123")], origin: Some(id(1)), ..Default::default() };
+        let add = |n: u128, platform: &str, name: &str| Op::Source { id: id(n), platform: platform.into(), name: name.into(), data: serde_json::json!({ "n": n as u64 }) };
+        // A new one, made the origin; the same NetEase song: a correction of the one there.
+        let a = attach(&[add(9, "youtube", "abc"), Op::Origin(2), add(8, "netease", "123")], &base);
+        assert_eq!(a.sources.len(), 3);
+        assert!(a.sources[2].new && a.origin == Some(id(9)));
+        assert!(a.sources[1].corrected && a.sources[1].data["n"] == 8);
+        // Corrected by hand; the first to the trash (the origin stays what it was).
+        let a = attach(&[Op::CorrectSource { id: id(1), data: serde_json::json!({ "label": "discord" }) }, Op::NoSource(0)], &base);
+        assert_eq!((a.sources.len(), a.origin), (1, Some(id(1))));
+        let a = attach(&[Op::CorrectSource { id: id(1), data: serde_json::json!({ "label": "discord" }) }], &base);
+        assert_eq!((a.sources[0].label(), a.sources[0].corrected), ("custom “discord”".to_string(), true));
     }
 
     #[test]

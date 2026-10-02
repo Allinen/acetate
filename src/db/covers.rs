@@ -204,6 +204,42 @@ pub async fn apply_to_album_tracks(
     Ok((added, skipped))
 }
 
+/// Keeps an image (its blob stored already) as staged by the user, to be made a cover by a
+/// track edit (`db::track_edits`). Staging the same image again changes nothing.
+pub async fn stage(conn: &mut PgConnection, blob_sha256: &str, mime: Option<&str>, width: Option<i32>, height: Option<i32>) -> sqlx::Result<()> {
+    sqlx::query!(
+        r#"
+        INSERT INTO staged_covers (blob_sha256, mime, width, height) VALUES ($1, $2, $3, $4)
+        ON CONFLICT (user_id, blob_sha256) DO UPDATE SET staged_at = now()
+        "#,
+        blob_sha256,
+        mime,
+        width,
+        height
+    )
+    .execute(conn)
+    .await?;
+    Ok(())
+}
+
+/// A new cover of `owner` from an image the user staged (NotFound: they didn't).
+pub async fn add_staged(conn: &mut PgConnection, owner: CoverOwner, blob_sha256: &str) -> anyhow::Result<Uuid> {
+    let Some(staged) = sqlx::query!("SELECT mime, width, height FROM staged_covers WHERE blob_sha256 = $1", blob_sha256)
+        .fetch_optional(&mut *conn)
+        .await?
+    else {
+        return Err(EditRejected::NotFound("staged image").into());
+    };
+    let cover = NewCover {
+        blob_sha256,
+        mime: staged.mime.as_deref(),
+        width: staged.width,
+        height: staged.height,
+        source: "upload",
+    };
+    add(conn, owner, &cover).await
+}
+
 /// An image as covers use it: its full hash and type.
 #[derive(Debug)]
 pub struct Image {
@@ -233,6 +269,11 @@ pub async fn image_by_hash(conn: &mut PgConnection, hash: &str) -> sqlx::Result<
         SELECT f.thumb_sha256, 'image/jpeg'
         FROM extra_files f
         WHERE f.thumb_sha256 LIKE $1 || '%'
+        UNION ALL
+        -- An image the user staged (only theirs: row-level security).
+        SELECT s.blob_sha256, s.mime
+        FROM staged_covers s
+        WHERE s.blob_sha256 LIKE $1 || '%'
         LIMIT 1
         "#,
         hash

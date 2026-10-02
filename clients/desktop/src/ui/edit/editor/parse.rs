@@ -1,6 +1,6 @@
 //! The editor's line, as typed: `key:value` parts, the same keys (and abbreviations) as a
 //! filter (`catalog::query`) plus the editor's own (`comment:`, `related:`, `why:`,
-//! `role:`, `as:`, `along:`). Only the syntax: what a value means is worked out by the
+//! `role:`, `as:`, `along:`, `cover:`, `source:`, `origin:`). Only the syntax: what a value means is worked out by the
 //! editor, which knows the library.
 //!
 //! * A value runs until the next key: `artist:lil quill year:2017`.
@@ -8,7 +8,8 @@
 //!   (`no` is a key: track number).
 //! * `-key:value` takes one off; `-key` alone clears the list (`-artist`, `-genre`…).
 //! * `#…` after an artist or album: its place (`#2`) or numbers (`#2-5` disc 2 track 5,
-//!   `#1+` in order from 1).
+//!   `#1+` in order from 1). After a cover or source, which one (`-cover:#2`), and where
+//!   it goes (`cover:#3 #1`: the third made the main one); right after the colon too.
 //! * `role:` and `as:` go with the artist before them, `kind:` with the album or related
 //!   track before it.
 
@@ -33,6 +34,9 @@ pub enum K {
     As,
     Kind,
     Along,
+    Cover,
+    Source,
+    Origin,
     /// A filter's key that isn't something to change (`format:`, `og:`…).
     Other(QueryKey),
 }
@@ -58,18 +62,21 @@ impl K {
             K::As => "as",
             K::Kind => "kind",
             K::Along => "along",
+            K::Cover => "cover",
+            K::Source => "source",
+            K::Origin => "origin",
             K::Other(k) => k.name(),
         }
     }
 
     /// Whether `-key` alone means "clear it".
     pub fn is_list(self) -> bool {
-        matches!(self, K::Genre | K::Artist | K::Featured | K::Album | K::Related | K::Group)
+        matches!(self, K::Genre | K::Artist | K::Featured | K::Album | K::Related | K::Group | K::Cover | K::Source)
     }
 
     /// Whether `#…` after its value is its place or numbers.
     fn takes_hash(self) -> bool {
-        matches!(self, K::Artist | K::Featured | K::Album | K::Role | K::As | K::Kind)
+        matches!(self, K::Artist | K::Featured | K::Album | K::Role | K::As | K::Kind | K::Cover | K::Source | K::Origin)
     }
 }
 
@@ -83,6 +90,9 @@ pub fn key(name: &str) -> Option<K> {
         "role" => Some(K::Role),
         "as" => Some(K::As),
         "along" => Some(K::Along),
+        "cover" | "covers" => Some(K::Cover),
+        "source" | "sources" => Some(K::Source),
+        "origin" => Some(K::Origin),
         _ => None,
     };
     if own.is_some() {
@@ -114,8 +124,10 @@ pub struct Part {
     /// The value, trimmed, without its quotes.
     pub value: String,
     pub quoted: bool,
-    /// What followed a `#` (artist, album…), if there was one.
+    /// What followed the last `#` (artist, album…), if there was one.
     pub hash: Option<String>,
+    /// Every `#…`, in order (a cover moved: which, and where to).
+    pub hashes: Vec<String>,
     /// Where the value starts in the line (bytes): a choice from the list replaces the
     /// value from here to `end`.
     pub value_start: usize,
@@ -165,6 +177,7 @@ pub fn parse(text: &str) -> Line {
         };
         if !in_quote && part.key.takes_hash() && is_hash(token) {
             part.hash = Some(token[1..].to_string());
+            part.hashes.push(token[1..].to_string());
         } else if in_quote {
             in_quote = !token.ends_with('"');
         }
@@ -172,11 +185,8 @@ pub fn parse(text: &str) -> Line {
     }
     for part in &mut line.parts {
         let raw = text[part.value_start..part.end].trim();
-        // The `#…` isn't part of the value.
-        let raw = match (&part.hash, raw.rfind('#')) {
-            (Some(_), Some(i)) if !part.quoted => raw[..i].trim(),
-            _ => raw,
-        };
+        // The `#…`s aren't part of the value.
+        let raw = if part.hash.is_some() && !part.quoted { without_hashes(raw) } else { raw };
         part.value = if part.quoted {
             let inner = raw.strip_prefix('"').unwrap_or(raw);
             let (inner, after) = inner.split_once('"').unwrap_or((inner, ""));
@@ -207,7 +217,22 @@ fn key_token(at: usize, token: &str) -> Option<Part> {
         return None;
     }
     let value_start = at + token.len() - value.len();
-    Some(Part { key: k, minus, colon, value: String::new(), quoted: value.starts_with('"'), hash: None, value_start, end: at + token.len() })
+    // `cover:#3`: a `#` right after the colon.
+    let hashes: Vec<String> = if k.takes_hash() && !value.is_empty() && is_hash(value) { vec![value[1..].to_string()] } else { Vec::new() };
+    let hash = hashes.last().cloned();
+    Some(Part { key: k, minus, colon, value: String::new(), quoted: value.starts_with('"'), hash, hashes, value_start, end: at + token.len() })
+}
+
+/// A value without the `#…` words at its end.
+fn without_hashes(mut raw: &str) -> &str {
+    loop {
+        let start = raw.rfind(char::is_whitespace).map_or(0, |i| i + 1);
+        if start < raw.len() && is_hash(&raw[start..]) {
+            raw = raw[..start].trim_end();
+        } else {
+            return raw;
+        }
+    }
 }
 
 /// Whether a quoted value (from its opening quote) is closed.
@@ -293,6 +318,18 @@ mod tests {
         assert_eq!(numbers("1+"), Some((None, Some(1), true)));
         assert_eq!(numbers(""), Some((None, None, false)));
         assert_eq!(numbers("x"), None);
+    }
+
+    #[test]
+    fn covers_and_sources_take_hashes() {
+        let line = parse("cover:#3 #1 -cover:#2 cover:Long Player #2 source:https://youtu.be/x origin:#1");
+        let p = &line.parts;
+        assert_eq!((p[0].key, p[0].value.as_str(), p[0].hashes.clone()), (K::Cover, "", vec!["3".to_string(), "1".to_string()]));
+        assert_eq!((p[1].minus, p[1].hashes.clone()), (true, vec!["2".to_string()]));
+        assert_eq!((p[2].value.as_str(), p[2].hash.as_deref()), ("Long Player", Some("2")));
+        assert_eq!((p[3].key, p[3].value.as_str()), (K::Source, "https://youtu.be/x"));
+        assert_eq!((p[4].key, p[4].hash.as_deref()), (K::Origin, Some("1")));
+        assert!(!parse("-cover").parts[0].colon);
     }
 
     #[test]

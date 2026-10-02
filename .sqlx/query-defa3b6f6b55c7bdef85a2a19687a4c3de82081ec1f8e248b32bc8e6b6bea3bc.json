@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT c.blob_sha256 AS \"blob_sha256!\", c.mime\n        FROM covers c\n        WHERE c.blob_sha256 LIKE $1 || '%'\n          AND (EXISTS (SELECT 1 FROM tracks t WHERE t.id = c.track_id)\n               OR EXISTS (SELECT 1 FROM album_tracks at JOIN tracks t ON t.id = at.track_id\n                          WHERE at.album_id = c.album_id))\n        UNION ALL\n        -- A video's thumbnail (an extra's file: seen with the extra).\n        SELECT f.thumb_sha256, 'image/jpeg'\n        FROM extra_files f\n        WHERE f.thumb_sha256 LIKE $1 || '%'\n        UNION ALL\n        -- An image the user staged (only theirs: row-level security).\n        SELECT s.blob_sha256, s.mime\n        FROM staged_covers s\n        WHERE s.blob_sha256 LIKE $1 || '%'\n        LIMIT 1\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "blob_sha256!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "mime",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "defa3b6f6b55c7bdef85a2a19687a4c3de82081ec1f8e248b32bc8e6b6bea3bc"
+}

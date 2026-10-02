@@ -14,8 +14,16 @@
 //!   after, from the server's preview). ↓ from an empty line goes into the rows (↑/↓ or
 //!   j/k, Esc back): Enter edits a row through the line (`title:` and its value, ready to
 //!   change); on an artist `r` its role, `a` the name it's credited under, Alt+↑/↓ its
-//!   place, Delete takes it off (and an album, a related track, the date). With many
-//!   tracks: each field as they have it (how many differ), and as they will.
+//!   place, Delete takes it off (and an album, a related track, the date); on a cover `m`
+//!   makes it the main one, Alt+↑/↓ moves it, Space shows the original; on a source Enter
+//!   corrects it (its form opens under the rows), `o` says the file came from it. With
+//!   many tracks: each field as they have it (how many differ), and as they will.
+//! * **Covers and sources** are changes like the rest, applied with them: `cover:paste`
+//!   (or Ctrl+V with an image, or an image dropped, anywhere in the editor), `cover:file`,
+//!   `cover:<album or track>` (a copy of its cover), `cover:#3 #1`, `-cover:#2`;
+//!   `source:<link>`, `source:custom vk, …`, `-source:#1`, `origin:#2`. An image is
+//!   uploaded as soon as it's given (staged on the server), and only becomes a cover when
+//!   the edit is applied.
 //! * **Preview**: each track's changes in the history's words, the albums that change
 //!   along (`along:off` to leave them), and its review flags after (fixed, still there,
 //!   new), from the server's own checks. Ctrl+Enter applies what it shows; with many
@@ -37,8 +45,9 @@ use engine::{Change, Engine, Outcome, Phase, PlanState};
 use model::Op;
 use panel::{Flag, Row, RowKind};
 use parse::K;
-use resolve::{Candidate, Ctx, Names, Pick, PinKind, Unit};
+use resolve::{Candidate, Ctx, Names, Pick, PinKind, Unit, Want};
 use crate::account::Vocab;
+use crate::details::AliasInfo;
 use crate::catalog::search::{Part as SearchPart, Search};
 use crate::catalog::Catalog;
 use crate::ui::theme::{font, medium, semibold, PALETTE as P};
@@ -67,7 +76,11 @@ struct Here<'a> {
     album: Option<Uuid>,
     staged_album: Option<Uuid>,
     may_relate: bool,
+    may_source: bool,
 }
+
+/// An image uploaded for a cover: (its hash, what it is in words, where it goes), or why not.
+type Uploaded = Result<(String, String, Option<usize>), String>;
 
 static NEXT: AtomicU64 = AtomicU64::new(1);
 
@@ -80,6 +93,8 @@ pub struct TrackEditor {
     staged: Vec<Staged>,
     names: Names,
     lookup: Lookup,
+    /// Tracks to copy a cover from (`lookup` has the albums).
+    lookup_tracks: Lookup,
     engine: Engine,
     /// Put the cursor in the line (until it's there).
     focus_line: bool,
@@ -98,6 +113,14 @@ pub struct TrackEditor {
     apply_when_ready: bool,
     /// The line was filled in for you: the cursor goes after it.
     place_cursor: bool,
+    /// Images being uploaded for covers, and those done (staged as changes when they are).
+    uploading: usize,
+    uploaded: Arc<Mutex<Vec<Uploaded>>>,
+    /// The file dialog's answer (`cover:file`), and where that cover goes.
+    chosen: Arc<Mutex<Vec<std::path::PathBuf>>>,
+    chosen_at: Option<usize>,
+    /// A source being corrected (one track): its place, and the form.
+    correcting: Option<(usize, crate::ui::edit::sources::Form)>,
 }
 
 impl Default for TrackEditor {
@@ -109,6 +132,7 @@ impl Default for TrackEditor {
             staged: Vec::new(),
             names: Names::default(),
             lookup: Lookup::default(),
+            lookup_tracks: Lookup::default(),
             engine: Engine::default(),
             focus_line: false,
             confirm_discard: false,
@@ -119,6 +143,11 @@ impl Default for TrackEditor {
             saved: None,
             apply_when_ready: false,
             place_cursor: false,
+            uploading: 0,
+            uploaded: Arc::default(),
+            chosen: Arc::default(),
+            chosen_at: None,
+            correcting: None,
         }
     }
 }
@@ -226,8 +255,11 @@ impl TrackEditor {
         self.finished(shell, targets);
         let phase = self.engine.applied.lock().unwrap().phase;
         let line_id = self.line_id();
-        if !self.staged.is_empty() {
+        if !self.staged.is_empty() || self.uploading > 0 {
             shell.form_dirty = true;
+        }
+        if phase == Phase::Editing {
+            self.images(&ctx, shell, targets.len());
         }
 
         // Ctrl+Enter with one track came before its preview: applied once it's there.
@@ -268,7 +300,8 @@ impl TrackEditor {
         // ---- What the line means, and its list ----
         let staged_album = change.ops.iter().rev().find_map(|op| if let Op::Album { album, .. } = op { Some(*album) } else { None });
         let may_relate = shell.account.can("edit_relations");
-        let here = Here { catalog, vocab: &vocab, targets: targets.len(), album, staged_album, may_relate };
+        let may_source = shell.account.can("edit_sources");
+        let here = Here { catalog, vocab: &vocab, targets: targets.len(), album, staged_album, may_relate, may_source };
         let parsed = parse::parse(&self.line);
         let last = parsed.parts.last().cloned();
         let owner = last.as_ref().and_then(|l| {
@@ -278,30 +311,37 @@ impl TrackEditor {
         // (found in the background, they can still be the last keystroke's), so then
         // they're found now.
         let taking = focused && ctx.input(|i| i.key_pressed(Key::Tab) || i.key_pressed(Key::Enter));
-        let hits = match last.as_ref().and_then(|l| resolve::search_for(l).map(|sp| (sp, l.value.clone()))) {
+        // (A cover's: albums here, tracks below; what's typed without its `from:`.)
+        let query = |l: &parse::Part| if l.key == K::Cover { resolve::cover_value(l).unwrap_or_default() } else { l.value.clone() };
+        let hits = match last.as_ref().and_then(|l| resolve::search_for(l).map(|sp| (sp, query(l)))) {
             Some((sp, value)) if taking => self.lookup.now(catalog, sp, &value),
             Some((sp, value)) => self.lookup.hits(shell, sp, &value),
             None => Vec::new(),
         };
+        let track_hits = match last.as_ref().and_then(resolve::cover_value) {
+            Some(value) if taking => self.lookup_tracks.now(catalog, SearchPart::Tracks, &value),
+            Some(value) => self.lookup_tracks.hits(shell, SearchPart::Tracks, &value),
+            None => Vec::new(),
+        };
         let words = parsed.parts.is_empty() && !parsed.words.is_empty();
         let (candidates, actions, units) = {
-            let mut aliases = |id: Uuid| shell.artist_details.get(id).value.as_ref().map(|a| a.aliases.clone());
+            let mut look = Look(&mut *shell);
             let rctx = here.ctx(&self.names);
             let candidates: Vec<Candidate> = match &last {
-                Some(l) if !words => resolve::candidates(l, owner.as_ref(), &rctx, &hits, &mut aliases),
+                Some(l) if !words => resolve::candidates(l, owner.as_ref(), &rctx, &hits, &track_hits, &mut look),
                 _ => Vec::new(),
             };
             let actions = if words { resolve::actions(&parsed.words.join(" "), &rctx) } else { Vec::new() };
             let key = {
                 use std::hash::{Hash, Hasher};
                 let mut h = std::hash::DefaultHasher::new();
-                (&self.line, self.names.version, staged_album, shell.generation, targets.len()).hash(&mut h);
+                (&self.line, self.names.version, staged_album, look.0.generation, targets.len()).hash(&mut h);
                 h.finish()
             };
             let units = match &self.resolved {
                 Some((k, units)) if *k == key => units.clone(),
                 _ => {
-                    let (units, waiting) = resolve::resolve(&self.line, &rctx, &mut aliases);
+                    let (units, waiting) = resolve::resolve(&self.line, &rctx, &mut look);
                     self.resolved = if waiting { None } else { Some((key, units.clone())) };
                     units
                 }
@@ -338,7 +378,8 @@ impl TrackEditor {
                     .map(|f| (f.id, f.candidates().into_iter().map(|c| c.0).collect()))
                     .collect();
                 let names = self.names.stand_ins();
-                let know = panel::Know { catalog, names: &names, aliases: &aliases, ambiguous: &ambiguous };
+                let covers = self.engine.detail(track).map(|d| d.covers.clone()).unwrap_or_default();
+                let know = panel::Know { catalog, names: &names, aliases: &aliases, ambiguous: &ambiguous, covers: &covers };
                 panel::rows(r, &know, &now, after.as_deref())
             }
             _ => Vec::new(),
@@ -412,11 +453,16 @@ impl TrackEditor {
             if earlier || later {
                 ctx.input_mut(|i| i.events.retain(|e| !matches!(e, egui::Event::Text(_))));
                 self.row_key(row.kind, if earlier { RowKey::Earlier } else { RowKey::Later }, &r, shell, &here);
-                // The cursor goes with the artist moved (credits are rows next to each other).
-                if let RowKind::Credit(at) = row.kind {
+                // The cursor goes with the artist or cover moved (they're rows next to each other).
+                let (at, len) = match row.kind {
+                    RowKind::Credit(at) => (Some(at), r.meta.credits.len()),
+                    RowKind::Cover(at) => (Some(at), r.attached.covers.len()),
+                    _ => (None, 0),
+                };
+                if let Some(at) = at {
                     if earlier && at > 0 {
                         self.row = Some(n - 1);
-                    } else if later && at + 1 < r.meta.credits.len() {
+                    } else if later && at + 1 < len {
                         self.row = Some(n + 1);
                     }
                 }
@@ -443,6 +489,12 @@ impl TrackEditor {
                     Some(RowKey::Remove)
                 } else if pressed(Key::C, Modifiers::NONE) {
                     Some(RowKey::Next)
+                } else if pressed(Key::M, Modifiers::NONE) {
+                    Some(RowKey::Main)
+                } else if pressed(Key::O, Modifiers::NONE) {
+                    Some(RowKey::Origin)
+                } else if pressed(Key::Space, Modifiers::NONE) {
+                    Some(RowKey::View)
                 } else {
                     None
                 };
@@ -494,7 +546,7 @@ impl TrackEditor {
 
         // ---- The line ----
         let editing = phase == Phase::Editing;
-        let hint = "What to change: artist:…  album:…  status:demo  date:2020  genre:…  (Tab: the next part · Enter: stage it)";
+        let hint = "What to change: artist:…  album:…  status:demo  date:2020  cover:paste  source:<link>  (Tab: the next part · Enter: stage it)";
         let response = ui.add_enabled(editing, egui::TextEdit::singleline(&mut self.line).id(line_id).hint_text(hint).desired_width(f32::INFINITY));
         if response.changed() {
             self.highlighted = 0;
@@ -558,6 +610,12 @@ impl TrackEditor {
         }
         if let Some(notice) = &self.notice {
             ui.label(RichText::new(notice).color(P.muted).small());
+        }
+        if self.uploading > 0 {
+            ui.horizontal(|ui| {
+                ui.add(egui::Spinner::new());
+                ui.label(RichText::new("Uploading the image (a change once it's there)…").color(P.faint).small());
+            });
         }
 
         // ---- The staged changes ----
@@ -674,6 +732,7 @@ impl TrackEditor {
         if targets.len() == 1 && all_done {
             self.saved = Some(answers.get(&targets[0]).map(|a| a.flags.clone()).unwrap_or_default());
             self.staged.clear();
+            self.correcting = None;
             self.names = Names::default();
             self.engine.forget();
             self.notice = Some("Saved.".into());
@@ -722,10 +781,7 @@ impl TrackEditor {
         if text.trim().is_empty() {
             return true;
         }
-        let (units, _) = {
-            let mut aliases = |id: Uuid| shell.artist_details.get(id).value.as_ref().map(|a| a.aliases.clone());
-            resolve::resolve(text, &here.ctx(&self.names), &mut aliases)
-        };
+        let (units, _) = resolve::resolve(text, &here.ctx(&self.names), &mut Look(&mut *shell));
         if units.is_empty() {
             self.notice = Some("Nothing to change there: key:value (artist:…, status:…), or a word to find what to change.".into());
             return false;
@@ -734,19 +790,132 @@ impl TrackEditor {
             self.notice = Some(format!("Not staged: {err}"));
             return false;
         }
+        // What asking for something first says (no image in the clipboard…).
+        let mut notice = None;
         for u in units {
             let Ok(r) = u.result else { continue };
             if let Some((id, kind)) = &r.album_kind {
                 self.names.set_album_kind(*id, kind);
             }
-            self.staged.push(Staged { text: u.text, label: r.label, ops: r.ops, warning: r.warning, editable: true });
+            match r.want {
+                Some(Want::Paste { at }) => match crate::ui::edit::cover_list::clipboard_image() {
+                    Some(Ok((bytes, name))) => self.upload(shell, bytes, name, "the pasted image".into(), at),
+                    Some(Err(err)) => notice = Some(err),
+                    None => notice = Some("There's no image in the clipboard (copy an image, or an image file, first).".to_string()),
+                },
+                Some(Want::File { at }) => {
+                    self.chosen_at = at;
+                    crate::ui::files::choose(shell, "A cover", ("Images", crate::ui::files::IMAGES), false, &self.chosen);
+                }
+                Some(Want::Correct(n)) => self.correct(n, here.vocab),
+                None => self.staged.push(Staged { text: u.text, label: r.label, ops: r.ops, warning: r.warning, editable: true }),
+            }
         }
         // A Ctrl+Enter waiting was for what was staged before.
         self.apply_when_ready = false;
         self.resolved = None;
-        self.notice = None;
+        self.notice = notice;
         self.confirm_discard = false;
         true
+    }
+
+    /// Images for covers: pasted (Ctrl+V) or dropped anywhere in the editor, chosen in the
+    /// file dialog, uploaded; and those uploaded, staged as changes.
+    fn images(&mut self, ctx: &egui::Context, shell: &mut Shell, targets: usize) {
+        let chosen = std::mem::take(&mut *self.chosen.lock().unwrap());
+        let from_file = !chosen.is_empty();
+        let taking = !shell.palette_open && !shell.modal_open;
+        if taking || from_file {
+            let at = if from_file { self.chosen_at } else { None };
+            match crate::ui::edit::cover_list::take_image(ctx, taking, chosen) {
+                Some(Ok((bytes, name))) => {
+                    let what = if name == "pasted.png" { "the pasted image".to_string() } else { format!("the image “{name}”") };
+                    self.upload(shell, bytes, name, what, at);
+                }
+                Some(Err(err)) => self.notice = Some(err),
+                None => {}
+            }
+        }
+        let done = std::mem::take(&mut *self.uploaded.lock().unwrap());
+        for result in done {
+            self.uploading = self.uploading.saturating_sub(1);
+            match result {
+                Ok((sha, what, at)) => {
+                    let place = match at {
+                        None => String::new(),
+                        Some(0) => " as the main one".into(),
+                        Some(n) => format!(" as #{}", n + 1),
+                    };
+                    let warning = (targets > 1).then(|| format!("each of the {targets} tracks gets this cover"));
+                    let op = Op::Cover { image: model::Image::Staged, sha, at };
+                    self.staged.push(Staged { text: format!("cover: {what}{place}"), label: format!("cover: + {what}{place}"), ops: vec![op], warning, editable: false });
+                    self.apply_when_ready = false;
+                }
+                Err(err) => self.notice = Some(format!("The image couldn't be uploaded: {err}")),
+            }
+        }
+    }
+
+    /// Uploads an image for a cover (staged on the server; a change once it's there).
+    fn upload(&mut self, shell: &Shell, bytes: Vec<u8>, name: String, what: String, at: Option<usize>) {
+        #[derive(serde::Deserialize)]
+        struct StagedImage {
+            blob_sha256: String,
+        }
+        self.uploading += 1;
+        self.notice = None;
+        let (api, uploaded, ctx) = (shell.api.clone(), self.uploaded.clone(), shell.ctx.clone());
+        shell.runtime.spawn(async move {
+            let result = api.upload::<StagedImage>("/api/covers/staged", bytes, &name).await.map(|s| (s.blob_sha256, what, at)).map_err(|err| err.message);
+            uploaded.lock().unwrap().push(result);
+            ctx.request_repaint();
+        });
+    }
+
+    /// Opens the form correcting the source in place `n` (one track), as the staged changes
+    /// leave it.
+    fn correct(&mut self, n: usize, vocab: &Vocab) {
+        let Some(s) = (self.engine.plans.len() == 1).then(|| self.engine.plans.first().and_then(|p| self.engine.ready(p.track))).flatten().and_then(|r| r.attached.sources.get(n)) else {
+            self.notice = Some(format!("It has no source #{}.", n + 1));
+            return;
+        };
+        let shapes: Vec<crate::account::SourceShape> = vocab.source_shapes.iter().filter(|x| x.kind == "track").cloned().collect();
+        self.correcting = Some((n, crate::ui::edit::sources::Form::for_data(s.id, &s.platform, &s.data, &shapes)));
+        self.row = None;
+    }
+
+    /// The form correcting a source, under the rows: staged as a change when it's done.
+    fn correction(&mut self, ui: &mut egui::Ui, vocab: &Vocab) {
+        let Some((n, form)) = self.correcting.as_mut() else { return };
+        let n = *n;
+        let Some(shape) = vocab.source_shapes.iter().find(|x| x.kind == "track" && x.platform == form.platform) else {
+            self.correcting = None;
+            return;
+        };
+        let (mut stage, mut cancel) = (false, false);
+        egui::Frame::NONE.fill(P.surface).corner_radius(8).inner_margin(egui::Margin::same(10)).show(ui, |ui| {
+            ui.label(RichText::new(format!("Correcting source #{} ({}): a new snapshot of it when applied, the old ones kept.", n + 1, form.platform)).color(P.muted));
+            form.fields(ui, shape);
+            ui.horizontal(|ui| {
+                stage = ui.button("Stage the correction").clicked();
+                cancel = ui.button("Cancel").clicked();
+            });
+        });
+        if cancel {
+            self.correcting = None;
+        } else if stage {
+            match (form.data(shape), form.correcting) {
+                (Ok(data), Some(id)) => {
+                    let label = format!("source #{} ({}) corrected", n + 1, form.platform);
+                    self.staged.push(Staged { text: format!("source:#{} corrected", n + 1), label, ops: vec![Op::CorrectSource { id, data }], warning: None, editable: false });
+                    self.correcting = None;
+                    self.apply_when_ready = false;
+                    self.focus_line = true;
+                }
+                (Err(err), _) => self.notice = Some(err),
+                (_, None) => self.correcting = None,
+            }
+        }
     }
 
     /// A key on one track's row: an edit through the line (filled in, the cursor there), or
@@ -789,6 +958,48 @@ impl TrackEditor {
             (RowKind::AddArtist, RowKey::Edit) => fill(self, "artist:".into()),
             (RowKind::AddAlbum, RowKey::Edit) => fill(self, "album:".into()),
             (RowKind::AddRelated, RowKey::Edit) => fill(self, "related:".into()),
+            (RowKind::AddCover, RowKey::Edit) => fill(self, "cover:".into()),
+            (RowKind::AddSource, RowKey::Edit) => fill(self, "source:".into()),
+            (RowKind::Cover(n), key) => {
+                let at = n + 1;
+                match key {
+                    RowKey::Edit => fill(self, format!("cover:#{at} #")),
+                    RowKey::Main if n > 0 => {
+                        self.stage(&format!("cover:#{at} #1"), shell, here);
+                    }
+                    RowKey::Earlier if n > 0 => {
+                        self.stage(&format!("cover:#{at} #{n}"), shell, here);
+                    }
+                    RowKey::Later if n + 1 < r.attached.covers.len() => {
+                        self.stage(&format!("cover:#{at} #{}", at + 1), shell, here);
+                    }
+                    RowKey::Remove => {
+                        self.stage(&format!("-cover:#{at}"), shell, here);
+                    }
+                    RowKey::View => {
+                        if let Some(key) = r.attached.covers.get(n).and_then(|p| crate::catalog::model::CoverKey::from_hex(&p.sha)) {
+                            let ctx = shell.ctx.clone();
+                            shell.open_original(&ctx, crate::catalog::model::Cover { id: Uuid::nil(), key });
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            (RowKind::Source(n), key) => {
+                let at = n + 1;
+                match key {
+                    RowKey::Edit => {
+                        self.stage(&format!("source:#{at}"), shell, here);
+                    }
+                    RowKey::Remove => {
+                        self.stage(&format!("-source:#{at}"), shell, here);
+                    }
+                    RowKey::Origin => {
+                        self.stage(&format!("origin:#{at}"), shell, here);
+                    }
+                    _ => {}
+                }
+            }
             (RowKind::Credit(n), key) => {
                 let Some(c) = r.meta.credits.get(n).cloned() else { return };
                 let name = artist(&mut self.names, c.artist_id);
@@ -844,6 +1055,7 @@ impl TrackEditor {
     /// One track's rows: each field (the one the keys are on lit), its value as it will be
     /// (what it was, struck through), and the flags about it.
     fn rows_view(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: &Catalog, track: Uuid, rows: &[Row], vocab: &Vocab) {
+        let mut original = None;
         if rows.is_empty() {
             let text = match self.engine.plans.first().map(|p| &p.state) {
                 Some(PlanState::Failed(err)) => err.clone(),
@@ -879,6 +1091,15 @@ impl TrackEditor {
                     };
                     if lit {
                         value = value.background_color(P.surface_hi);
+                    }
+                    // A cover: small (a click: the original).
+                    if let Some(key) = row.image.as_deref().and_then(crate::catalog::model::CoverKey::from_hex) {
+                        let (rect, response) = ui.allocate_exact_size(egui::vec2(40.0, 40.0), egui::Sense::click());
+                        let cover = crate::catalog::model::Cover { id: Uuid::nil(), key };
+                        shell.cover(ui, Some(cover), Uuid::from_u128(key.0 as u128), rect, 4, 0.0);
+                        if response.on_hover_cursor(egui::CursorIcon::ZoomIn).on_hover_text("The original").clicked() {
+                            original = Some(cover);
+                        }
                     }
                     if ui.add(egui::Label::new(value).sense(egui::Sense::click())).clicked() {
                         clicked = Some(n);
@@ -921,6 +1142,10 @@ impl TrackEditor {
             self.row = Some(n);
             ui.ctx().memory_mut(|m| m.surrender_focus(self.line_id()));
         }
+        if let Some(cover) = original {
+            shell.open_original(ui.ctx(), cover);
+        }
+        self.correction(ui, vocab);
         match chosen {
             // The one credited, as it is now: it was right.
             Some((flag, credited, c)) if c == credited && !self.has_changes() => {
@@ -931,7 +1156,7 @@ impl TrackEditor {
         }
         if self.row.is_some() {
             ui.label(
-                RichText::new("Enter edits it · on an artist: r role, a credited as, Alt+↑/↓ (or Alt+k/j) its place, c the next of an ambiguous name's artists · Delete takes it off · Esc back to the line")
+                RichText::new("Enter edits it · on an artist: r role, a credited as, Alt+↑/↓ (or Alt+k/j) its place, c the next of an ambiguous name's artists · on a cover: m the main one, Alt+↑/↓ its place, Space the original · on a source: Enter corrects it, o the file came from it · Delete takes it off · Esc back to the line")
                     .color(P.faint)
                     .small(),
             );
@@ -961,7 +1186,7 @@ impl TrackEditor {
 
         match phase {
             Phase::Editing => {
-                let can = current && changing > refused && !loading && self.line.trim().is_empty();
+                let can = current && changing > refused && !loading && self.line.trim().is_empty() && self.uploading == 0;
                 let text = if single { "Apply  (Ctrl+Enter)".to_string() } else { format!("Apply to {} tracks  (Ctrl+Enter)", thousands(changing - refused.min(changing))) };
                 let mut apply = false;
                 ui.horizontal(|ui| {
@@ -980,6 +1205,8 @@ impl TrackEditor {
                 if ctrl_enter {
                     if can {
                         apply = true;
+                    } else if self.uploading > 0 {
+                        self.notice = Some("An image is still uploading: Ctrl+Enter again once it's a change.".into());
                     } else if single && !self.staged.is_empty() && self.line.trim().is_empty() {
                         // (What was typed may have been staged just now: its preview comes
                         // next.) Applied once the preview's there, if it can be.
@@ -1028,6 +1255,7 @@ impl TrackEditor {
                 });
                 if close {
                     self.staged.clear();
+                    self.correcting = None;
                     self.names = Names::default();
                     self.engine.forget();
                     closed = true;
@@ -1133,6 +1361,7 @@ impl Here<'_> {
             staged_album: self.staged_album,
             names,
             may_relate: self.may_relate,
+            may_source: self.may_source,
         }
     }
 }
@@ -1147,6 +1376,29 @@ enum RowKey {
     Later,
     /// An ambiguous name's next candidate.
     Next,
+    /// A cover made the main one.
+    Main,
+    /// The file came from this source.
+    Origin,
+    /// A cover's original, in full.
+    View,
+}
+
+/// The library's details, as resolving asks for them (loaded in the background).
+struct Look<'a>(&'a mut Shell);
+
+impl resolve::Lookups for Look<'_> {
+    fn aliases(&mut self, artist: Uuid) -> Option<Vec<AliasInfo>> {
+        self.0.artist_details.get(artist).value.as_ref().map(|a| a.aliases.clone())
+    }
+
+    fn covers(&mut self, kind: PinKind, id: Uuid) -> Option<Vec<(Uuid, String)>> {
+        let list = |covers: &[crate::details::Cover]| covers.iter().map(|c| (c.id, c.blob_sha256.clone())).collect();
+        match kind {
+            PinKind::Album => self.0.album_details.get(id).value.as_ref().map(|d| list(&d.covers)),
+            _ => self.0.track_details.get(id).value.as_ref().map(|d| list(&d.covers)),
+        }
+    }
 }
 
 /// A list under the line: (label, what tells it apart), the chosen one lit. A click sets
@@ -1175,21 +1427,21 @@ fn state(ui: &mut egui::Ui, engine: &Engine, catalog: &Catalog, names: &Names) {
     let artist = |id: Uuid| catalog.artist(id).map(|a| a.name.clone()).or_else(|| new_names.get(&id).cloned()).unwrap_or_else(|| "(an artist)".into());
     let album = |id: Uuid| catalog.album(id).map(|a| a.title.clone()).or_else(|| new_names.get(&id).cloned()).unwrap_or_else(|| "(an album)".into());
     let track = |id: Uuid| catalog.track_index(id).map(|i| catalog.tracks[i as usize].title.clone()).unwrap_or_else(|| "(a track)".into());
-    type Field<'a> = (&'static str, Box<dyn Fn(&model::Meta, &model::Facts) -> String + 'a>);
+    type Field<'a> = (&'static str, Box<dyn Fn(&model::Meta, &model::Facts, &model::Attached) -> String + 'a>);
     let fields: Vec<Field> = vec![
-        ("title", Box::new(|m, _| m.title.clone())),
+        ("title", Box::new(|m, _, _| m.title.clone())),
         (
             "artist",
-            Box::new(|m, _| {
+            Box::new(|m, _, _| {
                 m.credits.iter().map(|c| if c.role == "primary" { artist(c.artist_id) } else { format!("{} ({})", artist(c.artist_id), c.role) }).collect::<Vec<_>>().join(", ")
             }),
         ),
-        ("date", Box::new(|m, _| m.release_date.clone().unwrap_or_default())),
-        ("status", Box::new(|_, f| f.status.clone())),
-        ("genre", Box::new(|m, _| m.genres.join(", "))),
+        ("date", Box::new(|m, _, _| m.release_date.clone().unwrap_or_default())),
+        ("status", Box::new(|_, f, _| f.status.clone())),
+        ("genre", Box::new(|m, _, _| m.genres.join(", "))),
         (
             "album",
-            Box::new(|_, f| {
+            Box::new(|_, f, _| {
                 f.albums
                     .iter()
                     .map(|a| match (a.disc_number, a.track_number) {
@@ -1201,14 +1453,23 @@ fn state(ui: &mut egui::Ui, engine: &Engine, catalog: &Catalog, names: &Names) {
                     .join(", ")
             }),
         ),
-        ("related", Box::new(|_, f| f.relations.iter().map(|r| format!("{} “{}”", r.kind.replace('_', " "), track(r.track_id))).collect::<Vec<_>>().join(", "))),
-        ("comment", Box::new(|m, _| m.comment.clone().unwrap_or_default())),
+        ("related", Box::new(|_, f, _| f.relations.iter().map(|r| format!("{} “{}”", r.kind.replace('_', " "), track(r.track_id))).collect::<Vec<_>>().join(", "))),
+        ("comment", Box::new(|m, _, _| m.comment.clone().unwrap_or_default())),
+        (
+            "cover",
+            Box::new(|_, _, a| match a.covers.len() {
+                0 => String::new(),
+                1 => "1 cover".into(),
+                n => format!("{n} covers"),
+            }),
+        ),
+        ("source", Box::new(|_, _, a| a.sources.iter().map(|s| s.label()).collect::<Vec<_>>().join(", "))),
     ];
     let value_width = (ui.available_width() - 90.0).max(200.0);
     egui::Grid::new("track-editor-state-grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
         for (key, value) in &fields {
-            let before = summary(ready.iter().map(|r| value(&r.base.meta, &r.base.facts)));
-            let after = summary(ready.iter().map(|r| value(&r.meta, &r.facts)));
+            let before = summary(ready.iter().map(|r| value(&r.base.meta, &r.base.facts, &r.base.attached)));
+            let after = summary(ready.iter().map(|r| value(&r.meta, &r.facts, &r.attached)));
             ui.label(RichText::new(format!("{key}:")).color(P.faint));
             ui.vertical(|ui| {
                 ui.set_min_width(value_width);

@@ -29,6 +29,14 @@ pub enum RowKind {
     /// No related tracks (there to add one).
     AddRelated,
     Comment,
+    /// A cover (its place: 0 is the main one).
+    Cover(usize),
+    /// No covers (there to add one).
+    AddCover,
+    /// A source (its place among them).
+    Source(usize),
+    /// No sources (there to add one).
+    AddSource,
     /// Something the staged changes take off (shown struck through).
     Removed,
     /// Flags about nothing here (no cover, sources, fix later…).
@@ -48,6 +56,8 @@ pub struct Row {
     pub artist: Option<Uuid>,
     /// An ambiguous artist credited here: the flag and its candidates (to choose from).
     pub choose: Option<(Uuid, Vec<Uuid>)>,
+    /// A cover's image (its hash), drawn small.
+    pub image: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -71,6 +81,8 @@ pub fn line_for(kind: &str, title: &str) -> Option<String> {
         "missing_artists" => Some("artist:".into()),
         "missing_album" => Some("album:".into()),
         "missing_date" => Some("date:".into()),
+        "missing_cover" => Some("cover:".into()),
+        "weak_source" => Some("source:".into()),
         _ => None,
     }
 }
@@ -84,6 +96,8 @@ pub struct Know<'a> {
     pub aliases: &'a HashMap<Uuid, String>,
     /// Open ambiguous-artist flags: (the flag, its candidates).
     pub ambiguous: &'a [(Uuid, Vec<Uuid>)],
+    /// Its covers as they are (their sizes).
+    pub covers: &'a [crate::details::Cover],
 }
 
 /// The rows for one track's plan. `now`: its open flags; `after`: the preview's (None:
@@ -115,7 +129,7 @@ pub fn rows(r: &Ready, know: &Know, now: &[String], after: Option<&[String]>) ->
     };
     let relation = |rel: &super::model::Relation| format!("{} “{}”", rel.kind.replace('_', " "), track(rel.track_id));
     let changed = |before: String, after: String| -> (String, Option<String>) { if before == after { (after, None) } else { (after, Some(before)) } };
-    let row = |kind: RowKind, key: &'static str, (value, was): (String, Option<String>)| Row { kind, key, value, was, flags: Vec::new(), artist: None, choose: None };
+    let row = |kind: RowKind, key: &'static str, (value, was): (String, Option<String>)| Row { kind, key, value, was, flags: Vec::new(), artist: None, choose: None, image: None };
 
     let mut rows = Vec::new();
     rows.push(row(RowKind::Title, "title", changed(r.base.meta.title.clone(), r.meta.title.clone())));
@@ -170,6 +184,70 @@ pub fn rows(r: &Ready, know: &Know, now: &[String], after: Option<&[String]>) ->
     }
     rows.push(row(RowKind::Comment, "comment", changed(r.base.meta.comment.clone().unwrap_or_default(), r.meta.comment.clone().unwrap_or_default())));
 
+    // Covers: in order, the first the main one; what each is (new ones marked).
+    let (old, new) = (&r.base.attached, &r.attached);
+    let cover = |n: usize, p: &super::model::Pic| {
+        let place = if n == 0 { "main".to_string() } else { format!("#{}", n + 1) };
+        let what = match &p.image {
+            super::model::Image::Own(id) => know
+                .covers
+                .iter()
+                .find(|c| c.id == *id)
+                .map(|c| match (c.width, c.height) {
+                    (Some(w), Some(h)) => format!("{w}×{h} · {}", c.source),
+                    _ => c.source.clone(),
+                })
+                .unwrap_or_default(),
+            super::model::Image::CopyOf(_) => "a copy of another's".into(),
+            super::model::Image::Staged => "a new image".into(),
+        };
+        if what.is_empty() { place } else { format!("{place} · {what}") }
+    };
+    for (n, p) in new.covers.iter().enumerate() {
+        let was = match old.covers.iter().position(|b| b.sha == p.sha) {
+            None => Some("new".to_string()),
+            Some(m) if m != n => Some(cover(m, &old.covers[m])),
+            Some(_) => None,
+        };
+        let mut x = row(RowKind::Cover(n), "cover", (cover(n, p), was));
+        x.image = Some(p.sha.clone());
+        rows.push(x);
+    }
+    for (m, gone) in old.covers.iter().enumerate().filter(|(_, b)| !new.covers.iter().any(|p| p.sha == b.sha)) {
+        let mut x = row(RowKind::Removed, "cover", (String::new(), Some(format!("{} (to the trash)", cover(m, gone)))));
+        x.image = Some(gone.sha.clone());
+        rows.push(x);
+    }
+    if new.covers.is_empty() {
+        rows.push(row(RowKind::AddCover, "cover", ("none".into(), None)));
+    }
+
+    // Sources, and which one the file came from.
+    let source = |s: &super::model::Src, origin: Option<Uuid>| {
+        let mut text = s.label();
+        if origin == Some(s.id) {
+            text.push_str(" · the file came from here");
+        }
+        text
+    };
+    for (n, s) in new.sources.iter().enumerate() {
+        let text = source(s, new.origin);
+        let was = if s.new {
+            Some("new".to_string())
+        } else if s.corrected {
+            Some(format!("{} (before it's corrected)", s.label()))
+        } else {
+            old.sources.iter().find(|b| b.id == s.id).map(|b| source(b, old.origin)).filter(|b| *b != text)
+        };
+        rows.push(row(RowKind::Source(n), "source", (text, was)));
+    }
+    for gone in old.sources.iter().filter(|b| !new.sources.iter().any(|s| s.id == b.id)) {
+        rows.push(row(RowKind::Removed, "source", (String::new(), Some(format!("{} (to the trash)", source(gone, old.origin))))));
+    }
+    if new.sources.is_empty() {
+        rows.push(row(RowKind::AddSource, "source", ("none".into(), None)));
+    }
+
     // The flags, on the rows they're about.
     let mut flags: Vec<(String, Flag)> = now
         .iter()
@@ -199,6 +277,8 @@ pub fn rows(r: &Ready, know: &Know, now: &[String], after: Option<&[String]>) ->
                 if on.is_empty() { first(&rows, &artists).into_iter().collect() } else { on }
             }
             "missing_artists" | "merged_artist" => first(&rows, &artists).into_iter().collect(),
+            "missing_cover" => first(&rows, &|k| matches!(k, RowKind::Cover(_) | RowKind::AddCover)).into_iter().collect(),
+            "weak_source" => first(&rows, &|k| matches!(k, RowKind::Source(_) | RowKind::AddSource)).into_iter().collect(),
             _ => Vec::new(),
         };
         for &i in &at {
@@ -221,7 +301,7 @@ pub fn rows(r: &Ready, know: &Know, now: &[String], after: Option<&[String]>) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::edit::editor::model::{Base, Credit, Facts, Meta};
+    use crate::ui::edit::editor::model::{Attached, Base, Credit, Facts, Image, Meta, Pic, Src};
 
     fn catalog() -> Catalog {
         let body = serde_json::json!({
@@ -252,14 +332,15 @@ mod tests {
             meta: Meta { title: "Song (feat. Bo)".into(), credits: vec![credit(ann, "primary")], ..Default::default() },
             facts_base: Some(Uuid::from_u128(3)),
             facts: Facts { status: "released".into(), albums: vec![], relations: vec![] },
+            attached: Attached::default(),
         };
         let meta = Meta { title: "Song".into(), credits: vec![credit(ann, "primary"), credit(bo, "featured")], ..Default::default() };
-        let ready = Ready { position: 0, base: base.clone(), meta, facts: base.facts.clone(), lines: vec![], joins: vec![], sync: false };
+        let ready = Ready { position: 0, base: base.clone(), meta, facts: base.facts.clone(), attached: Attached::default(), lines: vec![], joins: vec![], sync: false };
         let now = ["credits_in_title".to_string(), "missing_album".to_string(), "missing_cover".to_string()];
         let after = ["missing_album".to_string(), "missing_cover".to_string()];
         let catalog = catalog();
         let (names, aliases) = (HashMap::new(), HashMap::new());
-        let know = Know { catalog: &catalog, names: &names, aliases: &aliases, ambiguous: &[] };
+        let know = Know { catalog: &catalog, names: &names, aliases: &aliases, ambiguous: &[], covers: &[] };
         let rows = rows(&ready, &know, &now, Some(&after));
 
         let title = rows.iter().find(|r| r.kind == RowKind::Title).unwrap();
@@ -271,9 +352,10 @@ mod tests {
         assert!(!rows.iter().any(|r| r.kind == RowKind::AddArtist));
         let albums = rows.iter().find(|r| r.kind == RowKind::AddAlbum).unwrap();
         assert_eq!(albums.flags, [("missing_album".to_string(), Flag::Still)]);
-        // A flag about nothing here: on its own row, last.
-        let other = rows.last().unwrap();
-        assert_eq!((other.kind, other.flags.clone()), (RowKind::Other, vec![("missing_cover".to_string(), Flag::Still)]));
+        // No cover: on the row to add one.
+        let covers = rows.iter().find(|r| r.kind == RowKind::AddCover).unwrap();
+        assert_eq!(covers.flags, [("missing_cover".to_string(), Flag::Still)]);
+        assert!(!rows.iter().any(|r| r.kind == RowKind::Other));
         // Before the preview: just open.
         let rows = super::rows(&ready, &know, &now, None);
         assert_eq!(rows[0].flags, [("credits_in_title".to_string(), Flag::Open)]);
@@ -288,17 +370,18 @@ mod tests {
             meta: Meta { title: "Song".into(), credits: vec![credit(ann, "primary"), credit(bo, "producer")], ..Default::default() },
             facts_base: Some(Uuid::from_u128(3)),
             facts: Facts { status: "released".into(), albums: vec![], relations: vec![] },
+            attached: Attached::default(),
         };
         // Bo taken off; Ann credited under an alias.
         let alias = Uuid::from_u128(70);
         let meta = Meta { credits: vec![Credit { alias_id: Some(alias), ..credit(ann, "primary") }], ..base.meta.clone() };
-        let ready = Ready { position: 0, base: base.clone(), meta, facts: base.facts.clone(), lines: vec![], joins: vec![], sync: false };
+        let ready = Ready { position: 0, base: base.clone(), meta, facts: base.facts.clone(), attached: Attached::default(), lines: vec![], joins: vec![], sync: false };
         let catalog = catalog();
         let names = HashMap::new();
         let aliases = HashMap::from([(alias, "Annie".to_string())]);
         let flag = Uuid::from_u128(80);
         let ambiguous = [(flag, vec![ann.parse().unwrap(), Uuid::from_u128(99)])];
-        let know = Know { catalog: &catalog, names: &names, aliases: &aliases, ambiguous: &ambiguous };
+        let know = Know { catalog: &catalog, names: &names, aliases: &aliases, ambiguous: &ambiguous, covers: &[] };
         let rows = rows(&ready, &know, &["ambiguous_artist".to_string()], None);
 
         let ann_row = rows.iter().find(|r| r.kind == RowKind::Credit(0)).unwrap();
@@ -317,6 +400,38 @@ mod tests {
         assert_eq!(line_for("missing_artists", "x").as_deref(), Some("artist:"));
         assert_eq!(line_for("credits_in_title", "Song (feat. Bo)").as_deref(), Some("title:Song (feat. Bo)"));
         assert_eq!(line_for("credits_in_title", "No: Way").as_deref(), Some("title:\"No: Way\""));
-        assert_eq!(line_for("missing_cover", "x"), None);
+        assert_eq!(line_for("missing_cover", "x").as_deref(), Some("cover:"));
+        assert_eq!(line_for("fix_later", "x"), None);
+    }
+
+    #[test]
+    fn covers_and_sources_as_rows() {
+        let base = Base {
+            variant: Uuid::from_u128(1),
+            variant_base: Uuid::from_u128(2),
+            meta: Meta { title: "Song".into(), ..Default::default() },
+            facts_base: Some(Uuid::from_u128(3)),
+            facts: Facts { status: "released".into(), albums: vec![], relations: vec![] },
+            attached: Attached {
+                covers: vec![Pic { image: Image::Own(Uuid::from_u128(10)), sha: "a".into() }, Pic { image: Image::Own(Uuid::from_u128(11)), sha: "b".into() }],
+                sources: vec![Src { id: Uuid::from_u128(20), new: false, platform: "custom".into(), name: "vk".into(), data: serde_json::json!({}), corrected: false }],
+                origin: Some(Uuid::from_u128(20)),
+            },
+        };
+        // A new image as the main one, the second to the trash; a new source.
+        let mut attached = base.attached.clone();
+        attached.covers = vec![Pic { image: Image::Staged, sha: "c".into() }, base.attached.covers[0].clone()];
+        attached.sources.push(Src { id: Uuid::from_u128(21), new: true, platform: "netease".into(), name: "123".into(), data: serde_json::json!({}), corrected: false });
+        let ready = Ready { position: 0, base: base.clone(), meta: base.meta.clone(), facts: base.facts.clone(), attached, lines: vec![], joins: vec![], sync: false };
+        let catalog = catalog();
+        let (names, aliases) = (HashMap::new(), HashMap::new());
+        let know = Know { catalog: &catalog, names: &names, aliases: &aliases, ambiguous: &[], covers: &[] };
+        let rows = rows(&ready, &know, &["weak_source".to_string()], None);
+        let covers: Vec<(&str, Option<&str>, Option<&str>)> =
+            rows.iter().filter(|r| r.key == "cover").map(|r| (r.value.as_str(), r.was.as_deref(), r.image.as_deref())).collect();
+        assert_eq!(covers, [("main · a new image", Some("new"), Some("c")), ("#2", Some("main"), Some("a")), ("", Some("#2 (to the trash)"), Some("b"))]);
+        let sources: Vec<(&str, Option<&str>)> = rows.iter().filter(|r| r.key == "source").map(|r| (r.value.as_str(), r.was.as_deref())).collect();
+        assert_eq!(sources, [("custom “vk” · the file came from here", None), ("netease 123", Some("new"))]);
+        assert_eq!(rows.iter().find(|r| r.kind == RowKind::Source(0)).unwrap().flags, [("weak_source".to_string(), Flag::Open)]);
     }
 }

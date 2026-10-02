@@ -207,6 +207,14 @@ pub fn router(state: AppState) -> Router {
                 post(covers::upload_to_album).layer(DefaultBodyLimit::max(covers::MAX_COVER_BYTES + 64 * 1024)).layer(middleware::from_fn_with_state(state.clone(), upload_limits::limit)),
             ),
         )
+        // An image to make covers of in a track edit (`/api/tracks/edit`).
+        .route(
+            "/api/covers/staged",
+            require(
+                &[EditMetadata],
+                post(covers::stage).layer(DefaultBodyLimit::max(covers::MAX_COVER_BYTES + 64 * 1024)).layer(middleware::from_fn_with_state(state.clone(), upload_limits::limit)),
+            ),
+        )
         .route("/api/tracks/{id}/covers/copy", require(&[EditMetadata], post(covers::copy_to_track)))
         .route("/api/albums/{id}/covers/copy", require(&[EditMetadata], post(covers::copy_to_album)))
         .route(
