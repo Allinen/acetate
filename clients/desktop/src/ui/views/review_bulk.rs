@@ -6,6 +6,8 @@
 //! * Ambiguous artist: the flags by the name in the tags, each name credited to one of its
 //!   candidates on all its tracks at once (`POST /api/review/ambiguous`: a revision each).
 //! * No album: each track gets a single of its own (`POST /api/tracks/singles`).
+//! * Possible duplicate: the pairs with the same title and about the same length are
+//!   merged (`POST /api/review/merge-duplicates`), after a preview of exactly which.
 //!
 //! What it'll act on is taken when the popup opens and listed in full first; nothing
 //! happens before the button.
@@ -21,6 +23,7 @@ use uuid::Uuid;
 use crate::catalog::Catalog;
 use crate::review::Flag;
 use crate::ui::theme::{font, semibold, PALETTE as P};
+use crate::ui::widgets::length;
 use crate::ui::{thousands, Action, Shell};
 
 /// How many one request names (the server takes up to 10,000; smaller shows progress).
@@ -50,9 +53,51 @@ struct Singles {
     skipped: Vec<Uuid>,
 }
 
+/// A track of a pair, as `POST /api/review/merge-duplicates` answers.
+#[derive(Debug, Deserialize)]
+struct PairTrack {
+    title: String,
+    duration_ms: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Pair {
+    kept: PairTrack,
+    merged: PairTrack,
+    merged_file_kept: bool,
+    /// Only for those that failed.
+    #[serde(default)]
+    error: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct Merged {
+    merged: Vec<Pair>,
+    different: usize,
+    failed: Vec<Pair>,
+}
+
+/// How the pairs are told the same (what a preview was made with).
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct SameTrack {
+    max_length_difference_ms: i64,
+    ignore_case: bool,
+}
+
+/// A preview or a real run, and what it was made with.
+struct MergeRun {
+    same: SameTrack,
+    dry_run: bool,
+    result: Result<Merged, String>,
+}
+
+/// The server takes at most this many flags at once; more need a narrower filter.
+const MERGE_LIMIT: usize = 10_000;
+
 enum Answer {
     Name(usize, Result<Settled, String>),
     Singles(Result<Singles, String>),
+    Merge(MergeRun),
 }
 
 pub struct ReviewBulk {
@@ -71,6 +116,9 @@ pub struct ReviewBulk {
     progress: Arc<AtomicUsize>,
     answer: Arc<Mutex<Vec<Answer>>>,
     singles: Option<Result<String, String>>,
+    /// Possible duplicates: how to tell the same track, and the last preview or run.
+    same: SameTrack,
+    merge: Option<MergeRun>,
 }
 
 impl ReviewBulk {
@@ -101,6 +149,8 @@ impl ReviewBulk {
             progress: Arc::default(),
             answer: Arc::default(),
             singles: None,
+            same: SameTrack { max_length_difference_ms: 1_000, ignore_case: false },
+            merge: None,
         }
     }
 
@@ -109,7 +159,10 @@ impl ReviewBulk {
         let answers = std::mem::take(&mut *self.answer.lock().unwrap());
         for answer in answers {
             self.sending = false;
-            shell.act(Action::RefreshLibrary);
+            // A preview changed nothing.
+            if !matches!(answer, Answer::Merge(MergeRun { dry_run: true, .. })) {
+                shell.act(Action::RefreshLibrary);
+            }
             match answer {
                 Answer::Name(n, result) => {
                     self.names[n].outcome = Some(result.map(|s| {
@@ -120,6 +173,7 @@ impl ReviewBulk {
                         text
                     }))
                 }
+                Answer::Merge(run) => self.merge = Some(run),
                 Answer::Singles(result) => {
                     self.singles = Some(result.map(|s| {
                         let mut text = format!("{} singles made", thousands(s.made.len()));
@@ -137,6 +191,7 @@ impl ReviewBulk {
         let mut resolve = false;
         let mut singles = false;
         let mut settle: Option<usize> = None;
+        let mut merge: Option<bool> = None;
         let mut cancel = false;
         let closed = crate::ui::modal::show(&ctx, "review-bulk", &title, Vec2::new(900.0, 760.0), |ui| {
             if self.flags.is_empty() {
@@ -145,6 +200,10 @@ impl ReviewBulk {
             }
             if self.kind == "ambiguous_artist" {
                 self.ambiguous(ui, catalog, &mut settle);
+                ui.add_space(10.0);
+            }
+            if self.kind == "possible_duplicate" {
+                self.duplicates(ui, &mut merge);
                 ui.add_space(10.0);
             }
             if self.kind == "missing_album" {
@@ -205,6 +264,9 @@ impl ReviewBulk {
         if let Some(n) = settle {
             self.settle(shell, n);
         }
+        if let Some(dry_run) = merge {
+            self.merge_duplicates(shell, dry_run);
+        }
         (closed || cancel) && !self.sending
     }
 
@@ -244,6 +306,84 @@ impl ReviewBulk {
                     }
                 });
             }
+        });
+    }
+
+    /// Possible duplicates: the options, a preview of the pairs, and the button. `merge`:
+    /// Some(dry run?) when one is asked for.
+    fn duplicates(&mut self, ui: &mut egui::Ui, merge: &mut Option<bool>) {
+        ui.label(RichText::new("Merge the exact duplicates").font(font(14.0, semibold())));
+        ui.label("Of the pairs these flags name, those with the same title and about the same length are merged: the older track is kept (its metadata, its covers first), with the bigger of the two files. Pairs that differ stay flagged. Each merge can be undone on the kept track's page.");
+        if self.flags.len() > MERGE_LIMIT {
+            ui.label(RichText::new(format!("More than {} flags shown: filter to fewer.", thousands(MERGE_LIMIT))).color(P.danger));
+            return;
+        }
+        ui.horizontal(|ui| {
+            ui.label("Lengths at most");
+            ui.add(egui::DragValue::new(&mut self.same.max_length_difference_ms).range(0..=10_000).speed(50).suffix(" ms"));
+            ui.label("apart");
+            ui.add_space(12.0);
+            ui.checkbox(&mut self.same.ignore_case, "Titles may differ in case (“Intro”, “INTRO”)");
+        });
+        // A preview stands for these options only, and a real run is done.
+        let previewed = self.merge.as_ref().is_some_and(|m| m.dry_run && m.same == self.same && m.result.is_ok());
+        let ran = self.merge.as_ref().is_some_and(|m| !m.dry_run && m.result.is_ok());
+        let count = self.merge.as_ref().and_then(|m| m.result.as_ref().ok()).map(|m| m.merged.len()).unwrap_or(0);
+        ui.horizontal(|ui| {
+            ui.add(egui::TextEdit::singleline(&mut self.reason).hint_text("Why (optional: kept with every merge)").desired_width(380.0));
+            if ui.add_enabled(!self.sending && !ran, egui::Button::new("Preview")).clicked() {
+                *merge = Some(true);
+            }
+            let text = format!("Merge {} pairs", thousands(count));
+            if ui.add_enabled(!self.sending && previewed && count > 0, egui::Button::new(text)).clicked() {
+                *merge = Some(false);
+            }
+        });
+        if self.sending {
+            ui.label(RichText::new("Working…").color(P.muted));
+        }
+        let Some(run) = &self.merge else { return };
+        let done = match &run.result {
+            Ok(done) => done,
+            Err(err) => {
+                ui.label(RichText::new(err.as_str()).color(P.danger));
+                return;
+            }
+        };
+        let (merged, failed) = if run.dry_run { ("would be merged", "would fail") } else { ("merged", "failed") };
+        let mut text = format!("{} pairs {merged}, {} left as they are (title or length differs)", thousands(done.merged.len()), thousands(done.different));
+        if !done.failed.is_empty() {
+            text.push_str(&format!(", {} {failed}", thousands(done.failed.len())));
+        }
+        if run.dry_run && run.same != self.same {
+            text.push_str(" — options changed since: preview again");
+        }
+        ui.label(RichText::new(text).color(if run.dry_run { P.muted } else { P.accent }));
+        egui::ScrollArea::vertical().id_salt("review-bulk-pairs").max_height(240.0).show(ui, |ui| {
+            for pair in &done.merged {
+                ui.label(pair_text(pair));
+            }
+            for pair in &done.failed {
+                ui.label(RichText::new(format!("{}: {}", pair_text(pair), pair.error)).color(P.danger));
+            }
+        });
+    }
+
+    fn merge_duplicates(&mut self, shell: &Shell, dry_run: bool) {
+        self.sending = true;
+        let same = self.same;
+        let (api, answer, ctx, flags, reason) = (shell.api.clone(), self.answer.clone(), shell.ctx.clone(), self.flags.clone(), self.reason.trim().to_string());
+        shell.runtime.spawn(async move {
+            let body = serde_json::json!({
+                "flag_ids": flags,
+                "max_length_difference_ms": same.max_length_difference_ms,
+                "ignore_case": same.ignore_case,
+                "reason": reason,
+                "dry_run": dry_run,
+            });
+            let result = api.send_json::<Merged>(reqwest::Method::POST, "/api/review/merge-duplicates", Some(body)).await.map_err(|err| err.message);
+            answer.lock().unwrap().push(Answer::Merge(MergeRun { same, dry_run, result }));
+            ctx.request_repaint();
         });
     }
 
@@ -301,6 +441,13 @@ impl ReviewBulk {
             ctx.request_repaint();
         });
     }
+}
+
+/// A pair as listed: the title(s), both lengths, and whose file stays.
+fn pair_text(pair: &Pair) -> String {
+    let title = if pair.kept.title == pair.merged.title { format!("“{}”", pair.kept.title) } else { format!("“{}” ← “{}”", pair.kept.title, pair.merged.title) };
+    let file = if pair.merged_file_kept { "the merged track's file" } else { "its own file" };
+    format!("{title}  ·  {} / {}  ·  keeps {file}", length(pair.kept.duration_ms), length(pair.merged.duration_ms))
 }
 
 /// A candidate as listed: its name, disambiguation and how many tracks it has.

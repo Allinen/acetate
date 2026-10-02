@@ -151,3 +151,41 @@ pub async fn make_singles(
     tx.commit().await?;
     Ok(Json(made))
 }
+
+#[derive(Debug, Deserialize)]
+pub struct MergeDuplicates {
+    flag_ids: Vec<Uuid>,
+    max_length_difference_ms: i64,
+    #[serde(default)]
+    ignore_case: bool,
+    #[serde(default)]
+    reason: String,
+    /// Only say what would be merged (the same work, rolled back: an exact preview).
+    #[serde(default)]
+    dry_run: bool,
+}
+
+/// `POST /api/review/merge-duplicates`, JSON `{"flag_ids": [...], "max_length_difference_ms":
+/// 1000, "ignore_case": false, "reason": ..., "dry_run": true}`: the possible duplicates
+/// those flags name that have the same title and about the same length are merged. See
+/// `db::review_bulk::merge_duplicates`.
+pub async fn merge_duplicates(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Json(body): Json<MergeDuplicates>,
+) -> Result<Json<db::review_bulk::MergedDuplicates>, AppError> {
+    check_size(&body.flag_ids)?;
+    if body.max_length_difference_ms < 0 {
+        return Err(AppError::BadRequest("the length difference can't be negative".into()));
+    }
+    let same = db::review_bulk::SameTrack { max_length_difference_ms: body.max_length_difference_ms, ignore_case: body.ignore_case };
+    let reason = if body.reason.trim().is_empty() { "same title and length (bulk merge)" } else { body.reason.trim() };
+    let mut tx = state.db(&user).await?;
+    let done = db::review_bulk::merge_duplicates(&mut tx, Some(&body.flag_ids), same, reason).await?;
+    if body.dry_run {
+        tx.rollback().await?;
+    } else {
+        tx.commit().await?;
+    }
+    Ok(Json(done))
+}

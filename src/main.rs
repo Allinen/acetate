@@ -489,7 +489,8 @@ async fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Command::MergeDuplicates { max_length_difference_ms, ignore_case, dry_run } => {
-            let options = merge_duplicates_command::Options { max_length_difference_ms, ignore_case, dry_run };
+            let same = db::review_bulk::SameTrack { max_length_difference_ms, ignore_case };
+            let options = merge_duplicates_command::Options { same, dry_run };
             merge_duplicates_command::run(&pool, options).await
         }
         Command::RecheckDuplicates { dry_run } => recheck_duplicates_command::run(&pool, dry_run).await,

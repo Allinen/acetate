@@ -583,7 +583,7 @@ async fn merging_settles_only_that_pairs_duplicate_flags(_: PgPoolOptions, conne
 async fn merge_duplicates_merges_same_title_and_length(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
     let lib = setup(connect).await?;
     let dupe = make_duplicate(&lib).await?; // V is flagged: "looks like D"
-    let options = |dry_run| crate::merge_duplicates_command::Options { max_length_difference_ms: 1000, ignore_case: false, dry_run };
+    let options = |dry_run| crate::merge_duplicates_command::Options { same: crate::db::review_bulk::SameTrack { max_length_difference_ms: 1000, ignore_case: false }, dry_run };
 
     // Different titles ("Song V" and "Song V (copy)"): left alone.
     sqlx::query("UPDATE files SET duration_ms = 180000").execute(&lib.owner).await?;
@@ -594,7 +594,7 @@ async fn merge_duplicates_merges_same_title_and_length(_: PgPoolOptions, connect
     sqlx::query("UPDATE tracks SET title = 'SONG V' WHERE id = $1").bind(dupe.d).execute(&lib.owner).await?;
     crate::merge_duplicates_command::run(&lib.owner, options(false)).await?;
     assert_eq!(db::tracks::merged_into(&mut *lib.owner.acquire().await?, dupe.d).await?, None);
-    let ignoring_case = crate::merge_duplicates_command::Options { max_length_difference_ms: 1000, ignore_case: true, dry_run: true };
+    let ignoring_case = crate::merge_duplicates_command::Options { same: crate::db::review_bulk::SameTrack { max_length_difference_ms: 1000, ignore_case: true }, dry_run: true };
     crate::merge_duplicates_command::run(&lib.owner, ignoring_case).await?;
     assert_eq!(db::tracks::merged_into(&mut *lib.owner.acquire().await?, dupe.d).await?, None);
 
@@ -613,5 +613,59 @@ async fn merge_duplicates_merges_same_title_and_length(_: PgPoolOptions, connect
         .fetch_one(&lib.owner)
         .await?;
     assert_eq!(open, 0);
+    Ok(())
+}
+
+#[sqlx::test]
+async fn bulk_merge_takes_only_the_same_title_and_length(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
+    let lib = setup(connect).await?;
+    let dupe = make_duplicate(&lib).await?;
+    // V and D: the same title but for case, 0.5 s apart. O looks like V too, under another title.
+    sqlx::query("UPDATE tracks SET title = 'song v' WHERE id = $1").bind(dupe.d).execute(&lib.owner).await?;
+    for (track, ms) in [(lib.v, 200_000), (dupe.d, 200_500), (lib.o, 200_000)] {
+        sqlx::query("UPDATE files SET duration_ms = $2 WHERE id = (SELECT file_id FROM tracks WHERE id = $1)").bind(track).bind(ms).execute(&lib.owner).await?;
+    }
+    sqlx::query("INSERT INTO review_flags (kind, track_id, related) VALUES ('possible_duplicate', $1, $2)")
+        .bind(lib.o)
+        .bind(json!({ "tracks": [lib.v] }))
+        .execute(&lib.owner)
+        .await?;
+    let flags: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM review_flags WHERE kind = 'possible_duplicate'").fetch_all(&lib.owner).await?;
+    let same = |ms, ignore_case| db::review_bulk::SameTrack { max_length_difference_ms: ms, ignore_case };
+    let run = |same| {
+        let (app, carol, flags) = (lib.app.clone(), lib.carol, flags.clone());
+        async move {
+            let mut tx = db::begin(&app, Some(carol)).await?;
+            let done = db::review_bulk::merge_duplicates(&mut tx, Some(&flags), same, "bulk").await?;
+            anyhow::Ok((tx, done))
+        }
+    };
+
+    // Case matters unless told otherwise; so does the length.
+    let (_, done) = run(same(1_000, false)).await?;
+    assert!(done.merged.is_empty() && done.failed.is_empty());
+    assert_eq!(done.different, 2);
+    let (_, done) = run(same(100, true)).await?;
+    assert!(done.merged.is_empty());
+
+    // A preview, rolled back: V (older) kept, D merged; O left as it is.
+    let (tx, done) = run(same(1_000, true)).await?;
+    tx.rollback().await?;
+    assert_eq!(done.merged.iter().map(|p| (p.kept.id, p.merged.id)).collect::<Vec<_>>(), [(lib.v, dupe.d)]);
+    assert_eq!(done.different, 1);
+    let mut tx = db::begin(&lib.owner, None).await?;
+    assert_eq!(db::tracks::merged_into(&mut tx, dupe.d).await?, None, "nothing changed");
+    drop(tx);
+
+    // For real: the same, and V's flag about D settled; O's stays open.
+    let (tx, again) = run(same(1_000, true)).await?;
+    tx.commit().await?;
+    assert_eq!(again.merged.iter().map(|p| (p.kept.id, p.merged.id)).collect::<Vec<_>>(), [(lib.v, dupe.d)]);
+    let mut tx = db::begin(&lib.owner, None).await?;
+    assert_eq!(db::tracks::merged_into(&mut tx, dupe.d).await?, Some(lib.v));
+    let open: Vec<Uuid> = sqlx::query_scalar("SELECT track_id FROM review_flags WHERE kind = 'possible_duplicate' AND resolved_at IS NULL")
+        .fetch_all(&mut *tx)
+        .await?;
+    assert_eq!(open, [lib.o]);
     Ok(())
 }

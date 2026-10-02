@@ -154,6 +154,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/review/{id}/resolve", require(&[EditMetadata], post(review::resolve)))
         .route("/api/review/resolve", require(&[EditMetadata], post(review::resolve_many)))
         .route("/api/review/ambiguous", require(&[EditMetadata], post(review::settle_ambiguous)))
+        .route("/api/review/merge-duplicates", require(&[EditMetadata], post(review::merge_duplicates)))
         .route("/api/tracks/singles", require(&[EditMetadata], post(review::make_singles)))
         .route("/api/tracks/edit", require(&[EditMetadata], post(tracks::edit_many)))
         // Files that didn't import: whoever uploaded them (admins: all).

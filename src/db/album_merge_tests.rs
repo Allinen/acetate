@@ -540,7 +540,7 @@ async fn merge_duplicates_keeps_the_only_covers(_: PgPoolOptions, connect: PgCon
         .bind(json!({ "tracks": [lib.o] }))
         .execute(&lib.owner)
         .await?;
-    let options = crate::merge_duplicates_command::Options { max_length_difference_ms: 1000, ignore_case: false, dry_run: false };
+    let options = crate::merge_duplicates_command::Options { same: crate::db::review_bulk::SameTrack { max_length_difference_ms: 1000, ignore_case: false }, dry_run: false };
     crate::merge_duplicates_command::run(&lib.owner, options).await?;
 
     // V (the older one) is kept, with O's cover instead of none.

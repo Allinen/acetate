@@ -5,6 +5,8 @@
 //! * `make_singles`: tracks on no album each get a single of their own (named after the
 //!   track, credited to its primary artists, with its release date and covers; the track
 //!   as disc 1, track 1), so the "missing album" flag settles itself;
+//! * `merge_duplicates`: possible duplicates with the same title and about the same
+//!   length are merged (the `merge-duplicates` command too);
 //! * resolving many flags at once is `review::resolve_many`.
 //!
 //! Everything goes through revisions, like a change made by hand, and only touches what
@@ -159,4 +161,136 @@ pub async fn make_single(conn: &mut PgConnection, track: Uuid, variant: Option<U
         super::album_merges::copy_if_new(conn, cover, album).await?;
     }
     Ok(Some(album))
+}
+
+/// How `merge_duplicates` tells the same track.
+#[derive(Debug, Clone, Copy)]
+pub struct SameTrack {
+    /// How far apart the two lengths may be, in milliseconds. An unknown length is never
+    /// close enough: not clear enough to merge without a look.
+    pub max_length_difference_ms: i64,
+    /// Titles that differ only in case ("Intro" and "INTRO") count as the same.
+    pub ignore_case: bool,
+}
+
+/// One side of a pair `merge_duplicates` looked at.
+#[derive(Debug, Clone, Serialize)]
+pub struct PairTrack {
+    pub id: Uuid,
+    pub title: String,
+    pub duration_ms: Option<i64>,
+    pub size_bytes: i64,
+}
+
+/// A pair merged (or that failed to be), and how.
+#[derive(Debug, Serialize)]
+pub struct MergedPair {
+    /// The older track: kept, with its metadata and its covers first.
+    pub kept: PairTrack,
+    pub merged: PairTrack,
+    /// The merged track's file became the kept track's (it's bigger: the better copy).
+    pub merged_file_kept: bool,
+}
+
+/// What `merge_duplicates` did.
+#[derive(Debug, Default, Serialize)]
+pub struct MergedDuplicates {
+    pub merged: Vec<MergedPair>,
+    /// Pairs whose titles or lengths differ: left as they are, flagged.
+    pub different: usize,
+    /// Pairs whose merge failed (e.g. one can't be seen): their flags stay open.
+    pub failed: Vec<FailedPair>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct FailedPair {
+    #[serde(flatten)]
+    pub pair: MergedPair,
+    pub error: String,
+}
+
+/// Merges the pairs the open "possible duplicate" `flags` name (`None`: all of them) that
+/// are clearly the same track: the same title and about the same length (`same`). Each
+/// is an ordinary merge (`revisions::merge_tracks`: revisioned, settles the pair's flags,
+/// can be undone on the kept track's page), each in a savepoint: one that fails is left
+/// out and the rest go on. The older track is kept; the bigger file stays (same length,
+/// so more bytes is the better copy: lossless over lossy, a higher bitrate).
+///
+/// A track merged by an earlier pair is looked at as the track it went into (A looks like
+/// B, B like C: C is compared with A, once B is A). Rolled back, it's an exact preview.
+pub async fn merge_duplicates(conn: &mut PgConnection, flags: Option<&[Uuid]>, same: SameTrack, reason: &str) -> anyhow::Result<MergedDuplicates> {
+    // Every pair a flag names: (flagged track, one of the tracks it looks like).
+    let pairs = sqlx::query!(
+        r#"
+        SELECT rf.track_id, listed.id::uuid AS "other!"
+        FROM review_flags rf
+        CROSS JOIN jsonb_array_elements_text(rf.related -> 'tracks') AS listed(id)
+        WHERE rf.kind = 'possible_duplicate' AND rf.resolved_at IS NULL
+          AND ($1::uuid[] IS NULL OR rf.id = ANY($1))
+        ORDER BY rf.id, listed.id
+        "#,
+        flags
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+
+    let mut done = MergedDuplicates::default();
+    let mut seen = std::collections::HashSet::new();
+    for pair in pairs {
+        // Earlier merges may have made either one a redirect: go where it leads.
+        let (Some(a), Some(b)) = (current(conn, pair.track_id).await?, current(conn, pair.other).await?) else {
+            continue;
+        };
+        if a.id == b.id {
+            continue; // merged already (a chain)
+        }
+        // Flagged both ways (A looks like B, B looks like A): once is enough.
+        if !seen.insert((a.id.min(b.id), a.id.max(b.id))) {
+            continue;
+        }
+        let length_ok = match (a.duration_ms, b.duration_ms) {
+            (Some(x), Some(y)) => (x - y).abs() <= same.max_length_difference_ms,
+            _ => false,
+        };
+        let same_title = if same.ignore_case { a.title.to_lowercase() == b.title.to_lowercase() } else { a.title == b.title };
+        if !same_title || !length_ok {
+            done.different += 1;
+            continue;
+        }
+
+        // UUIDv7: the smaller id was made first.
+        let (kept, merged) = if a.id < b.id { (a, b) } else { (b, a) };
+        let merged_file_kept = merged.size_bytes > kept.size_bytes;
+        let picks = revisions::MergePicks { file: if merged_file_kept { revisions::Side::Right } else { revisions::Side::Left }, ..Default::default() };
+        let mut savepoint = sqlx::Connection::begin(&mut *conn).await?;
+        let result = revisions::merge_tracks(&mut savepoint, kept.id, merged.id, &picks, None, None, reason).await;
+        let pair = MergedPair { kept, merged, merged_file_kept };
+        match result {
+            Ok(_) => {
+                savepoint.commit().await?;
+                done.merged.push(pair);
+            }
+            Err(err) => {
+                savepoint.rollback().await?;
+                done.failed.push(FailedPair { pair, error: format!("{err:#}") });
+            }
+        }
+    }
+    Ok(done)
+}
+
+/// The track as it is now: following merge redirects to the track it ended up in.
+async fn current(conn: &mut PgConnection, id: Uuid) -> sqlx::Result<Option<PairTrack>> {
+    sqlx::query_as!(
+        PairTrack,
+        r#"
+        SELECT t.id, t.title, f.duration_ms, f.size_bytes
+        FROM tracks t
+        JOIN files f ON f.id = t.file_id
+        WHERE t.id = COALESCE((SELECT merged_into FROM tracks WHERE id = $1), $1)
+        "#,
+        id
+    )
+    .fetch_optional(conn)
+    .await
 }
