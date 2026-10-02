@@ -205,7 +205,7 @@ impl MergeView {
         }
         let singles = lone_singles(catalog, self.left, self.right);
         // Rows where both are the same: nothing to pick, so ↑/↓ pass over them.
-        let same: Vec<bool> = FIELDS.iter().map(|(field, _)| value(&l, catalog, field) == value(&r, catalog, field)).collect();
+        let same: Vec<bool> = FIELDS.iter().map(|(field, _)| same(&l, &r, catalog, field)).collect();
         if !self.file_suggested {
             self.file_suggested = true;
             if quality(&r) > quality(&l) {
@@ -309,7 +309,7 @@ impl MergeView {
             ui.end_row();
             for (n, (field, name)) in FIELDS.iter().enumerate() {
                 let (lv, rv) = (values(&l, field), values(&r, field));
-                let same = lv == rv;
+                let same = same[n];
                 let current = n == self.row;
                 let label = if same { format!("{name}  (same)") } else { name.to_string() };
                 ui.label(RichText::new(label).color(if current { P.text } else { P.faint }));
@@ -501,7 +501,16 @@ fn play(shell: &mut Shell, catalog: &Catalog, player: &PlayerView, track: Uuid, 
     shell.act(Action::PlayFrom { track: index, at });
 }
 
-/// A field as the row shows it (the same text on both sides means the same).
+/// Whether a row is the same on both sides: the same text, except covers, whose text is
+/// only a count: the same images in the same order.
+fn same(l: &TrackDetail, r: &TrackDetail, catalog: &Catalog, field: &str) -> bool {
+    if field == "covers" {
+        return l.covers.iter().map(|c| &c.blob_sha256).eq(r.covers.iter().map(|c| &c.blob_sha256));
+    }
+    value(l, catalog, field) == value(r, catalog, field)
+}
+
+/// A field as the row shows it.
 fn value(d: &TrackDetail, catalog: &Catalog, field: &str) -> String {
     let track = catalog.track_index(d.id).map(|i| &catalog.tracks[i as usize]);
     let variant = d.primary_variant_id.and_then(|id| d.variants.iter().find(|v| v.id == id)).map(|v| &v.data);
