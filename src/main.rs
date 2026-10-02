@@ -7,6 +7,7 @@ mod ingest;
 mod ingest_client;
 mod ingest_command;
 mod merge_duplicates_command;
+mod recheck_duplicates_command;
 mod producers_command;
 mod album_covers_command;
 mod measure_command;
@@ -111,6 +112,14 @@ enum Command {
         #[arg(long)]
         ignore_case: bool,
         /// Only list what would be merged.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Looks at the open "possible duplicate" flags again with today's rule for titles and
+    /// settles the pairs it rules out: another version of the song ("Song" and "Song
+    /// (Instrumental)", "Sped Up", "Remastered", "Song 2"). For flags raised before the rule.
+    RecheckDuplicates {
+        /// Only list what would be settled.
         #[arg(long)]
         dry_run: bool,
     },
@@ -483,6 +492,7 @@ async fn main() -> anyhow::Result<()> {
             let options = merge_duplicates_command::Options { max_length_difference_ms, ignore_case, dry_run };
             merge_duplicates_command::run(&pool, options).await
         }
+        Command::RecheckDuplicates { dry_run } => recheck_duplicates_command::run(&pool, dry_run).await,
         Command::DuplicateAlbums {
             max_track_difference,
             max_length_difference_ms,

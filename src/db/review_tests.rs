@@ -250,3 +250,41 @@ async fn a_duplicate_merged_since_shows_where_it_went(_: PgPoolOptions, connect:
     assert!(named(lib.v).is_empty());
     Ok(())
 }
+
+#[sqlx::test]
+async fn a_recheck_settles_other_versions(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
+    let lib = setup(connect).await?;
+    for (track, title) in [(lib.o, "Song"), (lib.v, "Song (Instrumental)"), (lib.h, "Song")] {
+        sqlx::query("UPDATE tracks SET title = $2 WHERE id = $1").bind(track).bind(title).execute(&lib.owner).await?;
+    }
+    // From before the rule: O looks like V and H, V looks like O; and O has V's platform song id.
+    let mut tx = db::begin(&lib.owner, None).await?;
+    let flag = |track: Uuid, tracks: &[Uuid]| {
+        sqlx::query_scalar::<_, Uuid>("INSERT INTO review_flags (kind, track_id, related) VALUES ('possible_duplicate', $1, $2) RETURNING id")
+            .bind(track)
+            .bind(serde_json::json!({ "tracks": tracks }))
+    };
+    let o_flag = flag(lib.o, &[lib.v, lib.h]).fetch_one(&mut *tx).await?;
+    let v_flag = flag(lib.v, &[lib.o]).fetch_one(&mut *tx).await?;
+    db::review::flag_same_song(&mut tx, lib.o, &[lib.v], "same netease song id 7").await?;
+    let settled = db::review::recheck_duplicates(&mut tx, "test").await?;
+    tx.commit().await?;
+
+    // O and V, once (though flagged both ways).
+    assert_eq!(settled.iter().map(|p| (p.track.0, p.other.0)).collect::<Vec<_>>(), [(lib.o, lib.v)]);
+    let related = |id: Uuid| sqlx::query_scalar::<_, Value>("SELECT related FROM review_flags WHERE id = $1").bind(id).fetch_one(&lib.owner);
+    // O's stays open for H; V's is settled.
+    assert_eq!(related(o_flag).await?["tracks"], serde_json::json!([lib.h]));
+    let resolution: Option<String> = sqlx::query_scalar("SELECT resolution FROM review_flags WHERE id = $1 AND resolved_at IS NOT NULL")
+        .bind(v_flag)
+        .fetch_optional(&lib.owner)
+        .await?;
+    assert_eq!(resolution.as_deref(), Some("test"));
+    // The same song id isn't about titles: still open.
+    let same_song: i64 = sqlx::query_scalar("SELECT count(*) FROM review_flags WHERE track_id = $1 AND related ? 'reason' AND resolved_at IS NULL")
+        .bind(lib.o)
+        .fetch_one(&lib.owner)
+        .await?;
+    assert_eq!(same_song, 1);
+    Ok(())
+}
