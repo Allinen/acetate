@@ -109,13 +109,25 @@ where
 // ============================================================================
 
 /// Creates a track with its first variant and revision 0 of both kinds. The only way
-/// tracks are created (used by ingest).
+/// tracks are created (by ingest, and by `duplicate_track`).
 pub async fn create_track(
     conn: &mut PgConnection,
     file_id: Uuid,
     meta: &TrackMetadata,
     facts: &TrackFacts,
     variant_label: &str,
+    reason: &str,
+) -> anyhow::Result<Uuid> {
+    create_track_from(conn, file_id, meta, facts, variant_label, Source::Import, reason).await
+}
+
+async fn create_track_from(
+    conn: &mut PgConnection,
+    file_id: Uuid,
+    meta: &TrackMetadata,
+    facts: &TrackFacts,
+    variant_label: &str,
+    source: Source,
     reason: &str,
 ) -> anyhow::Result<Uuid> {
     // Generate the ids up front: the track points at its variant and the variant points
@@ -152,9 +164,66 @@ pub async fn create_track(
     .execute(&mut *conn)
     .await?;
 
-    write_internal(conn, track_id, variant_id, None, meta, Source::Import, reason, false).await?;
-    write_external(conn, track_id, None, facts, Source::Import, reason).await?;
+    write_internal(conn, track_id, variant_id, None, meta, source, reason, false).await?;
+    write_external(conn, track_id, None, facts, source, reason).await?;
     Ok(track_id)
+}
+
+/// Makes a copy of a track, e.g. to take one of two songs that ended up on one track
+/// back out: the copy then plays the other one (one of the previous files it has too).
+///
+/// The copy has the track's shown metadata and status, plays the same file, has the same
+/// previous files (its file history, copied) and copies of its covers, and the same
+/// access. Not its albums (it would clash on track numbers), relations, lyrics, sources,
+/// other variants, or anyone's plays and ratings. Returns the copy's id.
+pub async fn duplicate_track(conn: &mut PgConnection, track_id: Uuid, reason: &str) -> anyhow::Result<Uuid> {
+    let Some(track) = sqlx::query!(
+        "SELECT title, file_id, primary_variant_id, merged_into, is_restricted FROM tracks WHERE id = $1 FOR UPDATE",
+        track_id
+    )
+    .fetch_optional(&mut *conn)
+    .await?
+    else {
+        return Err(EditRejected::NotFound("track").into());
+    };
+    if track.merged_into.is_some() {
+        return Err(invalid("this track was merged into another one".to_string()));
+    }
+    let (Some(file_id), Some(variant)) = (track.file_id, track.primary_variant_id) else {
+        return Err(invalid("the track needs a file and metadata".to_string()));
+    };
+    let Some((_, meta)) = latest_internal(conn, track_id, variant).await? else {
+        return Err(invalid("the track needs metadata".to_string()));
+    };
+    let facts = TrackFacts { status: current_facts(conn, track_id).await?.status, albums: Vec::new(), relations: Vec::new() };
+    let reason = if reason.trim().is_empty() { format!("duplicate of \"{}\" ({track_id})", track.title) } else { reason.trim().to_string() };
+    let copy = create_track_from(conn, file_id, &meta, &facts, "Duplicate", Source::Edit, &reason).await?;
+
+    // Its previous files: the same history, in the same order.
+    sqlx::query!(
+        r#"
+        INSERT INTO track_file_history (track_id, old_file_id, new_file_id, replaced_at, replaced_by, reason)
+        SELECT $2, old_file_id, new_file_id, replaced_at, replaced_by, reason
+        FROM track_file_history WHERE track_id = $1 ORDER BY id
+        "#,
+        track_id,
+        copy
+    )
+    .execute(&mut *conn)
+    .await?;
+    let covers = sqlx::query_scalar!("SELECT id FROM covers WHERE track_id = $1 AND trashed_at IS NULL ORDER BY position, id", track_id)
+        .fetch_all(&mut *conn)
+        .await?;
+    for cover in covers {
+        super::covers::copy(conn, super::covers::CoverOwner::Track(copy), cover).await?;
+    }
+    if track.is_restricted {
+        let groups = sqlx::query_scalar!("SELECT group_id FROM track_access WHERE track_id = $1", track_id)
+            .fetch_all(&mut *conn)
+            .await?;
+        super::access::set(conn, copy, true, &groups, &reason).await?;
+    }
+    Ok(copy)
 }
 
 /// Writes an internal revision: new metadata for one variant of a track. Applied to the

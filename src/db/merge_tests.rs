@@ -669,3 +669,38 @@ async fn bulk_merge_takes_only_the_same_title_and_length(_: PgPoolOptions, conne
     assert_eq!(open, [lib.o]);
     Ok(())
 }
+
+#[sqlx::test]
+async fn a_duplicate_can_take_a_previous_file_as_its_own(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
+    let lib = setup(connect).await?;
+    // D plays its upgrade; its old file is a previous file. It has a cover, and is on no album.
+    let dupe = make_duplicate(&lib).await?;
+    let mut tx = db::begin(&lib.app, Some(lib.carol)).await?;
+    let copy = db::revisions::duplicate_track(&mut tx, dupe.d, "").await?;
+    tx.commit().await?;
+
+    let mut tx = db::begin(&lib.owner, None).await?;
+    let (d, c) = (db::tracks::get_track(&mut tx, dupe.d, true).await?.unwrap(), db::tracks::get_track(&mut tx, copy, true).await?.unwrap());
+    assert_eq!((c.title.as_str(), c.artist_display.as_str()), (d.title.as_str(), d.artist_display.as_str()));
+    assert_eq!(c.file.id, dupe.d_file, "the same file");
+    let previous = |t: &db::tracks::TrackDetail| t.file_history.as_ref().unwrap().iter().map(|h| h.old_file_id).collect::<Vec<_>>();
+    assert_eq!(previous(&c), previous(&d));
+    assert_eq!(c.covers.iter().map(|c| &c.blob_sha256).collect::<Vec<_>>(), d.covers.iter().map(|c| &c.blob_sha256).collect::<Vec<_>>());
+    assert_ne!(c.covers[0].id, d.covers[0].id, "copies");
+    assert!(c.albums.is_empty() && c.relations.is_empty() && c.lyrics.is_empty());
+    drop(tx);
+
+    // The copy plays the old file; D keeps its own.
+    let mut tx = db::begin(&lib.app, Some(lib.carol)).await?;
+    db::track_files::use_previous_file(&mut tx, copy, dupe.d_old_file, "").await?;
+    tx.commit().await?;
+    let mut tx = db::begin(&lib.owner, None).await?;
+    assert_eq!(db::tracks::get_track(&mut tx, copy, true).await?.unwrap().file.id, dupe.d_old_file);
+    assert_eq!(db::tracks::get_track(&mut tx, dupe.d, true).await?.unwrap().file.id, dupe.d_file);
+
+    // A restricted track's copy is restricted the same way.
+    db::access::set(&mut tx, dupe.d, true, &[], "test").await?;
+    let restricted = db::revisions::duplicate_track(&mut tx, dupe.d, "").await?;
+    assert!(db::access::get(&mut tx, restricted).await?.unwrap().restricted);
+    Ok(())
+}

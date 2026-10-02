@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO track_file_history (track_id, old_file_id, new_file_id, replaced_at, replaced_by, reason)\n        SELECT $2, old_file_id, new_file_id, replaced_at, replaced_by, reason\n        FROM track_file_history WHERE track_id = $1 ORDER BY id\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "8079521d93d20948804d8e9116fde9c106f3f1c32c92ae19b54e2c723ba6d845"
+}

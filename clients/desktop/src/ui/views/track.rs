@@ -46,6 +46,12 @@ pub struct TrackPage {
     merge: Option<super::merge::MergeView>,
     /// "Merge with another track…" asked the palette for the other one.
     picking_merge: bool,
+    /// "Duplicate this track…" was clicked: asking to be sure. Then on its way, and the
+    /// server's answer (the copy, or why not).
+    duplicate_asked: bool,
+    duplicating: bool,
+    duplicate_answer: std::sync::Arc<std::sync::Mutex<Option<Result<Uuid, String>>>>,
+    duplicate_error: Option<String>,
     /// "Undo…" was clicked on this merge: asking to be sure.
     undo_asked: Option<Uuid>,
     /// An undo on its way: the merge.
@@ -392,7 +398,15 @@ impl TrackPage {
                 if ui.button("Turn into an extra…").on_hover_text(tip).clicked() {
                     self.to_extra = Some(super::to_extra::ToExtra::open(d.id, &d.title));
                 }
+                if shell.account.can("upload") && shell.account.can("edit_metadata") {
+                    let tip = "A copy of this track, e.g. to make one of its previous files a track of its own";
+                    if ui.add_enabled(!self.duplicating, egui::Button::new("Duplicate this track…")).on_hover_text(tip).clicked() {
+                        self.duplicate_asked = true;
+                        self.duplicate_error = None;
+                    }
+                }
             });
+            self.duplicate(ui, shell, d);
             ui.add_space(6.0);
             return false;
         };
@@ -421,6 +435,59 @@ impl TrackPage {
             None => {}
         }
         true
+    }
+
+    /// "Duplicate this track…": what the copy gets, asked first; then its page.
+    fn duplicate(&mut self, ui: &mut egui::Ui, shell: &mut Shell, d: &TrackDetail) {
+        if let Some(answer) = self.duplicate_answer.lock().unwrap().take() {
+            self.duplicating = false;
+            match answer {
+                Ok(copy) => {
+                    shell.act(Action::RefreshLibrary);
+                    shell.act(Action::Go(Page::Track(copy)));
+                }
+                Err(err) => self.duplicate_error = Some(err),
+            }
+        }
+        if self.duplicating {
+            ui.label(RichText::new("Duplicating…").color(P.muted));
+        }
+        if let Some(err) = &self.duplicate_error {
+            ui.label(RichText::new(format!("Couldn't duplicate it: {err}")).color(P.danger));
+        }
+        if !self.duplicate_asked {
+            return;
+        }
+        ui.label(
+            RichText::new(format!(
+                "A new track: “{}” with this metadata and status, playing the same file, with the same previous files, copies of the covers and the same access. Not its albums, relations, lyrics, sources or plays. To have it play one of the previous files, use that file on the copy's page.",
+                d.title
+            ))
+            .color(P.text),
+        );
+        ui.horizontal(|ui| {
+            if ui.button("Duplicate it").clicked() {
+                self.duplicate_asked = false;
+                self.duplicating = true;
+                let (api, answer, ctx, id) = (shell.api.clone(), self.duplicate_answer.clone(), shell.ctx.clone(), d.id);
+                shell.runtime.spawn(async move {
+                    #[derive(serde::Deserialize)]
+                    struct Copy {
+                        track_id: Uuid,
+                    }
+                    let result = api
+                        .send_json::<Copy>(reqwest::Method::POST, &format!("/api/tracks/{id}/duplicate"), Some(serde_json::json!({ "reason": "" })))
+                        .await
+                        .map(|c| c.track_id)
+                        .map_err(|err| err.message);
+                    *answer.lock().unwrap() = Some(result);
+                    ctx.request_repaint();
+                });
+            }
+            if ui.button("Cancel").clicked() {
+                self.duplicate_asked = false;
+            }
+        });
     }
 
     /// The merges into this track, newest first, each with Undo when it can be (the
@@ -810,6 +877,23 @@ fn file(ui: &mut egui::Ui, shell: &mut Shell, d: &TrackDetail) {
     if let Some(history) = d.file_history.as_ref().filter(|h| !h.is_empty()) {
         ui.add_space(8.0);
         ui.label(RichText::new(format!("Earlier files ({})", history.len())).font(font(14.0, semibold())));
+        // Playing one again (edit mode, `replace_file`): the request's state, kept in egui's
+        // memory for this track. The current file becomes an earlier one in turn.
+        let can_switch = shell.edit_mode && shell.account.can("replace_file");
+        let switching: UseFile = ui.ctx().data_mut(|m| m.get_temp_mut_or_default::<UseFile>(egui::Id::new(("use-file", d.id))).clone());
+        let answer = switching.lock().unwrap().1.take();
+        match answer {
+            Some(Ok(())) => {
+                shell.track_details.refresh(d.id);
+                shell.act(Action::RefreshLibrary);
+            }
+            Some(Err(err)) => {
+                ui.label(RichText::new(format!("Couldn't switch files: {err}")).color(P.danger));
+                switching.lock().unwrap().1 = Some(Err(err));
+            }
+            None => {}
+        }
+        let mut offered = std::collections::HashSet::new();
         for h in history {
             let name = h.old_original_filename.clone().map(|n| format!("original file “{n}”")).unwrap_or_else(|| h.old_uploaded_filename.clone());
             let state = if h.old_purged_at.is_some() {
@@ -821,11 +905,22 @@ fn file(ui: &mut egui::Ui, shell: &mut Shell, d: &TrackDetail) {
             };
             let codec = h.old_codec.clone().unwrap_or_default().to_uppercase();
             let bitrate = h.old_bitrate.map(|b| format!(" {b} kbps")).unwrap_or_default();
-            ui.label(format!(
-                "{name} · {codec}{bitrate} · {:.1} MB · replaced {}{state}",
-                h.old_size_bytes as f64 / 1_000_000.0,
-                day(&h.replaced_at)
-            ));
+            ui.horizontal_wrapped(|ui| {
+                ui.label(format!(
+                    "{name} · {codec}{bitrate} · {:.1} MB · replaced {}{state}",
+                    h.old_size_bytes as f64 / 1_000_000.0,
+                    day(&h.replaced_at)
+                ));
+                // Once per file (it may have been replaced more than once), not the one it plays.
+                let usable = h.old_purged_at.is_none() && h.old_file_id != d.file.id && offered.insert(h.old_file_id);
+                if can_switch && usable {
+                    let sending = switching.lock().unwrap().0;
+                    let tip = "The track plays this file from now on; the one it plays now becomes an earlier file";
+                    if ui.add_enabled(!sending, egui::Button::new("Play this file again").small()).on_hover_text(tip).clicked() {
+                        use_previous_file(shell, &switching, d.id, h.old_file_id);
+                    }
+                }
+            });
             if let Some(origin) = &h.old_origin {
                 let id = origin.external_id.as_deref().map(|i| format!(" · {i}")).unwrap_or_default();
                 ui.label(RichText::new(format!("from {}{id}", origin.platform)).color(P.muted).small());
@@ -836,6 +931,21 @@ fn file(ui: &mut egui::Ui, shell: &mut Shell, d: &TrackDetail) {
             }
         }
     }
+}
+
+/// "Play this file again": on its way, and the server's answer.
+type UseFile = Arc<std::sync::Mutex<(bool, Option<Result<(), String>>)>>;
+
+/// The track plays one of its earlier files again (`POST /api/tracks/{id}/use-file`).
+fn use_previous_file(shell: &Shell, state: &UseFile, track: Uuid, file: Uuid) {
+    state.lock().unwrap().0 = true;
+    let (api, ctx, state) = (shell.api.clone(), shell.ctx.clone(), state.clone());
+    shell.runtime.spawn(async move {
+        let body = serde_json::json!({ "previous_file": file, "reason": "" });
+        let result = api.send_json::<serde_json::Value>(reqwest::Method::POST, &format!("/api/tracks/{track}/use-file"), Some(body)).await;
+        *state.lock().unwrap() = (false, Some(result.map(|_| ()).map_err(|err| err.message)));
+        ctx.request_repaint();
+    });
 }
 
 /// Sources: the platform and id, and the newest snapshot's data (links clickable).

@@ -394,3 +394,29 @@ pub async fn edit_many(
     }
     Ok(Json(edited))
 }
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct Duplicate {
+    reason: String,
+}
+
+/// `POST /api/tracks/{id}/duplicate`, JSON `{"reason": ""}` (optional): a copy of the
+/// track (see `db::revisions::duplicate_track`), e.g. to have it play one of the previous
+/// files as a track of its own. Makes a track, so it needs `upload` as well as
+/// `edit_metadata`. Answers the copy's id.
+pub async fn duplicate(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<Uuid>,
+    body: Option<Json<Duplicate>>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    if !(user.has(Permission::Upload) && user.has(Permission::EditMetadata)) {
+        return Err(AppError::Forbidden("duplicating a track makes one: it needs the `upload` and `edit_metadata` permissions".to_string()));
+    }
+    let reason = body.map(|Json(b)| b.reason).unwrap_or_default();
+    let mut tx = state.db(&user).await?;
+    let copy = crate::db::revisions::duplicate_track(&mut tx, id, &reason).await?;
+    tx.commit().await?;
+    Ok(Json(serde_json::json!({ "track_id": copy })))
+}

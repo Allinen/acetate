@@ -129,6 +129,7 @@ pub struct Shared {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct FileChange {
+    pub old_file_id: Uuid,
     pub replaced_at: String,
     pub reason: String,
     pub old_original_filename: Option<String>,
