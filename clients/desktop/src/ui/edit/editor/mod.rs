@@ -183,6 +183,21 @@ impl TrackEditor {
         !self.staged.is_empty()
     }
 
+    /// Applied to every track, and what came of it still shown (until Close). (Some
+    /// failed: not this; the changes are kept, to try again.)
+    pub fn applied(&self) -> bool {
+        let a = self.engine.applied.lock().unwrap();
+        a.phase == Phase::Finished && !a.outcomes.values().any(|o| matches!(o, Outcome::Failed(_)))
+    }
+
+    /// Done with what was applied (Close): the changes are cleared.
+    pub fn close(&mut self) {
+        self.staged.clear();
+        self.correcting = None;
+        self.names = Names::default();
+        self.engine.forget();
+    }
+
     /// The keys are on its rows (a page's own keys wait).
     pub fn takes_keys(&self) -> bool {
         self.row.is_some()
@@ -535,9 +550,15 @@ impl TrackEditor {
         if ctrl_enter && !self.line.trim().is_empty() {
             stage = true;
         }
-        // Esc outside the line, with changes staged: asks, and again discards them.
-        if !typing && self.row.is_none() && !self.staged.is_empty() && phase == Phase::Editing && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
-            if self.confirm_discard {
+        // Esc outside the line, with changes staged: asks, and again discards them. Once
+        // they're applied: Close.
+        let mut esc_closed = false;
+        if !typing && self.row.is_none() && !self.staged.is_empty() && phase != Phase::Applying && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
+            if phase == Phase::Finished && (self.applied() || self.confirm_discard) {
+                self.close();
+                self.confirm_discard = false;
+                esc_closed = true;
+            } else if self.confirm_discard {
                 self.staged.clear();
                 self.confirm_discard = false;
             } else {
@@ -668,13 +689,18 @@ impl TrackEditor {
                 self.apply_when_ready = false;
             }
             if self.confirm_discard {
-                ui.label(RichText::new("Discard these changes? Esc again to discard them.").color(P.danger).small());
+                let text = if phase == Phase::Finished {
+                    "Some weren't changed (below): Esc again closes anyway, discarding the changes (Keep editing tries again)."
+                } else {
+                    "Discard these changes? Esc again to discard them."
+                };
+                ui.label(RichText::new(text).color(P.danger).small());
             }
         }
         ui.add_space(8.0);
 
         // ---- State and preview ----
-        let mut closed = false;
+        let mut closed = esc_closed;
         if single {
             self.rows_view(ui, shell, catalog, targets[0], &rows, &vocab);
             ui.add_space(10.0);
@@ -1265,14 +1291,11 @@ impl TrackEditor {
                 ui.label(RichText::new(text).color(if failed == 0 { P.accent } else { P.danger }));
                 let (mut close, mut keep) = (false, false);
                 ui.horizontal(|ui| {
-                    close = ui.button("Close").on_hover_text("Done: the changes are cleared").clicked();
+                    close = ui.button("Close  (Esc)").on_hover_text("Done: the changes are cleared").clicked();
                     keep = ui.button("Keep editing").on_hover_text("The same changes, on the tracks as they are now").clicked();
                 });
                 if close {
-                    self.staged.clear();
-                    self.correcting = None;
-                    self.names = Names::default();
-                    self.engine.forget();
+                    self.close();
                     closed = true;
                 } else if keep {
                     self.engine.forget();

@@ -5,8 +5,9 @@
 //! A list gives its rows as positions shown (0..len) and `id_at`, the track at one. The
 //! box in front of each row (`paint_box`), `x`, or Ctrl+click marks or unmarks one;
 //! Shift+click or Shift+↑/↓ a range, which takes the state of the row it starts from (so
-//! ranges unmark too); Ctrl+A marks everything shown; Esc clears. Marks are kept by
-//! track, so sorting and filtering don't lose them. Ctrl+E (or the button) opens the
+//! ranges unmark too); Ctrl+A marks everything shown; Esc clears (all of them, shown or
+//! not; after a change was applied to them too). Marks are kept by track, so sorting and
+//! filtering don't lose them. Ctrl+E (or the button) opens the
 //! change for all of them, in a popup (see `edit::editor`); or, on a page that shows it
 //! in place (`change_in_place`: Review, instead of its one track's form), Ctrl+E puts
 //! the cursor in it. Ctrl+M with two marked compares them side by side, to merge (see
@@ -164,7 +165,7 @@ impl Marking {
         let Some(catalog) = shell.catalog.value.clone() else { return };
         let marked = self.ordered(len, id_at);
         ui.label(RichText::new(format!("Change {} tracks", thousands(marked.len()))).font(font(22.0, bold())));
-        ui.label(RichText::new("Ctrl+E: the line · Ctrl+Enter: apply the preview · Esc (outside the line): discard the changes, then unmark them all").color(P.faint).small());
+        ui.label(RichText::new("Ctrl+E: the line · Ctrl+Enter: apply the preview · Esc (outside the line): discard the changes, then unmark them all (once applied: close, unmarking them)").color(P.faint).small());
         ui.add_space(8.0);
         if show_editor(&mut self.bulk, ui, shell, &catalog, &marked, album) {
             self.clear();
@@ -219,6 +220,10 @@ impl Marking {
                 done = show_editor(&mut self.bulk, ui, shell, &catalog, &marked, album);
             });
             if closed || done {
+                // Closed after applying (Esc, ×): done with it, as Close is.
+                if self.bulk.applied() {
+                    self.bulk.close();
+                }
                 self.bulk_open = false;
                 self.quick = None;
             }
@@ -254,7 +259,7 @@ impl Marking {
             (
                 i.key_pressed(egui::Key::X) && i.modifiers.is_none(),
                 i.consume_key(egui::Modifiers::COMMAND, egui::Key::A),
-                !self.marked.is_empty() && !self.bulk.has_changes() && i.consume_key(egui::Modifiers::NONE, egui::Key::Escape),
+                !self.marked.is_empty() && (!self.bulk.has_changes() || self.bulk.applied()) && i.consume_key(egui::Modifiers::NONE, egui::Key::Escape),
                 !self.marked.is_empty() && i.consume_key(egui::Modifiers::COMMAND, egui::Key::E),
             )
         });
@@ -265,6 +270,9 @@ impl Marking {
             self.marked.extend((0..len).filter_map(id_at));
         }
         if clear {
+            if self.bulk.applied() {
+                self.bulk.close();
+            }
             self.clear();
         }
         if open {
