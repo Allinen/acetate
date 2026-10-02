@@ -317,13 +317,17 @@ pub fn attach(ops: &[Op], attached: &Attached) -> Attached {
             }
             Op::NoCovers => a.covers.clear(),
             Op::Source { id, platform, name, data } => {
-                let same = a.sources.iter_mut().find(|s| s.platform == *platform && !name.is_empty() && s.name == *name && platform != "custom");
-                match same {
-                    Some(s) => {
-                        s.data = data.clone();
-                        s.corrected = !s.new;
-                    }
-                    None => a.sources.push(Src { id: *id, new: true, platform: platform.clone(), name: name.clone(), data: data.clone(), corrected: false }),
+                // The same source: the same platform id, or (custom ones, without an id)
+                // the same data, as the server matches them.
+                let same = |s: &Src| s.platform == *platform && if platform == "custom" { s.data == *data } else { !name.is_empty() && s.name == *name };
+                if let Some(s) = a.sources.iter_mut().find(|s| same(s)) {
+                    s.data = data.clone();
+                    s.corrected = !s.new;
+                } else if let Some(had) = attached.sources.iter().find(|s| same(s)) {
+                    // One it had, taken off before (replacing them all): it stays.
+                    a.sources.push(Src { data: data.clone(), corrected: had.data != *data, ..had.clone() });
+                } else {
+                    a.sources.push(Src { id: *id, new: true, platform: platform.clone(), name: name.clone(), data: data.clone(), corrected: false });
                 }
             }
             Op::CorrectSource { id, data } => {
@@ -508,6 +512,11 @@ mod tests {
         assert_eq!((a.sources.len(), a.origin), (1, Some(id(1))));
         let a = attach(&[Op::CorrectSource { id: id(1), data: serde_json::json!({ "label": "discord" }) }], &base);
         assert_eq!((a.sources[0].label(), a.sources[0].corrected), ("custom “discord”".to_string(), true));
+        // All of them replaced by one it has: that one stays (corrected, its data being
+        // new), the file from it; the other goes.
+        let a = attach(&[Op::NoSources, add(8, "netease", "123"), Op::Origin(0)], &base);
+        assert_eq!(a.sources.iter().map(|s| (s.id, s.new, s.corrected)).collect::<Vec<_>>(), [(id(2), false, true)]);
+        assert_eq!(a.origin, Some(id(2)));
     }
 
     #[test]

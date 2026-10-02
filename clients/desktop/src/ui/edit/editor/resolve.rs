@@ -530,6 +530,14 @@ fn unit(
                     _ => Err("-source:#N puts the Nth in the trash; -source alone, all of them".into()),
                 };
             }
+            // `source:=…`: its only source from now on, and where its file came from.
+            let (replace, value) = match value.strip_prefix('=') {
+                Some(rest) => (true, rest.trim()),
+                None => (false, value),
+            };
+            if replace && value.is_empty() {
+                return Err("source:= and a link (or custom and where it's from): its only source, the file from there too".into());
+            }
             if value.is_empty() {
                 return match main.hashes.as_slice() {
                     [h] if !many => {
@@ -565,8 +573,13 @@ fn unit(
                 Uuid::from_u128(0xACE7_5000_0000_4000_8000_0000_0000_0000 | h.finish() as u128)
             };
             let shown = super::model::Src { id, new: true, platform: platform.clone(), name: name.clone(), data: data.clone(), corrected: false }.label();
+            let source = Op::Source { id, platform, name, data };
+            if replace {
+                let label = format!("sources → only {shown}, and the file came from it (the others to the trash)");
+                return done(label, vec![Op::NoSources, source, Op::Origin(0)]);
+            }
             let warning = many.then(|| format!("every one of the {} tracks gets this source; usually it's one track's", ctx.targets));
-            Ok(Resolved { label: format!("source: + {shown}"), ops: vec![Op::Source { id, platform, name, data }], warning, ..Default::default() })
+            Ok(Resolved { label: format!("source: + {shown}"), ops: vec![source], warning, ..Default::default() })
         }
         K::Origin => {
             only(&[])?;
@@ -861,8 +874,15 @@ pub fn candidates(part: &Part, owner: Option<&Part>, ctx: &Ctx, hits: &[u32], tr
                 out.push(Candidate { label: format!("its cover: {title}"), sub, text: t.title.clone(), pick: Some(Pick::Pin(PinKind::Track, t.id)), next: Some("#") });
             }
         }
-        K::Source if !part.minus && part.hash.is_none() && "custom".starts_with(&value.to_lowercase()) && ctx.may_source => {
-            out.push(Candidate { label: "custom".into(), sub: "where it's from, then a comma and more: custom vk, sent by a friend".into(), text: "custom".into(), pick: None, next: None });
+        K::Source if !part.minus && part.hash.is_none() && ctx.may_source => {
+            let (equals, rest) = match value.strip_prefix('=') {
+                Some(rest) => ("=", rest.trim()),
+                None => ("", value),
+            };
+            if "custom".starts_with(&rest.to_lowercase()) {
+                let sub = "where it's from, then a comma and more: custom vk, sent by a friend";
+                out.push(Candidate { label: format!("{equals}custom"), sub: sub.into(), text: format!("{equals}custom"), pick: None, next: None });
+            }
         }
         K::Along => {
             let label = |s: &str| match s {
@@ -915,6 +935,7 @@ pub fn actions(words: &str, ctx: &Ctx) -> Vec<(String, String)> {
         all.extend([
             ("Source: add a link…".to_string(), "source:".to_string()),
             ("Source: custom (where it's from)…".into(), "source:custom ".into()),
+            ("Sources: replace them all with one, the file from there too…".into(), "source:=".into()),
             ("Source: the file came from… (origin)".into(), "origin:#".into()),
         ]);
     }
@@ -1100,6 +1121,15 @@ mod tests {
         assert_eq!((platform.as_str(), name.as_str(), data.clone()), ("netease", "123", serde_json::json!({ "song_id": 123 })));
         assert_eq!(custom, &serde_json::json!({ "label": "vk", "description": "sent by a friend" }));
         assert_eq!(resolve("source:#1", &ctx, &mut Known).0[0].result.as_ref().unwrap().want, Some(Want::Correct(0)));
+        // Replacing them all, for many tracks too: every one off, this one on, the file from it.
+        let many = Ctx { targets: 3, ..ctx };
+        let (units, _) = resolve("source:= custom google drive, a shared folder", &many, &mut Known);
+        let r = units[0].result.as_ref().unwrap();
+        assert!(r.warning.is_none());
+        let [Op::NoSources, Op::Source { data, .. }, Op::Origin(0)] = r.ops.as_slice() else { panic!("{:?}", r.ops) };
+        assert_eq!(data, &serde_json::json!({ "label": "google drive", "description": "a shared folder" }));
+        let ctx = Ctx { targets: 1, ..many };
+        assert!(resolve("source:=", &ctx, &mut Known).0[0].result.is_err());
         // Not a link; and without the permission.
         assert!(resolve("source:somewhere", &ctx, &mut Known).0[0].result.is_err());
         let ctx = Ctx { may_source: false, ..ctx };

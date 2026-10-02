@@ -492,7 +492,8 @@ async fn write_sources(conn: &mut PgConnection, track: Uuid, edit: &SourcesEdit,
             .ok_or_else(|| EditRejected::Invalid("it has no file to have come from somewhere".into()))?;
         super::sources::set_file_origin(conn, file, super::sources::OriginTarget::Source(origin), reason).await?;
     }
-    for gone in &edit.trash {
+    // (Not one a source added here turned out to be: the server matched it to one it had.)
+    for gone in edit.trash.iter().filter(|g| !made.values().any(|m| m == *g)) {
         own(conn, *gone).await?;
         super::sources::trash(conn, *gone).await?;
     }

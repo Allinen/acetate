@@ -871,6 +871,8 @@ impl Review {
                     Some(line) if editor.is_blank() => editor.prefill(&line),
                     _ => editor.opened(),
                 }
+                // (Shown, not asked for: a search being typed keeps the cursor.)
+                editor.gently();
             }
 
             editor.show(ui, shell, catalog, &[id], None);

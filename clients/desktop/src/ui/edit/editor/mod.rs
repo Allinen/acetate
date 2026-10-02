@@ -98,6 +98,8 @@ pub struct TrackEditor {
     engine: Engine,
     /// Put the cursor in the line (until it's there).
     focus_line: bool,
+    /// Only if no other field has it (it wasn't asked for: a track was shown).
+    focus_gently: bool,
     /// Esc was pressed with changes staged: again discards them.
     confirm_discard: bool,
     notice: Option<String>,
@@ -135,6 +137,7 @@ impl Default for TrackEditor {
             lookup_tracks: Lookup::default(),
             engine: Engine::default(),
             focus_line: false,
+            focus_gently: false,
             confirm_discard: false,
             notice: None,
             resolved: None,
@@ -160,7 +163,14 @@ impl TrackEditor {
     /// The cursor goes to the line.
     pub fn opened(&mut self) {
         self.focus_line = true;
+        self.focus_gently = false;
         self.row = None;
+    }
+
+    /// The cursor goes to the line unless it's in another field (a search being typed,
+    /// whose results changed the track shown): for a track shown, not a key pressed.
+    pub fn gently(&mut self) {
+        self.focus_gently = self.focus_line;
     }
 
     /// Applying, or applied and its outcome not closed yet.
@@ -190,6 +200,7 @@ impl TrackEditor {
         self.row = None;
         self.resolved = None;
         self.focus_line = true;
+        self.focus_gently = false;
         self.place_cursor = true;
     }
 
@@ -279,8 +290,12 @@ impl TrackEditor {
             self.cursor_to_end(&ctx);
         }
         if self.focus_line {
-            if ctx.memory(|m| m.has_focus(line_id)) && !ctx.input(|i| i.pointer.any_released()) {
+            // Asked gently and another field has it (a search being typed): left there.
+            let elsewhere = ctx.memory(|m| m.focused().is_some_and(|f| f != line_id));
+            let holds = ctx.memory(|m| m.has_focus(line_id)) && !ctx.input(|i| i.pointer.any_released());
+            if (self.focus_gently && elsewhere) || holds {
                 self.focus_line = false;
+                self.focus_gently = false;
             } else {
                 ctx.memory_mut(|m| m.request_focus(line_id));
             }

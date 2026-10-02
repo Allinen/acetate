@@ -466,3 +466,51 @@ async fn sources_added_made_the_origin_and_trashed_with_the_track(_: PgPoolOptio
     assert_eq!(edited.tracks[0].error.as_ref().map(|e| e.code.as_str()), Some("invalid"));
     Ok(())
 }
+
+/// Replacing every source of several tracks with one (and their files' origins), as
+/// `source:=…` sends it: V and O get "google drive", the files come from it, their old
+/// sources go. A track that had it already keeps that one (not trashed, though asked).
+#[sqlx::test]
+async fn every_source_replaced_with_one_on_many_tracks(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
+    let lib = setup(connect).await?;
+    let drive = serde_json::json!({ "label": "google drive", "description": "a shared folder" });
+    // O has it already.
+    let mut tx = db::begin(&lib.owner, None).await?;
+    let valid = crate::model::sources::validate(
+        crate::model::sources::Kind::Track,
+        crate::model::sources::NewSource { platform: "custom".into(), source_id: None, captured_at: None, data: drive.clone() },
+    )?;
+    let had = db::sources::add_snapshot(&mut tx, crate::model::sources::SourceOwner::Track(lib.o), &valid).await?.source_id;
+    tx.commit().await?;
+    let stand_in = Uuid::from_u128(0x7);
+    let mut tracks = Vec::new();
+    for track in [lib.v, lib.o] {
+        let old: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM sources WHERE track_id = $1").bind(track).fetch_all(&lib.owner).await?;
+        let sources = SourcesEdit {
+            add: vec![AddSource { id: Some(stand_in), platform: "custom".into(), data: drive.clone() }],
+            trash: old,
+            origin: Some(stand_in),
+            ..Default::default()
+        };
+        tracks.push(TrackEdit { track_id: track, meta: None, facts: None, along: true, sync: false, covers: None, sources: Some(sources) });
+    }
+    let edited = run(&lib, lib.bob, &edit(tracks), true).await?;
+    assert!(edited.tracks.iter().all(|t| t.error.is_none()), "{:?}", edited.tracks);
+    for track in [lib.v, lib.o] {
+        let left: Vec<(Uuid, serde_json::Value)> = sqlx::query_as(
+            "SELECT s.id, ss.data FROM sources s JOIN source_snapshots ss ON ss.source_id = s.id WHERE s.track_id = $1 AND s.trashed_at IS NULL",
+        )
+        .bind(track)
+        .fetch_all(&lib.owner)
+        .await?;
+        assert_eq!(left.iter().map(|l| l.1.clone()).collect::<Vec<_>>(), [drive.clone()], "{track}");
+        let origin: Uuid = sqlx::query_scalar("SELECT ss.source_id FROM tracks t JOIN files f ON f.id = t.file_id JOIN source_snapshots ss ON ss.id = f.origin_snapshot_id WHERE t.id = $1")
+            .bind(track)
+            .fetch_one(&lib.owner)
+            .await?;
+        assert_eq!(origin, left[0].0);
+    }
+    let o_now: Uuid = sqlx::query_scalar("SELECT id FROM sources WHERE track_id = $1 AND trashed_at IS NULL").bind(lib.o).fetch_one(&lib.owner).await?;
+    assert_eq!(o_now, had);
+    Ok(())
+}

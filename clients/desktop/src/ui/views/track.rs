@@ -213,7 +213,9 @@ impl TrackPage {
                 let open = self.editor_opened != Some(d.id);
                 self.editor_opened = Some(d.id);
                 if open {
-                    shell.track_editors.entry(d.id).or_default().opened();
+                    let editor = shell.track_editors.entry(d.id).or_default();
+                    editor.opened();
+                    editor.gently();
                 }
                 // Ctrl+Enter in the lyrics saves them, not the track's form (shown first).
                 self.lyrics_editor.take_keys(ui.ctx());
