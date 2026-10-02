@@ -37,6 +37,10 @@ pub enum RowKind {
     Source(usize),
     /// No sources (there to add one).
     AddSource,
+    /// A grouping it's in (its place among them).
+    Group(usize),
+    /// In no grouping (there to put it in one).
+    AddGroup,
     /// Something the staged changes take off (shown struck through).
     Removed,
     /// Flags about nothing here (no cover, sources, fix later…).
@@ -248,6 +252,22 @@ pub fn rows(r: &Ready, know: &Know, now: &[String], after: Option<&[String]>) ->
         rows.push(row(RowKind::AddSource, "source", ("none".into(), None)));
     }
 
+    // Groupings.
+    let grouping = |id: Uuid| match catalog.grouping(id) {
+        Some(g) => format!("{} ({})", g.name, g.kind),
+        None => know.names.get(&id).map(|n| format!("{n} (new)")).unwrap_or_else(|| "(a grouping)".into()),
+    };
+    for (n, g) in new.groups.iter().enumerate() {
+        let was = (!old.groups.contains(g)).then(|| "new".to_string());
+        rows.push(row(RowKind::Group(n), "group", (grouping(*g), was)));
+    }
+    for gone in old.groups.iter().filter(|g| !new.groups.contains(g)) {
+        rows.push(row(RowKind::Removed, "group", (String::new(), Some(grouping(*gone)))));
+    }
+    if new.groups.is_empty() {
+        rows.push(row(RowKind::AddGroup, "group", ("none".into(), None)));
+    }
+
     // The flags, on the rows they're about.
     let mut flags: Vec<(String, Flag)> = now
         .iter()
@@ -335,7 +355,7 @@ mod tests {
             attached: Attached::default(),
         };
         let meta = Meta { title: "Song".into(), credits: vec![credit(ann, "primary"), credit(bo, "featured")], ..Default::default() };
-        let ready = Ready { position: 0, base: base.clone(), meta, facts: base.facts.clone(), attached: Attached::default(), lines: vec![], joins: vec![], sync: false };
+        let ready = Ready { position: 0, base: base.clone(), meta, facts: base.facts.clone(), attached: Attached::default(), lines: vec![], warnings: vec![], sync: false, single: false };
         let now = ["credits_in_title".to_string(), "missing_album".to_string(), "missing_cover".to_string()];
         let after = ["missing_album".to_string(), "missing_cover".to_string()];
         let catalog = catalog();
@@ -375,7 +395,7 @@ mod tests {
         // Bo taken off; Ann credited under an alias.
         let alias = Uuid::from_u128(70);
         let meta = Meta { credits: vec![Credit { alias_id: Some(alias), ..credit(ann, "primary") }], ..base.meta.clone() };
-        let ready = Ready { position: 0, base: base.clone(), meta, facts: base.facts.clone(), attached: Attached::default(), lines: vec![], joins: vec![], sync: false };
+        let ready = Ready { position: 0, base: base.clone(), meta, facts: base.facts.clone(), attached: Attached::default(), lines: vec![], warnings: vec![], sync: false, single: false };
         let catalog = catalog();
         let names = HashMap::new();
         let aliases = HashMap::from([(alias, "Annie".to_string())]);
@@ -416,13 +436,14 @@ mod tests {
                 covers: vec![Pic { image: Image::Own(Uuid::from_u128(10)), sha: "a".into() }, Pic { image: Image::Own(Uuid::from_u128(11)), sha: "b".into() }],
                 sources: vec![Src { id: Uuid::from_u128(20), new: false, platform: "custom".into(), name: "vk".into(), data: serde_json::json!({}), corrected: false }],
                 origin: Some(Uuid::from_u128(20)),
+                groups: vec![],
             },
         };
         // A new image as the main one, the second to the trash; a new source.
         let mut attached = base.attached.clone();
         attached.covers = vec![Pic { image: Image::Staged, sha: "c".into() }, base.attached.covers[0].clone()];
         attached.sources.push(Src { id: Uuid::from_u128(21), new: true, platform: "netease".into(), name: "123".into(), data: serde_json::json!({}), corrected: false });
-        let ready = Ready { position: 0, base: base.clone(), meta: base.meta.clone(), facts: base.facts.clone(), attached, lines: vec![], joins: vec![], sync: false };
+        let ready = Ready { position: 0, base: base.clone(), meta: base.meta.clone(), facts: base.facts.clone(), attached, lines: vec![], warnings: vec![], sync: false, single: false };
         let catalog = catalog();
         let (names, aliases) = (HashMap::new(), HashMap::new());
         let know = Know { catalog: &catalog, names: &names, aliases: &aliases, ambiguous: &[], covers: &[] };
@@ -433,5 +454,28 @@ mod tests {
         let sources: Vec<(&str, Option<&str>)> = rows.iter().filter(|r| r.key == "source").map(|r| (r.value.as_str(), r.was.as_deref())).collect();
         assert_eq!(sources, [("custom “vk” · the file came from here", None), ("netease 123", Some("new"))]);
         assert_eq!(rows.iter().find(|r| r.kind == RowKind::Source(0)).unwrap().flags, [("weak_source".to_string(), Flag::Open)]);
+    }
+
+    #[test]
+    fn groupings_as_rows() {
+        let (crew, early) = (Uuid::from_u128(30), Uuid::from_u128(31));
+        let base = Base {
+            variant: Uuid::from_u128(1),
+            variant_base: Uuid::from_u128(2),
+            meta: Meta { title: "Song".into(), ..Default::default() },
+            facts_base: Some(Uuid::from_u128(3)),
+            facts: Facts { status: "released".into(), albums: vec![], relations: vec![] },
+            attached: Attached { groups: vec![crew], ..Default::default() },
+        };
+        // Out of one it's in, into a new one.
+        let attached = Attached { groups: vec![early], ..Default::default() };
+        let ready = Ready { position: 0, base: base.clone(), meta: base.meta.clone(), facts: base.facts.clone(), attached, lines: vec![], warnings: vec![], sync: false, single: false };
+        let catalog = catalog();
+        let names = HashMap::from([(early, "Early".to_string())]);
+        let aliases = HashMap::new();
+        let know = Know { catalog: &catalog, names: &names, aliases: &aliases, ambiguous: &[], covers: &[] };
+        let rows = rows(&ready, &know, &[], None);
+        let groups: Vec<(RowKind, &str, Option<&str>)> = rows.iter().filter(|r| r.key == "group").map(|r| (r.kind, r.value.as_str(), r.was.as_deref())).collect();
+        assert_eq!(groups, [(RowKind::Group(0), "Early (new)", Some("new")), (RowKind::Removed, "", Some("(a grouping)"))]);
     }
 }

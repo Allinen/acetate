@@ -124,27 +124,39 @@ pub async fn make_singles(conn: &mut PgConnection, tracks: &[Uuid], reason: &str
         else {
             return Err(EditRejected::NotFound("track").into());
         };
-        let meta = match row.primary_variant_id {
-            Some(variant) => revisions::latest_internal(conn, track, variant).await?.map(|(_, m)| m),
-            None => None,
-        };
-        let facts = revisions::latest_external(conn, track).await?.and_then(|(_, data)| serde_json::from_value::<TrackFacts>(data).ok());
-        let (Some(meta), Some(mut facts), false) = (meta, facts, row.on_album) else {
+        if row.on_album {
             out.skipped.push(track);
             continue;
-        };
-        let credits: Vec<Credit> = meta.credits.iter().filter(|c| c.role == "primary").cloned().collect();
-        let data = AlbumData { title: meta.title.clone(), kind: "single".into(), release_date: meta.release_date.clone(), credits };
-        let album = revisions::create_album(conn, &data, Source::Edit, &reason).await?;
-        facts.albums.push(AlbumMembership { album_id: album, disc_number: Some(1), track_number: Some(1) });
-        revisions::write_external(conn, track, None, &facts, Source::Edit, &reason).await?;
-        let covers = sqlx::query_scalar!("SELECT id FROM covers WHERE track_id = $1 AND trashed_at IS NULL ORDER BY position, id", track)
-            .fetch_all(&mut *conn)
-            .await?;
-        for cover in covers {
-            super::album_merges::copy_if_new(conn, cover, album).await?;
         }
-        out.made.push(Made { track_id: track, album_id: album });
+        match make_single(conn, track, row.primary_variant_id, &reason).await? {
+            Some(album) => out.made.push(Made { track_id: track, album_id: album }),
+            None => out.skipped.push(track),
+        }
     }
     Ok(out)
+}
+
+/// A single for a track, whatever albums it's on: named after it (its shown version,
+/// `variant`), of kind `single`, credited to its primary artists (as credited), with its
+/// release date; the track on it as disc 1, track 1 (a revision of its facts), and its
+/// covers copied onto it. None: it hasn't the revisions to build on.
+pub async fn make_single(conn: &mut PgConnection, track: Uuid, variant: Option<Uuid>, reason: &str) -> anyhow::Result<Option<Uuid>> {
+    let meta = match variant {
+        Some(variant) => revisions::latest_internal(conn, track, variant).await?.map(|(_, m)| m),
+        None => None,
+    };
+    let facts = revisions::latest_external(conn, track).await?.and_then(|(_, data)| serde_json::from_value::<TrackFacts>(data).ok());
+    let (Some(meta), Some(mut facts)) = (meta, facts) else { return Ok(None) };
+    let credits: Vec<Credit> = meta.credits.iter().filter(|c| c.role == "primary").cloned().collect();
+    let data = AlbumData { title: meta.title.clone(), kind: "single".into(), release_date: meta.release_date.clone(), credits };
+    let album = revisions::create_album(conn, &data, Source::Edit, reason).await?;
+    facts.albums.push(AlbumMembership { album_id: album, disc_number: Some(1), track_number: Some(1) });
+    revisions::write_external(conn, track, None, &facts, Source::Edit, reason).await?;
+    let covers = sqlx::query_scalar!("SELECT id FROM covers WHERE track_id = $1 AND trashed_at IS NULL ORDER BY position, id", track)
+        .fetch_all(&mut *conn)
+        .await?;
+    for cover in covers {
+        super::album_merges::copy_if_new(conn, cover, album).await?;
+    }
+    Ok(Some(album))
 }

@@ -10,7 +10,7 @@ use uuid::Uuid;
 use super::rls_tests::{Library, setup};
 use crate::db;
 use crate::db::revisions::{EditRejected, Source};
-use crate::db::track_edits::{AddSource, CoverItem, CoversEdit, Edit, Edited, FactsEdit, Failure, May, MetaEdit, NewAlbum, NewArtist, SourcesEdit, TrackEdit};
+use crate::db::track_edits::{AddSource, CoverItem, CoversEdit, Edit, Edited, FactsEdit, Failure, GroupsEdit, May, MetaEdit, NewAlbum, NewArtist, NewGrouping, SourcesEdit, TrackEdit};
 
 const ALL: May = May { relations: true, sources: true };
 use crate::model::{AlbumData, AlbumMembership, Credit, TrackFacts, TrackMetadata};
@@ -42,17 +42,17 @@ async fn state(conn: &mut PgConnection, track: Uuid) -> anyhow::Result<(Uuid, Uu
 async fn meta_edit(conn: &mut PgConnection, track: Uuid, change: impl FnOnce(&mut TrackMetadata)) -> anyhow::Result<TrackEdit> {
     let (variant, base, mut data, _, _) = state(conn, track).await?;
     change(&mut data);
-    Ok(TrackEdit { track_id: track, meta: Some(MetaEdit { variant_id: variant, base_revision_id: base, data }), facts: None, along: true, sync: false, covers: None, sources: None })
+    Ok(TrackEdit { track_id: track, meta: Some(MetaEdit { variant_id: variant, base_revision_id: base, data }), facts: None, along: true, sync: false, covers: None, sources: None, single: false, groups: None })
 }
 
 async fn facts_edit(conn: &mut PgConnection, track: Uuid, change: impl FnOnce(&mut TrackFacts)) -> anyhow::Result<TrackEdit> {
     let (_, _, _, base, mut data) = state(conn, track).await?;
     change(&mut data);
-    Ok(TrackEdit { track_id: track, meta: None, facts: Some(FactsEdit { base_revision_id: base, data }), along: true, sync: false, covers: None, sources: None })
+    Ok(TrackEdit { track_id: track, meta: None, facts: Some(FactsEdit { base_revision_id: base, data }), along: true, sync: false, covers: None, sources: None, single: false, groups: None })
 }
 
 fn edit(tracks: Vec<TrackEdit>) -> Edit {
-    Edit { reason: "test".into(), new_artists: vec![], new_albums: vec![], tracks }
+    Edit { reason: "test".into(), new_artists: vec![], new_albums: vec![], new_groupings: vec![], tracks }
 }
 
 async fn run(lib: &Library, user: Uuid, edit: &Edit, keep: bool) -> anyhow::Result<Edited> {
@@ -189,7 +189,7 @@ async fn albums_its_alone_on_change_along_with_what_changed(_: PgPoolOptions, co
 
     // Synced, with nothing else changing: the EP matches the track (its own date goes:
     // the track has none).
-    let sync = TrackEdit { track_id: lib.o, meta: None, facts: None, along: true, sync: true, covers: None, sources: None };
+    let sync = TrackEdit { track_id: lib.o, meta: None, facts: None, along: true, sync: true, covers: None, sources: None, single: false, groups: None };
     let edited = run(&lib, lib.bob, &edit(vec![sync]), false).await?;
     let along = &edited.tracks[0].along;
     assert_eq!(along.len(), 1, "{:?}", edited.tracks[0]);
@@ -310,7 +310,7 @@ async fn a_single_made_to_match_with_nothing_else_changed(_: PgPoolOptions, conn
     db::revisions::write_album(&mut tx, single, None, &data, Source::Edit, "renamed by hand").await?;
     tx.commit().await?;
 
-    let sync = TrackEdit { track_id: lib.o, meta: None, facts: None, along: true, sync: true, covers: None, sources: None };
+    let sync = TrackEdit { track_id: lib.o, meta: None, facts: None, along: true, sync: true, covers: None, sources: None, single: false, groups: None };
     let edited = run(&lib, lib.bob, &edit(vec![sync]), true).await?;
     assert!(edited.tracks[0].error.is_none(), "{:?}", edited.tracks[0].error);
     assert_eq!(edited.tracks[0].along.len(), 1);
@@ -322,7 +322,7 @@ async fn a_single_made_to_match_with_nothing_else_changed(_: PgPoolOptions, conn
     let mut tx = db::begin(&lib.owner, None).await?;
     db::revisions::write_album(&mut tx, single, None, &data, Source::Edit, "renamed again").await?;
     tx.commit().await?;
-    let plain = TrackEdit { track_id: lib.o, meta: None, facts: None, along: true, sync: false, covers: None, sources: None };
+    let plain = TrackEdit { track_id: lib.o, meta: None, facts: None, along: true, sync: false, covers: None, sources: None, single: false, groups: None };
     assert!(run(&lib, lib.bob, &edit(vec![plain]), true).await?.tracks[0].along.is_empty());
     assert_eq!(title(&lib, "albums", single).await?, "Old Single Name");
     Ok(())
@@ -330,7 +330,7 @@ async fn a_single_made_to_match_with_nothing_else_changed(_: PgPoolOptions, conn
 
 /// O's covers (it has none), as the editor sends them.
 fn covers_edit(track: Uuid, base: Vec<Uuid>, covers: Vec<CoverItem>) -> TrackEdit {
-    TrackEdit { track_id: track, meta: None, facts: None, along: true, sync: false, covers: Some(CoversEdit { base, covers }), sources: None }
+    TrackEdit { track_id: track, meta: None, facts: None, along: true, sync: false, covers: Some(CoversEdit { base, covers }), sources: None, single: false, groups: None }
 }
 
 async fn covers_of(lib: &Library, owner: Uuid) -> anyhow::Result<Vec<(Uuid, String)>> {
@@ -438,7 +438,7 @@ async fn sources_added_made_the_origin_and_trashed_with_the_track(_: PgPoolOptio
         origin,
         ..Default::default()
     };
-    let with = |s: SourcesEdit| TrackEdit { track_id: lib.o, meta: None, facts: None, along: true, sync: false, covers: None, sources: Some(s) };
+    let with = |s: SourcesEdit| TrackEdit { track_id: lib.o, meta: None, facts: None, along: true, sync: false, covers: None, sources: Some(s), single: false, groups: None };
 
     // The file's origin can't go to the trash while it's the origin.
     let edited = run(&lib, lib.bob, &edit(vec![with(sources(vec![old], None))]), false).await?;
@@ -492,7 +492,7 @@ async fn every_source_replaced_with_one_on_many_tracks(_: PgPoolOptions, connect
             origin: Some(stand_in),
             ..Default::default()
         };
-        tracks.push(TrackEdit { track_id: track, meta: None, facts: None, along: true, sync: false, covers: None, sources: Some(sources) });
+        tracks.push(TrackEdit { track_id: track, meta: None, facts: None, along: true, sync: false, covers: None, sources: Some(sources), single: false, groups: None });
     }
     let edited = run(&lib, lib.bob, &edit(tracks), true).await?;
     assert!(edited.tracks.iter().all(|t| t.error.is_none()), "{:?}", edited.tracks);
@@ -503,7 +503,7 @@ async fn every_source_replaced_with_one_on_many_tracks(_: PgPoolOptions, connect
         .bind(track)
         .fetch_all(&lib.owner)
         .await?;
-        assert_eq!(left.iter().map(|l| l.1.clone()).collect::<Vec<_>>(), [drive.clone()], "{track}");
+        assert_eq!(left.iter().map(|l| l.1.clone()).collect::<Vec<_>>(), std::slice::from_ref(&drive), "{track}");
         let origin: Uuid = sqlx::query_scalar("SELECT ss.source_id FROM tracks t JOIN files f ON f.id = t.file_id JOIN source_snapshots ss ON ss.id = f.origin_snapshot_id WHERE t.id = $1")
             .bind(track)
             .fetch_one(&lib.owner)
@@ -512,5 +512,67 @@ async fn every_source_replaced_with_one_on_many_tracks(_: PgPoolOptions, connect
     }
     let o_now: Uuid = sqlx::query_scalar("SELECT id FROM sources WHERE track_id = $1 AND trashed_at IS NULL").bind(lib.o).fetch_one(&lib.owner).await?;
     assert_eq!(o_now, had);
+    Ok(())
+}
+
+/// V (on Album A) renamed, a new cover, and a single of its own in the same edit: the
+/// single takes the new title, its primary artists and the new cover; V stays on A too.
+#[sqlx::test]
+async fn a_single_of_its_own_as_the_edit_leaves_the_track(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
+    let lib = setup(connect).await?;
+    let mut conn = lib.owner.acquire().await?;
+    let image = "f".repeat(64);
+    stage(&lib, lib.bob, &image).await?;
+    let mut change = meta_edit(&mut conn, lib.v, |m| m.title = "Song V (Edit)".into()).await?;
+    change.covers = Some(CoversEdit { base: vec![], covers: vec![CoverItem::Staged { staged: image.clone() }] });
+    change.single = true;
+
+    let preview = run(&lib, lib.bob, &edit(vec![change]), false).await?;
+    assert!(preview.tracks[0].single.is_some(), "{:?}", preview.tracks[0]);
+    let singles = || async { sqlx::query_scalar::<_, i64>("SELECT count(*) FROM albums WHERE kind = 'single'").fetch_one(&lib.owner).await };
+    assert_eq!(singles().await?, 0, "a preview keeps nothing");
+
+    let mut change = meta_edit(&mut conn, lib.v, |m| m.title = "Song V (Edit)".into()).await?;
+    change.covers = Some(CoversEdit { base: vec![], covers: vec![CoverItem::Staged { staged: image.clone() }] });
+    change.single = true;
+    let edited = run(&lib, lib.bob, &edit(vec![change]), true).await?;
+    let single = edited.tracks[0].single.expect("made");
+    assert_eq!(title(&lib, "albums", single).await?, "Song V (Edit)");
+    let credited: Vec<Uuid> = sqlx::query_scalar("SELECT artist_id FROM album_credits WHERE album_id = $1").bind(single).fetch_all(&lib.owner).await?;
+    assert_eq!(credited, [lib.both]);
+    let on: Vec<(Uuid, Option<i16>)> = sqlx::query_as("SELECT album_id, track_number FROM album_tracks WHERE track_id = $1 ORDER BY album_id = $2").bind(lib.v).bind(single).fetch_all(&lib.owner).await?;
+    assert_eq!(on, [(lib.album, None), (single, Some(1))]);
+    assert_eq!(covers_of(&lib, single).await?.into_iter().map(|c| c.1).collect::<Vec<_>>(), [image]);
+    Ok(())
+}
+
+#[sqlx::test]
+async fn groupings_made_joined_and_left_with_the_track(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
+    let lib = setup(connect).await?;
+    let early = Uuid::from_u128(0xE);
+    let with = |groups: GroupsEdit, single: bool| TrackEdit { track_id: lib.o, meta: None, facts: None, along: true, sync: false, covers: None, sources: None, single, groups: Some(groups) };
+    let (owner, o) = (lib.owner.clone(), lib.o);
+    let in_it = |grouping: Uuid| {
+        let owner = owner.clone();
+        async move { sqlx::query_scalar::<_, i64>("SELECT count(*) FROM grouping_tracks WHERE grouping_id = $1 AND track_id = $2").bind(grouping).bind(o).fetch_one(&owner).await }
+    };
+    // A new era, O in it, and a single of its own (which goes in too: alone on it).
+    let new = Edit {
+        new_groupings: vec![NewGrouping { id: early, kind: "era".into(), name: " Early ".into() }],
+        ..edit(vec![with(GroupsEdit { add: vec![early], remove: vec![] }, true)])
+    };
+    let edited = run(&lib, lib.bob, &new, true).await?;
+    assert!(edited.tracks[0].error.is_none(), "{:?}", edited.tracks[0].error);
+    let grouping = edited.groupings[&early];
+    let (kind, name): (String, String) = sqlx::query_as("SELECT kind, name FROM groupings WHERE id = $1").bind(grouping).fetch_one(&lib.owner).await?;
+    assert_eq!((kind.as_str(), name.as_str()), ("era", "Early"));
+    assert_eq!(in_it(grouping).await?, 1);
+    let single = edited.tracks[0].single.unwrap();
+    let album_in: i64 = sqlx::query_scalar("SELECT count(*) FROM grouping_albums WHERE grouping_id = $1 AND album_id = $2").bind(grouping).bind(single).fetch_one(&lib.owner).await?;
+    assert_eq!(album_in, 1);
+
+    // Out of it again (its single with it).
+    run(&lib, lib.bob, &edit(vec![with(GroupsEdit { add: vec![], remove: vec![grouping] }, false)]), true).await?;
+    assert_eq!(in_it(grouping).await?, 0);
     Ok(())
 }

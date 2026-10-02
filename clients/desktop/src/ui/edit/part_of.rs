@@ -1,7 +1,8 @@
 //! "Part of": the groupings a track or album is in (collectives, eras, projects…), as
-//! links. In edit mode each can be taken out (×), and it can be put in another: one of the
-//! groupings there are, or a new one (its kind and name, made on the spot). Each change is
-//! sent at once and kept in the grouping's history.
+//! links. An album's, in edit mode: each can be taken out (×), and it can be put in
+//! another: one of the groupings there are, or a new one (its kind and name, made on the
+//! spot). Each change is sent at once and kept in the grouping's history. (A track's are
+//! changed in its editor: `group:`, `-group:`.)
 
 use std::sync::{Arc, Mutex};
 
@@ -53,7 +54,7 @@ impl PartOf {
                 Err(err) => self.error = Some(err),
             }
         }
-        let editing = shell.edit_mode && shell.account.can("edit_metadata");
+        let editing = shell.edit_mode && shell.account.can("edit_metadata") && matches!(member, Member::Album(_));
         if groupings.is_empty() && !editing {
             return;
         }

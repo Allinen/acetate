@@ -8,7 +8,8 @@
 //! artists and albums with the first request, their real ids used after. Each track is
 //! written whole or not at all (the server's savepoints). A track someone changed since
 //! it was loaded (`stale`) is loaded again and the changes are made again on it, once.
-//! Groupings last (they aren't revisions).
+//! Covers, sources, groupings and a single of its own go in the same request, each
+//! track's all or nothing.
 
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
@@ -62,10 +63,12 @@ pub struct Ready {
     pub attached: Attached,
     /// What changes, in the history's words (empty: nothing).
     pub lines: Vec<String>,
-    /// The groupings it goes in (it isn't in them yet).
-    pub joins: Vec<Uuid>,
+    /// Allowed, but worth a look (a single for a track on an album already…).
+    pub warnings: Vec<String>,
     /// Its albums are made to match it (whether they need it, the server says).
     pub sync: bool,
+    /// It gets a single of its own.
+    pub single: bool,
 }
 
 impl Ready {
@@ -85,9 +88,13 @@ impl Ready {
         self.attached.sources != self.base.attached.sources || self.attached.origin != self.base.attached.origin
     }
 
-    /// Something to write: a revision, covers, sources.
+    pub fn groups_changed(&self) -> bool {
+        self.attached.groups != self.base.attached.groups
+    }
+
+    /// Something to write: a revision, covers, sources, groupings, a single.
     pub fn writes(&self) -> bool {
-        self.meta_changed() || self.facts_changed() || self.covers_changed() || self.sources_changed()
+        self.meta_changed() || self.facts_changed() || self.covers_changed() || self.sources_changed() || self.groups_changed() || self.single
     }
 
     /// Something for the server: a revision, or its albums to match.
@@ -96,7 +103,7 @@ impl Ready {
     }
 
     pub fn changes(&self) -> bool {
-        self.sends() || !self.joins.is_empty()
+        self.sends()
     }
 }
 
@@ -133,6 +140,8 @@ struct Edited {
     artists: HashMap<Uuid, Uuid>,
     #[serde(default)]
     albums: HashMap<Uuid, Uuid>,
+    #[serde(default)]
+    groupings: HashMap<Uuid, Uuid>,
     tracks: Vec<Answer>,
 }
 
@@ -198,6 +207,8 @@ pub struct Change {
     pub ops: Vec<Op>,
     pub new_artists: Vec<(Uuid, String)>,
     pub new_albums: Vec<(Uuid, String, String)>,
+    /// Stand-in id → (name, kind).
+    pub new_groupings: Vec<(Uuid, String, String)>,
     pub along: bool,
     /// Albums it's alone on made to match, changed or not.
     pub sync: bool,
@@ -209,7 +220,7 @@ impl Change {
         let along = model::along(&ops);
         let why = model::why(&ops);
         let sync = model::sync(&ops);
-        Change { ops, new_artists: names.new_artists.clone(), new_albums: names.new_albums.clone(), along, sync, why }
+        Change { ops, new_artists: names.new_artists.clone(), new_albums: names.new_albums.clone(), new_groupings: names.new_groupings.clone(), along, sync, why }
     }
 }
 
@@ -339,8 +350,8 @@ impl Engine {
 
     fn plan(&self, catalog: &Catalog, targets: &[Uuid], ops: &[Op], names: &Names, variant: Option<Uuid>) -> Vec<Plan> {
         let loaded = self.loaded.lock().unwrap();
-        let groupings = model::groupings(ops);
         let stand_ins = names.stand_ins();
+        let single = model::single(ops);
         targets
             .iter()
             .enumerate()
@@ -356,7 +367,8 @@ impl Engine {
                         }
                         match Base::for_variant(d, variant) {
                             None => PlanState::Failed("it has no version to edit".into()),
-                            Some(base) => {
+                            Some(mut base) => {
+                                base.attached.groups = in_catalog.map(|t| t.groupings.clone()).unwrap_or_default();
                                 let (meta, facts) = model::apply(ops, &base.meta, &base.facts, position);
                                 let attached = model::attach(ops, &base.attached);
                                 let mut lines = Vec::new();
@@ -367,12 +379,21 @@ impl Engine {
                                     lines.extend(diff(&base.facts, &facts, catalog, &stand_ins));
                                 }
                                 lines.extend(attached_lines(&base.attached, &attached));
-                                let joins: Vec<Uuid> = groupings.iter().filter(|g| in_catalog.is_none_or(|t| !t.groupings.contains(g))).copied().collect();
-                                for g in &joins {
-                                    let name = catalog.grouping(*g).map(|g| g.name.clone()).unwrap_or_default();
-                                    lines.push(format!("grouping: + “{name}” (and a single it's alone on)"));
+                                let grouping = |g: &Uuid| catalog.grouping(*g).map(|g| g.name.clone()).or_else(|| stand_ins.get(g).map(|n| format!("{n} (new)"))).unwrap_or_default();
+                                for g in attached.groups.iter().filter(|g| !base.attached.groups.contains(g)) {
+                                    lines.push(format!("grouping: + “{}” (and a single it's alone on)", grouping(g)));
                                 }
-                                PlanState::Ready(Box::new(Ready { position, base, meta, facts, attached, lines, joins, sync: model::sync(ops) }))
+                                for g in base.attached.groups.iter().filter(|g| !attached.groups.contains(g)) {
+                                    lines.push(format!("grouping: − “{}” (and a single it's alone on)", grouping(g)));
+                                }
+                                let mut warnings = Vec::new();
+                                if single {
+                                    lines.push(format!("single: + “{}” of its own (disc 1, track 1; its primary artists, date and covers)", meta.title));
+                                    if !facts.albums.is_empty() {
+                                        warnings.push("it's on an album already: it gets a single too (unmark it to leave it out)".into());
+                                    }
+                                }
+                                PlanState::Ready(Box::new(Ready { position, base, meta, facts, attached, lines, warnings, sync: model::sync(ops), single }))
                             }
                         }
                     }
@@ -428,7 +449,9 @@ impl Engine {
             _ => None,
         }).collect();
         let writes: Vec<(Uuid, Ready)> = ready.iter().filter(|(_, r)| r.sends()).cloned().collect();
-        let joins: Vec<(Uuid, Vec<Uuid>)> = ready.iter().filter(|(_, r)| !r.joins.is_empty()).map(|(t, r)| (*t, r.joins.clone())).collect();
+        // Their groupings as the library had them (the details don't say), for a track
+        // loaded again.
+        let groups: HashMap<Uuid, Vec<Uuid>> = ready.iter().map(|(t, r)| (*t, r.base.attached.groups.clone())).collect();
         {
             let mut applied = self.applied.lock().unwrap();
             *applied = Applied { phase: Phase::Applying, total: ready.len(), ..Applied::default() };
@@ -452,10 +475,12 @@ impl Engine {
             for (track, position) in stale {
                 let again = match api.send_json::<TrackDetail>(reqwest::Method::GET, &format!("/api/tracks/{track}"), None).await {
                     Ok(d) => match Base::for_variant(&d, variant) {
-                        Some(base) => {
+                        Some(mut base) => {
+                            base.attached.groups = groups.get(&track).cloned().unwrap_or_default();
                             let (meta, facts) = model::apply(&change.ops, &base.meta, &base.facts, position);
                             let attached = model::attach(&change.ops, &base.attached);
-                            Ok(Ready { position, base, meta, facts, attached, lines: Vec::new(), joins: Vec::new(), sync: change.sync })
+                            let single = model::single(&change.ops);
+                            Ok(Ready { position, base, meta, facts, attached, lines: Vec::new(), warnings: Vec::new(), sync: change.sync, single })
                         }
                         None => Err("it has no version to edit".to_string()),
                     },
@@ -475,31 +500,6 @@ impl Engine {
                     Err(message) => Outcome::Failed(message),
                 });
                 ctx.request_repaint();
-            }
-            // Groupings: the tracks that go in each, written (or with nothing else to write).
-            let mut by_grouping: HashMap<Uuid, Vec<Uuid>> = HashMap::new();
-            for (track, groupings) in &joins {
-                let failed = matches!(applied.lock().unwrap().outcomes.get(track), Some(Outcome::Failed(_)));
-                if !failed {
-                    for g in groupings {
-                        by_grouping.entry(*g).or_default().push(*track);
-                    }
-                }
-            }
-            for (grouping, tracks) in by_grouping {
-                let body = json!({ "track_ids": tracks, "reason": change.why });
-                let result = api.send_json::<Value>(reqwest::Method::POST, &format!("/api/groupings/{grouping}/add"), Some(body)).await;
-                for track in &tracks {
-                    let mut a = applied.lock().unwrap();
-                    match &result {
-                        Ok(_) => {
-                            a.outcomes.entry(*track).or_insert(Outcome::Done);
-                        }
-                        Err(err) => {
-                            a.outcomes.insert(*track, Outcome::Failed(format!("its other changes were made, but it couldn't go in the grouping: {}", err.message)));
-                        }
-                    }
-                }
             }
             let mut a = applied.lock().unwrap();
             a.done = a.total;
@@ -536,6 +536,7 @@ async fn send(api: &Api, chunk: &[(Uuid, Ready)], change: &Change, ids: &mut Has
         Ok(edited) => {
             ids.extend(edited.artists);
             ids.extend(edited.albums);
+            ids.extend(edited.groupings);
             for answer in edited.tracks {
                 let position = chunk.iter().find(|c| c.0 == answer.track_id).map_or(0, |c| c.1.position);
                 let outcome = match &answer.error {
@@ -613,6 +614,18 @@ fn body(chunk: &[(Uuid, Ready)], change: &Change, ids: &HashMap<Uuid, Uuid>, pre
             let origin = (after.origin != before.origin).then_some(after.origin).flatten();
             entry["sources"] = json!({ "add": add, "correct": correct, "trash": trash, "origin": origin });
         }
+        if r.groups_changed() {
+            let (before, after) = (&r.base.attached.groups, &r.attached.groups);
+            let add: Vec<Uuid> = after.iter().filter(|g| !before.contains(g)).map(|g| {
+                used.insert(*g);
+                real(*g)
+            }).collect();
+            let remove: Vec<Uuid> = before.iter().filter(|g| !after.contains(g)).copied().collect();
+            entry["groups"] = json!({ "add": add, "remove": remove });
+        }
+        if r.single {
+            entry["single"] = json!(true);
+        }
         tracks.push(entry);
     }
     // New albums: credited to the primary artists all their tracks share.
@@ -644,10 +657,17 @@ fn body(chunk: &[(Uuid, Ready)], change: &Change, ids: &HashMap<Uuid, Uuid>, pre
     used.extend(credited);
     let new_artists: Vec<Value> =
         change.new_artists.iter().filter(|(id, _)| used.contains(id) && !ids.contains_key(id)).map(|(id, name)| json!({ "id": id, "name": name })).collect();
+    let new_groupings: Vec<Value> = change
+        .new_groupings
+        .iter()
+        .filter(|(id, _, _)| used.contains(id) && !ids.contains_key(id))
+        .map(|(id, name, kind)| json!({ "id": id, "name": name, "kind": kind }))
+        .collect();
     let body = json!({
         "tracks": tracks,
         "new_artists": new_artists,
         "new_albums": new_albums,
+        "new_groupings": new_groupings,
         "reason": change.why,
         "preview": preview,
     });
@@ -739,13 +759,13 @@ mod tests {
             facts.albums.push(Membership { album_id: id(a), disc_number: None, track_number: None });
         }
         let attached = base.attached.clone();
-        Ready { position, base, meta, facts, attached, lines: vec![], joins: vec![], sync: false }
+        Ready { position, base, meta, facts, attached, lines: vec![], warnings: vec![], sync: false, single: false }
     }
 
     #[test]
     fn requests_name_new_things_once_and_use_their_real_ids_after() {
         // A new artist (9) on both tracks, a new EP (8) both go on; only 9 credited on both.
-        let change = Change { ops: vec![], new_artists: vec![(id(9), "New".into())], new_albums: vec![(id(8), "EP".into(), "ep".into())], along: true, sync: false, why: "why".into() };
+        let change = Change { ops: vec![], new_artists: vec![(id(9), "New".into())], new_albums: vec![(id(8), "EP".into(), "ep".into())], new_groupings: vec![], along: true, sync: false, why: "why".into() };
         let chunk = vec![(id(1), ready(0, &[9, 5], Some(8))), (id(2), ready(1, &[9], Some(8)))];
         let (body, refused) = body(&chunk, &change, &HashMap::new(), true);
         assert!(refused.is_empty());
@@ -767,7 +787,7 @@ mod tests {
     /// `along:on` with nothing else changed: the track is still sent, to be made to match.
     #[test]
     fn a_track_to_match_is_sent_with_nothing_else() {
-        let change = Change { ops: vec![Op::Sync], new_artists: vec![], new_albums: vec![], along: true, sync: true, why: String::new() };
+        let change = Change { ops: vec![Op::Sync], new_artists: vec![], new_albums: vec![], new_groupings: vec![], along: true, sync: true, why: String::new() };
         let mut r = ready(0, &[], None);
         r.meta = r.base.meta.clone();
         r.sync = true;
@@ -782,16 +802,17 @@ mod tests {
     #[test]
     fn covers_and_sources_go_as_the_server_takes_them() {
         use crate::ui::edit::editor::model::{Pic, Src};
-        let change = Change { ops: vec![], new_artists: vec![], new_albums: vec![], along: true, sync: false, why: String::new() };
+        let change = Change { ops: vec![], new_artists: vec![], new_albums: vec![], new_groupings: vec![], along: true, sync: false, why: String::new() };
         let mut r = ready(0, &[], None);
         r.meta = r.base.meta.clone();
         let src = |n: u128, new: bool| Src { id: id(n), new, platform: "custom".into(), name: "x".into(), data: json!({ "label": "x" }), corrected: false };
-        r.base.attached = Attached { covers: vec![Pic { image: Image::Own(id(1)), sha: "a".into() }], sources: vec![src(5, false)], origin: Some(id(5)) };
+        r.base.attached = Attached { covers: vec![Pic { image: Image::Own(id(1)), sha: "a".into() }], sources: vec![src(5, false)], origin: Some(id(5)), groups: vec![] };
         // A staged image as main, a copy, its own last; the old source to the trash, a new one the origin.
         r.attached = Attached {
             covers: vec![Pic { image: Image::Staged, sha: "b".into() }, Pic { image: Image::CopyOf(id(2)), sha: "c".into() }, Pic { image: Image::Own(id(1)), sha: "a".into() }],
             sources: vec![src(6, true)],
             origin: Some(id(6)),
+            groups: vec![],
         };
         assert!(r.writes() && !r.meta_changed() && !r.facts_changed());
         let (body, _) = body(&[(id(9), r.clone())], &change, &HashMap::new(), true);
@@ -806,6 +827,23 @@ mod tests {
         r.attached = r.base.attached.clone();
         let (body, _) = super::body(&[(id(9), r)], &change, &HashMap::new(), true);
         assert!(body["tracks"][0].get("covers").is_none() && body["tracks"][0].get("sources").is_none());
+    }
+
+    #[test]
+    fn groupings_and_a_single_go_with_the_track() {
+        let change = Change { ops: vec![], new_artists: vec![], new_albums: vec![], new_groupings: vec![(id(7), "Early".into(), "era".into())], along: true, sync: false, why: String::new() };
+        let mut r = ready(0, &[], None);
+        r.meta = r.base.meta.clone();
+        r.base.attached.groups = vec![id(5)];
+        r.attached.groups = vec![id(7)];
+        r.single = true;
+        let (body, _) = body(&[(id(9), r.clone())], &change, &HashMap::new(), true);
+        let track = &body["tracks"][0];
+        assert_eq!((track["groups"].clone(), track["single"].clone()), (json!({ "add": [id(7)], "remove": [id(5)] }), json!(true)));
+        assert_eq!(body["new_groupings"], json!([{ "id": id(7), "name": "Early", "kind": "era" }]));
+        // Made already: its real id, and not made again.
+        let (body, _) = super::body(&[(id(9), r)], &change, &HashMap::from([(id(7), id(17))]), false);
+        assert_eq!((body["tracks"][0]["groups"]["add"].clone(), body["new_groupings"].clone()), (json!([id(17)]), json!([])));
     }
 
     #[test]

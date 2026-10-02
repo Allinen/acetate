@@ -27,9 +27,11 @@ pub enum PinKind {
     Artist,
     Album,
     Track,
+    Grouping,
 }
 
-/// What the line's names stand for: choices made in the list, and new artists and albums.
+/// What the line's names stand for: choices made in the list, and new artists, albums and
+/// groupings.
 #[derive(Debug, Default)]
 pub struct Names {
     pins: Vec<(PinKind, String, Uuid)>,
@@ -37,6 +39,8 @@ pub struct Names {
     pub new_artists: Vec<(Uuid, String)>,
     /// Stand-in id → (title, kind).
     pub new_albums: Vec<(Uuid, String, String)>,
+    /// Stand-in id → (name, kind).
+    pub new_groupings: Vec<(Uuid, String, String)>,
     next: u128,
     /// Changes whenever something here does.
     pub version: u64,
@@ -81,8 +85,22 @@ impl Names {
         id
     }
 
-    pub fn set_album_kind(&mut self, album: Uuid, kind: &str) {
-        if let Some(a) = self.new_albums.iter_mut().find(|a| a.0 == album)
+    /// A new grouping called `name` (the same one for the same name); a collective until
+    /// its kind is said.
+    pub fn new_grouping(&mut self, name: &str) -> Uuid {
+        let name = name.trim();
+        if let Some((id, _, _)) = self.new_groupings.iter().find(|(_, n, _)| n == name) {
+            return *id;
+        }
+        let id = self.stand_in();
+        self.new_groupings.push((id, name.to_string(), "collective".into()));
+        id
+    }
+
+    /// A new album's or grouping's kind.
+    pub fn set_kind(&mut self, id: Uuid, kind: &str) {
+        let new = self.new_albums.iter_mut().chain(self.new_groupings.iter_mut()).find(|a| a.0 == id);
+        if let Some(a) = new
             && a.2 != kind
         {
             a.2 = kind.to_string();
@@ -91,12 +109,17 @@ impl Names {
     }
 
     pub fn is_new(&self, id: Uuid) -> bool {
-        self.new_artists.iter().any(|a| a.0 == id) || self.new_albums.iter().any(|a| a.0 == id)
+        self.new_artists.iter().any(|a| a.0 == id) || self.new_albums.iter().any(|a| a.0 == id) || self.new_groupings.iter().any(|a| a.0 == id)
     }
 
     /// Names for the new ones' stand-ins (for the history's words).
     pub fn stand_ins(&self) -> HashMap<Uuid, String> {
-        self.new_artists.iter().map(|(id, n)| (*id, n.clone())).chain(self.new_albums.iter().map(|(id, t, _)| (*id, t.clone()))).collect()
+        self.new_artists
+            .iter()
+            .map(|(id, n)| (*id, n.clone()))
+            .chain(self.new_albums.iter().map(|(id, t, _)| (*id, t.clone())))
+            .chain(self.new_groupings.iter().map(|(id, n, _)| (*id, n.clone())))
+            .collect()
     }
 
     fn stand_in(&mut self) -> Uuid {
@@ -156,8 +179,8 @@ pub struct Resolved {
     pub ops: Vec<Op>,
     /// Allowed, but worth a look (a title for many tracks…).
     pub warning: Option<String>,
-    /// A new album's kind, set when it's staged.
-    pub album_kind: Option<(Uuid, String)>,
+    /// A new album's or grouping's kind, set when it's staged.
+    pub new_kind: Option<(Uuid, String)>,
     /// What it asks for first (it's staged once that's there).
     pub want: Option<Want>,
 }
@@ -367,7 +390,7 @@ fn unit(
                 Numbers::At { disc: None, number: Some(n) } => label.push_str(&format!(", track {n}")),
                 _ => {}
             }
-            Ok(Resolved { label, ops: vec![Op::Album { album: id, numbers }], album_kind: kind.map(|k| (id, k)), ..Default::default() })
+            Ok(Resolved { label, ops: vec![Op::Album { album: id, numbers }], new_kind: kind.map(|k| (id, k)), ..Default::default() })
         }
         K::Disc | K::Number => {
             only(&[])?;
@@ -418,22 +441,35 @@ fn unit(
             Ok(Resolved { label: format!("related: {}", relation_sentence(ctx.vocab, &kind, &title)), ops: vec![Op::Relate { track: id, kind }], warning, ..Default::default() })
         }
         K::Group => {
-            only(&[])?;
+            only(&[K::Kind])?;
+            if main.minus && !main.colon {
+                return Err("-group alone isn't anything: -group:name takes it out of that one".into());
+            }
+            if value.is_empty() {
+                return Err(format!("{}group: type its name", if main.minus { "-" } else { "" }));
+            }
+            let (id, name, kind, new) = grouping(value, ctx)?;
             if main.minus {
-                return Err("taking tracks out of a grouping is on the grouping's page".into());
+                if new {
+                    return Err(format!("“{name}” isn't made yet: nothing is in it"));
+                }
+                return done(format!("grouping: − “{name}” ({kind}), and a single it's alone on"), vec![Op::Ungroup(id)]);
             }
-            let lower = value.to_lowercase();
-            let found = ctx
-                .catalog
-                .groupings
-                .iter()
-                .find(|g| g.name.to_lowercase() == lower)
-                .or_else(|| ctx.catalog.groupings.iter().find(|g| !value.is_empty() && loosely_in(value, &g.name)));
-            match found {
-                Some(g) => done(format!("grouping: + “{}” ({})", g.name, g.kind), vec![Op::Group(g.id)]),
-                None if value.is_empty() => Err("group: type its name".into()),
-                None => Err(format!("no grouping like “{value}”")),
+            let kind = match modifier(K::Kind) {
+                Some(_) if !new => return Err("kind: only for a new grouping (a grouping's own kind is changed on its page)".into()),
+                Some(p) if valid_grouping_kind(p.value.trim()) => p.value.trim().to_string(),
+                Some(p) => return Err(format!("“{}” isn't a kind of grouping (lowercase letters: collective, era, project…)", p.value)),
+                None => kind,
+            };
+            let label = if new { format!("grouping: + “{name}” (new {kind})") } else { format!("grouping: + “{name}” ({kind})") };
+            Ok(Resolved { label: format!("{label}, and a single it's alone on"), ops: vec![Op::Group(id)], new_kind: new.then_some((id, kind)), ..Default::default() })
+        }
+        K::Single => {
+            only(&[])?;
+            if main.minus || !value.is_empty() {
+                return Err("single: alone (a single of its own for each track); nothing after it".into());
             }
+            done("a single of its own, for each (named after it as it'll be; its primary artists, date and covers)".into(), vec![Op::Single])
         }
         K::Why => {
             only(&[])?;
@@ -602,6 +638,27 @@ fn unit(
     }
 }
 
+/// A grouping by name: chosen, new, or the library's (the same name, then one like it).
+/// (id, name, kind, whether it's new.)
+fn grouping(value: &str, ctx: &Ctx) -> Result<(Uuid, String, String, bool), String> {
+    let known = |id: Uuid| ctx.catalog.groupings.iter().find(|g| g.id == id).map(|g| (g.id, g.name.clone(), g.kind.clone(), false));
+    let new = |id: Uuid| ctx.names.new_groupings.iter().find(|g| g.0 == id).map(|g| (g.0, g.1.clone(), g.2.clone(), true));
+    if let Some(id) = ctx.names.pinned(PinKind::Grouping, value) {
+        return known(id).or_else(|| new(id)).ok_or_else(|| format!("no grouping like “{value}”"));
+    }
+    if let Some(g) = ctx.names.new_groupings.iter().find(|g| g.1.eq_ignore_ascii_case(value.trim())) {
+        return Ok((g.0, g.1.clone(), g.2.clone(), true));
+    }
+    let lower = value.to_lowercase();
+    let found = ctx.catalog.groupings.iter().find(|g| g.name.to_lowercase() == lower).or_else(|| ctx.catalog.groupings.iter().find(|g| loosely_in(value, &g.name)));
+    found.and_then(|g| known(g.id)).ok_or_else(|| format!("no grouping like “{value}” (a new one: choose “New grouping” in the list)"))
+}
+
+/// A kind of grouping is lowercase letters (and `_`), as the server says.
+fn valid_grouping_kind(kind: &str) -> bool {
+    kind.starts_with(|c: char| c.is_ascii_lowercase()) && kind.chars().all(|c| c.is_ascii_lowercase() || c == '_')
+}
+
 /// `#N` as a place from 0.
 fn place(hash: &str, what: &str) -> Result<usize, String> {
     hash.parse::<usize>().ok().filter(|n| *n >= 1).map(|n| n - 1).ok_or_else(|| format!("#{hash}: a {what}'s place is a number from 1"))
@@ -750,6 +807,7 @@ pub enum Pick {
     Pin(PinKind, Uuid),
     NewArtist,
     NewAlbum,
+    NewGrouping,
 }
 
 /// Which library search the part being typed needs, if any (a cover's: albums, and
@@ -835,6 +893,10 @@ pub fn candidates(part: &Part, owner: Option<&Part>, ctx: &Ctx, hits: &[u32], tr
         }
         K::Kind => match owner.map(|o| o.key) {
             Some(K::Album) => out = simple(&ctx.vocab.album_kinds, &|s| format!("New {s}")),
+            Some(K::Group) => {
+                let kinds: Vec<String> = crate::ui::views::grouping::KINDS.iter().map(|k| k.to_string()).collect();
+                out = simple(&kinds, &|s| format!("New {s}"));
+            }
             Some(K::Related) => {
                 let other = owner.and_then(|o| track(&o.value, ctx).ok()).map(|t| t.1).unwrap_or_else(|| "…".into());
                 out = ctx
@@ -848,12 +910,11 @@ pub fn candidates(part: &Part, owner: Option<&Part>, ctx: &Ctx, hits: &[u32], tr
             _ => {}
         },
         K::Group => {
-            let names: Vec<String> = ctx.catalog.groupings.iter().map(|g| g.name.clone()).collect();
-            out = simple(&names, &|s| s.to_string());
-            for c in &mut out {
-                if let Some(g) = ctx.catalog.groupings.iter().find(|g| g.name == c.text) {
-                    c.sub = g.kind.clone();
-                }
+            for g in ctx.catalog.groupings.iter().filter(|g| value.is_empty() || g.name.to_lowercase().starts_with(&value.to_lowercase()) || loosely_in(value, &g.name)) {
+                out.push(Candidate { label: g.name.clone(), sub: g.kind.clone(), text: g.name.clone(), pick: Some(Pick::Pin(PinKind::Grouping, g.id)), next: None });
+            }
+            if !value.is_empty() && !part.minus && !ctx.catalog.groupings.iter().any(|g| g.name.eq_ignore_ascii_case(value)) {
+                out.push(Candidate { label: format!("New grouping “{value}”"), sub: "made when it's applied".into(), text: value.to_string(), pick: Some(Pick::NewGrouping), next: Some("kind:") });
             }
         }
         K::Cover if !part.minus && part.hash.is_none() => {
@@ -918,6 +979,9 @@ pub fn actions(words: &str, ctx: &Ctx) -> Vec<(String, String)> {
         ("Why (kept with the change)…".into(), "why:".into()),
         ("Albums it's alone on: leave them".into(), "along:off".into()),
         ("Albums it's alone on: make them match it".into(), "along:on".into()),
+        ("Single: a single of its own, for each".into(), "single:".into()),
+        ("Grouping: into one (or a new one)…".into(), "group:".into()),
+        ("Grouping: out of one…".into(), "-group:".into()),
     ];
     for status in &ctx.vocab.statuses {
         all.push((format!("Status: {status}"), format!("status:{status}")));
@@ -1022,7 +1086,7 @@ mod tests {
             [Op::Status("demo".into()), Op::Date(Some("2020".into())), Op::Genre("rap".into()), Op::Genre("trap".into())]
         );
         assert_eq!(ops("date:none -genre"), [Op::Date(None), Op::NoGenres]);
-        assert_eq!(ops("group:crew"), [Op::Group(id("00000000-0000-7000-8000-0000000000c1"))]);
+        assert_eq!(ops("group:crew -group:the crew single:"), [Op::Group(id("00000000-0000-7000-8000-0000000000c1")), Op::Ungroup(id("00000000-0000-7000-8000-0000000000c1")), Op::Single]);
         assert_eq!(ops("along:off why:fixing tags"), [Op::Along(false), Op::Why("fixing tags".into())]);
         assert_eq!(ops("along:on"), [Op::Sync]);
         assert!(run("along:sync", &Names::default(), 1)[0].is_err());
@@ -1078,7 +1142,7 @@ mod tests {
         // A relation for many: a warning too.
         assert!(run("related:other song kind:remix", &Names::default(), 2)[0].as_ref().unwrap().1.is_some());
         // Things that aren't anything.
-        for line in ["title:", "role:producer", "format:flac", "status:nope", "-group:crew"] {
+        for line in ["title:", "role:producer", "format:flac", "status:nope", "-group", "group:nobody like this", "single:yes"] {
             assert!(run(line, &Names::default(), 1)[0].is_err(), "{line}");
         }
     }
@@ -1134,6 +1198,23 @@ mod tests {
         assert!(resolve("source:somewhere", &ctx, &mut Known).0[0].result.is_err());
         let ctx = Ctx { may_source: false, ..ctx };
         assert!(resolve("origin:#1", &ctx, &mut Known).0[0].result.is_err());
+    }
+
+    #[test]
+    fn new_groupings_and_their_kind() {
+        let mut names = Names::default();
+        let early = names.new_grouping("Early Days");
+        let units = run("group:early days kind:era", &names, 2);
+        assert_eq!(units[0].clone().unwrap().0, [Op::Group(early)]);
+        // An existing one's kind isn't changed here; a kind is lowercase letters.
+        assert!(run("group:the crew kind:era", &names, 1)[0].is_err());
+        assert!(run("group:early days kind:Big Era", &names, 1)[0].is_err());
+        // Nothing is in a new one yet.
+        assert!(run("-group:early days", &names, 1)[0].is_err());
+        let (catalog, vocab) = (catalog(), vocab());
+        let ctx = Ctx { catalog: &catalog, vocab: &vocab, targets: 1, context_album: None, staged_album: None, names: &names, may_relate: true, may_source: true };
+        let (units, _) = resolve("group:early days kind:project", &ctx, &mut Known);
+        assert_eq!(units[0].result.as_ref().unwrap().new_kind, Some((early, "project".to_string())));
     }
 
     #[test]

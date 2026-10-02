@@ -23,6 +23,12 @@
 //!   The covers are stale like a revision: if they've changed since the client loaded
 //!   them, nothing of the track is written. New covers go along too, to the albums it's
 //!   alone on that haven't got that image (the track's new main cover becomes theirs).
+//! * **A single of its own** (`single`), made last: from the track as the edit leaves it
+//!   (title, date, primary artists, covers), whatever albums it's on (the client warns
+//!   about those).
+//! * **Groupings**: the track put in some (new ones made first, like albums, under
+//!   stand-ins) and taken out of others; a single it's alone on goes along, as always
+//!   (`db::groupings::add`), the new one too.
 //! * **The flags after it**: each track's open review flags once the checks have run
 //!   (they're deferred to the commit; see migration 0030), so a preview says exactly what
 //!   would still be missing.
@@ -54,7 +60,17 @@ pub struct Edit {
     /// too, used in the tracks' albums.
     #[serde(default)]
     pub new_albums: Vec<NewAlbum>,
+    /// Groupings to make first, under stand-in ids too, used in the tracks' `groups`.
+    #[serde(default)]
+    pub new_groupings: Vec<NewGrouping>,
     pub tracks: Vec<TrackEdit>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct NewGrouping {
+    pub id: Uuid,
+    pub kind: String,
+    pub name: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -91,6 +107,21 @@ pub struct TrackEdit {
     /// Its sources' changes, and where its file came from (None: none).
     #[serde(default)]
     pub sources: Option<SourcesEdit>,
+    /// A single of its own, made last.
+    #[serde(default)]
+    pub single: bool,
+    /// Groupings it goes in and leaves (None: none).
+    #[serde(default)]
+    pub groups: Option<GroupsEdit>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct GroupsEdit {
+    /// Groupings it goes in (or new ones' stand-ins).
+    #[serde(default)]
+    pub add: Vec<Uuid>,
+    #[serde(default)]
+    pub remove: Vec<Uuid>,
 }
 
 fn yes() -> bool {
@@ -179,6 +210,8 @@ pub struct Edited {
     pub artists: HashMap<Uuid, Uuid>,
     /// Stand-in id → the album made.
     pub albums: HashMap<Uuid, Uuid>,
+    /// Stand-in id → the grouping made.
+    pub groupings: HashMap<Uuid, Uuid>,
     pub tracks: Vec<TrackEdited>,
 }
 
@@ -195,6 +228,9 @@ pub struct TrackEdited {
     /// Albums changed along with it.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub along: Vec<Along>,
+    /// The single made for it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub single: Option<Uuid>,
     /// Its open review flags afterwards (their kinds, in the server's order).
     pub flags: Vec<String>,
 }
@@ -238,11 +274,16 @@ pub async fn edit(
         let data = AlbumData { credits: real_credits(&new.data.credits, &artists), ..new.data.clone() };
         albums.insert(new.id, revisions::create_album(conn, &data, Source::Edit, reason).await?);
     }
+    let mut groupings = HashMap::new();
+    for new in &edit.new_groupings {
+        groupings.insert(new.id, super::groupings::create(conn, new.kind.trim(), new.name.trim(), "", reason).await?);
+    }
 
     let mut tracks = Vec::new();
     for track in &edit.tracks {
         let mut savepoint = conn.begin().await?;
-        let result = edit_track(&mut savepoint, track, &artists, &albums, reason, may).await;
+        let made = Made { artists: &artists, albums: &albums, groupings: &groupings };
+        let result = edit_track(&mut savepoint, track, &made, reason, may).await;
         let done = match result {
             Ok(done) => {
                 savepoint.commit().await?;
@@ -250,7 +291,7 @@ pub async fn edit(
             }
             Err(err) => {
                 savepoint.rollback().await?;
-                TrackEdited { track_id: track.track_id, error: Some(describe(err)), meta: None, facts: None, along: Vec::new(), flags: Vec::new() }
+                TrackEdited { track_id: track.track_id, error: Some(describe(err)), meta: None, facts: None, along: Vec::new(), single: None, flags: Vec::new() }
             }
         };
         tracks.push(done);
@@ -274,17 +315,18 @@ pub async fn edit(
             }
         }
     }
-    Ok(Edited { artists, albums, tracks })
+    Ok(Edited { artists, albums, groupings, tracks })
 }
 
-async fn edit_track(
-    conn: &mut PgConnection,
-    edit: &TrackEdit,
-    artists: &HashMap<Uuid, Uuid>,
-    albums: &HashMap<Uuid, Uuid>,
-    reason: &str,
-    may: May,
-) -> anyhow::Result<TrackEdited> {
+/// What the edit made first: stand-in id → the real one.
+struct Made<'a> {
+    artists: &'a HashMap<Uuid, Uuid>,
+    albums: &'a HashMap<Uuid, Uuid>,
+    groupings: &'a HashMap<Uuid, Uuid>,
+}
+
+async fn edit_track(conn: &mut PgConnection, edit: &TrackEdit, made: &Made<'_>, reason: &str, may: May) -> anyhow::Result<TrackEdited> {
+    let (artists, albums) = (made.artists, made.albums);
     let track = edit.track_id;
     let shown = sqlx::query_scalar!("SELECT primary_variant_id FROM tracks WHERE id = $1 AND merged_into IS NULL", track)
         .fetch_optional(&mut *conn)
@@ -298,7 +340,7 @@ async fn edit_track(
         _ => None,
     };
 
-    let mut done = TrackEdited { track_id: track, error: None, meta: None, facts: None, along: Vec::new(), flags: Vec::new() };
+    let mut done = TrackEdited { track_id: track, error: None, meta: None, facts: None, along: Vec::new(), single: None, flags: Vec::new() };
     if let Some(m) = &edit.meta {
         let data = TrackMetadata { credits: real_credits(&m.data.credits, artists), ..m.data.clone() };
         done.meta = Some(revisions::write_internal(conn, track, m.variant_id, Some(m.base_revision_id), &data, Source::Edit, reason, false).await?);
@@ -359,6 +401,25 @@ async fn edit_track(
             if new != old || covers > 0 {
                 done.along.push(Along { album_id: album, before: old, after: new, covers });
             }
+        }
+    }
+    // Last: a single of its own (as the track is now), then its groupings (a single it's
+    // alone on, the new one too, goes along).
+    if edit.single {
+        let shown = sqlx::query_scalar!("SELECT primary_variant_id FROM tracks WHERE id = $1", track).fetch_one(&mut *conn).await?;
+        let single_reason = if reason.is_empty() { "a single of its own" } else { reason };
+        done.single = super::review_bulk::make_single(conn, track, shown, single_reason)
+            .await?
+            .ok_or_else(|| EditRejected::Invalid("it hasn't the revisions a single is made from".into()))
+            .map(Some)?;
+    }
+    if let Some(groups) = &edit.groups {
+        let real = |id: &Uuid| made.groupings.get(id).copied().unwrap_or(*id);
+        for grouping in &groups.add {
+            super::groupings::add(conn, real(grouping), &[track], &[], reason).await?;
+        }
+        for grouping in &groups.remove {
+            super::groupings::remove(conn, real(grouping), &[track], &[], reason).await?;
         }
     }
     Ok(done)

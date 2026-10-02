@@ -1,6 +1,6 @@
 //! The editor's line, as typed: `key:value` parts, the same keys (and abbreviations) as a
 //! filter (`catalog::query`) plus the editor's own (`comment:`, `related:`, `why:`,
-//! `role:`, `as:`, `along:`, `cover:`, `source:`, `origin:`). Only the syntax: what a value means is worked out by the
+//! `role:`, `as:`, `along:`, `cover:`, `source:`, `origin:`, `single:`). Only the syntax: what a value means is worked out by the
 //! editor, which knows the library.
 //!
 //! * A value runs until the next key: `artist:lil quill year:2017`.
@@ -10,8 +10,8 @@
 //! * `#…` after an artist or album: its place (`#2`) or numbers (`#2-5` disc 2 track 5,
 //!   `#1+` in order from 1). After a cover or source, which one (`-cover:#2`), and where
 //!   it goes (`cover:#3 #1`: the third made the main one); right after the colon too.
-//! * `role:` and `as:` go with the artist before them, `kind:` with the album or related
-//!   track before it.
+//! * `role:` and `as:` go with the artist before them, `kind:` with the album, grouping or
+//!   related track before it.
 
 use crate::catalog::query::Key as QueryKey;
 
@@ -37,6 +37,7 @@ pub enum K {
     Cover,
     Source,
     Origin,
+    Single,
     /// A filter's key that isn't something to change (`format:`, `og:`…).
     Other(QueryKey),
 }
@@ -65,6 +66,7 @@ impl K {
             K::Cover => "cover",
             K::Source => "source",
             K::Origin => "origin",
+            K::Single => "single",
             K::Other(k) => k.name(),
         }
     }
@@ -93,6 +95,7 @@ pub fn key(name: &str) -> Option<K> {
         "cover" | "covers" => Some(K::Cover),
         "source" | "sources" => Some(K::Source),
         "origin" => Some(K::Origin),
+        "single" => Some(K::Single),
         _ => None,
     };
     if own.is_some() {

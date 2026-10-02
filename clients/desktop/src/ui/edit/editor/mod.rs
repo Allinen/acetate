@@ -18,6 +18,10 @@
 //!   makes it the main one, Alt+↑/↓ moves it, Space shows the original; on a source Enter
 //!   corrects it (its form opens under the rows), `o` says the file came from it. With
 //!   many tracks: each field as they have it (how many differ), and as they will.
+//! * **Singles and groupings**: `single:` makes each track a single of its own (last, from
+//!   the track as the edit leaves it; a track on an album already gets one too, said in
+//!   the preview), `group:` puts it in a grouping (or a new one, `kind:` after it), and
+//!   `-group:` takes it out.
 //! * **Covers and sources** are changes like the rest, applied with them: `cover:paste`
 //!   (or Ctrl+V with an image, or an image dropped, anywhere in the editor), `cover:file`,
 //!   `cover:<album or track>` (a copy of its cover), `cover:#3 #1`, `-cover:#2`;
@@ -807,6 +811,10 @@ impl TrackEditor {
                 let id = self.names.new_album(&c.text);
                 self.names.pin(PinKind::Album, &c.text, id);
             }
+            Some(Pick::NewGrouping) => {
+                let id = self.names.new_grouping(&c.text);
+                self.names.pin(PinKind::Grouping, &c.text, id);
+            }
             None => {}
         }
         if next && let Some(after) = c.next {
@@ -835,8 +843,8 @@ impl TrackEditor {
         let mut notice = None;
         for u in units {
             let Ok(r) = u.result else { continue };
-            if let Some((id, kind)) = &r.album_kind {
-                self.names.set_album_kind(*id, kind);
+            if let Some((id, kind)) = &r.new_kind {
+                self.names.set_kind(*id, kind);
             }
             match r.want {
                 Some(Want::Paste { at }) => match crate::ui::edit::cover_list::clipboard_image() {
@@ -1000,6 +1008,19 @@ impl TrackEditor {
             (RowKind::AddAlbum, RowKey::Edit) => fill(self, "album:".into()),
             (RowKind::AddRelated, RowKey::Edit) => fill(self, "related:".into()),
             (RowKind::AddCover, RowKey::Edit) => fill(self, "cover:".into()),
+            (RowKind::AddGroup, RowKey::Edit) | (RowKind::Group(_), RowKey::Edit) => fill(self, "group:".into()),
+            (RowKind::Group(n), RowKey::Remove) => {
+                if let Some(g) = r.attached.groups.get(n).copied() {
+                    let name = catalog.grouping(g).map(|x| x.name.clone()).or_else(|| self.names.stand_ins().get(&g).cloned()).unwrap_or_default();
+                    self.names.pin(PinKind::Grouping, &name, g);
+                    if self.names.is_new(g) {
+                        // Not made yet: what put it there is taken back.
+                        self.staged.retain(|s| !s.ops.contains(&Op::Group(g)));
+                    } else {
+                        self.stage(&format!("-group:{}", q(&name)), shell, here);
+                    }
+                }
+            }
             (RowKind::AddSource, RowKey::Edit) => fill(self, "source:".into()),
             (RowKind::Cover(n), key) => {
                 let at = n + 1;
@@ -1121,7 +1142,7 @@ impl TrackEditor {
                 ui.horizontal_wrapped(|ui| {
                     ui.set_min_width(value_width);
                     ui.set_max_width(value_width);
-                    let empty = matches!(row.kind, RowKind::AddArtist | RowKind::AddAlbum | RowKind::AddRelated);
+                    let empty = matches!(row.kind, RowKind::AddArtist | RowKind::AddAlbum | RowKind::AddRelated | RowKind::AddCover | RowKind::AddSource | RowKind::AddGroup);
                     let mut value = if row.kind == RowKind::Removed {
                         // Taken off by the staged changes.
                         RichText::new(row.was.clone().unwrap_or_default()).color(P.faint).strikethrough()
@@ -1271,6 +1292,20 @@ impl TrackEditor {
                         new.push(format!("{kind} “{title}” (credited to the primary artists its tracks share)"));
                     }
                 }
+                for (id, name, kind) in &self.names.new_groupings {
+                    if change.ops.iter().any(|op| matches!(op, Op::Group(g) if g == id)) {
+                        new.push(format!("{kind} “{name}”"));
+                    }
+                }
+                if model::single(&change.ops) {
+                    let ready: Vec<&engine::Ready> = self.engine.plans.iter().filter_map(|p| if let PlanState::Ready(r) = &p.state { Some(&**r) } else { None }).collect();
+                    let on_albums = ready.iter().filter(|r| !r.warnings.is_empty()).count();
+                    let mut text = if single { "a single of its own".to_string() } else { format!("{} singles, one for each", thousands(ready.len())) };
+                    if on_albums > 0 && !single {
+                        text.push_str(&format!(" ({} of them on an album already)", thousands(on_albums)));
+                    }
+                    new.push(text);
+                }
                 if !new.is_empty() {
                     ui.label(RichText::new(format!("Makes: {}", new.join(", "))).color(P.muted).small());
                 }
@@ -1312,6 +1347,7 @@ impl TrackEditor {
         let vocab = shell.account.vocab.clone().unwrap_or_default();
         let each = |ui: &mut egui::Ui| {
             for plan in &self.engine.plans {
+                let mut warnings: &[String] = &[];
                 let (mark, color, lines, err): (&str, egui::Color32, Vec<String>, Option<String>) = match &plan.state {
                     PlanState::Loading => continue,
                     PlanState::Failed(err) => ("✗", P.danger, Vec::new(), Some(err.clone())),
@@ -1335,6 +1371,7 @@ impl TrackEditor {
                             None => "",
                         };
                         let color = if err.is_some() { P.danger } else if mark == "✓" { P.accent } else { P.text };
+                        warnings = &r.warnings;
                         (mark, color, lines, err)
                     }
                 };
@@ -1344,6 +1381,9 @@ impl TrackEditor {
                 let indent = if single { "" } else { "    " };
                 for line in &lines {
                     ui.label(RichText::new(format!("{indent}{line}")).color(P.muted));
+                }
+                for w in warnings {
+                    ui.label(RichText::new(format!("{indent}⚠ {w}")).color(P.text));
                 }
                 if let Some(err) = &err {
                     ui.label(RichText::new(format!("{indent}{err}")).color(P.danger));
@@ -1465,6 +1505,7 @@ fn state(ui: &mut egui::Ui, engine: &Engine, catalog: &Catalog, names: &Names) {
     let artist = |id: Uuid| catalog.artist(id).map(|a| a.name.clone()).or_else(|| new_names.get(&id).cloned()).unwrap_or_else(|| "(an artist)".into());
     let album = |id: Uuid| catalog.album(id).map(|a| a.title.clone()).or_else(|| new_names.get(&id).cloned()).unwrap_or_else(|| "(an album)".into());
     let track = |id: Uuid| catalog.track_index(id).map(|i| catalog.tracks[i as usize].title.clone()).unwrap_or_else(|| "(a track)".into());
+    let grouping = |id: Uuid| catalog.grouping(id).map(|g| g.name.clone()).or_else(|| new_names.get(&id).map(|n| format!("{n} (new)"))).unwrap_or_else(|| "(a grouping)".into());
     type Field<'a> = (&'static str, Box<dyn Fn(&model::Meta, &model::Facts, &model::Attached) -> String + 'a>);
     let fields: Vec<Field> = vec![
         ("title", Box::new(|m, _, _| m.title.clone())),
@@ -1502,6 +1543,7 @@ fn state(ui: &mut egui::Ui, engine: &Engine, catalog: &Catalog, names: &Names) {
             }),
         ),
         ("source", Box::new(|_, _, a| a.sources.iter().map(|s| s.label()).collect::<Vec<_>>().join(", "))),
+        ("group", Box::new(|_, _, a| a.groups.iter().map(|g| grouping(*g)).collect::<Vec<_>>().join(", "))),
     ];
     let value_width = (ui.available_width() - 90.0).max(200.0);
     egui::Grid::new("track-editor-state-grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {

@@ -69,6 +69,8 @@ pub struct Attached {
     pub sources: Vec<Src>,
     /// The source its file came from.
     pub origin: Option<Uuid>,
+    /// The groupings it's in (from the library: its details don't say).
+    pub groups: Vec<Uuid>,
 }
 
 /// A cover, and what it'll be made from.
@@ -152,6 +154,8 @@ impl Base {
                 })
                 .collect(),
             origin: d.file.origin.as_ref().map(|o| o.source_id),
+            // (The library's: the engine fills them in.)
+            groups: Vec::new(),
         };
         Some(Base { variant: v.id, variant_base: v.revision_id, meta, facts_base: d.external_revision_id, facts, attached })
     }
@@ -193,8 +197,12 @@ pub enum Op {
     Relate { track: Uuid, kind: String },
     Unrelate(Uuid),
     NoRelations,
-    /// Into a grouping: not a revision; done after the rest is written.
+    /// Into a grouping (or a new one's stand-in): not a revision.
     Group(Uuid),
+    /// Out of a grouping.
+    Ungroup(Uuid),
+    /// A single of its own, made after the rest is written (from the track as it is then).
+    Single,
     /// Whether albums it's alone on change along (the last one says).
     Along(bool),
     /// Albums it's alone on are made to match it, changed or not (title, date, performers):
@@ -278,7 +286,7 @@ pub fn apply(ops: &[Op], meta: &Meta, facts: &Facts, position: usize) -> (Meta, 
             }
             Op::Unrelate(track) => facts.relations.retain(|r| r.track_id != *track),
             Op::NoRelations => facts.relations.clear(),
-            Op::Group(_) | Op::Along(_) | Op::Sync | Op::Why(_) => {}
+            Op::Group(_) | Op::Ungroup(_) | Op::Single | Op::Along(_) | Op::Sync | Op::Why(_) => {}
             Op::Cover { .. } | Op::MoveCover { .. } | Op::NoCover(_) | Op::NoCovers => {}
             Op::Source { .. } | Op::CorrectSource { .. } | Op::NoSource(_) | Op::NoSources | Op::Origin(_) => {}
         }
@@ -350,6 +358,12 @@ pub fn attach(ops: &[Op], attached: &Attached) -> Attached {
                     a.origin = Some(s.id);
                 }
             }
+            Op::Group(g) => {
+                if !a.groups.contains(g) {
+                    a.groups.push(*g);
+                }
+            }
+            Op::Ungroup(g) => a.groups.retain(|x| x != g),
             _ => {}
         }
     }
@@ -383,17 +397,9 @@ fn credit(credits: &mut Vec<Credit>, artist: Uuid, role: Option<&str>, alias: Op
     }
 }
 
-/// The groupings `ops` put tracks in.
-pub fn groupings(ops: &[Op]) -> Vec<Uuid> {
-    let mut out = Vec::new();
-    for op in ops {
-        if let Op::Group(g) = op
-            && !out.contains(g)
-        {
-            out.push(*g);
-        }
-    }
-    out
+/// Whether each track gets a single of its own.
+pub fn single(ops: &[Op]) -> bool {
+    ops.contains(&Op::Single)
 }
 
 /// Whether albums change along (on unless an `along:off` says otherwise, the last one
@@ -495,6 +501,14 @@ mod tests {
         let a = attach(&[Op::MoveCover { from: 1, to: 0 }, Op::NoCover(1), Op::NoCover(5)], &base);
         assert_eq!(a.covers, [pic(2)]);
         assert!(attach(&[Op::NoCovers], &base).covers.is_empty());
+    }
+
+    #[test]
+    fn groupings_joined_and_left() {
+        let base = Attached { groups: vec![id(1)], ..Default::default() };
+        let a = attach(&[Op::Group(id(2)), Op::Group(id(1)), Op::Ungroup(id(1)), Op::Group(id(2))], &base);
+        assert_eq!(a.groups, [id(2)]);
+        assert!(single(&[Op::Title("x".into()), Op::Single]) && !single(&[]));
     }
 
     #[test]
