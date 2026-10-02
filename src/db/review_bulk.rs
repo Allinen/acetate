@@ -179,7 +179,29 @@ pub struct PairTrack {
     pub id: Uuid,
     pub title: String,
     pub duration_ms: Option<i64>,
+    pub codec: Option<String>,
     pub size_bytes: i64,
+}
+
+/// How good a file's format is, to keep the better of two: uncompressed (WAV, AIFF) over
+/// lossless (FLAC, ALAC…) over lossy (MP3, AAC…) over unknown. Within one, the bigger file
+/// is the better copy. The desktop client's merge view suggests a file the same way.
+pub fn format_rank(codec: Option<&str>) -> u8 {
+    let Some(codec) = codec.map(str::to_lowercase) else { return 0 };
+    if codec.starts_with("pcm") || matches!(codec.as_str(), "wav" | "aiff") {
+        3
+    } else if matches!(codec.as_str(), "flac" | "alac" | "ape" | "wavpack") {
+        2
+    } else {
+        1
+    }
+}
+
+impl PairTrack {
+    /// Which file to keep of two: the better format, then the bigger.
+    fn better_file(&self) -> (u8, i64) {
+        (format_rank(self.codec.as_deref()), self.size_bytes)
+    }
 }
 
 /// A pair merged (or that failed to be), and how.
@@ -188,7 +210,7 @@ pub struct MergedPair {
     /// The older track: kept, with its metadata and its covers first.
     pub kept: PairTrack,
     pub merged: PairTrack,
-    /// The merged track's file became the kept track's (it's bigger: the better copy).
+    /// The merged track's file became the kept track's (the better: see `format_rank`).
     pub merged_file_kept: bool,
 }
 
@@ -213,8 +235,8 @@ pub struct FailedPair {
 /// are clearly the same track: the same title and about the same length (`same`). Each
 /// is an ordinary merge (`revisions::merge_tracks`: revisioned, settles the pair's flags,
 /// can be undone on the kept track's page), each in a savepoint: one that fails is left
-/// out and the rest go on. The older track is kept; the bigger file stays (same length,
-/// so more bytes is the better copy: lossless over lossy, a higher bitrate).
+/// out and the rest go on. The older track is kept; the better file stays (`format_rank`:
+/// WAV over FLAC over MP3, then the bigger one).
 ///
 /// A track merged by an earlier pair is looked at as the track it went into (A looks like
 /// B, B like C: C is compared with A, once B is A). Rolled back, it's an exact preview.
@@ -260,7 +282,7 @@ pub async fn merge_duplicates(conn: &mut PgConnection, flags: Option<&[Uuid]>, s
 
         // UUIDv7: the smaller id was made first.
         let (kept, merged) = if a.id < b.id { (a, b) } else { (b, a) };
-        let merged_file_kept = merged.size_bytes > kept.size_bytes;
+        let merged_file_kept = merged.better_file() > kept.better_file();
         let picks = revisions::MergePicks { file: if merged_file_kept { revisions::Side::Right } else { revisions::Side::Left }, ..Default::default() };
         let mut savepoint = sqlx::Connection::begin(&mut *conn).await?;
         let result = revisions::merge_tracks(&mut savepoint, kept.id, merged.id, &picks, None, None, reason).await;
@@ -284,7 +306,7 @@ async fn current(conn: &mut PgConnection, id: Uuid) -> sqlx::Result<Option<PairT
     sqlx::query_as!(
         PairTrack,
         r#"
-        SELECT t.id, t.title, f.duration_ms, f.size_bytes
+        SELECT t.id, t.title, f.duration_ms, f.codec, f.size_bytes
         FROM tracks t
         JOIN files f ON f.id = t.file_id
         WHERE t.id = COALESCE((SELECT merged_into FROM tracks WHERE id = $1), $1)
@@ -293,4 +315,15 @@ async fn current(conn: &mut PgConnection, id: Uuid) -> sqlx::Result<Option<PairT
     )
     .fetch_optional(conn)
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_rank;
+
+    #[test]
+    fn wav_over_flac_over_mp3() {
+        let order = [None, Some("mp3"), Some("aac"), Some("flac"), Some("pcm_s16le"), Some("pcm_s24le")].map(format_rank);
+        assert_eq!(order, [0, 1, 1, 2, 3, 3]);
+    }
 }

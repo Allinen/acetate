@@ -102,7 +102,8 @@ enum Command {
     },
     /// Merge the "possible duplicate" pairs from review flags that have exactly the same
     /// title and about the same length. The older track is kept (its metadata and covers),
-    /// with the bigger of the two files. Each merge can be undone on the track's page.
+    /// with the better of the two files (WAV over FLAC over MP3, then the bigger). Each merge
+    /// can be undone on the track's page.
     MergeDuplicates {
         /// How far apart the lengths may be, in milliseconds.
         #[arg(long, default_value_t = 1000)]

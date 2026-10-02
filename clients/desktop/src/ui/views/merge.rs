@@ -557,13 +557,31 @@ fn value(d: &TrackDetail, catalog: &Catalog, field: &str) -> String {
     }
 }
 
-/// How good a file is, to suggest which to keep (shown, and changeable): lossless first,
-/// then sample rate and bit depth, then bitrate, then size.
-fn quality(d: &TrackDetail) -> (bool, i32, i16, i32, i64) {
-    let f = &d.file;
-    let lossless = matches!(f.codec.as_deref().map(str::to_lowercase).as_deref(), Some("flac" | "alac" | "wav" | "pcm" | "aiff" | "ape" | "wavpack"))
-        || f.codec.as_deref().is_some_and(|c| c.to_lowercase().starts_with("pcm"));
-    (lossless, f.sample_rate.unwrap_or(0), f.bit_depth.unwrap_or(0), f.bitrate.unwrap_or(0), f.size_bytes)
+/// How good a file is, to suggest which to keep (shown, and changeable): its format first,
+/// uncompressed (WAV, AIFF) over lossless (FLAC, ALAC…) over lossy (MP3, AAC…) over
+/// unknown; then the bigger file. As the server's bulk merge picks (`format_rank` there).
+fn quality(d: &TrackDetail) -> (u8, i64) {
+    (format_rank(d.file.codec.as_deref()), d.file.size_bytes)
+}
+
+fn format_rank(codec: Option<&str>) -> u8 {
+    match codec.map(str::to_lowercase) {
+        None => 0,
+        Some(c) if c.starts_with("pcm") || c == "wav" || c == "aiff" => 3,
+        Some(c) if matches!(c.as_str(), "flac" | "alac" | "ape" | "wavpack") => 2,
+        Some(_) => 1,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_rank;
+
+    #[test]
+    fn wav_over_flac_over_mp3() {
+        let order = [None, Some("mp3"), Some("aac"), Some("flac"), Some("pcm_s16le"), Some("pcm_s24le")].map(format_rank);
+        assert_eq!(order, [0, 1, 1, 2, 3, 3]);
+    }
 }
 
 /// Against a running server (ignored by default): `ACETATE_TEST_SERVER`,

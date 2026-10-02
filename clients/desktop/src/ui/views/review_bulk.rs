@@ -58,6 +58,8 @@ struct Singles {
 struct PairTrack {
     title: String,
     duration_ms: Option<i64>,
+    codec: Option<String>,
+    size_bytes: i64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -313,7 +315,7 @@ impl ReviewBulk {
     /// Some(dry run?) when one is asked for.
     fn duplicates(&mut self, ui: &mut egui::Ui, merge: &mut Option<bool>) {
         ui.label(RichText::new("Merge the exact duplicates").font(font(14.0, semibold())));
-        ui.label("Of the pairs these flags name, those with the same title and about the same length are merged: the older track is kept (its metadata, its covers first), with the bigger of the two files. Pairs that differ stay flagged. Each merge can be undone on the kept track's page.");
+        ui.label("Of the pairs these flags name, those with the same title and about the same length are merged: the older track is kept (its metadata, its covers first), with the better of the two files (WAV over FLAC over MP3, then the bigger). Pairs that differ stay flagged. Each merge can be undone on the kept track's page.");
         if self.flags.len() > MERGE_LIMIT {
             ui.label(RichText::new(format!("More than {} flags shown: filter to fewer.", thousands(MERGE_LIMIT))).color(P.danger));
             return;
@@ -443,11 +445,12 @@ impl ReviewBulk {
     }
 }
 
-/// A pair as listed: the title(s), both lengths, and whose file stays.
+/// A pair as listed: the title(s), both lengths, and which file stays (of the two).
 fn pair_text(pair: &Pair) -> String {
     let title = if pair.kept.title == pair.merged.title { format!("“{}”", pair.kept.title) } else { format!("“{}” ← “{}”", pair.kept.title, pair.merged.title) };
-    let file = if pair.merged_file_kept { "the merged track's file" } else { "its own file" };
-    format!("{title}  ·  {} / {}  ·  keeps {file}", length(pair.kept.duration_ms), length(pair.merged.duration_ms))
+    let file = |t: &PairTrack| format!("{} {:.1} MB", t.codec.as_deref().unwrap_or("?"), t.size_bytes as f64 / 1_000_000.0);
+    let (kept, other) = if pair.merged_file_kept { (&pair.merged, &pair.kept) } else { (&pair.kept, &pair.merged) };
+    format!("{title}  ·  {} / {}  ·  keeps {} (not {})", length(pair.kept.duration_ms), length(pair.merged.duration_ms), file(kept), file(other))
 }
 
 /// A candidate as listed: its name, disambiguation and how many tracks it has.

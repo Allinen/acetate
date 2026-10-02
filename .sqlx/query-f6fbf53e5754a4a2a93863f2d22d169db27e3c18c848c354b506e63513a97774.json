@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT t.id, t.title, f.duration_ms, f.size_bytes\n        FROM tracks t\n        JOIN files f ON f.id = t.file_id\n        WHERE t.id = COALESCE((SELECT merged_into FROM tracks WHERE id = $1), $1)\n        ",
+  "query": "\n        SELECT t.id, t.title, f.duration_ms, f.codec, f.size_bytes\n        FROM tracks t\n        JOIN files f ON f.id = t.file_id\n        WHERE t.id = COALESCE((SELECT merged_into FROM tracks WHERE id = $1), $1)\n        ",
   "describe": {
     "columns": [
       {
@@ -38,6 +38,17 @@
       },
       {
         "ordinal": 3,
+        "name": "codec",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "files",
+            "name": "codec"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
         "name": "size_bytes",
         "type_info": "Int8",
         "origin": {
@@ -57,8 +68,9 @@
       false,
       false,
       true,
+      true,
       false
     ]
   },
-  "hash": "d593224452ceeca8e3112f410039b04b289e81117553f44bd21913a3858c3609"
+  "hash": "f6fbf53e5754a4a2a93863f2d22d169db27e3c18c848c354b506e63513a97774"
 }
