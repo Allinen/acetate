@@ -715,6 +715,8 @@ async fn similar_titles_are_flagged_only_at_about_the_same_length(
     assert!(!flagged_as_glass_harbor(pool, other, &mira).await?, "5 s apart: another song, whatever the title says");
     set_length(pool, glass, None).await?;
     assert!(flagged_as_glass_harbor(pool, other, &mira).await?, "unknown length: not ruled out");
+    sqlx::query("UPDATE tracks SET title = 'Glass Harbor (Instrumental)' WHERE id = $1").bind(glass).execute(pool).await?;
+    assert!(!flagged_as_glass_harbor(pool, other, &mira).await?, "another version of the song");
     Ok(())
 }
 

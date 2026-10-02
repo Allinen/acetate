@@ -20,6 +20,83 @@ const DUPLICATE_SIMILARITY: f32 = 0.5;
 /// songs (an edit, the extended version), whatever their titles say.
 const DUPLICATE_MAX_LENGTH_DIFFERENCE_MS: i64 = 3_000;
 
+/// Words that make a title another version of a song: "Song" and "Song (Instrumental)"
+/// aren't duplicates, however similar the titles. Each maps to a mark, so spellings of the
+/// same thing agree ("Remastered" and "Remaster"). Several words are matched in a row.
+const VERSION_WORDS: &[(&[&str], &str)] = &[
+    (&["instrumental"], "instrumental"),
+    (&["inst"], "instrumental"),
+    (&["off", "vocal"], "instrumental"),
+    (&["karaoke"], "instrumental"),
+    (&["a", "cappella"], "a cappella"),
+    (&["acapella"], "a cappella"),
+    (&["acappella"], "a cappella"),
+    (&["sped"], "sped up"),
+    (&["speed", "up"], "sped up"),
+    (&["spedup"], "sped up"),
+    (&["nightcore"], "sped up"),
+    (&["slowed"], "slowed"),
+    (&["reverb"], "reverb"),
+    (&["remaster"], "remaster"),
+    (&["remastered"], "remaster"),
+    (&["remix"], "remix"),
+    (&["mix"], "mix"),
+    (&["edit"], "edit"),
+    (&["extended"], "extended"),
+    (&["live"], "live"),
+    (&["acoustic"], "acoustic"),
+    (&["unplugged"], "acoustic"),
+    (&["demo"], "demo"),
+    (&["8d"], "8d"),
+];
+
+/// The same for titles written without spaces between words (Chinese, Japanese): found
+/// anywhere in the title.
+const VERSION_SUBSTRINGS: &[(&str, &str)] = &[
+    ("伴奏", "instrumental"),
+    ("纯音乐", "instrumental"),
+    ("インスト", "instrumental"),
+    ("加速", "sped up"),
+    ("降速", "slowed"),
+    ("慢速", "slowed"),
+    ("现场", "live"),
+    ("ライブ", "live"),
+    ("重制", "remaster"),
+    ("混音", "remix"),
+];
+
+/// What makes a title a particular version: its version words (above) and its numbers
+/// ("Song 2", "Part II"), each as often as it appears. Two tracks are possible duplicates
+/// only if theirs are the same: "Song" and "Song (Sped Up)" aren't, nor "Song" and "Song
+/// 2", nor "Live Forever" and "Live Forever (Live)"; "Song (Remix)" and "Song - remix" are.
+fn version_marks(title: &str) -> Vec<String> {
+    let title = title.to_lowercase();
+    let words: Vec<&str> = title.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect();
+    let mut marks = Vec::new();
+    let mut i = 0;
+    while i < words.len() {
+        if let Some((phrase, mark)) = VERSION_WORDS.iter().find(|(phrase, _)| words[i..].starts_with(phrase)) {
+            marks.push(mark.to_string());
+            i += phrase.len();
+            continue;
+        }
+        let word = words[i];
+        let roman = ["ii", "iii", "iv", "vi", "vii", "viii", "ix"].iter().position(|r| *r == word);
+        if let Some(n) = roman {
+            marks.push([2, 3, 4, 6, 7, 8, 9][n].to_string());
+        } else if word.bytes().all(|b| b.is_ascii_digit()) {
+            let n = word.trim_start_matches('0');
+            marks.push(if n.is_empty() { "0" } else { n }.to_string());
+        }
+        i += 1;
+    }
+    for (text, mark) in VERSION_SUBSTRINGS {
+        marks.extend(std::iter::repeat_n(mark.to_string(), title.matches(text).count()));
+    }
+    marks.sort();
+    marks
+}
+
 /// Flags a track whose artist name from the tags matched several artists; `chosen` (the
 /// oldest) was credited.
 pub async fn flag_ambiguous_artist(
@@ -125,8 +202,9 @@ pub async fn flag_same_song(
 }
 
 /// Flags a new track if tracks by the same artists have a similar title and about the same
-/// length (a track or file without a known length isn't ruled out). `except`: tracks
-/// already flagged for another reason (see `flag_same_song`).
+/// length (a track or file without a known length isn't ruled out), and are the same
+/// version (`version_marks`). `except`: tracks already flagged for another reason (see
+/// `flag_same_song`).
 ///
 /// Starts from the artists' tracks rather than from all similar titles: an artist has at
 /// most thousands of tracks, while a short title like "Intro" is similar to far more.
@@ -137,12 +215,12 @@ pub async fn flag_possible_duplicates(
     artist_ids: &[Uuid],
     except: &[Uuid],
 ) -> sqlx::Result<()> {
-    let similar = sqlx::query_scalar!(
+    let candidates = sqlx::query!(
         r#"
         WITH new AS (
             SELECT f.duration_ms FROM tracks t JOIN files f ON f.id = t.file_id WHERE t.id = $1
         )
-        SELECT t.id FROM tracks t
+        SELECT t.id, t.title FROM tracks t
         JOIN files f ON f.id = t.file_id
         WHERE t.id IN (SELECT track_id FROM track_credits WHERE artist_id = ANY($3))
           AND t.id <> $1
@@ -152,7 +230,7 @@ pub async fn flag_possible_duplicates(
           AND (f.duration_ms IS NULL OR (SELECT duration_ms FROM new) IS NULL
                OR abs(f.duration_ms - (SELECT duration_ms FROM new)) <= $6)
         ORDER BY similarity(t.title, $2) DESC, t.id
-        LIMIT 10
+        LIMIT 100
         "#,
         track_id,
         title,
@@ -163,6 +241,8 @@ pub async fn flag_possible_duplicates(
     )
     .fetch_all(&mut *conn)
     .await?;
+    let marks = version_marks(title);
+    let similar: Vec<Uuid> = candidates.into_iter().filter(|t| version_marks(&t.title) == marks).map(|t| t.id).take(10).collect();
     if similar.is_empty() {
         return Ok(());
     }
@@ -395,4 +475,40 @@ pub async fn set_checked(conn: &mut PgConnection, kind: &str, checked: bool) -> 
         .fetch_one(&mut *conn)
         .await?;
     Ok(open)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::version_marks;
+
+    #[test]
+    fn versions_of_a_song_are_told_apart() {
+        let same = |a: &str, b: &str| version_marks(a) == version_marks(b);
+        assert!(same("Northbound", "northbound"));
+        assert!(same("Northbound (feat. Someone)", "Northbound"));
+        assert!(same("Northbound (Remix)", "Northbound - remix"));
+        assert!(same("Northbound (Remastered 2011)", "Northbound - 2011 Remaster"));
+        assert!(!same("Northbound (Remastered)", "Northbound [2011 Remaster]"), "the year is a number too");
+        assert!(same("Part II", "Part 2"));
+        assert!(same("Track 07", "Track 7"));
+        for other in [
+            "Northbound (Instrumental)",
+            "Northbound (Inst.)",
+            "Northbound (Off Vocal)",
+            "Northbound (Sped Up)",
+            "Northbound - sped up + reverb",
+            "Northbound (Slowed Down)",
+            "Northbound (Remastered)",
+            "Northbound 2",
+            "Northbound Pt. 3",
+            "Northbound (Live)",
+            "Northbound (Extended Mix)",
+            "Northbound (伴奏)",
+        ] {
+            assert!(!same("Northbound", other), "{other}");
+        }
+        assert!(!same("Live Forever", "Live Forever (Live)"));
+        assert!(!same("Northbound (Sped Up)", "Northbound (Slowed)"));
+        assert!(same("Northbound (Sped Up)", "Northbound - SPED UP"));
+    }
 }
