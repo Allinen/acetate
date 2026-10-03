@@ -5,7 +5,7 @@
 //! feat prod [prod] with=prod split:-x -and whole:off keep:cdq -live word:vs=featured
 //! ```
 //!
-//! * Rules: `prod`, `feat` (`ft`), `with` (`w/`), `w`, `x`, `prefix`, each in its own role
+//! * Rules: `prod`, `feat` (`ft`), `w/`, `with`, `w`, `x`, `prefix`, each in its own role
 //!   or another (`with=prod`), or one for each name in order, the last for the rest
 //!   (`prefix=primary,featured`: "Ann x Bo x Cy - Song" → Ann primary, Bo and Cy featured); `+feat` / `+prod` (`+=role`, the role is needed); `[prod]`,
 //!   `(prod)`, `{prod}` (`[]=role`; `[]` alone: producer); `self`: `himself`, `me`… among
@@ -23,7 +23,8 @@
 pub const RULES: &[(&str, &str)] = &[
     ("feat", "feat. ft. featuring → featured"),
     ("prod", "prod. produced by → producer"),
-    ("with", "w/ with → featured"),
+    ("w/", "w/ → featured"),
+    ("with", "with → featured"),
     ("w", "w alone → featured"),
     ("x", "x alone → featured"),
     ("+feat", "+ Name → featured"),
@@ -82,6 +83,9 @@ impl Shape {
 pub enum Kind {
     Prod,
     Feat,
+    /// `w/` (not `w/o`).
+    Slash,
+    /// `with`, the word (`with` in a title is often just a word: its own rule).
     With,
     W,
     X,
@@ -99,14 +103,15 @@ impl Kind {
         match self {
             Kind::Prod => 0,
             Kind::Feat => 1,
-            Kind::With => 2,
-            Kind::W => 3,
-            Kind::X => 4,
-            Kind::Word(_) => 5,
-            Kind::Own => 6,
-            Kind::Plus => 7,
-            Kind::Bracket(_) => 8,
-            Kind::Prefix => 9,
+            Kind::Slash => 2,
+            Kind::With => 3,
+            Kind::W => 4,
+            Kind::X => 5,
+            Kind::Word(_) => 6,
+            Kind::Own => 7,
+            Kind::Plus => 8,
+            Kind::Bracket(_) => 9,
+            Kind::Prefix => 10,
         }
     }
 
@@ -115,7 +120,8 @@ impl Kind {
         match self {
             Kind::Prod => vec!["produced by", "prod. by", "prod by", "prod.", "prod"],
             Kind::Feat => vec!["featuring", "feat.", "feat", "ft.", "ft"],
-            Kind::With => vec!["with", "w/"],
+            Kind::Slash => vec!["w/"],
+            Kind::With => vec!["with"],
             Kind::W => vec!["w"],
             Kind::X => vec!["x"],
             Kind::Word(w) => vec![w.as_str()],
@@ -129,6 +135,7 @@ impl Kind {
         Some(match self {
             Kind::Prod => "prod",
             Kind::Feat => "feat",
+            Kind::Slash => "w/",
             Kind::With => "with",
             Kind::W => "w",
             Kind::X => "x",
@@ -141,7 +148,7 @@ impl Kind {
     fn default_role(&self) -> Option<&'static str> {
         match self {
             Kind::Prod | Kind::Bracket(_) | Kind::Own => Some("producer"),
-            Kind::Feat | Kind::With | Kind::W | Kind::X => Some("featured"),
+            Kind::Feat | Kind::Slash | Kind::With | Kind::W | Kind::X => Some("featured"),
             Kind::Prefix => Some("primary"),
             Kind::Word(_) | Kind::Plus => None,
         }
@@ -186,7 +193,8 @@ impl Rule {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Setting {
     pub rules: Vec<Rule>,
-    /// The separators names are split on (`,` alone; the others need spaces around).
+    /// The separators names are split on: signs (`,` `&` `+`) wherever they are, words
+    /// (`x`, `and`) with spaces around.
     pub split: Vec<String>,
     /// Whether pieces that are an artist's name together are kept whole.
     pub whole: bool,
@@ -333,7 +341,7 @@ impl Setting {
 
 /// A rule typed (lowercase).
 fn rule(token: &str, role_of: &dyn Fn(&str) -> Result<Vec<String>, String>) -> Result<Rule, String> {
-    let unknown = || format!("no rule like “{token}” (feat, prod, with, w, x, +feat, +prod, [prod], (prod), {{prod}}, prefix, self, word:…=role)");
+    let unknown = || format!("no rule like “{token}” (feat, prod, w/, with, w, x, +feat, +prod, [prod], (prod), {{prod}}, prefix, self, word:…=role)");
     if let Some(rest) = token.strip_prefix('+') {
         let typed = rest.strip_prefix('=').unwrap_or(rest);
         if typed.is_empty() {
@@ -363,7 +371,8 @@ fn rule(token: &str, role_of: &dyn Fn(&str) -> Result<Vec<String>, String>) -> R
     let kind = match name {
         "prod" => Kind::Prod,
         "feat" | "ft" => Kind::Feat,
-        "with" | "w/" => Kind::With,
+        "w/" => Kind::Slash,
+        "with" => Kind::With,
         "w" => Kind::W,
         "x" => Kind::X,
         "prefix" => Kind::Prefix,

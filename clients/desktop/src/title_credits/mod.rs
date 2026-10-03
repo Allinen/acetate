@@ -8,13 +8,14 @@
 //! * `parse`: one title → the title without its credits, the credits (name, role, which
 //!   rule found it), and warnings.
 //! * The rules run in a fixed order whatever order they're typed in: the keywords
-//!   (`prod`, `feat`, `with`, `w`, `x`, `word:`), then `self`, then `+`, then bare
+//!   (`prod`, `feat`, `w/`, `with`, `w`, `x`, `word:`), then `self`, then `+`, then bare
 //!   brackets, then `prefix`. So `[prod. Dee]` is always taken by `prod`, never by `[prod]` as a name
 //!   "prod. Dee".
 //! * Where a credit ends (`find`): a keyword right after an opening bracket runs to its
 //!   closing bracket; elsewhere to the first of an opening bracket, another rule's keyword,
 //!   ` - ` or ` | `, the closing bracket around it, the end.
-//! * Names are split on the separators (`, ` ` & ` ` x ` ` + ` ` and ` by default),
+//! * Names are split on the separators (`,` `&` `+` wherever they are, ` x ` ` and ` with
+//!   spaces around, by default),
 //!   except where pieces next to each other are exactly the name of an artist in the
 //!   library ("keep whole", `NameTable`).
 //! * Cutting a credit out takes the brackets around it if nothing else is left in them,
@@ -241,28 +242,39 @@ fn split(text: &str, setting: &Setting, names: &NameTable, fixes: &Fixes) -> Vec
             out.push((name, whole));
             continue;
         }
-        let mut every = setting.clone();
-        for s in setting::SPLIT {
-            if !every.split.iter().any(|x| x == s) {
-                every.split.push(s.to_string());
-            }
-        }
-        every.whole = false;
-        out.extend(pieces(&name, &every, &NameTable::default(), &Fixes::default()));
+        out.extend(pieces(&name, &every_separator(setting), &NameTable::default(), &Fixes::default()));
     }
     out
+}
+
+/// `name` as splitting it by hand splits it (the check's `s`): on every separator, the
+/// default ones too, never kept whole. One piece: nothing to split.
+pub fn split_by_hand(name: &str, setting: &Setting) -> Vec<String> {
+    pieces(name, &every_separator(setting), &NameTable::default(), &Fixes::default()).into_iter().map(|p| p.0).collect()
+}
+
+fn every_separator(setting: &Setting) -> Setting {
+    let mut every = setting.clone();
+    for s in setting::SPLIT {
+        if !every.split.iter().any(|x| x == s) {
+            every.split.push(s.to_string());
+        }
+    }
+    every.whole = false;
+    every
 }
 
 fn pieces(text: &str, setting: &Setting, names: &NameTable, fixes: &Fixes) -> Vec<(String, bool)> {
     let mut seps: Vec<(usize, usize)> = Vec::new();
     for (i, c) in text.char_indices() {
         for s in &setting.split {
-            if s == "," {
-                if c == ',' {
-                    seps.push((i, i + 1));
+            if !s.chars().any(char::is_alphanumeric) {
+                // A sign (`,` `&` `+`): wherever it is, "Ann&Bo" too.
+                if text[i..].starts_with(s.as_str()) {
+                    seps.push((i, i + s.len()));
                 }
             } else if c.is_whitespace() {
-                // A separator that's a word or a sign: with spaces on both sides.
+                // A word (`x`, `and`): with spaces on both sides ("Max" isn't split).
                 let at = find::skip_space(text, i);
                 if let Some(e) = find::match_ci(text, at, s)
                     && text[e..].starts_with(char::is_whitespace)

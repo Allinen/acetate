@@ -543,7 +543,16 @@ impl TrackEditor {
             }
             (Entry::Name(i), Key::S) => {
                 let name = p.names[*i].text.clone();
+                let pieces = crate::title_credits::split_by_hand(&name, &p.rules);
+                if pieces.len() < 2 {
+                    self.notice = Some(format!("“{name}” has no separator to split on (, & + x and)."));
+                    return;
+                }
+                self.notice = Some(format!("“{name}” split: {}.", pieces.join(", ")));
                 self.reparse(|p| p.fixes.split.push(name));
+            }
+            (Entry::Track(..), Key::S | Key::W | Key::N | Key::C) => {
+                self.notice = Some("On a track, x leaves it out; s, w, n and c are for a name's row (above).".into());
             }
             (Entry::Name(i), Key::W) => {
                 let n = &p.names[*i];

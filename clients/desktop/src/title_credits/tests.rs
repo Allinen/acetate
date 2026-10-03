@@ -74,13 +74,17 @@ fn the_keywords() {
     case("prod", "Song (produced by Dee)", "Song", &[("Dee", P)]);
     case("prod", "Song prod by Dee", "Song", &[("Dee", P)]);
     case("prod", "Song [Prod. By Dee]", "Song", &[("Dee", P)]);
-    case("with", "Song w/ Ann", "Song", &[("Ann", F)]);
+    case("w/", "Song w/ Ann", "Song", &[("Ann", F)]);
+    case("w/", "Song w/o Ann", "Song w/o Ann", &[]);
     case("with", "Song (with Ann)", "Song", &[("Ann", F)]);
-    case("with", "Song w/o Ann", "Song w/o Ann", &[]);
+    // Each its own: `w/` leaves a title's "with" alone, and the other way round.
+    case("w/", "You Cant Hang With Us", "You Cant Hang With Us", &[]);
+    case("w/", "Hang With Us w/ Ann", "Hang With Us", &[("Ann", F)]);
+    case("with", "Song w/ Ann", "Song w/ Ann", &[]);
     case("w", "Song w Ann", "Song", &[("Ann", F)]);
     case("x", "Song x Ann", "Song", &[("Ann", F)]);
     // Roles changed.
-    case("with=prod", "Song w/ Dee", "Song", &[("Dee", P)]);
+    case("w/=prod", "Song w/ Dee", "Song", &[("Dee", P)]);
     case("x=primary", "Song x Ann", "Song", &[("Ann", M)]);
     // A role for each name in order, the last for the rest.
     case("prefix=primary,featured", "Ann x Bo x Cy - Song", "Song", &[("Ann", M), ("Bo", F), ("Cy", F)]);
@@ -94,7 +98,7 @@ fn the_keywords() {
 
 #[test]
 fn only_whole_words_and_not_first() {
-    let all = "feat prod with w x";
+    let all = "feat prod w/ with w x";
     for title in ["Feathers", "Product of Swan", "Max Exodus", "Wwwhat", "Featherweight (Prodigy)"] {
         case(all, title, title, &[]);
     }
@@ -175,7 +179,15 @@ fn splitting() {
     case("feat", "Song (feat. Ann and Bo)", "Song", &[("Ann", F), ("Bo", F)]);
     case("feat", "Song (feat. Ann, Bo, and Cy)", "Song", &[("Ann", F), ("Bo", F), ("Cy", F)]);
     case("feat", "Song (feat. Ann,Bo)", "Song", &[("Ann", F), ("Bo", F)]);
-    case("feat", "Song (feat. Ann&Bo)", "Song", &[("Ann&Bo", F)]);
+    // Signs split wherever they are; words need spaces ("Max", "Alexandra").
+    case("feat", "Song (feat. Ann&Bo+Cy)", "Song", &[("Ann", F), ("Bo", F), ("Cy", F)]);
+    case("feat", "Song (feat. Max & Alexandra)", "Song", &[("Max", F), ("Alexandra", F)]);
+    case("feat split:-&", "Song (feat. Ann&Bo)", "Song", &[("Ann&Bo", F)]);
+    let duo = NameTable::new([(Uuid::from_u128(1), "Ann&Bo")]);
+    assert_eq!(with_names("feat", "Song (feat. Ann&Bo)", &duo).credits[0].name, "Ann&Bo", "an artist's name: whole");
+    // Split by hand: on every separator; a name with none has nothing to split.
+    assert_eq!(split_by_hand("Ann x Bo", &setting("feat split:-x")), ["Ann", "Bo"]);
+    assert_eq!(split_by_hand("Ann", &setting("feat")), ["Ann"]);
     case("feat split:-x", "Song (feat. Ann x Bo)", "Song", &[("Ann x Bo", F)]);
     case("feat split:, &", "Song (feat. Ann x Bo and Cy, Dee)", "Song", &[("Ann x Bo and Cy", F), ("Dee", F)]);
     case("feat split:/", "Song (feat. Ann / Bo, Cy)", "Song", &[("Ann", F), ("Bo, Cy", F)]);
@@ -295,7 +307,7 @@ fn the_servers_check() {
         assert!(!server_flags(title), "{title}");
     }
     // Every keyword it flags, a rule finds.
-    let ours: Vec<&str> = [Kind::Feat, Kind::With, Kind::Prod].iter().flat_map(|k| k.keywords()).collect();
+    let ours: Vec<&str> = [Kind::Feat, Kind::Slash, Kind::Prod].iter().flat_map(|k| k.keywords()).collect();
     for k in SERVER_KEYWORDS {
         assert!(ours.contains(k), "{k}");
     }

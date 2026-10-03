@@ -610,7 +610,7 @@ mod tests {
         assert_eq!((m.title.as_str(), m.credits, refused), ("Song", vec![c(2, "primary"), c(1, "featured"), c(3, "producer")], None));
         // Its suffix taken off first, parsed, then put back.
         let titles = [(id(12), "Song w/ Ann".to_string())];
-        let with = Setting::parse("with", &|t| ["primary", "featured", "producer"].iter().find(|r| r.starts_with(t)).map(|r| r.to_string())).unwrap();
+        let with = Setting::parse("w/", &|t| ["primary", "featured", "producer"].iter().find(|r| r.starts_with(t)).map(|r| r.to_string())).unwrap();
         let parsed = Arc::new(TitlesParsed::new(&with, titles.to_vec(), Default::default(), &NameTable::default(), &mut { credited }).unwrap());
         let chain = [Op::CutSuffix("|".into()), Op::ParseTitle(parsed), Op::AddSuffix(None)];
         let meta = Meta { title: "Song w/ Ann | Some Tape".into(), ..Default::default() };
