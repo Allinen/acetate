@@ -6,6 +6,8 @@
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use serde_json::json;
+
+use super::revisions::EditRejected;
 use sqlx::PgConnection;
 use uuid::Uuid;
 
@@ -488,11 +490,66 @@ pub struct Kind {
     pub automatic: bool,
     /// For automatic kinds: whether the server checks for it.
     pub checked: bool,
+    /// Made by people, from the app (see `make_kind`).
+    pub custom: bool,
 }
 
 /// Every kind of flag, in the order to show them.
 pub async fn kinds(conn: &mut PgConnection) -> sqlx::Result<Vec<Kind>> {
-    sqlx::query_as!(Kind, "SELECT kind, name, automatic, checked FROM review_kinds ORDER BY position").fetch_all(conn).await
+    sqlx::query_as!(Kind, "SELECT kind, name, automatic, checked, custom FROM review_kinds ORDER BY position").fetch_all(conn).await
+}
+
+/// A kind of flag made by a person (see migration 0056), named `name`: returns its key.
+/// Refused if a kind has that name, or the key it makes, already.
+pub async fn make_kind(conn: &mut PgConnection, name: &str) -> anyhow::Result<String> {
+    let name = name.split_whitespace().collect::<Vec<_>>().join(" ");
+    let key: String = name.to_lowercase().split(|c: char| !c.is_ascii_alphanumeric()).filter(|w| !w.is_empty()).collect::<Vec<_>>().join("_");
+    if key.is_empty() {
+        return Err(EditRejected::Invalid("a kind of flag needs a name with letters or digits".into()).into());
+    }
+    let taken = sqlx::query_scalar!(r#"SELECT name AS "name!" FROM review_kinds WHERE kind = $1 OR lower(name) = lower($2)"#, key, name)
+        .fetch_optional(&mut *conn)
+        .await?;
+    if let Some(taken) = taken {
+        return Err(EditRejected::Invalid(format!("there's a kind of flag named “{taken}” already")).into());
+    }
+    Ok(sqlx::query_scalar!(r#"SELECT make_review_kind($1) AS "kind!""#, name).fetch_one(conn).await?)
+}
+
+/// Flags a track by hand with `kind` ("Fix later" or one made by people), unless it has
+/// an open flag of that kind already. Returns whether it was flagged.
+pub async fn flag_by_hand(conn: &mut PgConnection, track_id: Uuid, kind: &str) -> anyhow::Result<bool> {
+    let found = sqlx::query!("SELECT name, custom FROM review_kinds WHERE kind = $1", kind).fetch_optional(&mut *conn).await?;
+    match found {
+        None => return Err(EditRejected::NotFound("kind of flag").into()),
+        Some(k) if !k.custom && kind != "fix_later" => {
+            return Err(EditRejected::Invalid(format!("“{}” flags are raised by the server, not by hand", k.name)).into());
+        }
+        Some(_) => {}
+    }
+    let made = sqlx::query!(
+        r#"INSERT INTO review_flags (kind, track_id)
+           SELECT $1, $2 WHERE NOT EXISTS (SELECT 1 FROM review_flags WHERE track_id = $2 AND kind = $1 AND resolved_at IS NULL)"#,
+        kind,
+        track_id
+    )
+    .execute(conn)
+    .await?;
+    Ok(made.rows_affected() > 0)
+}
+
+/// Settles a track's open flags of `kind` (any kind), with `resolution`. Returns how many.
+pub async fn settle_kind(conn: &mut PgConnection, track_id: Uuid, kind: &str, resolution: &str) -> sqlx::Result<u64> {
+    let result = sqlx::query!(
+        "UPDATE review_flags SET resolved_at = now(), resolved_by = current_app_user(), resolution = $3
+         WHERE track_id = $1 AND kind = $2 AND resolved_at IS NULL",
+        track_id,
+        kind,
+        resolution
+    )
+    .execute(conn)
+    .await?;
+    Ok(result.rows_affected())
 }
 
 /// Turns an automatic check on or off (the owner only: `acetate review-checks`), then

@@ -1,6 +1,7 @@
 //! The editor's line, as typed: `key:value` parts, the same keys (and abbreviations) as a
 //! filter (`catalog::query`) plus the editor's own (`comment:`, `related:`, `why:`,
-//! `role:`, `as:`, `along:`, `cover:`, `source:`, `origin:`, `single:`). Only the syntax: what a value means is worked out by the
+//! `role:`, `as:`, `along:`, `cover:`, `source:`, `origin:`, `single:`; `flag:` is the
+//! filter's). Only the syntax: what a value means is worked out by the
 //! editor, which knows the library.
 //!
 //! * A value runs until the next key: `artist:lil quill year:2017`.
@@ -38,6 +39,7 @@ pub enum K {
     Source,
     Origin,
     Single,
+    Flag,
     /// A filter's key that isn't something to change (`format:`, `og:`…).
     Other(QueryKey),
 }
@@ -67,6 +69,7 @@ impl K {
             K::Source => "source",
             K::Origin => "origin",
             K::Single => "single",
+            K::Flag => "flag",
             K::Other(k) => k.name(),
         }
     }
@@ -113,6 +116,7 @@ pub fn key(name: &str) -> Option<K> {
         QueryKey::Number => K::Number,
         QueryKey::Group => K::Group,
         QueryKey::Kind => K::Kind,
+        QueryKey::Flag => K::Flag,
         other => K::Other(other),
     })
 }

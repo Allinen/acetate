@@ -237,6 +237,11 @@ pub enum Op {
     /// `label` says it ("soundcloud someone"), `data` is in the platform's artist shape. Not
     /// a revision; sent once, with the edit.
     Account { artist: Uuid, platform: String, label: String, data: serde_json::Value },
+    /// Flagged by hand: `kind` ("fix_later", one people made), or (`new`) a new kind of
+    /// flag named `name`, made with the edit. Not a revision.
+    Flag { kind: String, name: String, new: bool },
+    /// Its open flags of `kind` settled.
+    Unflag { kind: String, name: String },
 }
 
 /// `ops` on a track's metadata and facts. `position`: its place among the targets (for
@@ -294,7 +299,7 @@ pub fn apply(ops: &[Op], meta: &Meta, facts: &Facts, position: usize) -> (Meta, 
             }
             Op::Unrelate(track) => facts.relations.retain(|r| r.track_id != *track),
             Op::NoRelations => facts.relations.clear(),
-            Op::Group(_) | Op::Ungroup(_) | Op::Single | Op::Along(_) | Op::Sync | Op::Why(_) | Op::Version(_) | Op::Account { .. } => {}
+            Op::Group(_) | Op::Ungroup(_) | Op::Single | Op::Along(_) | Op::Sync | Op::Why(_) | Op::Version(_) | Op::Account { .. } | Op::Flag { .. } | Op::Unflag { .. } => {}
             Op::Cover { .. } | Op::MoveCover { .. } | Op::NoCover(_) | Op::NoCovers => {}
             Op::Source { .. } | Op::CorrectSource { .. } | Op::NoSource(_) | Op::NoSources | Op::Origin(_) => {}
         }
@@ -413,6 +418,41 @@ pub fn single(ops: &[Op]) -> bool {
 /// The new version the metadata goes to (`Op::Version`, the last one).
 pub fn version(ops: &[Op]) -> Option<String> {
     ops.iter().rev().find_map(|op| if let Op::Version(label) = op { Some(label.clone()) } else { None })
+}
+
+/// The flags raised and settled by hand: (kinds or new kinds' names raised, kinds settled),
+/// each once (the last one for a kind says which).
+pub fn flags(ops: &[Op]) -> (Vec<String>, Vec<String>) {
+    let (mut add, mut settle): (Vec<String>, Vec<String>) = (Vec::new(), Vec::new());
+    for op in ops {
+        match op {
+            Op::Flag { kind, .. } => {
+                settle.retain(|k| k != kind);
+                if !add.contains(kind) {
+                    add.push(kind.clone());
+                }
+            }
+            Op::Unflag { kind, .. } => {
+                add.retain(|k| k != kind);
+                if !settle.contains(kind) {
+                    settle.push(kind.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+    (add, settle)
+}
+
+/// The new kinds of flag the changes make (their names).
+pub fn new_flag_kinds(ops: &[Op]) -> Vec<String> {
+    let (add, _) = flags(ops);
+    ops.iter().filter_map(|op| if let Op::Flag { kind, new: true, .. } = op { Some(kind.clone()) } else { None }).filter(|k| add.contains(k)).fold(Vec::new(), |mut out, k| {
+        if !out.contains(&k) {
+            out.push(k);
+        }
+        out
+    })
 }
 
 /// The accounts given to artists: (artist, platform, data), each once.

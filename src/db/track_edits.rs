@@ -34,6 +34,9 @@
 //!   copied), and the version edited can be renamed with it (`label`).
 //! * **Accounts of artists** (`artist_sources`): sources added to artists, new ones too,
 //!   before the tracks (e.g. the SoundCloud account of the artist an import credits).
+//! * **Flags by hand**: a track flagged ("Fix later", or a kind people made: new ones are
+//!   made first, `new_review_kinds`, under their names) or its open flags of a kind
+//!   settled, in its savepoint.
 //! * **The flags after it**: each track's open review flags once the checks have run
 //!   (they're deferred to the commit; see migration 0030), so a preview says exactly what
 //!   would still be missing.
@@ -72,6 +75,9 @@ pub struct Edit {
     /// `edit_sources`.
     #[serde(default)]
     pub artist_sources: Vec<ArtistSource>,
+    /// Kinds of flag to make first (their names): the tracks' `flags.add` name them so.
+    #[serde(default)]
+    pub new_review_kinds: Vec<String>,
     pub tracks: Vec<TrackEdit>,
 }
 
@@ -129,6 +135,19 @@ pub struct TrackEdit {
     /// Groupings it goes in and leaves (None: none).
     #[serde(default)]
     pub groups: Option<GroupsEdit>,
+    /// Flags raised and settled by hand (None: none).
+    #[serde(default)]
+    pub flags: Option<FlagsEdit>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct FlagsEdit {
+    /// Kinds it's flagged with ("fix_later", one people made, or a new one's name).
+    #[serde(default)]
+    pub add: Vec<String>,
+    /// Kinds whose open flags on it are settled (any kind).
+    #[serde(default)]
+    pub settle: Vec<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -237,6 +256,8 @@ pub struct Edited {
     pub albums: HashMap<Uuid, Uuid>,
     /// Stand-in id → the grouping made.
     pub groupings: HashMap<Uuid, Uuid>,
+    /// Name → the kind of flag made.
+    pub review_kinds: HashMap<String, String>,
     pub tracks: Vec<TrackEdited>,
 }
 
@@ -303,6 +324,10 @@ pub async fn edit(
     for new in &edit.new_groupings {
         groupings.insert(new.id, super::groupings::create(conn, new.kind.trim(), new.name.trim(), "", reason).await?);
     }
+    let mut review_kinds = HashMap::new();
+    for name in &edit.new_review_kinds {
+        review_kinds.insert(name.clone(), super::review::make_kind(conn, name).await?);
+    }
     if !edit.artist_sources.is_empty() && !may.sources {
         return Err(EditRejected::Invalid("giving artists sources needs the `edit_sources` permission".into()).into());
     }
@@ -319,7 +344,7 @@ pub async fn edit(
     let mut tracks = Vec::new();
     for track in &edit.tracks {
         let mut savepoint = conn.begin().await?;
-        let made = Made { artists: &artists, albums: &albums, groupings: &groupings };
+        let made = Made { artists: &artists, albums: &albums, groupings: &groupings, review_kinds: &review_kinds };
         let result = edit_track(&mut savepoint, track, &made, reason, may).await;
         let done = match result {
             Ok(done) => {
@@ -335,7 +360,7 @@ pub async fn edit(
     }
 
     read_flags(conn, &mut tracks).await?;
-    Ok(Edited { artists, albums, groupings, tracks })
+    Ok(Edited { artists, albums, groupings, review_kinds, tracks })
 }
 
 /// Fills in the tracks' `flags`: their open review flags, the checks run first.
@@ -367,6 +392,7 @@ struct Made<'a> {
     artists: &'a HashMap<Uuid, Uuid>,
     albums: &'a HashMap<Uuid, Uuid>,
     groupings: &'a HashMap<Uuid, Uuid>,
+    review_kinds: &'a HashMap<String, String>,
 }
 
 async fn edit_track(conn: &mut PgConnection, edit: &TrackEdit, made: &Made<'_>, reason: &str, may: May) -> anyhow::Result<TrackEdited> {
@@ -474,6 +500,16 @@ async fn edit_track(conn: &mut PgConnection, edit: &TrackEdit, made: &Made<'_>, 
         }
         for grouping in &groups.remove {
             super::groupings::remove(conn, real(grouping), &[track], &[], reason).await?;
+        }
+    }
+    if let Some(flags) = &edit.flags {
+        for kind in &flags.add {
+            let kind = made.review_kinds.get(kind).unwrap_or(kind);
+            super::review::flag_by_hand(conn, track, kind).await?;
+        }
+        let settled = if reason.is_empty() { "settled in the track editor" } else { reason };
+        for kind in &flags.settle {
+            super::review::settle_kind(conn, track, kind, settled).await?;
         }
     }
     Ok(done)

@@ -42,17 +42,17 @@ async fn state(conn: &mut PgConnection, track: Uuid) -> anyhow::Result<(Uuid, Uu
 async fn meta_edit(conn: &mut PgConnection, track: Uuid, change: impl FnOnce(&mut TrackMetadata)) -> anyhow::Result<TrackEdit> {
     let (variant, base, mut data, _, _) = state(conn, track).await?;
     change(&mut data);
-    Ok(TrackEdit { track_id: track, meta: Some(MetaEdit { variant_id: Some(variant), base_revision_id: Some(base), new_variant: None, label: None, data }), facts: None, along: true, sync: false, covers: None, sources: None, single: false, groups: None })
+    Ok(TrackEdit { track_id: track, meta: Some(MetaEdit { variant_id: Some(variant), base_revision_id: Some(base), new_variant: None, label: None, data }), facts: None, along: true, sync: false, covers: None, sources: None, single: false, groups: None , flags: None })
 }
 
 async fn facts_edit(conn: &mut PgConnection, track: Uuid, change: impl FnOnce(&mut TrackFacts)) -> anyhow::Result<TrackEdit> {
     let (_, _, _, base, mut data) = state(conn, track).await?;
     change(&mut data);
-    Ok(TrackEdit { track_id: track, meta: None, facts: Some(FactsEdit { base_revision_id: base, data }), along: true, sync: false, covers: None, sources: None, single: false, groups: None })
+    Ok(TrackEdit { track_id: track, meta: None, facts: Some(FactsEdit { base_revision_id: base, data }), along: true, sync: false, covers: None, sources: None, single: false, groups: None , flags: None })
 }
 
 fn edit(tracks: Vec<TrackEdit>) -> Edit {
-    Edit { reason: "test".into(), new_artists: vec![], new_albums: vec![], new_groupings: vec![], artist_sources: vec![], tracks }
+    Edit { reason: "test".into(), new_artists: vec![], new_albums: vec![], new_groupings: vec![], artist_sources: vec![], new_review_kinds: vec![], tracks }
 }
 
 async fn run(lib: &Library, user: Uuid, edit: &Edit, keep: bool) -> anyhow::Result<Edited> {
@@ -189,7 +189,7 @@ async fn albums_its_alone_on_change_along_with_what_changed(_: PgPoolOptions, co
 
     // Synced, with nothing else changing: the EP matches the track (its own date goes:
     // the track has none).
-    let sync = TrackEdit { track_id: lib.o, meta: None, facts: None, along: true, sync: true, covers: None, sources: None, single: false, groups: None };
+    let sync = TrackEdit { track_id: lib.o, meta: None, facts: None, along: true, sync: true, covers: None, sources: None, single: false, groups: None , flags: None };
     let edited = run(&lib, lib.bob, &edit(vec![sync]), false).await?;
     let along = &edited.tracks[0].along;
     assert_eq!(along.len(), 1, "{:?}", edited.tracks[0]);
@@ -310,7 +310,7 @@ async fn a_single_made_to_match_with_nothing_else_changed(_: PgPoolOptions, conn
     db::revisions::write_album(&mut tx, single, None, &data, Source::Edit, "renamed by hand").await?;
     tx.commit().await?;
 
-    let sync = TrackEdit { track_id: lib.o, meta: None, facts: None, along: true, sync: true, covers: None, sources: None, single: false, groups: None };
+    let sync = TrackEdit { track_id: lib.o, meta: None, facts: None, along: true, sync: true, covers: None, sources: None, single: false, groups: None , flags: None };
     let edited = run(&lib, lib.bob, &edit(vec![sync]), true).await?;
     assert!(edited.tracks[0].error.is_none(), "{:?}", edited.tracks[0].error);
     assert_eq!(edited.tracks[0].along.len(), 1);
@@ -322,7 +322,7 @@ async fn a_single_made_to_match_with_nothing_else_changed(_: PgPoolOptions, conn
     let mut tx = db::begin(&lib.owner, None).await?;
     db::revisions::write_album(&mut tx, single, None, &data, Source::Edit, "renamed again").await?;
     tx.commit().await?;
-    let plain = TrackEdit { track_id: lib.o, meta: None, facts: None, along: true, sync: false, covers: None, sources: None, single: false, groups: None };
+    let plain = TrackEdit { track_id: lib.o, meta: None, facts: None, along: true, sync: false, covers: None, sources: None, single: false, groups: None , flags: None };
     assert!(run(&lib, lib.bob, &edit(vec![plain]), true).await?.tracks[0].along.is_empty());
     assert_eq!(title(&lib, "albums", single).await?, "Old Single Name");
     Ok(())
@@ -330,7 +330,7 @@ async fn a_single_made_to_match_with_nothing_else_changed(_: PgPoolOptions, conn
 
 /// O's covers (it has none), as the editor sends them.
 fn covers_edit(track: Uuid, base: Vec<Uuid>, covers: Vec<CoverItem>) -> TrackEdit {
-    TrackEdit { track_id: track, meta: None, facts: None, along: true, sync: false, covers: Some(CoversEdit { base, covers }), sources: None, single: false, groups: None }
+    TrackEdit { track_id: track, meta: None, facts: None, along: true, sync: false, covers: Some(CoversEdit { base, covers }), sources: None, single: false, groups: None , flags: None }
 }
 
 async fn covers_of(lib: &Library, owner: Uuid) -> anyhow::Result<Vec<(Uuid, String)>> {
@@ -438,7 +438,7 @@ async fn sources_added_made_the_origin_and_trashed_with_the_track(_: PgPoolOptio
         origin,
         ..Default::default()
     };
-    let with = |s: SourcesEdit| TrackEdit { track_id: lib.o, meta: None, facts: None, along: true, sync: false, covers: None, sources: Some(s), single: false, groups: None };
+    let with = |s: SourcesEdit| TrackEdit { track_id: lib.o, meta: None, facts: None, along: true, sync: false, covers: None, sources: Some(s), single: false, groups: None , flags: None };
 
     // The file's origin can't go to the trash while it's the origin.
     let edited = run(&lib, lib.bob, &edit(vec![with(sources(vec![old], None))]), false).await?;
@@ -492,7 +492,7 @@ async fn every_source_replaced_with_one_on_many_tracks(_: PgPoolOptions, connect
             origin: Some(stand_in),
             ..Default::default()
         };
-        tracks.push(TrackEdit { track_id: track, meta: None, facts: None, along: true, sync: false, covers: None, sources: Some(sources), single: false, groups: None });
+        tracks.push(TrackEdit { track_id: track, meta: None, facts: None, along: true, sync: false, covers: None, sources: Some(sources), single: false, groups: None , flags: None });
     }
     let edited = run(&lib, lib.bob, &edit(tracks), true).await?;
     assert!(edited.tracks.iter().all(|t| t.error.is_none()), "{:?}", edited.tracks);
@@ -550,7 +550,7 @@ async fn a_single_of_its_own_as_the_edit_leaves_the_track(_: PgPoolOptions, conn
 async fn groupings_made_joined_and_left_with_the_track(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
     let lib = setup(connect).await?;
     let early = Uuid::from_u128(0xE);
-    let with = |groups: GroupsEdit, single: bool| TrackEdit { track_id: lib.o, meta: None, facts: None, along: true, sync: false, covers: None, sources: None, single, groups: Some(groups) };
+    let with = |groups: GroupsEdit, single: bool| TrackEdit { track_id: lib.o, meta: None, facts: None, along: true, sync: false, covers: None, sources: None, single, groups: Some(groups), flags: None };
     let (owner, o) = (lib.owner.clone(), lib.o);
     let in_it = |grouping: Uuid| {
         let owner = owner.clone();
@@ -642,5 +642,57 @@ async fn artists_get_their_accounts_with_the_edit(_: PgPoolOptions, connect: PgC
     let found = db::sources::accounts(&mut tx, "soundcloud", &["77".into(), "78".into(), "79".into()]).await?;
     let found: Vec<(&str, Uuid, &str)> = found.iter().map(|o| (o.kind, o.id, o.account.as_str())).collect();
     assert_eq!(found, [("artist", made, "77"), ("artist", lib.x, "78")]);
+    Ok(())
+}
+
+#[sqlx::test]
+async fn flags_by_hand_of_kinds_people_make(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
+    use crate::db::track_edits::FlagsEdit;
+    let lib = setup(connect).await?;
+    let flagged = |add: &[&str], settle: &[&str]| TrackEdit {
+        track_id: lib.o,
+        meta: None,
+        facts: None,
+        along: true,
+        sync: false,
+        covers: None,
+        sources: None,
+        single: false,
+        groups: None,
+        flags: Some(FlagsEdit { add: add.iter().map(|s| s.to_string()).collect(), settle: settle.iter().map(|s| s.to_string()).collect() }),
+    };
+    let open = |kind: &'static str| {
+        let pool = lib.owner.clone();
+        let track = lib.o;
+        async move {
+            sqlx::query_scalar::<_, i64>("SELECT count(*) FROM review_flags WHERE track_id = $1 AND kind = $2 AND resolved_at IS NULL")
+                .bind(track)
+                .bind(kind)
+                .fetch_one(&pool)
+                .await
+        }
+    };
+
+    // A new kind, made with the edit, the track flagged with it (and "Fix later").
+    let change = Edit { new_review_kinds: vec!["Missing  SoundCloud metadata".into()], ..edit(vec![flagged(&["Missing  SoundCloud metadata", "fix_later"], &[])]) };
+    let done = run(&lib, lib.alice, &change, true).await?;
+    assert_eq!(done.review_kinds["Missing  SoundCloud metadata"], "missing_soundcloud_metadata");
+    assert!(done.tracks[0].flags.contains(&"missing_soundcloud_metadata".to_string()), "{:?}", done.tracks[0].flags);
+    let mut tx = db::begin(&lib.app, Some(lib.carol)).await?;
+    let kind = db::review::kinds(&mut tx).await?.into_iter().find(|k| k.kind == "missing_soundcloud_metadata").unwrap();
+    assert!(kind.custom && !kind.automatic && kind.name == "Missing SoundCloud metadata");
+    // Its name again (any case): refused.
+    assert!(db::review::make_kind(&mut tx, "missing soundcloud METADATA").await.is_err());
+    drop(tx);
+
+    // Again: still one open flag. Then settled.
+    run(&lib, lib.alice, &edit(vec![flagged(&["missing_soundcloud_metadata"], &[])]), true).await?;
+    assert_eq!(open("missing_soundcloud_metadata").await?, 1);
+    run(&lib, lib.alice, &edit(vec![flagged(&[], &["missing_soundcloud_metadata"])]), true).await?;
+    assert_eq!((open("missing_soundcloud_metadata").await?, open("fix_later").await?), (0, 1));
+
+    // Kinds the server raises aren't raised by hand.
+    let done = run(&lib, lib.alice, &edit(vec![flagged(&["missing_cover"], &[])]), false).await?;
+    assert_eq!(done.tracks[0].error.as_ref().map(|e| e.code.as_str()), Some("invalid"));
     Ok(())
 }

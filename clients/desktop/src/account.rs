@@ -62,6 +62,16 @@ pub struct ReviewKind {
     pub name: String,
     /// Raised and settled by the server itself, from what the track has ("no cover").
     pub automatic: bool,
+    /// Made by people, from the app (raised and settled by hand, like "Fix later").
+    #[serde(default)]
+    pub custom: bool,
+}
+
+impl ReviewKind {
+    /// Whether people flag tracks with it (in the editor: `flag:…`).
+    pub fn by_hand(&self) -> bool {
+        self.custom || self.kind == "fix_later"
+    }
 }
 
 impl Vocab {
@@ -113,6 +123,23 @@ impl Account {
             self.me = me;
             self.vocab = vocab.map(Arc::new);
         }
+    }
+
+    /// Asks for the vocabulary again (e.g. a kind of flag was made), keeping who's logged
+    /// in.
+    pub fn refresh_vocab(&mut self, api: &Api, runtime: &tokio::runtime::Handle, ctx: &eframe::egui::Context) {
+        let me = self.me.clone();
+        let (api, arrived, ctx) = (api.clone(), self.arrived.clone(), ctx.clone());
+        runtime.spawn(async move {
+            let mut vocab = api.send_json::<Vocab>(reqwest::Method::GET, "/api/vocab", None).await.ok();
+            if let Some(vocab) = vocab.as_mut() {
+                vocab.source_shapes = api.send_json(reqwest::Method::GET, "/api/source-shapes", None).await.unwrap_or_default();
+            }
+            if vocab.is_some() {
+                *arrived.lock().unwrap() = Some((me, vocab));
+                ctx.request_repaint();
+            }
+        });
     }
 
     pub fn can(&self, permission: &str) -> bool {

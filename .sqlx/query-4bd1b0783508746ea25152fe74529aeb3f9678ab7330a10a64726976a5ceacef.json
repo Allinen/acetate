@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO review_flags (kind, track_id)\n           SELECT $1, $2 WHERE NOT EXISTS (SELECT 1 FROM review_flags WHERE track_id = $2 AND kind = $1 AND resolved_at IS NULL)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "4bd1b0783508746ea25152fe74529aeb3f9678ab7330a10a64726976a5ceacef"
+}

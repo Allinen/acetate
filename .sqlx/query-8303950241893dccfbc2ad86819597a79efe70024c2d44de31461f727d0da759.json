@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT kind, name, automatic, checked FROM review_kinds ORDER BY position",
+  "query": "SELECT kind, name, automatic, checked, custom FROM review_kinds ORDER BY position",
   "describe": {
     "columns": [
       {
@@ -46,6 +46,17 @@
             "name": "checked"
           }
         }
+      },
+      {
+        "ordinal": 4,
+        "name": "custom",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "review_kinds",
+            "name": "custom"
+          }
+        }
       }
     ],
     "parameters": {
@@ -55,8 +66,9 @@
       false,
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "0f178f4795b15e9060732bcb85d359e93d9d13c327fb6b42b3de5aba507a5abc"
+  "hash": "8303950241893dccfbc2ad86819597a79efe70024c2d44de31461f727d0da759"
 }

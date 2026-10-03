@@ -474,6 +474,26 @@ fn unit(
             let label = if new { format!("grouping: + “{name}” (new {kind})") } else { format!("grouping: + “{name}” ({kind})") };
             Ok(Resolved { label: format!("{label}, and a single it's alone on"), ops: vec![Op::Group(id)], new_kind: new.then_some((id, kind)), ..Default::default() })
         }
+        K::Flag => {
+            only(&[])?;
+            if main.minus && !main.colon {
+                return Err("-flag alone isn't anything: -flag:name settles that kind of flag on it".into());
+            }
+            if value.is_empty() {
+                return Err(format!("{}flag: type its name", if main.minus { "-" } else { "" }));
+            }
+            let typed = value.split_whitespace().collect::<Vec<_>>().join(" ");
+            let same = ctx.vocab.review_kinds.iter().find(|k| k.name.eq_ignore_ascii_case(&typed) || k.kind.eq_ignore_ascii_case(&typed));
+            if main.minus {
+                let k = same.ok_or_else(|| format!("no kind of flag named “{typed}”"))?;
+                return done(format!("flag: settles its “{}” flags", k.name), vec![Op::Unflag { kind: k.kind.clone(), name: k.name.clone() }]);
+            }
+            match same {
+                Some(k) if !k.by_hand() => Err(format!("“{}” flags are raised by the server, not by hand", k.name)),
+                Some(k) => done(format!("flag: + “{}”", k.name), vec![Op::Flag { kind: k.kind.clone(), name: k.name.clone(), new: false }]),
+                None => done(format!("flag: + “{typed}” (a new kind of flag, listed on Review)"), vec![Op::Flag { kind: typed.clone(), name: typed, new: true }]),
+            }
+        }
         K::Single => {
             only(&[])?;
             if main.minus || !value.is_empty() {
@@ -919,6 +939,16 @@ pub fn candidates(part: &Part, owner: Option<&Part>, ctx: &Ctx, hits: &[u32], tr
             }
             _ => {}
         },
+        K::Flag => {
+            let typed = value.split_whitespace().collect::<Vec<_>>().join(" ");
+            for k in ctx.vocab.review_kinds.iter().filter(|k| (part.minus || k.by_hand()) && (typed.is_empty() || k.name.to_lowercase().starts_with(&typed.to_lowercase()) || loosely_in(&typed, &k.name))) {
+                let sub = if k.custom { "made by people" } else if k.automatic { "the server's" } else { "" };
+                out.push(Candidate { label: k.name.clone(), sub: sub.into(), text: k.name.clone(), pick: None, next: None });
+            }
+            if !typed.is_empty() && !part.minus && !ctx.vocab.review_kinds.iter().any(|k| k.name.eq_ignore_ascii_case(&typed)) {
+                out.push(Candidate { label: format!("New flag “{typed}”"), sub: "a kind of flag, made when it's applied".into(), text: typed.clone(), pick: None, next: None });
+            }
+        }
         K::Group => {
             for g in ctx.catalog.groupings.iter().filter(|g| value.is_empty() || g.name.to_lowercase().starts_with(&value.to_lowercase()) || loosely_in(value, &g.name)) {
                 out.push(Candidate { label: g.name.clone(), sub: g.kind.clone(), text: g.name.clone(), pick: Some(Pick::Pin(PinKind::Grouping, g.id)), next: None });
@@ -1022,7 +1052,7 @@ pub fn actions(words: &str, ctx: &Ctx) -> Vec<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::account::RelationKind;
+    use crate::account::{RelationKind, ReviewKind};
     use crate::catalog::model;
 
     const ANN: &str = "00000000-0000-7000-8000-0000000000a1";
@@ -1061,6 +1091,11 @@ mod tests {
             credit_roles: strings(&["primary", "featured", "producer"]),
             album_kinds: strings(&["album", "ep", "single"]),
             relation_kinds: vec![RelationKind { kind: "remix_of".into(), template: "%A is a remix of %B".into() }],
+            review_kinds: vec![
+                ReviewKind { kind: "fix_later".into(), name: "Fix later".into(), automatic: false, custom: false },
+                ReviewKind { kind: "missing_cover".into(), name: "No cover".into(), automatic: true, custom: false },
+                ReviewKind { kind: "missing_sc".into(), name: "Missing SoundCloud metadata".into(), automatic: false, custom: true },
+            ],
             ..Default::default()
         }
     }
@@ -1087,6 +1122,19 @@ mod tests {
 
     fn ops(line: &str) -> Vec<Op> {
         run(line, &Names::default(), 1).into_iter().flat_map(|u| u.unwrap().0).collect()
+    }
+
+    #[test]
+    fn flags_by_hand() {
+        let flag = |kind: &str, name: &str, new: bool| Op::Flag { kind: kind.into(), name: name.into(), new };
+        assert_eq!(ops("flag:missing   soundcloud METADATA"), [flag("missing_sc", "Missing SoundCloud metadata", false)]);
+        assert_eq!(ops("flag:fix later"), [flag("fix_later", "Fix later", false)]);
+        // A name no kind has: a new kind, named as typed.
+        assert_eq!(ops("flag:Ask Bo"), [flag("Ask Bo", "Ask Bo", true)]);
+        // The server's kinds are settled by hand, not raised.
+        assert!(run("flag:no cover", &Names::default(), 1)[0].as_ref().unwrap_err().contains("raised by the server"));
+        assert_eq!(ops("-flag:No cover"), [Op::Unflag { kind: "missing_cover".into(), name: "No cover".into() }]);
+        assert!(run("-flag:nothing like it", &Names::default(), 1)[0].is_err());
     }
 
     #[test]

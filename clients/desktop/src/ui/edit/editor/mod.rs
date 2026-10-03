@@ -35,6 +35,9 @@
 //!   along (`along:off` to leave them), and its review flags after (fixed, still there,
 //!   new), from the server's own checks. Ctrl+Enter applies what it shows; with many
 //!   tracks only once it's up to date, with one as soon as it is.
+//! * **Flags by hand**: `flag:Missing SoundCloud metadata` flags it ("Fix later", or a kind
+//!   people made; a name no kind has makes a new one, listed on Review like the others),
+//!   `-flag:…` settles its open flags of that kind (any kind). Many tracks at once too.
 //! * **Import metadata from**: a SoundCloud track's JSON, a yt-dlp JSON or a YouTube link
 //!   pasted (Ctrl+V, into the empty line or outside any field; one track) stages what it
 //!   says (see `import`): `version:SoundCloud` (a new version with only that, not the shown
@@ -965,6 +968,11 @@ impl TrackEditor {
         }
         shell.act(Action::RefreshLibrary);
         shell.flags.refresh(&shell.api, shell.runtime.handle(), &shell.ctx);
+        // New kinds of flag: named everywhere from now on.
+        if !model::new_flag_kinds(&self.ops()).is_empty() {
+            let api = shell.api.clone();
+            shell.account.refresh_vocab(&api, shell.runtime.handle(), &shell.ctx);
+        }
         // (A draft is gone: the track it became is new.)
         if targets.len() <= 100 && self.engine.draft.is_none() {
             for t in targets {
