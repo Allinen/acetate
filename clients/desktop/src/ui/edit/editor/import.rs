@@ -135,7 +135,7 @@ fn soundcloud(json: &Value) -> Result<Metadata, String> {
         }
         _ => None,
     };
-    let artwork = str_of(json, "artwork_url").map(|u| vec![u.replace("-large.", "-original."), u.replace("-large.", "-t500x500."), u.to_string()]).unwrap_or_default();
+    let artwork = str_of(json, "artwork_url").map(artwork_links).unwrap_or_default();
     Ok(Metadata {
         from: "SoundCloud",
         title,
@@ -196,6 +196,22 @@ fn youtube(json: &Value) -> Result<Metadata, String> {
     })
 }
 
+/// A SoundCloud artwork's links, best first: its original (a JPEG, else a PNG: it's kept
+/// as uploaded), whatever size `url` is ("…-large.jpg", "…-t500x500.jpg"), then `url`.
+fn artwork_links(url: &str) -> Vec<String> {
+    let (path, query) = url.split_once('?').map_or((url, ""), |(p, q)| (p, q));
+    let mut links = Vec::new();
+    // "…/artworks-abc-def-t500x500.jpg": the size is after the last "-" of the file's name.
+    let name_at = path.rfind('/').map_or(0, |i| i + 1);
+    if let Some(dash) = path[name_at..].rfind('-') {
+        let base = &path[..name_at + dash];
+        links.push(format!("{base}-original.jpg"));
+        links.push(format!("{base}-original.png"));
+    }
+    links.push(if query.is_empty() { path.to_string() } else { format!("{path}?{query}") });
+    dedup(links)
+}
+
 fn dedup(mut list: Vec<String>) -> Vec<String> {
     let mut seen = Vec::new();
     list.retain(|x| {
@@ -239,7 +255,9 @@ mod tests {
         );
         let account = m.account.unwrap();
         assert_eq!((account.ids, account.data), (vec!["42".to_string()], json!({ "artist_id": 42, "artist_permalinks": ["miravale"] })));
-        assert_eq!(m.artwork[0], "https://i1.sndcdn.com/artworks-xyz-original.jpg");
+        assert_eq!(m.artwork, ["https://i1.sndcdn.com/artworks-xyz-original.jpg", "https://i1.sndcdn.com/artworks-xyz-original.png", "https://i1.sndcdn.com/artworks-xyz-large.jpg"]);
+        let links = artwork_links("https://i1.sndcdn.com/artworks-000123-AbC-t500x500.png?x=1");
+        assert_eq!(links, ["https://i1.sndcdn.com/artworks-000123-AbC-original.jpg", "https://i1.sndcdn.com/artworks-000123-AbC-original.png", "https://i1.sndcdn.com/artworks-000123-AbC-t500x500.png?x=1"]);
     }
 
     #[test]

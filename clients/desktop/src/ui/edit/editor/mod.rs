@@ -1143,9 +1143,11 @@ impl TrackEditor {
                 };
                 let mut artwork = None;
                 for url in &meta.artwork {
+                    // The first that's there (an original is a JPEG or a PNG), and an image.
                     if let Ok(answer) = reqwest::get(url).await
                         && answer.status().is_success()
                         && let Ok(bytes) = answer.bytes().await
+                        && image::guess_format(&bytes).is_ok()
                     {
                         artwork = Some(bytes.to_vec());
                         break;
