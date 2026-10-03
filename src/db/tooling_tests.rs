@@ -144,7 +144,7 @@ async fn composers_become_producers_later(_: PgPoolOptions, connect: PgConnectOp
         restrict_to: None,
         hints: crate::ingest::describe::Hints { no_composers: true, ..Default::default() },
         local_path: None,
-        given: Default::default(),
+        edited_after: false,
         tags_from: None,
         volume: None,
     };

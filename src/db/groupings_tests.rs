@@ -38,7 +38,7 @@ async fn ingest_glass_harbor(pool: &PgPool, store: &BlobStore, file: &str, song:
         restrict_to: None,
         hints,
         local_path: None,
-        given: Default::default(),
+        edited_after: false,
         tags_from: None,
         volume: None,
     };

@@ -165,7 +165,7 @@ async fn create_track_from(
     .await?;
 
     // Revision 0 may lack a title: what the file's tags said, when an edit in the same
-    // transaction gives one (see `ingest::Given::edited_after`, whose caller checks it does).
+    // transaction gives one (see `ingest::IngestOptions::edited_after`, whose caller checks it does).
     meta.validate_credits().map_err(invalid)?;
     write_internal_unchecked(conn, track_id, variant_id, None, meta, source, reason, false).await?;
     write_external(conn, track_id, None, facts, source, reason).await?;

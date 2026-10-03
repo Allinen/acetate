@@ -1346,8 +1346,6 @@ async function showReview() {
 function problemList(problems) {
   if (!problems.length) return h("p", { class: "muted" }, "None.");
   return problems.map((p) => {
-    const resolution = h("input", { placeholder: "what you did (optional)" });
-    const status = h("span", {});
     const tags = p.embedded_tags?.tags ?? [];
     return h("div", { class: "box stack" },
       h("div", { class: "row" },
@@ -1362,33 +1360,21 @@ function problemList(problems) {
         h("pre", { class: "mono" }, tags.map((t) => [`[${t.format}]`,
           ...t.items.map((i) => `  ${i.key}${i.description ? ` (${i.description})` : ""}: ${typeof i.value === "string" ? i.value : JSON.stringify(i.value)}`)].join("\n")).join("\n"))) : null,
       importForm(p),
-      can("replace_file") ? addToTrackForm(p) : null,
-      h("div", { class: "row" }, resolution,
-        h("button", {
-          type: "button", class: "small",
-          onclick: () => save(status, () => postJson(`/api/ingest-problems/${p.id}/resolve`, { resolution: resolution.value }), showReview),
-        }, "Resolve"), status));
+      can("replace_file") ? addToTrackForm(p) : null);
   });
 }
 
-// Import the kept file again, typing in what its tags lack (the file isn't changed).
+// Import the kept file again as it is (the file isn't changed). What its tags lack (a
+// title, an artist) is given in the desktop app's editor, which imports it with them.
 function importForm(p) {
-  const title = h("input", { value: p.tag_title ?? "", placeholder: "title", required: true });
-  const artists = h("input", { value: p.tag_artists.join("; "), placeholder: "artists, separated by ;", required: true });
   const status = h("span", {});
-  const form = h("form", { class: "row" },
-    h("label", { class: "row" }, "title", title),
-    h("label", { class: "row" }, "artists", artists),
-    h("button", { type: "submit", class: "small" }, "Import with these"), status);
-  form.addEventListener("submit", (e) => {
-    e.preventDefault();
-    save(status, () => postJson(`/api/ingest-problems/${p.id}/import`, {
-      // Only what differs from the tags counts as given by hand.
-      title: title.value.trim() !== (p.tag_title ?? "") ? title.value.trim() : null,
-      artists: artists.value.trim() !== p.tag_artists.join("; ") ? [artists.value] : [],
-    }), (report) => { location.hash = `#/track/${report.track_id}`; });
-  });
-  return form;
+  return h("div", { class: "row" },
+    h("button", {
+      type: "button", class: "small",
+      onclick: () => save(status, () => postJson(`/api/ingest-problems/${p.id}/import`, {}),
+        (answer) => { location.hash = `#/track/${answer.track_id}`; }),
+    }, "Import as it is"),
+    h("span", { class: "muted" }, "(what its tags lack: in the desktop app)"), status);
 }
 
 // For a file that belongs to a track that's already there: make it that track's file (the

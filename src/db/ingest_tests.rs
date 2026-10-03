@@ -42,7 +42,7 @@ fn options(user: Option<Uuid>, song_id: i64, hints: Hints) -> IngestOptions {
         restrict_to: None,
         hints,
         local_path: None,
-        given: Default::default(),
+        edited_after: false,
         tags_from: None,
         volume: None,
     }
@@ -457,7 +457,7 @@ async fn listed_files_keep_their_covers_and_go_to_the_trash_when_resolved(
 }
 
 #[sqlx::test]
-async fn listed_files_import_with_values_given_by_hand(
+async fn listed_files_import_again_keeping_their_restriction(
     _: PgPoolOptions,
     connect: PgConnectOptions,
 ) -> anyhow::Result<()> {
@@ -474,31 +474,24 @@ async fn listed_files_import_with_values_given_by_hand(
         .await?;
     assert_eq!(description["restrict_to"], json!([lib.friends]));
 
-    // Imported again (what the Review page does), with the artist typed in.
+    // Imported again (what the Review page does), its artist to be given by an edit.
     let description: crate::ingest::describe::NewDescription = serde_json::from_value(description)?;
     let description = description.validate(|_| None).map_err(anyhow::Error::msg)?;
     let again = IngestOptions {
         restrict_to: description.restrict_to,
-        given: ingest::Given { title: None, artists: vec!["Typed Artist; Another".into()], edited_after: false },
+        edited_after: true,
         uploaded_filename: "no-artist.opus".into(),
         ..opts.clone()
     };
     let report = ingest::ingest_staged(&lib.owner, &store, &file, &again, false).await?;
     let track = report.track_id.unwrap();
-    let names: Vec<&str> = report.artists.iter().map(|a| a.name.as_str()).collect();
-    assert_eq!(names, ["Typed Artist", "Another"]);
 
-    // Still restricted, and the revision says what was typed in.
+    // Still restricted.
     let restricted: bool = sqlx::query_scalar("SELECT is_restricted FROM tracks WHERE id = $1")
         .bind(track)
         .fetch_one(&lib.owner)
         .await?;
     assert!(restricted);
-    let reason: String = sqlx::query_scalar("SELECT reason FROM track_revisions WHERE track_id = $1 AND variant_id IS NOT NULL")
-        .bind(track)
-        .fetch_one(&lib.owner)
-        .await?;
-    assert!(reason.contains("given by hand") && reason.contains("artist"), "{reason}");
     let open: i64 = sqlx::query_scalar("SELECT count(*) FROM ingest_problems WHERE resolved_at IS NULL")
         .fetch_one(&lib.owner)
         .await?;
@@ -794,7 +787,7 @@ async fn a_described_release_date_is_only_used_without_one_in_the_tags(
 
     // They don't: the described one, and the revision says so.
     let opts = IngestOptions {
-        given: ingest::Given { title: None, artists: vec!["Typed Artist".into()], edited_after: false },
+        edited_after: true,
         ..options(None, 2, dated)
     };
     let undated = ingest_file(&lib.owner, &store, "no-artist.opus", &opts, false).await?;

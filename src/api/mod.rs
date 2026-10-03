@@ -162,7 +162,6 @@ pub fn router(state: AppState) -> Router {
         .route("/api/tracks/edit", require(&[EditMetadata], post(tracks::edit_many)))
         // Files that didn't import: whoever uploaded them (admins: all).
         .route("/api/ingest-problems", require(&[Upload], get(problems::list)))
-        .route("/api/ingest-problems/{id}/resolve", require(&[Upload], post(problems::resolve)))
         .route("/api/ingest-problems/{id}/audio", require(&[Upload], get(problems::audio)))
         .route("/api/ingest-problems/{id}/import", require(&[Upload], post(problems::import)))
         .route(

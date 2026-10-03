@@ -14,7 +14,7 @@ use uuid::Uuid;
 
 use crate::api::{self, AppState};
 use crate::db;
-use crate::ingest::{self, IngestOptions};
+use crate::ingest::{self, IngestOptions, describe};
 use crate::model::sources::{self, Kind, NewSource};
 use crate::storage::BlobStore;
 
@@ -32,6 +32,11 @@ struct Setup {
 /// An admin with a session, and "no-artist.opus" uploaded by them from NetEase song 7,
 /// refused (no artist).
 async fn setup(connect: PgConnectOptions) -> anyhow::Result<Setup> {
+    setup_with(connect, "no-artist.opus").await
+}
+
+/// The same with `file`. One that would import is listed as if it had been refused.
+async fn setup_with(connect: PgConnectOptions, file: &str) -> anyhow::Result<Setup> {
     let owner = PgPoolOptions::new().connect_with(connect.clone()).await?;
     let pool = db::app_pool_options().connect_with(connect).await?;
     let mut tx = db::begin(&owner, None).await?;
@@ -46,20 +51,42 @@ async fn setup(connect: PgConnectOptions) -> anyhow::Result<Setup> {
     let origin = NewSource { platform: "netease".into(), source_id: None, captured_at: None, data: json!({ "song_id": 7 }) };
     let options = IngestOptions {
         user: Some(user),
-        uploaded_filename: "no-artist.opus".into(),
+        uploaded_filename: file.into(),
         origin: sources::validate(Kind::Track, origin)?,
         status: "released".into(),
         sources: Vec::new(),
         restrict_to: None,
         hints: Default::default(),
         local_path: None,
-        given: Default::default(),
+        edited_after: false,
         tags_from: None,
         volume: None,
     };
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("test-audio/no-artist.opus");
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("test-audio").join(file);
     let pending = ingest::receive_path(&store, &path, "main").await?;
-    assert!(ingest::ingest_with_report(&pool, &store, pending, &options, false).await.is_err());
+    if ingest::ingest_with_report(&pool, &store, pending, &options, true).await.is_err() {
+        let pending = ingest::receive_path(&store, &path, "main").await?;
+        assert!(ingest::ingest_with_report(&pool, &store, pending, &options, false).await.is_err());
+    } else {
+        let pending = ingest::receive_path(&store, &path, "main").await?;
+        let staged = ingest::StagedFile::new(&store, pending, false, "main").await?;
+        let problem = db::problems::NewProblem {
+            kind: "skipped",
+            sha256: &staged.sha256,
+            size_bytes: staged.size as i64,
+            uploaded_filename: file,
+            path: None,
+            reason: "refused once",
+            description: describe::description_json(&options.origin, "released", &[], &Default::default(), None),
+            embedded_tags: None,
+            tag_title: None,
+            tag_artists: &[],
+        };
+        let mut tx = db::begin(&owner, None).await?;
+        db::blobs::register(&mut tx, &staged.sha256, "main", Some(staged.size as i64)).await?;
+        db::problems::record(&mut tx, &problem, &[]).await?;
+        tx.commit().await?;
+    }
     let problem = sqlx::query_scalar("SELECT id FROM ingest_problems").fetch_one(&owner).await?;
 
     let app = api::router(AppState {
@@ -237,32 +264,59 @@ async fn changes_fit_only_their_draft(_: PgPoolOptions, connect: PgConnectOption
 
 #[sqlx::test]
 async fn what_the_import_made_is_carried_over(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
-    let s = setup(connect).await?;
-    // An artist typed in the old way: the import makes it (under a new id each time).
-    let (_, draft) = s.import(json!({ "artists": ["Made Artist"], "preview": true })).await;
+    // Tagged: the import makes its artist (Mira Vale) and album (Tidelines), under new ids
+    // each time.
+    let s = setup_with(connect, "01 - Glass Harbor.flac").await?;
+    let (_, draft) = s.import(json!({ "preview": true })).await;
     assert_eq!(draft["missing"], json!([]));
     let credit = draft["track"]["credits"][0].clone();
     let mut body = changes(&draft, "Typed Title");
-    body["artists"] = json!(["Made Artist"]);
-    // Kept as the draft has it (and a producer added), its source the file's origin.
+    // Kept as the draft has it (and a producer added), on its album still, its source the
+    // file's origin.
     body["track"]["meta"]["data"]["credits"] = json!([
         { "artist_id": credit["artist_id"], "role": "primary" },
         { "artist_id": body["new_artists"][0]["id"], "role": "producer" },
     ]);
+    body["track"]["facts"]["albums"] = json!([{ "album_id": draft["track"]["albums"][0]["album_id"] }]);
     body["track"]["sources"] = json!({ "origin": draft["track"]["sources"][0]["id"] });
+    // (It's alone on its album: not renamed along.)
+    body["track"]["along"] = json!(false);
     let (status, done) = s.import(body).await;
     assert_eq!(status, StatusCode::OK, "{done}");
+    let track = Uuid::parse_str(done["track_id"].as_str().unwrap())?;
     let credits: Vec<(String, String)> = sqlx::query_as(
         "SELECT a.name, c.role FROM track_credits c JOIN artists a ON a.id = c.artist_id WHERE c.track_id = $1 ORDER BY c.position",
     )
-    .bind(Uuid::parse_str(done["track_id"].as_str().unwrap())?)
+    .bind(track)
     .fetch_all(&s.owner)
     .await?;
     let credits: Vec<(&str, &str)> = credits.iter().map(|(a, r)| (a.as_str(), r.as_str())).collect();
-    assert_eq!(credits, [("Made Artist", "primary"), ("Typed Artist", "producer")]);
-    // The draft's artist was the preview's only: one "Made Artist".
-    let made: i64 = sqlx::query_scalar("SELECT count(*) FROM artists WHERE name = 'Made Artist'").fetch_one(&s.owner).await?;
-    assert_eq!(made, 1);
+    assert_eq!(credits, [("Mira Vale", "primary"), ("Typed Artist", "producer")]);
+    let albums: Vec<String> = sqlx::query_scalar("SELECT a.title FROM album_tracks n JOIN albums a ON a.id = n.album_id WHERE n.track_id = $1 ORDER BY a.kind")
+        .bind(track)
+        .fetch_all(&s.owner)
+        .await?;
+    assert_eq!(albums, ["Tidelines", "Typed Title"], "its album, and the single");
+    // The draft's were the preview's only: one of each.
+    let made: (i64, i64) = sqlx::query_as("SELECT (SELECT count(*) FROM artists WHERE name = 'Mira Vale'), (SELECT count(*) FROM albums WHERE title = 'Tidelines')")
+        .fetch_one(&s.owner)
+        .await?;
+    assert_eq!(made, (1, 1));
+    Ok(())
+}
+
+#[sqlx::test]
+async fn a_drafts_pictures_can_be_seen(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
+    let s = setup_with(connect, "01 - Glass Harbor.flac").await?;
+    let (_, draft) = s.import(json!({ "preview": true })).await;
+    let sha = draft["track"]["covers"][0]["blob_sha256"].as_str().expect("an embedded picture").to_string();
+    let request = Request::builder()
+        .uri(format!("/api/images/{sha}"))
+        .header("authorization", format!("Bearer {}", s.token))
+        .body(Body::empty())
+        .unwrap();
+    let response = s.app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
     Ok(())
 }
 

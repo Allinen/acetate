@@ -57,8 +57,11 @@ pub struct IngestOptions {
     /// Where the file was on disk (the CLI's, or what an HTTP client says): kept as
     /// `files.imported_from`, and shown in the review list if it doesn't import.
     pub local_path: Option<String>,
-    /// Values typed in by hand for what the tags lack (see `Given`).
-    pub given: Given,
+    /// The track is edited right after, in the same transaction (the editor on a file that
+    /// didn't import, see `api::problems::import`): a missing title or artist isn't refused
+    /// here. Revision 0 says what the tags say, even no title; the caller refuses the file
+    /// if the edit doesn't give what's missing.
+    pub edited_after: bool,
     /// Which storage volume the audio goes to (None: the default one). Admins choose.
     pub volume: Option<String>,
     /// Read the metadata from this copy of the file instead of the file itself (see
@@ -76,21 +79,6 @@ pub struct TagsFrom {
     pub path: PathBuf,
     /// The copy's own name (its extension helps tell its format).
     pub filename: String,
-}
-
-/// Title and artists given by hand for a file whose tags lack them (the Review page's
-/// "import with these values"). They're used instead of the tags' for those fields, in the
-/// track's first revision, which says so. The file and its stored raw tags aren't changed.
-#[derive(Debug, Clone, Default)]
-pub struct Given {
-    pub title: Option<String>,
-    /// Split on `;` like the ARTIST tag.
-    pub artists: Vec<String>,
-    /// The track is edited right after, in the same transaction (the editor on a file that
-    /// didn't import, see `api::problems::import`): a missing title or artist isn't refused
-    /// here. Revision 0 says what the tags say, even no title; the caller refuses the file
-    /// if the edit doesn't give what's missing.
-    pub edited_after: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -510,13 +498,10 @@ async fn merge_duplicate(
         added.push(format!("on the {kind} \"{}\"", album.title));
     }
     // Metadata the track has never had (in any revision of any variant). Only when it
-    // comes from elsewhere than the file (a tagged copy, values given by hand): the file's
+    // comes from elsewhere than the file (a tagged copy, a description): the file's
     // own tags are the same bytes as before, so a difference there would only come from
     // how tags are read now, or from edits made since.
-    let metadata_from_elsewhere = options.tags_from.is_some()
-        || options.hints.described.is_some()
-        || options.given.title.is_some()
-        || !options.given.artists.is_empty();
+    let metadata_from_elsewhere = options.tags_from.is_some() || options.hints.described.is_some();
     let mut new_metadata = false;
     if metadata_from_elsewhere {
         if let Some(metadata) = db::revisions::primary_metadata(&mut attempt, new).await? {
@@ -639,16 +624,6 @@ async fn new_track(
             ..TagInfo::default()
         };
     }
-    let mut given = Vec::new();
-    if let Some(title) = options.given.title.as_ref().filter(|t| !t.trim().is_empty()) {
-        tags.title = Some(title.clone());
-        given.push("title");
-    }
-    let given_artists = tags::split_artists(options.given.artists.clone());
-    if !given_artists.is_empty() {
-        tags.artists = given_artists;
-        given.push("artist");
-    }
     // The original file's name from the description, only if the tags have none.
     if tags.original_filename.is_none() {
         tags.original_filename = options.hints.original_filename.clone();
@@ -691,7 +666,7 @@ async fn new_track(
     .into_iter()
     .filter_map(|(name, is_missing)| is_missing.then_some(name))
     .collect();
-    if !missing.is_empty() && !options.given.edited_after {
+    if !missing.is_empty() && !options.edited_after {
         return Err(Rejected::MissingTags(missing).into());
     }
     let album_covers = checked_album_covers(options)?;
@@ -745,21 +720,12 @@ async fn new_track(
     //    (see `db::as_system`); what the uploader gets back is filtered afterwards.
     let system = db::as_system(conn).await?;
     // The first revision says where its values came from.
-    let variant_label = match (described_metadata.is_some(), given.is_empty()) {
-        (false, true) => "File tags",
-        (false, false) => "File tags + given by hand",
-        (true, true) => "From the description",
-        (true, false) => "From the description + given by hand",
-    }
-    .to_string();
+    let variant_label = if described_metadata.is_some() { "From the description" } else { "File tags" }.to_string();
     let mut revision_reason = if described_metadata.is_some() {
         "given with the upload (the file's own tags weren't used; they're kept with the file)".to_string()
     } else {
         "imported_from_file".to_string()
     };
-    if !given.is_empty() {
-        revision_reason += &format!("; given by hand (not from the tags): {}", given.join(", "));
-    }
     if let Some(copy) = &options.tags_from {
         revision_reason += &format!("; metadata from the tags of a copy ({}), not the stored file's", copy.filename);
     }
@@ -793,7 +759,7 @@ async fn new_track(
     Ok(report)
 }
 
-/// Flags a track imported with `Given::edited_after` as a possible duplicate of tracks by
+/// Flags a track imported with `IngestOptions::edited_after` as a possible duplicate of tracks by
 /// the same artists with a similar title, as an import does, once the edit has given its
 /// title and artists. `same_song_as`: from the import's report (already flagged as such).
 pub async fn flag_possible_duplicates(conn: &mut PgConnection, track_id: Uuid, same_song_as: &[Uuid]) -> anyhow::Result<()> {
@@ -1280,7 +1246,7 @@ async fn create_track_rows(
     let metadata = TrackMetadata {
         title: match &tags.title {
             Some(title) => title.clone(),
-            None if options.given.edited_after => String::new(),
+            None if options.edited_after => String::new(),
             None => anyhow::bail!("title is required"),
         },
         release_date: tags.date.clone(),
@@ -1509,7 +1475,7 @@ async fn create_track_rows(
             .await?;
     }
     // With an edit to follow, on what it leaves instead (`flag_possible_duplicates`).
-    if !options.given.edited_after {
+    if !options.edited_after {
         let artist_ids: Vec<Uuid> = metadata.credits.iter().map(|c| c.artist_id).collect();
         db::review::flag_possible_duplicates(conn, track_id, &metadata.title, &artist_ids, &same_song_as)
             .await?;

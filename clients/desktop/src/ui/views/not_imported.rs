@@ -1,15 +1,17 @@
 //! Review's "Didn't import": files the server refused (missing tags…) or failed on, kept
 //! with their audio (`GET /api/ingest-problems`). Left, the list; right, the chosen file:
-//! where it came from, why, its tags, a play button, and what to do with it:
+//! where it came from, why, its tags, a play button, and where it goes (every file goes
+//! somewhere; Alt+1/2/3 choose):
 //!
-//! * **add it to a track that's there** (`replace_file`): the track found by typing (the
-//!   file's name is typed in to start with), then "make it this track's file" (its file
-//!   becomes an older one) or "keep it as an older file of this track";
-//! * **import it as a new track**, with the title and artists its tags lack typed in;
-//! * **resolve it** with a note (nothing to import).
-//!
-//! A video (a music video that didn't import as a track) is kept as one: an extra of kind
-//! "video", linked to the track chosen or to nothing yet; or every video shown at once.
+//! 1. **a new track**: the track editor on a draft, the file as a preview imports it (its
+//!    tags, its source), with `single:` staged when it's on no album. Importing applies
+//!    the changes with it; it needs a title and an artist in the end (see `editor::draft`);
+//! 2. **a file of a track that's there** (`replace_file`): the track found by typing (the
+//!    file's name is typed in to start with), then "make it this track's file" (its file
+//!    becomes an older one) or "keep it as an older file of this track";
+//! 3. **an extra** (vocals, stems, a video…) of a track, an album, an artist, a grouping,
+//!    or of nothing yet. A video starts here, of kind "video"; every video shown can be
+//!    kept at once too.
 //!
 //! Adding or importing can say the file is an original file (an og file, named as it was
 //! uploaded): on to start with for WAV files, which are nearly always the artist's own.
@@ -27,6 +29,7 @@ use uuid::Uuid;
 use crate::catalog::search::Part;
 use crate::catalog::Catalog;
 use crate::playback::{AudioSource, QueueItem};
+use crate::ui::edit::editor::{DraftOf, Imported, TrackEditor};
 use crate::ui::edit::inline_search::{Choice, InlineSearch};
 use crate::ui::theme::{bold, font, medium, semibold, PALETTE as P};
 use crate::ui::{widgets, Action, Page, Shell};
@@ -59,6 +62,64 @@ pub struct Problem {
 /// What an action on a file answered: (the file, what to say, the track it went to).
 type Done = (Uuid, Result<(String, Option<Uuid>), String>);
 
+/// Where the chosen file goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum Fate {
+    #[default]
+    NewTrack,
+    FileOf,
+    Extra,
+}
+
+impl Fate {
+    const ALL: [(Fate, &'static str, egui::Key); 3] =
+        [(Fate::NewTrack, "A new track", egui::Key::Num1), (Fate::FileOf, "A file of a track that's there", egui::Key::Num2), (Fate::Extra, "An extra", egui::Key::Num3)];
+}
+
+/// What an extra is of.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum Of {
+    #[default]
+    Track,
+    Album,
+    Artist,
+    Grouping,
+    Nothing,
+}
+
+impl Of {
+    const ALL: [(Of, &'static str); 5] = [(Of::Track, "a track"), (Of::Album, "an album"), (Of::Artist, "an artist"), (Of::Grouping, "a grouping"), (Of::Nothing, "nothing yet")];
+
+    /// Its kind in an extra's links.
+    fn link(self) -> &'static str {
+        match self {
+            Of::Track => "track",
+            Of::Album => "album",
+            Of::Artist => "artist",
+            Of::Grouping | Of::Nothing => "grouping",
+        }
+    }
+}
+
+/// The file as a new track: the preview's draft, and the editor on it.
+struct Draft {
+    /// The original filename it was previewed with (another one: previewed again).
+    og: Option<String>,
+    /// Waiting for a preview (its number).
+    asked: Option<u64>,
+    arrived: Arc<Mutex<Option<(u64, Result<Imported, String>)>>>,
+    /// The draft track (None: not there yet).
+    track: Option<Uuid>,
+    /// What the file lacks to be imported, as it is.
+    missing: Vec<String>,
+    /// It's a track's file already (that track, if it can be seen).
+    duplicate: Option<Option<Uuid>>,
+    error: Option<String>,
+    /// To be previewed again (the library changed since).
+    again: bool,
+    editor: TrackEditor,
+}
+
 #[derive(Default)]
 pub struct NotImported {
     pub list: Vec<Problem>,
@@ -67,19 +128,28 @@ pub struct NotImported {
     asked: u64,
     arrived: Arc<Mutex<Option<(u64, Result<Vec<Problem>, String>)>>>,
     selected: Option<Uuid>,
-    /// The track to add it to: found by typing, then chosen (a place in the catalog).
+    fate: Fate,
+    /// The track it's a file or an extra of: found by typing, then chosen (a place in the
+    /// catalog).
     search: Option<InlineSearch>,
     target: Option<u32>,
     reason: String,
-    title: String,
-    artists: String,
-    /// Made an extra of the chosen track instead: its kind (guessed from the file's name).
+    /// An extra: its kind (guessed from the file's name), and what it's of.
     extra_kind: String,
+    of: Of,
+    /// The album or artist it's an extra of: found by typing, then chosen.
+    of_search: Option<InlineSearch>,
+    /// What it's an extra of, if not a track: (its id, in words).
+    of_target: Option<(Uuid, String)>,
+    /// The grouping it's an extra of: typed, then chosen.
+    grouping_query: String,
     /// It's an original file (an og file), with this name: on to start with for WAVs.
     is_og: bool,
     og_name: String,
     /// The form was filled for this file (moving to another fills it again).
     filled_for: Option<Uuid>,
+    draft: Option<Draft>,
+    drafts_asked: u64,
     sending: bool,
     done: Arc<Mutex<Option<Done>>>,
     /// The last thing done (or why not), with the track it went to.
@@ -243,8 +313,7 @@ impl NotImported {
             self.notice_line(ui, shell);
             return;
         };
-        // A new file chosen: its name typed in to find its track, its tags (or name) in the
-        // import fields.
+        // A new file chosen: its name typed in to find its track, where it goes guessed.
         if self.filled_for != Some(p.id) {
             self.filled_for = Some(p.id);
             let name = searchable_name(&p.uploaded_filename);
@@ -253,11 +322,27 @@ impl NotImported {
             self.search = Some(search);
             self.target = None;
             self.reason.clear();
-            self.title = p.tag_title.clone().unwrap_or_else(|| name.clone());
-            self.artists = p.tag_artists.join("; ");
             self.is_og = is_wav(&p.uploaded_filename);
-            self.extra_kind = guess_kind(&p.uploaded_filename).to_string();
             self.og_name = p.uploaded_filename.clone();
+            let video = is_video(&p.uploaded_filename);
+            self.extra_kind = if video { "video".into() } else { guess_kind(&p.uploaded_filename).to_string() };
+            self.fate = if video { Fate::Extra } else { Fate::NewTrack };
+            self.of = Of::Track;
+            self.of_search = None;
+            self.of_target = None;
+            self.grouping_query.clear();
+            self.draft = None;
+        }
+        // Alt+1/2/3: where it goes.
+        if !shell.modal_open {
+            for (fate, _, key) in Fate::ALL {
+                if ui.ctx().input_mut(|i| i.consume_key(egui::Modifiers::ALT, key)) && (fate != Fate::FileOf || shell.account.can("replace_file")) {
+                    self.fate = fate;
+                }
+            }
+        }
+        if self.fate == Fate::NewTrack {
+            self.keep_draft(shell, &p);
         }
         egui::ScrollArea::vertical().id_salt(("not-imported-detail", p.id)).auto_shrink([false, false]).show(ui, |ui| {
             self.notice_line(ui, shell);
@@ -293,48 +378,37 @@ impl NotImported {
             ui.label(RichText::new(&p.reason).color(P.danger));
             tags(ui, &p);
             ui.add_space(12.0);
-            // For either way in (added to a track, or imported).
+
+            // Where it goes.
             ui.horizontal(|ui| {
-                ui.checkbox(&mut self.is_og, "It's an original file (og file)").on_hover_text("The file as the artist made and named it, not a rip or a download. On to start with for WAV files");
-                if self.is_og {
-                    ui.label(RichText::new("named").color(P.muted));
-                    ui.add(egui::TextEdit::singleline(&mut self.og_name).desired_width(360.0));
+                for (n, (fate, label, _)) in Fate::ALL.into_iter().enumerate() {
+                    if fate == Fate::FileOf && !shell.account.can("replace_file") {
+                        continue;
+                    }
+                    if widgets::chip(ui, label, self.fate == fate) {
+                        self.fate = fate;
+                    }
+                    ui.label(RichText::new(format!("Alt+{}", n + 1)).color(P.faint).small());
+                    ui.add_space(6.0);
                 }
             });
-            ui.add_space(12.0);
-
-            // A video: kept as a music video (linked to the track chosen below, if one is).
-            if is_video(&p.uploaded_filename) {
-                let target = self.target.and_then(|i| catalog.tracks.get(i as usize)).map(|t| (t.id, t.title.clone()));
-                egui::Frame::NONE.fill(P.surface).corner_radius(8).inner_margin(egui::Margin::same(10)).show(ui, |ui| {
-                    ui.label(RichText::new("It's a video").font(font(15.0, semibold())));
-                    let whose = match &target {
-                        Some((_, title)) => format!("It's kept as a music video of “{title}” (the track chosen below)."),
-                        None => "It's kept as a music video linked to nothing yet (choose its track below first, or link it later: Review, “Unlinked extras”).".into(),
-                    };
-                    ui.label(RichText::new(whose).color(P.muted));
-                    if ui.add_enabled(!self.sending, egui::Button::new("Keep it as a music video")).clicked() {
-                        let links: Vec<serde_json::Value> = target.iter().map(|(id, _)| serde_json::json!({ "kind": "track", "id": id })).collect();
-                        let body = serde_json::json!({ "name": searchable_name(&p.uploaded_filename), "kind": "video", "links": links, "reason": self.reason.trim() });
-                        self.send(shell, p.id, format!("/api/ingest-problems/{}/extra", p.id), body, target.as_ref().map(|t| t.0), "Kept as a music video.".into(), true);
+            ui.add_space(8.0);
+            // A track or a track's file: whether it's an original file.
+            if self.fate != Fate::Extra {
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut self.is_og, "It's an original file (og file)").on_hover_text("The file as the artist made and named it, not a rip or a download. On to start with for WAV files");
+                    if self.is_og {
+                        ui.label(RichText::new("named").color(P.muted));
+                        ui.add(egui::TextEdit::singleline(&mut self.og_name).id(egui::Id::new("not-imported-og")).desired_width(360.0));
                     }
                 });
-                ui.add_space(14.0);
+                ui.add_space(10.0);
             }
-            if shell.account.can("replace_file") {
-                self.add_to_track(ui, shell, catalog, &p);
-                ui.add_space(14.0);
+            match self.fate {
+                Fate::NewTrack => self.new_track(ui, shell, catalog, &p),
+                Fate::FileOf => self.add_to_track(ui, shell, catalog, &p),
+                Fate::Extra => self.extra(ui, shell, catalog, &p),
             }
-            self.import(ui, shell, &p);
-            ui.add_space(14.0);
-            ui.label(RichText::new("Or: nothing to import").font(font(15.0, semibold())));
-            ui.horizontal(|ui| {
-                ui.add(egui::TextEdit::singleline(&mut self.reason).hint_text("what you did (optional): not music, a duplicate…").desired_width(360.0));
-                if ui.add_enabled(!self.sending, egui::Button::new("Resolve")).clicked() {
-                    let body = serde_json::json!({ "resolution": self.reason.trim() });
-                    self.send(shell, p.id, format!("/api/ingest-problems/{}/resolve", p.id), body, None, "Resolved.".into(), false);
-                }
-            });
         });
     }
 
@@ -355,9 +429,8 @@ impl NotImported {
         ui.add_space(8.0);
     }
 
-    /// "Add it to a track that's there": the track, then as its file or an older one.
+    /// "A file of a track that's there": the track, then as its file or an older one.
     fn add_to_track(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: &Arc<Catalog>, p: &Problem) {
-        ui.label(RichText::new("Add it to a track that's there").font(font(15.0, semibold())));
         ui.label(RichText::new("The same song already in the library (a better copy without tags, an older version…). Found by its name; type to find another.").color(P.muted));
         if let Some(search) = self.search.as_mut() {
             let hit = search.show(ui, shell, Some(catalog), egui::Id::new("not-imported-track"), "the track: type its title or artist", &[]);
@@ -397,53 +470,205 @@ impl NotImported {
                     let add_as = if current { "current_file" } else { "previous_file" };
                     let body = serde_json::json!({ "track_id": t.id, "add_as": add_as, "reason": self.reason.trim(), "original_filename": self.og() });
                     let text = if current { format!("“{}” plays this file now (its old file is kept as an older one).", t.title) } else { format!("Kept as an older file of “{}”.", t.title) };
-                    self.send(shell, p.id, format!("/api/ingest-problems/{}/add-to-track", p.id), body, Some(t.id), text, true);
-                }
-            });
-            // Not the song itself but something of it (vocals, a stem…): an extra of it.
-            ui.add_space(4.0);
-            ui.horizontal_wrapped(|ui| {
-                ui.label(RichText::new("Or an extra of it:").color(P.muted));
-                for k in crate::ui::edit::extras::KINDS {
-                    if widgets::chip(ui, k, self.extra_kind == *k) {
-                        self.extra_kind = k.to_string();
-                    }
-                }
-                let make = ui
-                    .add_enabled(!self.sending, egui::Button::new("Make it an extra of this track"))
-                    .on_hover_text("Kept with the track (vocals, a stem…), not a track of its own; seen like the track")
-                    .clicked();
-                if make {
-                    let name = searchable_name(&p.uploaded_filename);
-                    let body = serde_json::json!({ "name": name, "kind": self.extra_kind, "links": [{ "kind": "track", "id": t.id }], "reason": self.reason.trim() });
-                    let text = format!("Made an extra ({}) of “{}”.", self.extra_kind, t.title);
-                    self.send(shell, p.id, format!("/api/ingest-problems/{}/extra", p.id), body, Some(t.id), text, true);
+                    self.send(shell, p.id, format!("/api/ingest-problems/{}/add-to-track", p.id), body, Some(t.id), text);
                 }
             });
         });
     }
 
-    /// "Import it as a new track": what its tags lack, typed in.
-    fn import(&mut self, ui: &mut egui::Ui, shell: &mut Shell, p: &Problem) {
-        ui.label(RichText::new("Import it as a new track").font(font(15.0, semibold())));
-        ui.label(RichText::new("With what its tags lack typed in (the file isn't changed; the track's first revision says what was typed).").color(P.muted));
-        egui::Grid::new(("not-imported-import", p.id)).num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
-            ui.label("Title");
-            ui.add(egui::TextEdit::singleline(&mut self.title).desired_width(420.0));
-            ui.end_row();
-            ui.label("Artists");
-            ui.add(egui::TextEdit::singleline(&mut self.artists).hint_text("separated by ;").desired_width(420.0));
-            ui.end_row();
+    /// Keeps the draft up to date: previewed for this file, and again when it's said to be
+    /// another original file (once that name isn't being typed).
+    fn keep_draft(&mut self, shell: &Shell, p: &Problem) {
+        let og = self.og();
+        let typing = shell.ctx.memory(|m| m.has_focus(egui::Id::new("not-imported-og")));
+        let draft = self.draft.get_or_insert_with(|| Draft {
+            og: og.clone(),
+            asked: None,
+            arrived: Arc::default(),
+            track: None,
+            missing: Vec::new(),
+            duplicate: None,
+            error: None,
+            again: false,
+            editor: TrackEditor::default(),
         });
-        let ready = !self.title.trim().is_empty() && !self.artists.trim().is_empty();
-        if ui.add_enabled(!self.sending && ready, egui::Button::new("Import")).clicked() {
-            // Only what differs from the tags counts as given by hand.
-            let title = self.title.trim();
-            let title = (Some(title) != p.tag_title.as_deref()).then(|| title.to_string());
-            let artists = self.artists.trim();
-            let artists: Vec<String> = if artists != p.tag_artists.join("; ") { vec![artists.to_string()] } else { Vec::new() };
-            let body = serde_json::json!({ "title": title, "artists": artists, "original_filename": self.og() });
-            self.send(shell, p.id, format!("/api/ingest-problems/{}/import", p.id), body, None, "Imported.".into(), true);
+        if draft.editor.take_draft_stale() {
+            draft.again = true;
+        }
+        let arrived = draft.arrived.lock().unwrap().take();
+        if let Some((number, answer)) = arrived
+            && draft.asked == Some(number)
+        {
+            draft.asked = None;
+            match answer {
+                Ok(imported) => match (imported.track, imported.draft) {
+                    (Some(track), Some(ids)) => {
+                        let first = draft.track.is_none();
+                        draft.track = Some(track.id);
+                        draft.missing = imported.missing;
+                        let flags = imported.edited.map(|e| e.flags).unwrap_or_default();
+                        let with = serde_json::json!({ "original_filename": draft.og });
+                        draft.editor.draft(DraftOf { problem: p.id, ids, with, flags }, track);
+                        if first {
+                            draft.editor.opened();
+                        }
+                    }
+                    _ => draft.duplicate = Some(imported.track_id),
+                },
+                Err(err) => draft.error = Some(err),
+            }
+        }
+        let stale = draft.og != og && !typing;
+        if draft.asked.is_none() && draft.error.is_none() && draft.duplicate.is_none() && (draft.track.is_none() || stale || draft.again) {
+            draft.og = og.clone();
+            draft.again = false;
+            self.drafts_asked += 1;
+            let number = self.drafts_asked;
+            draft.asked = Some(number);
+            let (api, arrived, ctx) = (shell.api.clone(), draft.arrived.clone(), shell.ctx.clone());
+            let path = format!("/api/ingest-problems/{}/import", p.id);
+            let body = serde_json::json!({ "preview": true, "original_filename": og });
+            shell.runtime.spawn(async move {
+                let answer = api.send_json::<Imported>(reqwest::Method::POST, &path, Some(body)).await.map_err(|e| e.message);
+                *arrived.lock().unwrap() = Some((number, answer));
+                ctx.request_repaint();
+            });
+        }
+    }
+
+    /// "A new track": the editor on the draft.
+    fn new_track(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: &Arc<Catalog>, p: &Problem) {
+        let Some(draft) = self.draft.as_mut() else { return };
+        if let Some(err) = &draft.error {
+            ui.label(RichText::new(format!("Couldn't preview it: {err}")).color(P.danger));
+            if ui.button("Try again").clicked() {
+                draft.error = None;
+            }
+            return;
+        }
+        if let Some(track) = draft.duplicate {
+            ui.label(RichText::new("This exact file is a track's already.").color(P.muted));
+            if let Some(track) = track
+                && widgets::link(ui, "open the track", font(13.0, medium()), P.muted)
+            {
+                shell.act(Action::Go(Page::Track(track)));
+            }
+            return;
+        }
+        let Some(track) = draft.track else {
+            ui.horizontal(|ui| {
+                ui.add(egui::Spinner::new());
+                ui.label(RichText::new("Importing it as a preview…").color(P.faint));
+            });
+            return;
+        };
+        let lacks = |what: &str| draft.missing.iter().any(|m| m == what);
+        let needs = match (lacks("title"), lacks("artist")) {
+            (true, true) => Some("Its tags have no title and no artist: give them (title:…  artist:…)."),
+            (true, false) => Some("Its tags have no title: give it one (title:…)."),
+            (false, true) => Some("Its tags have no artist: give it one (artist:…)."),
+            (false, false) => None,
+        };
+        if let Some(needs) = needs {
+            ui.label(RichText::new(needs).color(P.text));
+        }
+        if draft.asked.is_some() {
+            ui.horizontal(|ui| {
+                ui.add(egui::Spinner::new());
+                ui.label(RichText::new("Previewing it again (another original file name, or the library changed)…").color(P.faint));
+            });
+        }
+        ui.add_space(4.0);
+        draft.editor.offer(&[]);
+        draft.editor.show(ui, shell, catalog, &[track], None);
+        if let Some(made) = draft.editor.take_imported() {
+            *self.done.lock().unwrap() = Some((p.id, Ok(("Imported.".into(), Some(made)))));
+        }
+    }
+
+    /// "An extra": its kind, and what it's of.
+    fn extra(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: &Arc<Catalog>, p: &Problem) {
+        ui.label(RichText::new("Not a track of its own: kept with what it's of (vocals, a stem, a video…), and seen like it.").color(P.muted));
+        ui.add_space(4.0);
+        ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new("Kind:").color(P.muted));
+            for k in crate::ui::edit::extras::KINDS {
+                if widgets::chip(ui, k, self.extra_kind == *k) {
+                    self.extra_kind = k.to_string();
+                }
+            }
+        });
+        ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new("Of:").color(P.muted));
+            for (of, label) in Of::ALL {
+                if widgets::chip(ui, label, self.of == of) && self.of != of {
+                    self.of = of;
+                    self.of_target = None;
+                    self.of_search = match of {
+                        Of::Album => Some(InlineSearch::new(Part::Albums)),
+                        Of::Artist => Some(InlineSearch::new(Part::Artists)),
+                        _ => None,
+                    };
+                }
+            }
+        });
+        ui.add_space(6.0);
+        // What it's of: (its id, in words).
+        let target: Option<(Uuid, String)> = match self.of {
+            Of::Track => {
+                if let Some(search) = self.search.as_mut()
+                    && let Some((Choice::Hit(i), _)) = search.show(ui, shell, Some(catalog), egui::Id::new("not-imported-track"), "the track: type its title or artist", &[])
+                {
+                    self.target = Some(i);
+                }
+                self.target.and_then(|i| catalog.tracks.get(i as usize)).map(|t| (t.id, format!("the track “{}” ({})", t.title, t.artist_display)))
+            }
+            Of::Album | Of::Artist => {
+                let album = self.of == Of::Album;
+                if let Some(search) = self.of_search.as_mut() {
+                    let hint = if album { "the album: type its title" } else { "the artist: type their name" };
+                    if let Some((Choice::Hit(i), _)) = search.show(ui, shell, Some(catalog), egui::Id::new("not-imported-of"), hint, &[]) {
+                        self.of_target = if album {
+                            catalog.albums.get(i as usize).map(|a| (a.id, format!("the album “{}” ({})", a.title, a.artist_display)))
+                        } else {
+                            catalog.artists.get(i as usize).map(|a| (a.id, format!("the artist “{}”", a.name)))
+                        };
+                    }
+                }
+                self.of_target.clone()
+            }
+            Of::Grouping => {
+                ui.add(egui::TextEdit::singleline(&mut self.grouping_query).hint_text("the grouping: type its name").desired_width(420.0));
+                let query = self.grouping_query.trim().to_lowercase();
+                if !query.is_empty() {
+                    for g in catalog.groupings.iter().filter(|g| g.name.to_lowercase().contains(&query)).take(8) {
+                        let chosen = self.of_target.as_ref().is_some_and(|t| t.0 == g.id);
+                        if ui.selectable_label(chosen, format!("{} ({})", g.name, g.kind)).clicked() {
+                            self.of_target = Some((g.id, format!("the {} “{}”", g.kind, g.name)));
+                        }
+                    }
+                }
+                self.of_target.clone()
+            }
+            Of::Nothing => None,
+        };
+        ui.add_space(6.0);
+        let what = match (&target, self.of) {
+            (_, Of::Nothing) => "nothing yet (Review: “Unlinked extras” links it later)".to_string(),
+            (Some((_, words)), _) => words.clone(),
+            (None, _) => {
+                ui.label(RichText::new("Choose what it's of.").color(P.faint));
+                return;
+            }
+        };
+        ui.add(egui::TextEdit::singleline(&mut self.reason).hint_text("Why (optional: kept with it)").desired_width(420.0));
+        let label = format!("Keep it as an extra ({}) of {what}", self.extra_kind);
+        if ui.add_enabled(!self.sending, egui::Button::new(label)).clicked() {
+            let links: Vec<serde_json::Value> = target.iter().map(|(id, _)| serde_json::json!({ "kind": self.of.link(), "id": id })).collect();
+            let body = serde_json::json!({ "name": searchable_name(&p.uploaded_filename), "kind": self.extra_kind, "links": links, "reason": self.reason.trim() });
+            let track = (self.of == Of::Track).then(|| target.as_ref().map(|t| t.0)).flatten();
+            let text = format!("Kept as an extra ({}) of {what}.", self.extra_kind);
+            self.send(shell, p.id, format!("/api/ingest-problems/{}/extra", p.id), body, track, text);
         }
     }
 
@@ -479,18 +704,13 @@ impl NotImported {
     }
 
     /// Sends an action on `problem`; `track`: the track it goes to (known, or from the
-    /// answer's `track_id`). `answers`: the server answers with JSON (resolving doesn't).
-    #[allow(clippy::too_many_arguments)]
-    fn send(&mut self, shell: &Shell, problem: Uuid, path: String, body: serde_json::Value, track: Option<Uuid>, text: String, answers: bool) {
+    /// answer's `track_id`).
+    fn send(&mut self, shell: &Shell, problem: Uuid, path: String, body: serde_json::Value, track: Option<Uuid>, text: String) {
         self.sending = true;
         self.notice = None;
         let (api, ctx, done) = (shell.api.clone(), shell.ctx.clone(), self.done.clone());
         shell.runtime.spawn(async move {
-            let answer = if answers {
-                api.send_json::<serde_json::Value>(reqwest::Method::POST, &path, Some(body)).await.map(Some)
-            } else {
-                api.send(reqwest::Method::POST, &path, Some(body)).await.map(|_| None)
-            };
+            let answer = api.send_json::<serde_json::Value>(reqwest::Method::POST, &path, Some(body)).await.map(Some);
             let result = answer
                 .map(|answer| {
                     let track = track.or_else(|| answer.as_ref()?.get("track_id")?.as_str()?.parse().ok());

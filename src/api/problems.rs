@@ -5,7 +5,6 @@ use std::collections::HashMap;
 use anyhow::Context;
 use axum::Json;
 use axum::extract::{Path, Query, Request, State};
-use axum::http::StatusCode;
 use axum::response::Response;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -19,7 +18,7 @@ use crate::db::problems::Problem;
 use crate::db::track_edits::TrackEdited;
 use crate::db::tracks::TrackDetail;
 use crate::ingest::describe::{NewDescription, Report, ReportStatus, ValidDescription};
-use crate::ingest::{self, AddAs, Given, IngestOptions, Rejected, ReplaceOptions};
+use crate::ingest::{self, AddAs, IngestOptions, Rejected, ReplaceOptions};
 use crate::model::draft::{Draft, replace_ids};
 
 #[derive(Debug, Deserialize)]
@@ -50,30 +49,6 @@ pub async fn list(
         }
     }
     Ok(Json(problems))
-}
-
-#[derive(Debug, Default, Deserialize)]
-#[serde(default)]
-pub struct Resolve {
-    /// What was done, e.g. "fixed the tags, imported again" or "not music".
-    resolution: String,
-}
-
-/// `POST /api/ingest-problems/{id}/resolve`, JSON `{"resolution": "..."}` (optional).
-/// Entries also resolve by themselves when the same file imports fine later.
-pub async fn resolve(
-    State(state): State<AppState>,
-    user: CurrentUser,
-    Path(id): Path<Uuid>,
-    body: Option<Json<Resolve>>,
-) -> Result<StatusCode, AppError> {
-    let resolution = body.map(|Json(b)| b.resolution).unwrap_or_default();
-    let mut tx = state.db(&user).await?;
-    if !db::problems::resolve(&mut tx, id, &resolution).await? {
-        return Err(AppError::NotFound);
-    }
-    tx.commit().await?;
-    Ok(StatusCode::NO_CONTENT)
 }
 
 /// `GET /api/ingest-problems/{id}/audio`: the file as it was received (Range requests
@@ -143,10 +118,6 @@ async fn load_open(
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ImportWith {
-    /// Used instead of the tags' title (for a file whose tags have none).
-    title: Option<String>,
-    /// Used instead of the tags' artists. Each is split on `;` like the ARTIST tag.
-    artists: Vec<String>,
     /// The file is an original file (an og file) with this name, when its tags don't say.
     original_filename: Option<String>,
     /// The editor's changes to the new track: one of `/api/tracks/edit`'s `tracks`, made on
@@ -196,8 +167,6 @@ pub struct Imported {
 /// * `preview`: the same, rolled back. Answers the track before the changes (to edit), its
 ///   draft, and what the changes did, the flags after them included.
 /// * `original_filename`: it's an original file with this name, when its tags don't say.
-/// * `title`, `artists`: values for what the tags lack, written into the track's first
-///   revision (which says they were given by hand).
 ///
 /// The file and its raw tags aren't changed. Revision 0 is what the tags say (even no
 /// title); the changes come after it. Refused if the track has no title or no artist in
@@ -236,17 +205,14 @@ pub async fn import(
         restrict_to: description.restrict_to,
         hints: description.hints,
         local_path: problem.path,
-        given: Given {
-            title: with.title,
-            artists: with.artists,
-            edited_after: true,
-        },
+        edited_after: true,
         volume: None,
         tags_from: None, // a tagged copy was only there for the original request
     };
 
     let mut tx = state.db(&user).await?;
-    let report = ingest::ingest_in(&mut tx, &state.store, &file, &options, with.preview)
+    // Not a dry run even for a preview: its pictures are stored (see below).
+    let report = ingest::ingest_in(&mut tx, &state.store, &file, &options, false)
         .await
         .map_err(ingest::as_rejected)?;
     let new_track = report.track_id.filter(|_| report.status == ReportStatus::Created);
@@ -333,6 +299,17 @@ pub async fn import(
 
     if with.preview {
         tx.rollback().await?;
+        // Its pictures (embedded in the file, stored by the import) stay staged as the
+        // user's, so the draft's covers can be shown (`GET /api/images/{hash}`) and kept.
+        if !track.covers.is_empty() {
+            let mut tx = state.db(&user).await?;
+            for cover in &track.covers {
+                let size = state.store.size(&cover.blob_sha256).await.map(|s| s as i64);
+                db::blobs::register(&mut tx, &cover.blob_sha256, state.store.default_volume(), size).await?;
+                db::covers::stage(&mut tx, &cover.blob_sha256, cover.mime.as_deref(), cover.width, cover.height).await?;
+            }
+            tx.commit().await?;
+        }
     } else {
         if let Some(err) = failed.into_inner().unwrap() {
             return Err(AppError::Internal(err));

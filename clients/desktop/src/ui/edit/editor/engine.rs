@@ -10,6 +10,12 @@
 //! it was loaded (`stale`) is loaded again and the changes are made again on it, once.
 //! Covers, sources, groupings and a single of its own go in the same request, each
 //! track's all or nothing.
+//!
+//! A **draft** (`DraftOf`) is a track only a preview has made: a file that didn't import,
+//! imported with the edit. Its details come with it (they can't be loaded), and its
+//! preview and apply go to `POST /api/ingest-problems/{id}/import` instead, with the
+//! draft's ids (the server matches them to the ones it makes). Applying it imports the
+//! file; `Applied::made` is the track it became.
 
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
@@ -31,6 +37,36 @@ const PREVIEW_CHUNK: usize = 200;
 const APPLY_CHUNK: usize = 25;
 /// The preview waits this long after the last change (typing settles first).
 const SETTLE: Duration = Duration::from_millis(250);
+
+/// A track only a preview has made (see the module's notes).
+#[derive(Debug, Clone)]
+pub struct DraftOf {
+    /// The file that didn't import.
+    pub problem: Uuid,
+    /// The `draft` answered with its details: sent back with the edit.
+    pub ids: Value,
+    /// Sent with the edit too (`original_filename`).
+    pub with: Value,
+    /// Its open flags as the import leaves it, before the edit.
+    pub flags: Vec<String>,
+}
+
+/// The answer of `POST /api/ingest-problems/{id}/import`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Imported {
+    /// The new track (or one that has the file already).
+    pub track_id: Option<Uuid>,
+    /// The new track before the edit (None: a duplicate).
+    #[serde(default)]
+    pub track: Option<TrackDetail>,
+    #[serde(default)]
+    pub draft: Option<Value>,
+    #[serde(default)]
+    pub edited: Option<Answer>,
+    /// What it lacks to be imported ("title", "artist").
+    #[serde(default)]
+    pub missing: Vec<String>,
+}
 
 #[derive(Default)]
 struct Loaded {
@@ -69,6 +105,8 @@ pub struct Ready {
     pub sync: bool,
     /// It gets a single of its own.
     pub single: bool,
+    /// A draft: applying it imports it, changed or not.
+    pub draft: bool,
 }
 
 impl Ready {
@@ -94,7 +132,7 @@ impl Ready {
 
     /// Something to write: a revision, covers, sources, groupings, a single.
     pub fn writes(&self) -> bool {
-        self.meta_changed() || self.facts_changed() || self.covers_changed() || self.sources_changed() || self.groups_changed() || self.single
+        self.draft || self.meta_changed() || self.facts_changed() || self.covers_changed() || self.sources_changed() || self.groups_changed() || self.single
     }
 
     /// Something for the server: a revision, or its albums to match.
@@ -177,6 +215,8 @@ pub struct Applied {
     pub answers: HashMap<Uuid, Answer>,
     /// Finished, and the library hasn't been asked to catch up yet.
     pub finished_unseen: bool,
+    /// A draft applied: the track it became.
+    pub made: Option<Uuid>,
 }
 
 pub struct Engine {
@@ -186,6 +226,11 @@ pub struct Engine {
     changed_at: Instant,
     pub preview: Arc<Mutex<Preview>>,
     pub applied: Arc<Mutex<Applied>>,
+    /// The target is a draft (one track).
+    pub draft: Option<DraftOf>,
+    /// The server said the draft's import comes out differently now: it's to be previewed
+    /// again.
+    pub draft_stale: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Default for Engine {
@@ -197,6 +242,8 @@ impl Default for Engine {
             changed_at: Instant::now(),
             preview: Arc::default(),
             applied: Arc::default(),
+            draft: None,
+            draft_stale: Arc::default(),
         }
     }
 }
@@ -233,6 +280,7 @@ impl Engine {
         let version = self.loaded.lock().unwrap().version;
         let mut hasher = std::hash::DefaultHasher::new();
         (targets, format!("{:?}", change.ops), names.version, version, shell.generation, change.along, change.sync, &change.why, variant).hash(&mut hasher);
+        self.draft.as_ref().map(|d| d.with.to_string()).hash(&mut hasher);
         let key = hasher.finish();
         if key != self.plan_key {
             self.plans = self.plan(catalog, targets, &change.ops, names, variant);
@@ -277,9 +325,23 @@ impl Engine {
         preview.key == self.plan_key && !preview.running
     }
 
-    /// Everything loaded again (after applying: the tracks have changed).
+    /// Edits `track`, a draft (its details as the preview made them).
+    pub fn set_draft(&mut self, of: DraftOf, track: TrackDetail) {
+        let mut loaded = self.loaded.lock().unwrap();
+        loaded.details.clear();
+        loaded.asked.clear();
+        loaded.asked.insert(track.id);
+        loaded.details.insert(track.id, Ok(Arc::new(track)));
+        loaded.version += 1;
+        self.draft = Some(of);
+    }
+
+    /// Everything loaded again (after applying: the tracks have changed). A draft's details
+    /// can't be: they're kept (and planned again).
     pub fn forget(&mut self) {
-        *self.loaded.lock().unwrap() = Loaded::default();
+        if self.draft.is_none() {
+            *self.loaded.lock().unwrap() = Loaded::default();
+        }
         *self.preview.lock().unwrap() = Preview::default();
         *self.applied.lock().unwrap() = Applied::default();
         self.plan_key = 0;
@@ -398,7 +460,7 @@ impl Engine {
                                         warnings.push("it's on an album already: it gets a single too (unmark it to leave it out)".into());
                                     }
                                 }
-                                PlanState::Ready(Box::new(Ready { position, base, meta, facts, attached, lines, warnings, sync: model::sync(ops), single }))
+                                PlanState::Ready(Box::new(Ready { position, base, meta, facts, attached, lines, warnings, sync: model::sync(ops), single, draft: self.draft.is_some() }))
                             }
                         }
                     }
@@ -418,6 +480,24 @@ impl Engine {
             *preview = Preview { key, running: !ready.is_empty(), ..Preview::default() };
         }
         if ready.is_empty() {
+            return;
+        }
+        if let Some(draft) = self.draft.clone() {
+            let (api, preview, ctx, change, stale) = (shell.api.clone(), self.preview.clone(), shell.ctx.clone(), change.clone(), self.draft_stale.clone());
+            shell.runtime.spawn(async move {
+                let answer = import(&api, &draft, &ready[0], &change, true, &stale).await;
+                let mut p = preview.lock().unwrap();
+                if p.key == key {
+                    match answer {
+                        Ok((answer, _)) => {
+                            p.answers.insert(answer.track_id, answer);
+                        }
+                        Err(err) => p.error = Some(err),
+                    }
+                    p.running = false;
+                }
+                ctx.request_repaint();
+            });
             return;
         }
         let (api, preview, ctx, change) = (shell.api.clone(), self.preview.clone(), shell.ctx.clone(), change.clone());
@@ -461,6 +541,28 @@ impl Engine {
             let mut applied = self.applied.lock().unwrap();
             *applied = Applied { phase: Phase::Applying, total: ready.len(), ..Applied::default() };
         }
+        if let (Some(draft), Some(write)) = (self.draft.clone(), writes.first().cloned()) {
+            let (api, applied, ctx, change, stale) = (shell.api.clone(), self.applied.clone(), shell.ctx.clone(), change.clone(), self.draft_stale.clone());
+            shell.runtime.spawn(async move {
+                let track = write.0;
+                match import(&api, &draft, &write, &change, false, &stale).await {
+                    Ok((answer, made)) => {
+                        let mut a = applied.lock().unwrap();
+                        a.answers.insert(track, answer);
+                        a.made = made;
+                        drop(a);
+                        record(&applied, track, Outcome::Done);
+                    }
+                    Err(err) => record(&applied, track, Outcome::Failed(err)),
+                }
+                let mut a = applied.lock().unwrap();
+                a.done = a.total;
+                a.phase = Phase::Finished;
+                a.finished_unseen = true;
+                ctx.request_repaint();
+            });
+            return;
+        }
         let (api, applied, ctx, change) = (shell.api.clone(), self.applied.clone(), shell.ctx.clone(), change.clone());
         shell.runtime.spawn(async move {
             let mut ids: HashMap<Uuid, Uuid> = HashMap::new();
@@ -485,7 +587,7 @@ impl Engine {
                             let (meta, facts) = model::apply(&change.ops, &base.meta, &base.facts, position);
                             let attached = model::attach(&change.ops, &base.attached);
                             let single = model::single(&change.ops);
-                            Ok(Ready { position, base, meta, facts, attached, lines: Vec::new(), warnings: Vec::new(), sync: change.sync, single })
+                            Ok(Ready { position, base, meta, facts, attached, lines: Vec::new(), warnings: Vec::new(), sync: change.sync, single, draft: false })
                         }
                         None => Err("it has no version to edit".to_string()),
                     },
@@ -513,6 +615,45 @@ impl Engine {
             ctx.request_repaint();
         });
     }
+}
+
+/// A draft's edit sent to its import (`preview` or for real): the answer for the draft
+/// (its id the draft's; what it still lacks said as its error), and the track it became.
+/// `stale`: set when the draft doesn't fit the import anymore.
+async fn import(api: &Api, draft: &DraftOf, write: &(Uuid, Ready), change: &Change, preview: bool, stale: &std::sync::atomic::AtomicBool) -> Result<(Answer, Option<Uuid>), String> {
+    let body = draft_body(draft, write, change, preview)?;
+    let path = format!("/api/ingest-problems/{}/import", draft.problem);
+    let imported = api.send_json::<Imported>(reqwest::Method::POST, &path, Some(body)).await.map_err(|e| {
+        if e.code == "conflict" {
+            stale.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        e.message
+    })?;
+    let mut answer = imported.edited.unwrap_or(Answer { track_id: write.0, error: None, along: Vec::new(), flags: Vec::new() });
+    answer.track_id = write.0;
+    if answer.error.is_none() && !imported.missing.is_empty() {
+        let message = format!("a track needs a title and an artist: this one has no {} yet", imported.missing.join(" and no "));
+        answer.error = Some(Failure { code: "invalid".into(), message });
+    }
+    Ok((answer, imported.track_id))
+}
+
+/// The request importing a draft with its edit: the edit's one track as `track`, the draft's
+/// ids, and what it's sent with.
+fn draft_body(draft: &DraftOf, write: &(Uuid, Ready), change: &Change, preview: bool) -> Result<Value, String> {
+    let (mut body, refused) = body(std::slice::from_ref(write), change, &HashMap::new(), preview);
+    if let Some((_, why)) = refused.into_iter().next() {
+        return Err(why);
+    }
+    let entry = body["tracks"].as_array_mut().and_then(|t| t.pop()).unwrap_or_else(|| json!({}));
+    let Value::Object(mut body) = body else { return Err("not an edit".into()) };
+    body.remove("tracks");
+    body.insert("track".into(), entry);
+    body.insert("draft".into(), draft.ids.clone());
+    if let Some(with) = draft.with.as_object() {
+        body.extend(with.clone());
+    }
+    Ok(Value::Object(body))
 }
 
 fn record(applied: &Arc<Mutex<Applied>>, track: Uuid, outcome: Outcome) {
@@ -764,7 +905,7 @@ mod tests {
             facts.albums.push(Membership { album_id: id(a), disc_number: None, track_number: None });
         }
         let attached = base.attached.clone();
-        Ready { position, base, meta, facts, attached, lines: vec![], warnings: vec![], sync: false, single: false }
+        Ready { position, base, meta, facts, attached, lines: vec![], warnings: vec![], sync: false, single: false, draft: false }
     }
 
     #[test]
@@ -790,6 +931,29 @@ mod tests {
     }
 
     /// `along:on` with nothing else changed: the track is still sent, to be made to match.
+    #[test]
+    fn a_draft_goes_to_its_import_with_its_ids() {
+        let change = Change { ops: vec![], new_artists: vec![(id(9), "New".into())], new_albums: vec![], new_groupings: vec![], along: true, sync: false, why: String::new() };
+        let mut r = ready(0, &[9], None);
+        r.draft = true;
+        r.single = true;
+        let draft = DraftOf { problem: id(1), ids: json!({ "ids": {}, "shape": "ab" }), with: json!({ "original_filename": "a.wav" }), flags: vec![] };
+        let body = draft_body(&draft, &(id(5), r), &change, true).unwrap();
+        assert_eq!(body["track"]["track_id"], json!(id(5)));
+        assert_eq!(body["track"]["meta"]["data"]["credits"][0]["artist_id"], json!(id(9)));
+        assert_eq!(body["track"]["single"], json!(true));
+        assert_eq!(body["new_artists"], json!([{ "id": id(9), "name": "New" }]));
+        assert_eq!(body["draft"], json!({ "ids": {}, "shape": "ab" }));
+        assert_eq!((body["original_filename"].clone(), body["preview"].clone()), (json!("a.wav"), json!(true)));
+        assert!(body.get("tracks").is_none());
+        // Nothing changed: still imported, as it is.
+        let mut plain = ready(0, &[], None);
+        plain.draft = true;
+        assert!(plain.sends());
+        let body = draft_body(&draft, &(id(5), plain), &change, false).unwrap();
+        assert_eq!(body["track"], json!({ "track_id": id(5), "along": true, "sync": false }));
+    }
+
     #[test]
     fn a_track_to_match_is_sent_with_nothing_else() {
         let change = Change { ops: vec![Op::Sync], new_artists: vec![], new_albums: vec![], new_groupings: vec![], along: true, sync: true, why: String::new() };

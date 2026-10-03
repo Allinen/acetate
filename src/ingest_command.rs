@@ -276,7 +276,7 @@ pub async fn run(target: Target<'_>, dir: &Path, options: Options) -> anyhow::Re
                 described: None,
             },
             local_path: Some(path.display().to_string()),
-            given: Default::default(),
+            edited_after: false,
             tags_from: None,
             volume: options.volume.clone(),
         };

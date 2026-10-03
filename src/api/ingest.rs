@@ -113,7 +113,7 @@ pub async fn ingest(
         restrict_to: description.restrict_to,
         hints: description.hints,
         local_path: description.imported_from,
-        given: Default::default(),
+        edited_after: false,
         volume: description.volume,
         tags_from: tags_file.as_ref().map(|(filename, copy)| ingest::TagsFrom {
             path: copy.path().to_path_buf(),

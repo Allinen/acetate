@@ -54,7 +54,7 @@ async fn navidrome_users_and_annotations_move_over(
         restrict_to: None,
         hints: Hints::default(),
         local_path: None,
-        given: Default::default(),
+        edited_after: false,
         tags_from: None,
         volume: None,
     };

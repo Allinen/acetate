@@ -106,7 +106,7 @@ pub async fn upload(
             volume: volume.clone(),
             hints: Default::default(),
             local_path: None,
-            given: Default::default(),
+            edited_after: false,
             tags_from: None,
         };
         // One bad file shouldn't fail the whole batch, so errors are reported per file.
