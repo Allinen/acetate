@@ -1,7 +1,7 @@
 //! An album's page: its cover and facts, a Play button, and its tracks. Also the track
 //! list used here and on artist pages. Keys: arrows or jk move, Enter plays from there;
-//! in edit mode, Alt+↑/↓ or Alt+K/J moves the selected track in the tracklist (see
-//! `edit::track_order`).
+//! in edit mode, Alt+↑/↓ or Alt+K/J moves the selected track in the tracklist, saved
+//! together with Ctrl+Enter (see `edit::track_order`).
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -51,7 +51,7 @@ pub struct AlbumPage {
     covers: crate::ui::edit::cover_list::CoverList,
     /// The groupings it's in.
     part_of: crate::ui::edit::part_of::PartOf,
-    /// Tracks moved in its tracklist (edit mode), until the library has them.
+    /// Tracks moved in its tracklist (edit mode): drafts, saved together.
     order: crate::ui::edit::track_order::TrackOrder,
 }
 
@@ -74,7 +74,7 @@ impl AlbumPage {
             return;
         };
         self.order.update(shell, catalog, id);
-        let moved = self.order.tracks(catalog, id, catalog.album_tracks(id));
+        let moved = self.order.tracks(shell, catalog, id, catalog.album_tracks(id));
         let tracks: &[u32] = moved.as_deref().unwrap_or(catalog.album_tracks(id));
         // One scroll for the whole page (header, edit panels, notes, the tracks as tall
         // as they are): nothing in it scrolls on its own.
@@ -268,7 +268,8 @@ impl AlbumPage {
                 self.extras.show(ui, shell, crate::ui::edit::extras::Owner::Album(id), &d.extras, false, true);
                 ui.add_space(10.0);
             }
-            let options = Options { key: "album", columns: ALBUM_COLUMNS, added: None, filter_hint: None, album: Some((id, &album.artist_display)), places: self.order.places(), keys: true, scroll: false };
+            self.order.bar(ui, shell, id, self.list.has_marks());
+            let options = Options { key: "album", columns: ALBUM_COLUMNS, added: None, filter_hint: None, album: Some((id, &album.artist_display)), places: self.order.places(shell, id), keys: true, scroll: false };
             let shown = self.list.show(ui, shell, catalog, &rows, version(shell.generation, tracks), player, &options);
 
             // Alt+↑/↓ or Alt+K/J: the selected track a place earlier or later (edit mode).

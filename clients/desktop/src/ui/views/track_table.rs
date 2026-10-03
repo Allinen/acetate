@@ -154,7 +154,7 @@ pub struct Options<'a> {
     /// column showing only other ones).
     pub album: Option<(Uuid, &'a str)>,
     /// On an album: tracks moved, their places as they're to be (not in the library yet),
-    /// shown in place of theirs.
+    /// shown in place of theirs (in the accent colour).
     pub places: Option<&'a HashMap<Uuid, Place>>,
     /// It takes the keys (arrows, Enter, marking…): on a page with several tables, only
     /// the one in use does.
@@ -239,6 +239,11 @@ impl TrackTable {
         }
         // The rows follow at once.
         self.made_for = None;
+    }
+
+    /// Tracks are marked (Esc clears them).
+    pub fn has_marks(&self) -> bool {
+        !self.marking.is_empty()
     }
 
     /// The marked tracks' popup is open (it takes the keys).
@@ -483,7 +488,9 @@ impl TrackTable {
                             }
                             Column::Number => {
                                 let text = numbers.as_ref().map(|nb| nb.label(t)).unwrap_or_default();
-                                ui.label(RichText::new(text).font(font(12.5, medium())).color(P.faint));
+                                // Moved, not in the library yet: in the accent colour.
+                                let moved = numbers.as_ref().is_some_and(|nb| nb.moved(t));
+                                ui.label(RichText::new(text).font(font(12.5, medium())).color(if moved { P.accent } else { P.faint }));
                             }
                             Column::Cover => {
                                 // Centred in the whole cell (not at its top left, where the
@@ -670,6 +677,11 @@ impl<'a> AlbumNumbers<'a> {
     /// The track's disc and number on the album (None: it isn't on it).
     fn place(&self, t: &crate::catalog::model::Track) -> Option<Place> {
         self.places.and_then(|p| p.get(&t.id).copied()).or_else(|| t.albums.iter().find(|m| m.0 == self.album).map(|m| (m.1, m.2)))
+    }
+
+    /// The track was moved (its place isn't the library's yet).
+    fn moved(&self, t: &crate::catalog::model::Track) -> bool {
+        self.places.is_some_and(|p| p.contains_key(&t.id))
     }
 
     /// The track's disc on the album (1 when it has none).
