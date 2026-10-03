@@ -14,7 +14,7 @@ use std::collections::HashMap;
 
 use uuid::Uuid;
 
-use super::model::{self, Image, Numbers, Op};
+use super::model::{Image, Numbers, Op};
 use super::parse::{self, Part, K};
 use super::title_parse::{Credited, TitlesParsed};
 use crate::account::Vocab;
@@ -526,9 +526,8 @@ fn unit(
             let v = main.value.trim();
             if main.minus {
                 return match v {
-                    "" => Err("-suffix: what to take off the end: the text (-suffix:\"| Some Tape\"), or a divider, for everything after the last one (-suffix:|)".into()),
-                    _ if model::is_divider(v) => done(format!("title: everything after the last “ {v} ” taken off (suffix: alone puts it back)"), vec![Op::CutSuffix(v.into())]),
-                    _ => done(format!("title: “{v}” taken off the end, where it ends with it (suffix: alone puts it back)"), vec![Op::CutSuffix(v.into())]),
+                    "" => Err("-suffix: from what on to take off: -suffix:| or -suffix:( or -suffix:\"| Some Tape\"".into()),
+                    _ => done(format!("title: from the last “{v}” to the end taken off, where it has one (suffix: alone puts it back)"), vec![Op::CutSuffix(v.into())]),
                 };
             }
             match v {
@@ -1298,7 +1297,8 @@ mod tests {
         assert_eq!(ops("-suffix:\"| Some Tape\""), [Op::CutSuffix("| Some Tape".into())]);
         assert_eq!(ops("suffix:"), [Op::AddSuffix(None)]);
         assert_eq!(ops("suffix:| Some Tape"), [Op::AddSuffix(Some("| Some Tape".into()))]);
-        assert!(run("-suffix:", &Names::default(), 1)[0].as_ref().unwrap_err().contains("what to take off"));
+        assert_eq!(ops("-suffix:("), [Op::CutSuffix("(".into())]);
+        assert!(run("-suffix:", &Names::default(), 1)[0].as_ref().unwrap_err().contains("from what on"));
     }
 
     #[test]

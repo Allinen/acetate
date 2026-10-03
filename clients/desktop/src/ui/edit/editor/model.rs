@@ -249,41 +249,25 @@ pub enum Op {
     /// `parse:`: the credits in its title moved into its credits (each track its own; see
     /// `title_parse`).
     ParseTitle(Arc<TitlesParsed>),
-    /// `-suffix:`: taken off the end of the title, where it ends with it: that text (any
-    /// case), or (a divider, `|`) everything from the last ` | ` on. Kept for `suffix:`.
+    /// `-suffix:`: everything from the last place this text is in the title (any case) to
+    /// the end taken off, nothing clever (`|`, `(`, `| Some Tape`). Kept for `suffix:`.
     CutSuffix(String),
     /// `suffix:`: added to the end (with a space; not if it ends with it already), or (None)
     /// what was taken off put back, as it was.
     AddSuffix(Option<String>),
 }
 
-/// A divider between parts of a title (`-suffix:|` takes off everything after the last).
-pub fn is_divider(text: &str) -> bool {
-    ["|", "-", "–", "—", "/", "·", "•"].contains(&text)
-}
-
-/// `title` without `what` at its end (see `Op::CutSuffix`): the title, and what was taken
-/// off as it was (its space before too).
+/// `title` from the last `what` on taken off (see `Op::CutSuffix`): the title, and what
+/// was taken off as it was (the spaces before it too). None: it isn't there, or nothing
+/// would be left.
 fn cut_suffix(title: &str, what: &str) -> Option<(String, String)> {
-    let t = title.trim_end();
-    let at = if is_divider(what) {
-        // The last ` | ` (spaces on both sides): from the space before it.
-        let mut found = None;
-        for (i, _) in t.match_indices(what) {
-            let spaced = t[..i].ends_with(char::is_whitespace) && t[i + what.len()..].chars().next().is_none_or(char::is_whitespace);
-            if spaced {
-                found = Some(t[..i].trim_end().len());
-            }
-        }
-        found?
-    } else {
-        let start = t.len().checked_sub(what.len()).filter(|&s| t.is_char_boundary(s))?;
-        if !t[start..].eq_ignore_ascii_case(what) {
-            return None;
-        }
-        t[..start].trim_end().len()
-    };
-    (at > 0).then(|| (t[..at].to_string(), t[at..].to_string()))
+    if what.is_empty() {
+        return None;
+    }
+    // (Lowercasing ASCII keeps every byte where it was.)
+    let found = title.to_ascii_lowercase().rfind(&what.to_ascii_lowercase())?;
+    let at = title[..found].trim_end().len();
+    (at > 0).then(|| (title[..at].to_string(), title[at..].trim_end().to_string()))
 }
 
 /// `ops` on a track's metadata and facts. `position`: its place among the targets (for
@@ -590,18 +574,22 @@ mod tests {
     fn suffixes_taken_off_and_put_back() {
         let title = |ops: &[Op], t: &str| apply(ops, &Meta { title: t.into(), ..Default::default() }, &facts(), 0).0.title;
         let cut = |s: &str| Op::CutSuffix(s.into());
-        // A divider: everything after the last one.
+        // From the last one on, spaces or not.
         assert_eq!(title(&[cut("|")], "Song w/ Ann | Some Tape"), "Song w/ Ann");
+        assert_eq!(title(&[cut("|")], "Song w/ Ann|More Stuff"), "Song w/ Ann");
         assert_eq!(title(&[cut("|")], "One | Two | Three"), "One | Two");
-        assert_eq!(title(&[cut("|")], "No|Bar Here"), "No|Bar Here");
-        // The text, any case; titles without it are left as they are.
+        assert_eq!(title(&[cut("(")], "Song w/ Ann (BUY 1 GET 1 FREE)"), "Song w/ Ann");
+        // Any text, any case; titles without it are left as they are.
         assert_eq!(title(&[cut("| some tape")], "Song | Some Tape"), "Song");
         assert_eq!(title(&[cut("| Some Tape")], "Other Song"), "Other Song");
+        // What comes after it goes too: it's from the last one on.
+        assert_eq!(title(&[cut("(")], "Song (Remix) [Live]"), "Song");
         // Nothing left: not taken off.
         assert_eq!(title(&[cut("| Some Tape")], "| Some Tape"), "| Some Tape");
         // Put back as it was, after something else changed the title.
         let back = [cut("|"), Op::Title("Song".into()), Op::AddSuffix(None)];
         assert_eq!(title(&back, "Song w/ Ann  |  Some Tape"), "Song  |  Some Tape");
+        assert_eq!(title(&back, "Song w/ Ann|More"), "Song|More");
         // Added with a space, not twice.
         assert_eq!(title(&[Op::AddSuffix(Some("| Some Tape".into()))], "Song"), "Song | Some Tape");
         assert_eq!(title(&[Op::AddSuffix(Some("| Some Tape".into()))], "Song | some tape"), "Song | some tape");
