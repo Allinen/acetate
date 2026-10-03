@@ -22,7 +22,7 @@ use crate::catalog::query::loosely_in;
 use crate::catalog::search::{Part as SearchPart, Search};
 use crate::catalog::Catalog;
 use crate::details::AliasInfo;
-use crate::title_credits::{NameTable, Setting};
+use crate::title_credits::{Fixes, NameTable, Setting};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PinKind {
@@ -57,7 +57,14 @@ impl Names {
         self.version += 1;
     }
 
-    fn pinned(&self, kind: PinKind, text: &str) -> Option<Uuid> {
+    /// `text` is no longer the one chosen (it's found as before).
+    pub fn unpin(&mut self, kind: PinKind, text: &str) {
+        let text = text.trim().to_lowercase();
+        self.pins.retain(|(k, t, _)| !(*k == kind && *t == text));
+        self.version += 1;
+    }
+
+    pub fn pinned(&self, kind: PinKind, text: &str) -> Option<Uuid> {
         self.pinned_any(&[kind], text).map(|p| p.1)
     }
 
@@ -691,71 +698,83 @@ fn parse_titles(raw: &str, ctx: &Ctx, look: &mut dyn Lookups, waiting: &mut bool
         *waiting = true;
         return Err("parse: the tracks are still loading…".into());
     };
-    // Every name's aliases are asked for at once, then it's tried again.
     let mut looking: Vec<String> = Vec::new();
-    let mut credited = |name: &str| -> Option<Credited> {
-        let name = name.trim();
-        let mut artist = |id: Uuid| -> Credited {
-            if ctx.catalog.artist(id).is_some_and(|a| a.name.eq_ignore_ascii_case(name)) {
-                return Credited::Artist { id, alias: None };
-            }
-            match look.aliases(id) {
-                Some(list) => Credited::Artist { id, alias: list.iter().find(|a| a.name.eq_ignore_ascii_case(name)).map(|a| a.id) },
-                None => {
-                    looking.push(name.to_string());
-                    Credited::Artist { id, alias: None }
-                }
-            }
-        };
-        Some(if let Some(id) = ctx.names.pinned(PinKind::Artist, name) {
-            if ctx.names.is_new(id) { Credited::New(Some(id)) } else { artist(id) }
-        } else if let Some((id, _)) = ctx.names.new_artists.iter().find(|a| a.1.eq_ignore_ascii_case(name)) {
-            Credited::New(Some(*id))
-        } else {
-            match table.get(name) {
-                [] => Credited::New(None),
-                [id] => artist(*id),
-                ids => Credited::Undecided(ids.to_vec()),
-            }
-        })
-    };
-    let parsed = TitlesParsed::new(&setting, titles, table, &mut credited).ok_or("parse: still looking up names…")?;
+    let parsed = TitlesParsed::new(&setting, titles.to_vec(), Fixes::default(), table, &mut |name| Some(credited(name, ctx, look, &mut looking))).ok_or("parse: still looking up names…")?;
     if !looking.is_empty() {
         *waiting = true;
         return Err(format!("parse: looking up the names of {}…", looking.join(", ")));
     }
-    let changing = parsed.changing(titles);
-    if changing == 0 {
+    if parsed.changing() == 0 {
         return Err(format!("parse: {} finds nothing in {}", parsed.setting, if titles.len() == 1 { "its title" } else { "the titles" }));
     }
+    let (label, warning) = parse_label(&parsed);
+    Ok(Resolved { label, ops: vec![Op::ParseTitle(std::sync::Arc::new(parsed))], warning, ..Default::default() })
+}
+
+/// What a name found in a title credits: the artist chosen for it (`Names::pin`), a new one
+/// staged by that name, else the artists that have it as their name or an alias, exactly
+/// (ignoring case). Names whose aliases are still being looked up go in `looking` (each is
+/// asked for at once, then it's tried again).
+pub fn credited(name: &str, ctx: &Ctx, look: &mut dyn Lookups, looking: &mut Vec<String>) -> Credited {
+    let name = name.trim();
+    let mut artist = |id: Uuid| -> Credited {
+        if ctx.catalog.artist(id).is_some_and(|a| a.name.eq_ignore_ascii_case(name)) {
+            return Credited::Artist { id, alias: None };
+        }
+        match look.aliases(id) {
+            Some(list) => Credited::Artist { id, alias: list.iter().find(|a| a.name.eq_ignore_ascii_case(name)).map(|a| a.id) },
+            None => {
+                looking.push(name.to_string());
+                Credited::Artist { id, alias: None }
+            }
+        }
+    };
+    if let Some(id) = ctx.names.pinned(PinKind::Artist, name) {
+        return if ctx.names.is_new(id) { Credited::New(Some(id)) } else { artist(id) };
+    }
+    if let Some((id, _)) = ctx.names.new_artists.iter().find(|a| a.1.eq_ignore_ascii_case(name)) {
+        return Credited::New(Some(*id));
+    }
+    match ctx.artist_names.map(|t| t.get(name)).unwrap_or_default() {
+        [] => Credited::New(None),
+        [id] => artist(*id),
+        ids => Credited::Undecided(ids.to_vec()),
+    }
+}
+
+/// What a staged `parse:` says it does, and what's worth a look.
+pub fn parse_label(parsed: &TitlesParsed) -> (String, Option<String>) {
     let new = parsed.names.iter().filter(|n| matches!(n.credited, Credited::New(_))).count();
-    let undecided: Vec<String> = parsed.names.iter().filter(|n| matches!(n.credited, Credited::Undecided(_))).map(|n| format!("“{}”", n.text)).collect();
+    let undecided: Vec<String> = parsed.undecided().iter().map(|n| format!("“{}”", n.text)).collect();
     let mut label = format!("parse: {}", parsed.setting);
-    label.push_str(&match titles {
+    label.push_str(&match parsed.titles.as_slice() {
         [(_, title)] => {
             let o = &parsed.outcomes[title];
-            let names: Vec<String> = o.credits.iter().map(|(i, role)| format!("{} ({role})", parsed.names[*i].text)).collect();
+            let names: Vec<String> = o.credits.iter().map(|c| format!("{} ({})", parsed.names[c.name].text, c.role)).collect();
             format!(" → “{}”, {}", o.title, if names.is_empty() { "no credits".into() } else { format!("+ {}", names.join(", ")) })
         }
-        _ => format!(" → {changing} of {} tracks, {} names", titles.len(), parsed.names.len()),
+        titles => format!(" → {} of {} tracks, {} names", parsed.changing(), titles.len(), parsed.names.len()),
     });
     if new > 0 {
         label.push_str(&format!(" ({new} new artist{})", if new == 1 { "" } else { "s" }));
     }
+    let by_hand = parsed.fixes.not_names.len() + parsed.fixes.split.len() + parsed.fixes.whole.len() + parsed.skip.len();
+    if by_hand > 0 {
+        label.push_str(&format!(", {by_hand} corrected by hand"));
+    }
     let mut warnings = Vec::new();
     if !undecided.is_empty() {
-        warnings.push(format!("more than one artist is named {}: its tracks are left out until one is chosen", undecided.join(", ")));
+        warnings.push(format!("more than one artist is named {}: choose which in the check (or leave its tracks out) before applying", undecided.join(", ")));
     }
-    match titles {
+    match parsed.titles.as_slice() {
         [(_, title)] => warnings.extend(parsed.outcomes[title].warnings.iter().map(|w| w.text())),
-        _ => match parsed.to_check(titles) {
+        _ => match parsed.to_check() {
             0 => {}
             1 => warnings.push("1 track has something to look at".into()),
             n => warnings.push(format!("{n} tracks have something to look at")),
         },
     }
-    let warning = (!warnings.is_empty()).then(|| warnings.join("; "));
-    Ok(Resolved { label, ops: vec![Op::ParseTitle(std::sync::Arc::new(parsed))], warning, ..Default::default() })
+    (label, (!warnings.is_empty()).then(|| warnings.join("; ")))
 }
 
 /// A grouping by name: chosen, new, or the library's (the same name, then one like it).

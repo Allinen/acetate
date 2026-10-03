@@ -16,7 +16,7 @@ fn setting(text: &str) -> Setting {
 }
 
 fn with_names(rules: &str, title: &str, names: &NameTable) -> Parsed {
-    parse(title, &setting(rules), names)
+    parse(title, &setting(rules), names, &Fixes::default())
 }
 
 /// `title` parsed with `rules` comes out as `want` with `credits` (name, role).
@@ -167,6 +167,32 @@ fn keeping_whole() {
     assert_eq!(parsed.credits.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["Cy x Dee", "Eve"]);
     let parsed = with_names("feat whole:off", "Song (feat. Ann & The Bos)", &names);
     assert_eq!(parsed.credits.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["Ann", "The Bos"]);
+}
+
+#[test]
+fn fixed_by_hand() {
+    let fixes = |not: &[&str], split: &[&str], whole: &[&str]| Fixes {
+        not_names: not.iter().map(|s| s.to_string()).collect(),
+        split: split.iter().map(|s| s.to_string()).collect(),
+        whole: whole.iter().map(|s| s.to_string()).collect(),
+    };
+    let run = |rules: &str, title: &str, f: &Fixes, names: &NameTable| {
+        let p = parse(title, &setting(rules), names, f);
+        (p.title, p.credits.into_iter().map(|c| (c.name, c.whole)).collect::<Vec<_>>())
+    };
+    let none = NameTable::default();
+    // Not a name: its part stays, nothing in it is credited.
+    assert_eq!(run("feat [prod]", "Cool song! [bong] (feat. Ann)", &fixes(&["BONG"], &[], &[]), &none), ("Cool song! [bong]".into(), vec![("Ann".into(), false)]));
+    assert_eq!(run("feat", "Song (feat. Ann & bong)", &fixes(&["bong"], &[], &[]), &none), ("Song (feat. Ann & bong)".into(), vec![]));
+    // Kept whole, no artist needed.
+    assert_eq!(run("feat", "Song (feat. Cy, Ann & The Bos)", &fixes(&[], &[], &["ann & the bos"]), &none), ("Song".into(), vec![("Cy".into(), false), ("Ann & The Bos".into(), true)]));
+    // Split: an artist's name, and on separators not typed.
+    let names = NameTable::new([(Uuid::from_u128(1), "Ann & The Bos")]);
+    assert_eq!(run("feat", "Song (feat. Ann & The Bos)", &fixes(&[], &["Ann & The Bos"], &[]), &names).1, [("Ann".into(), false), ("The Bos".into(), false)]);
+    assert_eq!(run("feat split:,", "Song (feat. Ann x Bo, Cy)", &fixes(&[], &["ann x bo"], &[]), &none).1, [("Ann".into(), false), ("Bo".into(), false), ("Cy".into(), false)]);
+    // Where each came from.
+    let p = parse("Song (feat. Ann, Bo) [prod. Dee]", &setting("feat prod"), &none, &Fixes::default());
+    assert_eq!(p.credits.iter().map(|c| c.part.as_str()).collect::<Vec<_>>(), ["Dee", "Ann, Bo", "Ann, Bo"]);
 }
 
 #[test]

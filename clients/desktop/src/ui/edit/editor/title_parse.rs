@@ -10,16 +10,19 @@
 //!
 //! Names are matched to artists exactly, ignoring case (an artist's name or alias), not
 //! the line's "artist like": one artist has it → that one (under the alias, if it's an
-//! alias); a name chosen in the list for it (`Names::pin`) → that one; none → a new artist,
-//! made when the chip is staged; more than one → not decided, and the tracks with it are
-//! refused until one is chosen.
+//! alias); a name chosen for it (`Names::pin`: in the check, or the list of an `artist:`) →
+//! that one; none → a new artist, made when the chip is staged; more than one → not
+//! decided, and the tracks with it are refused (and applying waits) until one is chosen.
+//!
+//! It keeps what it was made from (the setting, the titles, the corrections by hand), so
+//! the check can correct it and parse again (`again`).
 
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
 use uuid::Uuid;
 
-use crate::title_credits::{self, NameTable, Setting, Warning};
+use crate::title_credits::{self, Fixes, NameTable, Setting, Warning};
 
 /// What a name found credits.
 #[derive(Debug, Clone, PartialEq)]
@@ -40,23 +43,36 @@ pub struct Name {
     pub credited: Credited,
     /// How many of the targets have it.
     pub tracks: usize,
-    /// Kept whole (an artist's name with a separator in it).
+    /// Kept whole (an artist's name with a separator in it, or by hand).
     pub whole: bool,
+    /// What looks wrong about it (the parser's warning), if anything.
+    pub why: Option<&'static str>,
+    /// The roles it's credited in.
+    pub roles: Vec<String>,
+    /// The text it was first found in, before splitting ("Ann, Bo & Cy").
+    pub part: String,
+}
+
+/// A credit a title gets.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Found {
+    /// Its name, in `TitlesParsed::names`.
+    pub name: usize,
+    pub role: String,
 }
 
 /// What one title becomes.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Outcome {
     pub title: String,
-    /// (Its name, in `TitlesParsed::names`; the role.)
-    pub credits: Vec<(usize, String)>,
+    pub credits: Vec<Found>,
     pub warnings: Vec<Warning>,
     /// Why a track with it can't be changed (the title would be empty).
     pub problem: Option<String>,
 }
 
 impl Outcome {
-    fn changes(&self, before: &str) -> bool {
+    pub fn changes(&self, before: &str) -> bool {
         self.title != before || !self.credits.is_empty()
     }
 }
@@ -64,8 +80,13 @@ impl Outcome {
 /// `parse:` staged: what each title becomes (see the module's notes).
 #[derive(Clone)]
 pub struct TitlesParsed {
-    /// The setting, as it reads back (`feat prod [producer]`).
+    /// The rules and overrides, and as they read back (`feat prod [producer]`).
+    pub rules: Setting,
     pub setting: String,
+    /// The targets' titles it was made for (as the edit left them before it).
+    pub titles: Vec<(Uuid, String)>,
+    /// Corrections by hand (the check).
+    pub fixes: Fixes,
     /// Each title (before this) → what it becomes.
     pub outcomes: HashMap<String, Outcome>,
     pub names: Vec<Name>,
@@ -93,33 +114,40 @@ impl PartialEq for TitlesParsed {
 pub type Becomes = (String, Vec<(Uuid, String, Option<Uuid>)>);
 
 impl TitlesParsed {
-    /// Every title of `titles` parsed with `setting`; `credited` says what a name credits
-    /// (None: still looking it up, then so is this).
-    pub fn new(setting: &Setting, titles: &[(Uuid, String)], table: &NameTable, credited: &mut dyn FnMut(&str) -> Option<Credited>) -> Option<TitlesParsed> {
+    /// Every title of `titles` parsed with `setting` and `fixes`; `credited` says what a
+    /// name credits (None: still looking it up, then so is this).
+    pub fn new(setting: &Setting, titles: Vec<(Uuid, String)>, fixes: Fixes, table: &NameTable, credited: &mut dyn FnMut(&str) -> Option<Credited>) -> Option<TitlesParsed> {
         let mut outcomes: HashMap<String, Outcome> = HashMap::new();
         let mut names: Vec<Name> = Vec::new();
         let mut index: HashMap<String, usize> = HashMap::new();
-        for (_, title) in titles {
+        for (_, title) in &titles {
             if outcomes.contains_key(title) {
                 continue;
             }
-            let parsed = title_credits::parse(title, setting, table);
-            let credits = parsed
-                .credits
-                .iter()
-                .map(|c| {
-                    let i = *index.entry(c.name.to_lowercase()).or_insert_with(|| {
-                        names.push(Name { text: c.name.clone(), credited: Credited::New(None), tracks: 0, whole: c.whole });
-                        names.len() - 1
-                    });
-                    (i, c.role.clone())
-                })
-                .collect();
+            let parsed = title_credits::parse(title, setting, table, &fixes);
+            let mut credits = Vec::new();
+            for c in &parsed.credits {
+                let i = *index.entry(c.name.to_lowercase()).or_insert_with(|| {
+                    names.push(Name { text: c.name.clone(), credited: Credited::New(None), tracks: 0, whole: c.whole, why: None, roles: Vec::new(), part: c.part.clone() });
+                    names.len() - 1
+                });
+                if !names[i].roles.contains(&c.role) {
+                    names[i].roles.push(c.role.clone());
+                }
+                credits.push(Found { name: i, role: c.role.clone() });
+            }
+            for w in &parsed.warnings {
+                if let Warning::Name { name, why } = w
+                    && let Some(&i) = index.get(&name.to_lowercase())
+                {
+                    names[i].why = Some(why);
+                }
+            }
             let problem = parsed.title.trim().is_empty().then(|| "its title would be empty".to_string());
             outcomes.insert(title.clone(), Outcome { title: parsed.title, credits, warnings: parsed.warnings, problem });
         }
-        for (_, title) in titles {
-            let mut seen: Vec<usize> = outcomes[title].credits.iter().map(|c| c.0).collect();
+        for (_, title) in &titles {
+            let mut seen: Vec<usize> = outcomes[title].credits.iter().map(|c| c.name).collect();
             seen.sort();
             seen.dedup();
             for i in seen {
@@ -129,9 +157,28 @@ impl TitlesParsed {
         for name in &mut names {
             name.credited = credited(&name.text)?;
         }
-        let mut parsed = TitlesParsed { setting: setting.to_text(), outcomes, names, skip: Vec::new(), key: 0 };
+        let mut parsed = TitlesParsed { rules: setting.clone(), setting: setting.to_text(), titles, fixes, outcomes, names, skip: Vec::new(), key: 0 };
         parsed.seal();
         Some(parsed)
+    }
+
+    /// Parsed again (the corrections changed, a name was chosen): the same titles and
+    /// tracks left alone.
+    pub fn again(&self, table: &NameTable, credited: &mut dyn FnMut(&str) -> Option<Credited>) -> Option<TitlesParsed> {
+        let mut again = TitlesParsed::new(&self.rules, self.titles.clone(), self.fixes.clone(), table, credited)?;
+        again.skip = self.skip.clone();
+        again.seal();
+        Some(again)
+    }
+
+    /// The new artists it credits made (`new_artist`: a name's stand-in).
+    pub fn make_new(&mut self, new_artist: &mut dyn FnMut(&str) -> Uuid) {
+        for n in &mut self.names {
+            if n.credited == Credited::New(None) {
+                n.credited = Credited::New(Some(new_artist(&n.text)));
+            }
+        }
+        self.seal();
     }
 
     /// The key again, after a change.
@@ -139,7 +186,7 @@ impl TitlesParsed {
         let mut outcomes: Vec<(&String, &Outcome)> = self.outcomes.iter().collect();
         outcomes.sort_by_key(|o| o.0);
         let mut h = std::hash::DefaultHasher::new();
-        format!("{}{outcomes:?}{:?}{:?}", self.setting, self.names, self.skip).hash(&mut h);
+        format!("{}{outcomes:?}{:?}{:?}{:?}", self.setting, self.names, self.skip, self.fixes).hash(&mut h);
         self.key = h.finish();
     }
 
@@ -157,11 +204,11 @@ impl TitlesParsed {
         }
         let mut credits = Vec::new();
         let mut undecided = Vec::new();
-        for (i, role) in &o.credits {
-            let name = &self.names[*i];
+        for c in &o.credits {
+            let name = &self.names[c.name];
             match &name.credited {
-                Credited::Artist { id, alias } => credits.push((*id, role.clone(), *alias)),
-                Credited::New(Some(id)) => credits.push((*id, role.clone(), None)),
+                Credited::Artist { id, alias } => credits.push((*id, c.role.clone(), *alias)),
+                Credited::New(Some(id)) => credits.push((*id, c.role.clone(), None)),
                 Credited::New(None) => return Err(format!("“{}” isn't made yet (stage parse: again)", name.text)),
                 Credited::Undecided(_) => undecided.push(format!("“{}”", name.text)),
             }
@@ -172,14 +219,30 @@ impl TitlesParsed {
         Ok(Some((o.title.clone(), credits)))
     }
 
-    /// How many of `titles` it changes.
-    pub fn changing(&self, titles: &[(Uuid, String)]) -> usize {
-        titles.iter().filter(|(t, title)| !self.skip.contains(t) && self.outcomes.get(title).is_some_and(|o| o.changes(title))).count()
+    /// How many of the titles it changes.
+    pub fn changing(&self) -> usize {
+        self.titles.iter().filter(|(t, title)| !self.skip.contains(t) && self.outcomes.get(title).is_some_and(|o| o.changes(title))).count()
     }
 
-    /// How many of `titles` have something to look at (warnings, a problem).
-    pub fn to_check(&self, titles: &[(Uuid, String)]) -> usize {
-        titles.iter().filter(|(_, title)| self.outcomes.get(title).is_some_and(|o| o.problem.is_some() || !o.warnings.is_empty())).count()
+    /// How many of the titles have something to look at (warnings, a problem).
+    pub fn to_check(&self) -> usize {
+        self.titles.iter().filter(|(_, title)| self.outcomes.get(title).is_some_and(|o| o.problem.is_some() || !o.warnings.is_empty())).count()
+    }
+
+    /// The names still to choose an artist for, on tracks it doesn't leave alone.
+    pub fn undecided(&self) -> Vec<&Name> {
+        let mut out: Vec<usize> = Vec::new();
+        for (t, title) in &self.titles {
+            if self.skip.contains(t) {
+                continue;
+            }
+            for c in self.outcomes.get(title).map(|o| o.credits.as_slice()).unwrap_or_default() {
+                if matches!(self.names[c.name].credited, Credited::Undecided(_)) && !out.contains(&c.name) {
+                    out.push(c.name);
+                }
+            }
+        }
+        out.into_iter().map(|i| &self.names[i]).collect()
     }
 }
 
@@ -211,9 +274,9 @@ mod tests {
     #[test]
     fn each_title_gets_its_own_result() {
         let t = titles(&["Song (feat. Ann)", "Other [prod. Cy]", "Plain", "Song (feat. Ann)"]);
-        let mut p = TitlesParsed::new(&setting("feat prod"), &t, &NameTable::default(), &mut credited).unwrap();
+        let mut p = TitlesParsed::new(&setting("feat prod"), t.clone(), Fixes::default(), &NameTable::default(), &mut credited).unwrap();
         assert_eq!(p.outcomes.len(), 3, "the same title once");
-        assert_eq!(p.changing(&t), 3);
+        assert_eq!(p.changing(), 3);
         assert_eq!(p.names.iter().map(|n| (n.text.as_str(), n.tracks)).collect::<Vec<_>>(), [("Ann", 2), ("Cy", 1)]);
         assert_eq!(p.result(t[0].0, "Song (feat. Ann)"), Ok(Some(("Song".into(), vec![(id(1), "featured".into(), None)]))));
         // A new artist has to be made first (staging does it).
@@ -228,7 +291,7 @@ mod tests {
     #[test]
     fn refused_when_it_cant_say() {
         let t = titles(&["Song (feat. Bo)", "(feat. Ann)"]);
-        let p = TitlesParsed::new(&setting("feat"), &t, &NameTable::default(), &mut credited).unwrap();
+        let p = TitlesParsed::new(&setting("feat"), t.clone(), Fixes::default(), &NameTable::default(), &mut credited).unwrap();
         assert!(p.result(t[0].0, "Song (feat. Bo)").unwrap_err().contains("more than one artist"));
         assert!(p.result(t[1].0, "(feat. Ann)").unwrap_err().contains("empty"));
         assert!(p.result(t[0].0, "Song (feat. Bo) [v2]").unwrap_err().contains("changed since"));
@@ -240,8 +303,23 @@ mod tests {
     }
 
     #[test]
+    fn parsed_again_with_corrections() {
+        let t = titles(&["Cool song! [bong]", "Song (feat. Bo)"]);
+        let p = TitlesParsed::new(&setting("feat [prod]"), t.clone(), Fixes::default(), &NameTable::default(), &mut credited).unwrap();
+        assert_eq!(p.undecided().iter().map(|n| n.text.as_str()).collect::<Vec<_>>(), ["Bo"]);
+        let mut fixed = p.clone();
+        fixed.fixes.not_names.push("bong".into());
+        fixed.skip.push(t[1].0);
+        let again = fixed.again(&NameTable::default(), &mut credited).unwrap();
+        assert_eq!(again.outcomes["Cool song! [bong]"].title, "Cool song! [bong]");
+        assert_eq!(again.names.iter().map(|n| n.text.as_str()).collect::<Vec<_>>(), ["Bo"]);
+        assert!(again.undecided().is_empty(), "its track is left alone");
+        assert_eq!(again.changing(), 0);
+    }
+
+    #[test]
     fn still_looking_up_is_nothing_yet() {
         let t = titles(&["Song (feat. Ann)"]);
-        assert!(TitlesParsed::new(&setting("feat"), &t, &NameTable::default(), &mut |_| None).is_none());
+        assert!(TitlesParsed::new(&setting("feat"), t.clone(), Fixes::default(), &NameTable::default(), &mut |_| None).is_none());
     }
 }

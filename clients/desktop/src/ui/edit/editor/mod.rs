@@ -49,12 +49,17 @@
 //!   (and `split:`, `whole:`, `keep:`, `word:` after it; see `crate::title_credits`), each
 //!   track its own result (`title_parse`): its title without them, and the names credited
 //!   (an artist's name or alias exactly, ignoring case; none: a new artist, made when it's
-//!   staged; more than one: its tracks are refused until one is chosen in the list for
-//!   that name).
+//!   staged; more than one: chosen before applying). **The check** (`check`, in place of
+//!   the fields with many tracks, under the rows with one; ↓ goes to it) lists every name
+//!   and what it credits, the corrections, and every track it changes, the odd ones
+//!   first: Enter says who a name is, `c` the next artist with that name, `s` splits it,
+//!   `w` keeps a name whole, `n` says it isn't one, `x` leaves a track out, Delete takes a
+//!   correction back. Each correction parses again (`title_parse::TitlesParsed::again`).
 //! * **A draft** (`draft`): a file that didn't import, as a preview imports it. Edited like
 //!   a track (its source among the rows); applying imports it with the changes. It starts
 //!   with `single:` staged when it's on no album, so a loose track gets a single of its own.
 
+mod check;
 mod engine;
 mod import;
 pub mod model;
@@ -209,6 +214,24 @@ pub struct TrackEditor {
     fetched: Arc<Mutex<Option<Result<Fetched, String>>>>,
     /// Every artist's names, for `parse:` (made from the catalog it's for, when asked).
     artist_names: Option<(*const Catalog, Arc<crate::title_credits::NameTable>)>,
+    /// The row of the check (a staged `parse:`) the keys are on; brought into view.
+    check: Option<usize>,
+    check_scroll: bool,
+    /// The line asked for something for the check (who a name is, a name kept whole).
+    prompt: Option<Prompt>,
+    /// The staged `parse:` corrected, to parse again (once the names it needs are there).
+    pending_parse: Option<title_parse::TitlesParsed>,
+    /// Back to the check from the line (a prompt answered).
+    to_check: bool,
+}
+
+/// What the line is asked for, for the check.
+#[derive(Debug, Clone, PartialEq)]
+enum Prompt {
+    /// Which artist a name is (the line finds it).
+    Who(String),
+    /// A name kept whole: the line has the text it was found in.
+    Whole(String),
 }
 
 /// What importing metadata fetched: what it says, who has the uploader's account, and its
@@ -260,6 +283,11 @@ impl Default for TrackEditor {
             importing: false,
             fetched: Arc::default(),
             artist_names: None,
+            check: None,
+            check_scroll: false,
+            prompt: None,
+            pending_parse: None,
+            to_check: false,
         }
     }
 }
@@ -441,6 +469,137 @@ impl TrackEditor {
         self.staged.iter().flat_map(|s| s.ops.clone()).collect()
     }
 
+    /// The `parse:` staged last (the check is its).
+    fn staged_parse(&self) -> Option<Arc<title_parse::TitlesParsed>> {
+        self.staged.iter().rev().flat_map(|s| s.ops.iter()).find_map(|op| if let Op::ParseTitle(p) = op { Some(p.clone()) } else { None })
+    }
+
+    /// The staged `parse:` corrected by `change`, then parsed again (`settle_parse`).
+    fn reparse(&mut self, change: impl FnOnce(&mut title_parse::TitlesParsed)) {
+        let Some(mut p) = self.pending_parse.take().or_else(|| self.staged_parse().map(|p| (*p).clone())) else { return };
+        change(&mut p);
+        self.pending_parse = Some(p);
+        self.apply_when_ready = false;
+    }
+
+    /// A corrected `parse:` parsed again and staged in its place, once the names it needs
+    /// are looked up (tried again each frame until then).
+    fn settle_parse(&mut self, shell: &mut Shell, here: &Here) {
+        let (Some(pending), Some(table)) = (self.pending_parse.take(), here.artist_names) else { return };
+        let mut looking = Vec::new();
+        let again = {
+            let ctx = here.ctx(&self.names);
+            let mut look = Look(&mut *shell);
+            pending.again(table, &mut |name| Some(resolve::credited(name, &ctx, &mut look, &mut looking)))
+        };
+        let Some(mut again) = again.filter(|_| looking.is_empty()) else {
+            self.pending_parse = Some(pending);
+            shell.ctx.request_repaint_after(std::time::Duration::from_millis(100));
+            return;
+        };
+        again.make_new(&mut |name| self.names.new_artist(name));
+        let (label, warning) = resolve::parse_label(&again);
+        let again = Arc::new(again);
+        if let Some(s) = self.staged.iter_mut().rev().find(|s| s.ops.iter().any(|op| matches!(op, Op::ParseTitle(_)))) {
+            for op in &mut s.ops {
+                if let Op::ParseTitle(p) = op {
+                    *p = again.clone();
+                }
+            }
+            (s.label, s.warning) = (label, warning);
+        }
+        self.resolved = None;
+    }
+
+    /// A key on the check's row `n`.
+    fn check_key(&mut self, entry: &check::Entry, key: Key, here: &Here) {
+        use check::{Entry, Fix};
+        let Some(p) = self.staged_parse() else { return };
+        match (entry, key) {
+            (Entry::Name(i), Key::Enter) => {
+                let name = p.names[*i].text.clone();
+                self.line = format!("artist:{}", parse::quoted(&name));
+                self.prompt = Some(Prompt::Who(name));
+                self.focus_line = true;
+                self.place_cursor = true;
+            }
+            (Entry::Name(i), Key::C) => {
+                let name = p.names[*i].text.clone();
+                let candidates = here.artist_names.map(|t| t.get(&name).to_vec()).unwrap_or_default();
+                if candidates.len() < 2 {
+                    self.notice = Some(format!("Only {} artist has the name “{name}” (Enter chooses another).", if candidates.is_empty() { "no" } else { "one" }));
+                    return;
+                }
+                let now = self.names.pinned(PinKind::Artist, &name).and_then(|id| candidates.iter().position(|c| *c == id));
+                let next = candidates[now.map_or(0, |at| (at + 1) % candidates.len())];
+                self.names.pin(PinKind::Artist, &name, next);
+                self.reparse(|_| {});
+            }
+            (Entry::Name(i), Key::S) => {
+                let name = p.names[*i].text.clone();
+                self.reparse(|p| p.fixes.split.push(name));
+            }
+            (Entry::Name(i), Key::W) => {
+                let n = &p.names[*i];
+                self.line = n.part.clone();
+                self.prompt = Some(Prompt::Whole(n.text.clone()));
+                self.focus_line = true;
+                self.place_cursor = true;
+            }
+            (Entry::Name(i), Key::N) => {
+                let name = p.names[*i].text.clone();
+                self.reparse(|p| p.fixes.not_names.push(name));
+            }
+            (Entry::Track(track, _), Key::X) => {
+                let track = *track;
+                self.reparse(|p| {
+                    if p.skip.contains(&track) {
+                        p.skip.retain(|t| *t != track);
+                    } else {
+                        p.skip.push(track);
+                    }
+                });
+            }
+            (Entry::Fixed(fix, name), Key::Delete) => {
+                let (fix, name) = (*fix, name.clone());
+                self.reparse(|p| {
+                    let list = match fix {
+                        Fix::NotName => &mut p.fixes.not_names,
+                        Fix::Split => &mut p.fixes.split,
+                        Fix::Whole => &mut p.fixes.whole,
+                    };
+                    list.retain(|n| *n != name);
+                });
+            }
+            (Entry::Chosen(name, _), Key::Delete) => {
+                self.names.unpin(PinKind::Artist, name);
+                self.reparse(|_| {});
+            }
+            _ => {}
+        }
+    }
+
+    /// The line's answer to the check's prompt (Enter).
+    fn answer_prompt(&mut self, prompt: Prompt) {
+        match prompt {
+            Prompt::Who(name) => {
+                self.notice = Some(format!("Choose who “{name}” is in the list (Esc: never mind)."));
+                return;
+            }
+            Prompt::Whole(_) => {
+                let whole = self.line.split_whitespace().collect::<Vec<_>>().join(" ");
+                if whole.is_empty() {
+                    self.notice = Some("Leave the name to keep whole in the line (Esc: never mind).".into());
+                    return;
+                }
+                self.reparse(|p| p.fixes.whole.push(whole));
+            }
+        }
+        self.line.clear();
+        self.prompt = None;
+        self.to_check = true;
+    }
+
     /// The editor for `targets` (in the order shown); `album`: the list is this album's.
     /// With one track it's laid out top to bottom (the page around it scrolls); with many,
     /// in two columns filling the room given. Returns true when it's done and asks to close.
@@ -491,6 +650,9 @@ impl TrackEditor {
         let focused = ctx.memory(|m| m.has_focus(line_id));
         if focused {
             self.row = None;
+            if self.prompt.is_none() {
+                self.check = None;
+            }
         }
         let typing = ctx.egui_wants_keyboard_input();
         // Metadata pasted to import (into the empty line, or outside any field).
@@ -522,14 +684,16 @@ impl TrackEditor {
         let may_source = shell.account.can("edit_sources");
         // `parse:` typed: each target's title as the staged changes leave it (once they're
         // all loaded), and every artist's names.
-        let parsing = parse::parse(&self.line).parts.iter().any(|p| p.key == K::Parse);
-        let titles: Option<Vec<(Uuid, String)>> = parsing.then(|| targets.iter().map(|t| self.engine.ready(*t).map(|r| (*t, r.meta.title.clone()))).collect()).flatten();
+        let typed_parse = parse::parse(&self.line).parts.iter().any(|p| p.key == K::Parse);
+        let parsing = typed_parse || self.staged_parse().is_some();
+        let titles: Option<Vec<(Uuid, String)>> = typed_parse.then(|| targets.iter().map(|t| self.engine.ready(*t).map(|r| (*t, r.meta.title.clone()))).collect()).flatten();
         if parsing && self.artist_names.as_ref().is_none_or(|(of, _)| !std::ptr::eq(*of, Arc::as_ptr(catalog))) {
             let names = catalog.artists.iter().flat_map(|a| std::iter::once((a.id, a.name.as_str())).chain(a.aliases.iter().map(move |x| (a.id, x.as_str()))));
             self.artist_names = Some((Arc::as_ptr(catalog), Arc::new(crate::title_credits::NameTable::new(names))));
         }
         let artist_names = self.artist_names.as_ref().filter(|_| parsing).map(|(_, t)| t.clone());
         let here = Here { catalog, vocab: &vocab, targets: targets.len(), album, staged_album, may_relate, may_source, titles: titles.as_deref(), artist_names: artist_names.as_deref() };
+        self.settle_parse(shell, &here);
         // Staged for you (`stage_for_you`); what can't be is left in the line.
         let mut left = Vec::new();
         for text in std::mem::take(&mut self.for_you) {
@@ -566,7 +730,8 @@ impl TrackEditor {
             Some(value) => self.lookup_tracks.hits(shell, SearchPart::Tracks, &value),
             None => Vec::new(),
         };
-        let words = parsed.parts.is_empty() && !parsed.words.is_empty();
+        // (A name kept whole is typed as plain words: they find nothing then.)
+        let words = parsed.parts.is_empty() && !parsed.words.is_empty() && !matches!(self.prompt, Some(Prompt::Whole(_)));
         let (candidates, actions, units) = {
             let mut look = Look(&mut *shell);
             let rctx = here.ctx(&self.names);
@@ -636,8 +801,19 @@ impl TrackEditor {
         if let Some(row) = self.row {
             self.row = (!rows.is_empty()).then(|| row.min(rows.len() - 1));
         }
-        // On the rows, the keys are theirs (Esc too: back to the line, not off the page).
-        if self.row.is_some() {
+        // The check of a staged `parse:`, and the row of it the keys are on.
+        let checking: Option<(Arc<title_parse::TitlesParsed>, Vec<check::Entry>)> = self.staged_parse().map(|p| {
+            let entries = check::entries(&p, &self.names, &self.engine);
+            (p, entries)
+        });
+        self.check = match (&checking, self.check) {
+            (Some((_, e)), Some(n)) => check::selectable(e, n.min(e.len().saturating_sub(1)), false).or_else(|| check::selectable(e, 0, true)),
+            _ => None,
+        };
+        let first_check = checking.as_ref().and_then(|(_, e)| check::selectable(e, 0, true));
+        // On the rows or the check, the keys are theirs (Esc too: back to the line, not off
+        // the page).
+        if self.row.is_some() || self.check.is_some() {
             shell.page_takes_keys = true;
             shell.page_takes_back = true;
         }
@@ -649,7 +825,7 @@ impl TrackEditor {
             let (up, down, tab, enter, back, escape) = ctx.input_mut(|i| {
                 (
                     choices > 0 && i.consume_key(Modifiers::NONE, Key::ArrowUp),
-                    (choices > 0 || (self.line.is_empty() && !rows.is_empty())) && i.consume_key(Modifiers::NONE, Key::ArrowDown),
+                    (choices > 0 || (self.line.is_empty() && (!rows.is_empty() || first_check.is_some()))) && i.consume_key(Modifiers::NONE, Key::ArrowDown),
                     i.consume_key(Modifiers::NONE, Key::Tab),
                     i.consume_key(Modifiers::NONE, Key::Enter),
                     self.line.is_empty() && !self.staged.is_empty() && i.consume_key(Modifiers::NONE, Key::Backspace),
@@ -662,9 +838,13 @@ impl TrackEditor {
             if down {
                 if choices > 0 {
                     self.highlighted = (self.highlighted + 1).min(choices - 1);
-                } else {
+                } else if !rows.is_empty() {
                     // Into the rows.
                     self.row = Some(0);
+                    ctx.memory_mut(|m| m.surrender_focus(line_id));
+                } else {
+                    self.check = first_check;
+                    self.check_scroll = true;
                     ctx.memory_mut(|m| m.surrender_focus(line_id));
                 }
             }
@@ -688,6 +868,9 @@ impl TrackEditor {
             }
             if escape {
                 self.line.clear();
+                if self.prompt.take().is_some() {
+                    self.to_check = true;
+                }
             }
         }
         // ---- Keys on a row ----
@@ -716,7 +899,14 @@ impl TrackEditor {
                     }
                 }
             } else if pressed(Key::ArrowDown, Modifiers::NONE) || pressed(Key::J, Modifiers::NONE) {
-                self.row = Some((n + 1).min(rows.len() - 1));
+                // Past the last row: the check, if there's one.
+                if n + 1 >= rows.len() && first_check.is_some() {
+                    self.row = None;
+                    self.check = first_check;
+                    self.check_scroll = true;
+                } else {
+                    self.row = Some((n + 1).min(rows.len() - 1));
+                }
             } else if pressed(Key::ArrowUp, Modifiers::NONE) || pressed(Key::K, Modifiers::NONE) {
                 if n == 0 {
                     self.row = None;
@@ -762,6 +952,34 @@ impl TrackEditor {
                         self.row_key(row.kind, action, &r, shell, &here);
                     }
                 }
+            }
+        }
+        // ---- Keys on the check ----
+        if let (Some(n), Some((_, entries))) = (self.check.filter(|_| !typing && !shell.palette_open && !shell.modal_was_open), &checking) {
+            let pressed = |k: Key| ctx.input_mut(|i| i.consume_key(Modifiers::NONE, k));
+            if pressed(Key::ArrowDown) || pressed(Key::J) {
+                self.check = check::selectable(entries, n + 1, true).or(Some(n));
+                self.check_scroll = true;
+            } else if pressed(Key::ArrowUp) || pressed(Key::K) {
+                match check::selectable(entries, n.saturating_sub(1), false).filter(|&m| m < n) {
+                    Some(m) => self.check = Some(m),
+                    None => {
+                        self.check = None;
+                        if rows.is_empty() {
+                            self.focus_line = true;
+                        } else {
+                            self.row = Some(rows.len() - 1);
+                        }
+                    }
+                }
+                self.check_scroll = true;
+            } else if pressed(Key::Escape) {
+                self.check = None;
+                self.focus_line = true;
+            } else if let Some(key) = [Key::Enter, Key::C, Key::S, Key::W, Key::N, Key::X, Key::Delete].into_iter().find(|k| pressed(*k)) {
+                // The letter typed is still in this frame's input: not into the line.
+                ctx.input_mut(|i| i.events.retain(|e| !matches!(e, egui::Event::Text(_))));
+                self.check_key(&entries[n], key, &here);
             }
         }
         // Ctrl+Enter: what's typed is staged first; then the preview is applied.
@@ -846,15 +1064,32 @@ impl TrackEditor {
                 ctx.memory_mut(|m| m.surrender_focus(line_id));
             }
         }
-        if stage {
+        if stage && let Some(prompt) = self.prompt.clone() {
+            self.answer_prompt(prompt);
+        } else if stage {
             let line = std::mem::take(&mut self.line);
             if !self.stage(&line, shell, &here) {
                 self.line = line;
             }
         }
+        // A prompt answered (or let go): back to the check.
+        if std::mem::take(&mut self.to_check) {
+            self.focus_line = false;
+            ctx.memory_mut(|m| m.surrender_focus(line_id));
+            self.check = self.check.or(first_check);
+            self.check_scroll = true;
+        }
 
+        // What the check asked the line for.
+        if let Some(prompt) = &self.prompt {
+            let text = match prompt {
+                Prompt::Who(name) => format!("Who is “{name}”? Choose the artist in the list (or a new one) · Esc: never mind"),
+                Prompt::Whole(name) => format!("Keep a name whole: leave exactly the name in the line (it has where “{name}” was found), then Enter · Esc: never mind"),
+            };
+            ui.label(RichText::new(text).color(P.accent).small());
+        }
         // What Enter would do (or why it can't), when no list is in the way.
-        if candidates.is_empty() && actions.is_empty() && verbs.is_empty() && !self.line.trim().is_empty() {
+        if self.prompt.is_none() && candidates.is_empty() && actions.is_empty() && verbs.is_empty() && !self.line.trim().is_empty() {
             egui::Frame::NONE.fill(P.bg).corner_radius(8).inner_margin(egui::Margin::same(6)).show(ui, |ui| {
                 for u in &units {
                     match &u.result {
@@ -937,8 +1172,18 @@ impl TrackEditor {
 
         // ---- State and preview ----
         let mut closed = esc_closed;
+        let check_id = egui::Id::new(("track-editor-check", self.id));
+        let mut check_clicked = None;
         if single {
             self.rows_view(ui, shell, catalog, targets[0], &rows, &vocab);
+            if let Some((p, entries)) = &checking {
+                ui.add_space(10.0);
+                let view = check::View { parsed: p, names: &self.names, catalog, engine: &self.engine };
+                ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), 260.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+                    ui.set_min_height(260.0);
+                    check_clicked = check::draw(ui, &view, entries, self.check, self.check_scroll, check_id);
+                });
+            }
             ui.add_space(10.0);
             closed = self.preview(ui, shell, catalog, &change, ctrl_enter, variant, true);
         } else {
@@ -947,9 +1192,17 @@ impl TrackEditor {
             ui.horizontal_top(|ui| {
                 ui.allocate_ui_with_layout(egui::vec2(left, height), egui::Layout::top_down(egui::Align::Min), |ui| {
                     ui.set_min_height(height);
-                    egui::ScrollArea::vertical().id_salt(("track-editor-state", self.id)).auto_shrink([false, false]).show(ui, |ui| {
-                        state(ui, &self.engine, catalog, &self.names);
-                    });
+                    match &checking {
+                        Some((p, entries)) => {
+                            let view = check::View { parsed: p, names: &self.names, catalog, engine: &self.engine };
+                            check_clicked = check::draw(ui, &view, entries, self.check, self.check_scroll, check_id);
+                        }
+                        None => {
+                            egui::ScrollArea::vertical().id_salt(("track-editor-state", self.id)).auto_shrink([false, false]).show(ui, |ui| {
+                                state(ui, &self.engine, catalog, &self.names);
+                            });
+                        }
+                    }
                 });
                 ui.add_space(16.0);
                 ui.allocate_ui_with_layout(egui::vec2(full - left - 16.0, height), egui::Layout::top_down(egui::Align::Min), |ui| {
@@ -957,6 +1210,12 @@ impl TrackEditor {
                     closed = self.preview(ui, shell, catalog, &change, ctrl_enter, variant, false);
                 });
             });
+        }
+        self.check_scroll = false;
+        if let Some(n) = check_clicked {
+            self.check = Some(n);
+            self.row = None;
+            ctx.memory_mut(|m| m.surrender_focus(line_id));
         }
         closed
     }
@@ -1045,6 +1304,23 @@ impl TrackEditor {
     /// A choice from the list: its text in the line for the value being typed, and what it
     /// stands for from now on; `next`: the next part to type after it.
     fn take(&mut self, c: &Candidate, part: &parse::Part, next: bool, ctx: &egui::Context) {
+        // Who a name is, for the check: that artist (or a new one) from now on.
+        if let Some(Prompt::Who(name)) = self.prompt.clone() {
+            let id = match &c.pick {
+                Some(Pick::Pin(PinKind::Artist, id)) => Some(*id),
+                Some(Pick::NewArtist) => Some(self.names.new_artist(&c.text)),
+                _ => None,
+            };
+            if let Some(id) = id {
+                self.names.pin(PinKind::Artist, &name, id);
+                self.reparse(|_| {});
+                self.line.clear();
+                self.prompt = None;
+                self.resolved = None;
+                self.to_check = true;
+            }
+            return;
+        }
         let text = parse::quoted(&c.text);
         let end = part.end.min(self.line.len());
         let start = part.value_start.min(end);
@@ -1098,13 +1374,9 @@ impl TrackEditor {
             for op in &mut r.ops {
                 if let Op::ParseTitle(parsed) = op {
                     let mut made = (**parsed).clone();
-                    for n in &mut made.names {
-                        if n.credited == title_parse::Credited::New(None) {
-                            n.credited = title_parse::Credited::New(Some(self.names.new_artist(&n.text)));
-                        }
-                    }
-                    made.seal();
+                    made.make_new(&mut |name| self.names.new_artist(name));
                     *op = Op::ParseTitle(Arc::new(made));
+                    self.pending_parse = None;
                 }
             }
             // The aliases it credits, named (for the preview's words).
@@ -1632,7 +1904,9 @@ impl TrackEditor {
 
         match phase {
             Phase::Editing => {
-                let can = current && changing > refused && !loading && self.line.trim().is_empty() && self.uploading == 0;
+                // A name more than one artist has: chosen first (or its tracks left out).
+                let undecided: Vec<String> = self.staged_parse().map(|p| p.undecided().iter().map(|n| format!("“{}”", n.text)).collect()).unwrap_or_default();
+                let can = current && changing > refused && !loading && self.line.trim().is_empty() && self.uploading == 0 && undecided.is_empty();
                 let text = if self.engine.is_draft() && single { "Import  (Ctrl+Enter)".to_string() } else if self.engine.is_draft() { format!("Import {} files  (Ctrl+Enter)", thousands(changing - refused.min(changing))) } else if single { "Apply  (Ctrl+Enter)".to_string() } else { format!("Apply to {} tracks  (Ctrl+Enter)", thousands(changing - refused.min(changing))) };
                 let mut apply = false;
                 ui.horizontal(|ui| {
@@ -1648,9 +1922,14 @@ impl TrackEditor {
                         ui.label(RichText::new("Checking it with the server…").color(P.faint));
                     }
                 });
+                if !undecided.is_empty() {
+                    ui.label(RichText::new(format!("Choose who {} is first, in the check (↓ from the line), or leave those tracks out (x).", undecided.join(", "))).color(P.danger).small());
+                }
                 if ctrl_enter {
                     if can {
                         apply = true;
+                    } else if !undecided.is_empty() {
+                        self.notice = Some(format!("Not applied: choose who {} is first.", undecided.join(", ")));
                     } else if self.uploading > 0 {
                         self.notice = Some("An image is still uploading: Ctrl+Enter again once it's a change.".into());
                     } else if single && (!self.staged.is_empty() || self.engine.is_draft()) && self.line.trim().is_empty() {
@@ -1666,8 +1945,9 @@ impl TrackEditor {
                 }
                 // The new things it makes, named.
                 let mut new = Vec::new();
+                let parsed_new = |id: &Uuid| change.ops.iter().any(|op| matches!(op, Op::ParseTitle(p) if p.names.iter().any(|n| n.credited == title_parse::Credited::New(Some(*id)))));
                 for (id, name) in &self.names.new_artists {
-                    if change.ops.iter().any(|op| matches!(op, Op::Credit { artist, .. } if artist == id)) {
+                    if change.ops.iter().any(|op| matches!(op, Op::Credit { artist, .. } if artist == id)) || parsed_new(id) {
                         new.push(format!("artist “{name}”"));
                     }
                 }

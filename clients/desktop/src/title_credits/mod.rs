@@ -61,11 +61,36 @@ impl NameTable {
     }
 }
 
+/// Corrections by hand to what's found (the editor's check), by name, ignoring case.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Fixes {
+    /// Not names: the part a name like this was found in stays in the title, and nothing in
+    /// it is credited.
+    pub not_names: Vec<String>,
+    /// Split on every separator (the default ones too), even an artist's name.
+    pub split: Vec<String>,
+    /// Kept whole, even if no artist has the name.
+    pub whole: Vec<String>,
+}
+
+impl Fixes {
+    pub fn is_empty(&self) -> bool {
+        self.not_names.is_empty() && self.split.is_empty() && self.whole.is_empty()
+    }
+
+    fn has(list: &[String], name: &str) -> bool {
+        let name = name.trim().to_lowercase();
+        list.iter().any(|n| n.trim().to_lowercase() == name)
+    }
+}
+
 /// A credit found in a title.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Credit {
     /// As written.
     pub name: String,
+    /// The text it was found in, before it was split into names ("Ann, Bo & Cy").
+    pub part: String,
     pub role: String,
     /// The rule that found it, as typed (`feat`, `[producer]`).
     pub rule: String,
@@ -109,20 +134,23 @@ pub struct Parsed {
     pub warnings: Vec<Warning>,
 }
 
-/// `title` parsed with `setting`. The same title, setting and names always give the same
-/// result.
-pub fn parse(title: &str, setting: &Setting, names: &NameTable) -> Parsed {
+/// `title` parsed with `setting` and the corrections. The same title, setting, names and
+/// corrections always give the same result.
+pub fn parse(title: &str, setting: &Setting, names: &NameTable, fixes: &Fixes) -> Parsed {
     let keywords = setting.keywords();
     let mut text = title.to_string();
     let mut credits: Vec<Credit> = Vec::new();
     let mut warnings = Vec::new();
     for rule in &setting.rules {
-        let found = find::find(&text, rule, setting, &keywords);
+        let mut found = find::find(&text, rule, setting, &keywords);
+        // A part with a name that isn't one stays as it is.
+        found.retain(|f| !split(&text[f.names.clone()], setting, names, fixes).iter().any(|(n, _)| Fixes::has(&fixes.not_names, n)));
         for f in &found {
-            for (name, whole) in split(&text[f.names.clone()], setting, names) {
+            let part = &text[f.names.clone()];
+            for (name, whole) in split(part, setting, names, fixes) {
                 let lower = name.to_lowercase();
                 if !credits.iter().any(|c| c.role == rule.role && c.name.to_lowercase() == lower) {
-                    credits.push(Credit { name, role: rule.role.clone(), rule: rule.token(), whole });
+                    credits.push(Credit { name, part: part.to_string(), role: rule.role.clone(), rule: rule.token(), whole });
                 }
             }
             if f.unclosed {
@@ -185,8 +213,28 @@ fn cut_out(text: &str, mut a: usize, mut b: usize) -> String {
 }
 
 /// A credit's text split into names: at every separator, then pieces next to each other
-/// joined back where they're exactly an artist's name or alias (longest first).
-fn split(text: &str, setting: &Setting, names: &NameTable) -> Vec<(String, bool)> {
+/// joined back where they're exactly an artist's name or alias (longest first), or kept
+/// whole by hand; names split by hand split again on every separator.
+fn split(text: &str, setting: &Setting, names: &NameTable, fixes: &Fixes) -> Vec<(String, bool)> {
+    let mut out = Vec::new();
+    for (name, whole) in pieces(text, setting, names, fixes) {
+        if !Fixes::has(&fixes.split, &name) {
+            out.push((name, whole));
+            continue;
+        }
+        let mut every = setting.clone();
+        for s in setting::SPLIT {
+            if !every.split.iter().any(|x| x == s) {
+                every.split.push(s.to_string());
+            }
+        }
+        every.whole = false;
+        out.extend(pieces(&name, &every, &NameTable::default(), &Fixes::default()));
+    }
+    out
+}
+
+fn pieces(text: &str, setting: &Setting, names: &NameTable, fixes: &Fixes) -> Vec<(String, bool)> {
     let mut seps: Vec<(usize, usize)> = Vec::new();
     for (i, c) in text.char_indices() {
         for s in &setting.split {
@@ -230,14 +278,13 @@ fn split(text: &str, setting: &Setting, names: &NameTable) -> Vec<(String, bool)
     let mut out = Vec::new();
     let mut i = 0;
     'pieces: while i < pieces.len() {
-        if setting.whole {
-            for j in (i + 1..pieces.len()).rev() {
-                let joined = &text[pieces[i].0..pieces[j].1];
-                if names.has(joined) {
-                    out.push((joined.to_string(), true));
-                    i = j + 1;
-                    continue 'pieces;
-                }
+        for j in (i + 1..pieces.len()).rev() {
+            let joined = &text[pieces[i].0..pieces[j].1];
+            let whole = (setting.whole && names.has(joined)) || Fixes::has(&fixes.whole, joined);
+            if whole && !Fixes::has(&fixes.split, joined) {
+                out.push((joined.to_string(), true));
+                i = j + 1;
+                continue 'pieces;
             }
         }
         out.push((text[pieces[i].0..pieces[i].1].to_string(), false));

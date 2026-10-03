@@ -542,7 +542,7 @@ mod tests {
         let setting = Setting::parse("feat prod", &|t| ["primary", "featured", "producer"].iter().find(|r| r.starts_with(t)).map(|r| r.to_string())).unwrap();
         let titles = [(id(10), "Song (feat. Ann) [prod. Cy]".to_string()), (id(11), "Other (feat. Ann)".to_string())];
         let credited = |name: &str| Some(if name == "Ann" { Credited::Artist { id: id(1), alias: None } } else { Credited::New(Some(id(3))) });
-        let parsed = Arc::new(TitlesParsed::new(&setting, &titles, &NameTable::default(), &mut { credited }).unwrap());
+        let parsed = Arc::new(TitlesParsed::new(&setting, titles.to_vec(), Default::default(), &NameTable::default(), &mut { credited }).unwrap());
         let ops = [Op::ParseTitle(parsed)];
         // Bo primary, Ann featured already: Ann isn't twice, Cy is added.
         let meta = Meta { title: titles[0].1.clone(), credits: vec![c(2, "primary"), c(1, "featured")], ..Default::default() };
