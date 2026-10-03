@@ -43,7 +43,7 @@ impl NameTable {
     pub fn new<S: AsRef<str>>(names: impl IntoIterator<Item = (Uuid, S)>) -> Self {
         let mut by_name: HashMap<String, Vec<Uuid>> = HashMap::new();
         for (id, name) in names {
-            let ids = by_name.entry(name.trim().to_lowercase()).or_default();
+            let ids = by_name.entry(name.as_ref().trim().to_lowercase()).or_default();
             if !ids.contains(&id) {
                 ids.push(id);
             }
