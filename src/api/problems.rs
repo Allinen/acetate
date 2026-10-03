@@ -127,6 +127,7 @@ pub struct ImportWith {
     new_artists: Vec<Value>,
     new_albums: Vec<Value>,
     new_groupings: Vec<Value>,
+    artist_sources: Vec<Value>,
     /// The edit's reason (default: that it was made while importing the file).
     reason: String,
     /// The `draft` a preview answered, whose ids `track` uses.
@@ -159,7 +160,7 @@ pub struct Imported {
 /// imported with the first time (its source included), and the track editor's changes to
 /// the new track, in one transaction. JSON:
 ///
-/// * `track`, `new_artists`, `new_albums`, `new_groupings`, `reason`: the changes, as for
+/// * `track`, `new_artists`, `new_albums`, `new_groupings`, `artist_sources`, `reason`: the changes, as for
 ///   `POST /api/tracks/edit` (one track; needs `edit_metadata`). A new track's ids only
 ///   come from a preview, so changes are made on the `track` a preview answers, and sent
 ///   with its `draft` (see `model::draft`); 409 if the import has come out differently
@@ -241,6 +242,8 @@ pub async fn import(
     replace_ids(&mut entry, &map);
     let mut new_albums = Value::Array(with.new_albums);
     replace_ids(&mut new_albums, &map);
+    let mut artist_sources = Value::Array(with.artist_sources);
+    replace_ids(&mut artist_sources, &map);
     let Some(fields) = entry.as_object_mut() else {
         return Err(AppError::BadRequest("`track` is the new track's changes, an object".to_string()));
     };
@@ -259,6 +262,7 @@ pub async fn import(
         "new_artists": with.new_artists,
         "new_albums": new_albums,
         "new_groupings": with.new_groupings,
+        "artist_sources": artist_sources,
         "tracks": [entry],
     }))
     .map_err(|err| AppError::BadRequest(format!("the changes don't fit: {err}")))?;

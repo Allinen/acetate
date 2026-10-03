@@ -60,6 +60,22 @@ pub async fn add_grouping_source(
     add(&state, &user, SourceOwner::Grouping(id), source).await
 }
 
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Accounts {
+    platform: String,
+    /// The account's ids, any of them (e.g. a YouTube channel's handle and its UC… id).
+    ids: Vec<String>,
+}
+
+/// `POST /api/sources/accounts`, JSON `{"platform": "soundcloud", "ids": ["123"]}`: the
+/// artists and groupings (collectives) with one of these accounts (their source's id
+/// field), as `[{"kind": "artist" | "grouping", "id", "name", "account"}]`.
+pub async fn accounts(State(state): State<AppState>, user: CurrentUser, Json(body): Json<Accounts>) -> Result<Json<Vec<db::sources::AccountOwner>>, AppError> {
+    let mut tx = state.db(&user).await?;
+    Ok(Json(db::sources::accounts(&mut tx, &body.platform, &body.ids).await?))
+}
+
 /// `POST /api/artists/{id}/sources`, same body as for tracks.
 pub async fn add_artist_source(
     State(state): State<AppState>,

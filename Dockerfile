@@ -17,11 +17,14 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 
 FROM debian:trixie-slim
 # ffmpeg: music videos' facts (ffprobe) and thumbnails (a frame). Without it they're
-# kept all the same, without those.
+# kept all the same, without those. python3 + yt-dlp: a YouTube video's metadata for the
+# track editor's "import metadata from" (without, pasting its JSON still works). yt-dlp is
+# its latest release (Debian's goes stale, and YouTube changes): rebuild to update it.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates ffmpeg \
+    && apt-get install -y --no-install-recommends ca-certificates ffmpeg python3 \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --uid 1000 --create-home acetate
+ADD --chmod=755 https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp /usr/local/bin/yt-dlp
 COPY --from=build /usr/local/bin/acetate /usr/local/bin/acetate
 COPY web /app/web
 WORKDIR /app

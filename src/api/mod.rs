@@ -16,6 +16,7 @@ mod catalog;
 mod groupings;
 mod groups;
 mod media;
+mod metadata;
 mod playlists;
 mod rate_limit;
 mod problems;
@@ -170,6 +171,8 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/tracks/{id}/sources", require(&[EditSources], post(sources::add_track_source)))
         .route("/api/sources/{id}", require(&[EditSources], delete(sources::trash)))
+        .route("/api/sources/accounts", require(&[Browse], post(sources::accounts)))
+        .route("/api/metadata/youtube", require(&[EditMetadata], post(metadata::youtube)))
         // Lyrics (entries are edited, never deleted).
         .route("/api/tracks/{id}/lyrics", require(&[EditMetadata], post(lyrics::create)))
         .route("/api/lyrics/{id}", require(&[EditMetadata], put(lyrics::edit).delete(lyrics::remove)))
@@ -378,6 +381,8 @@ pub enum AppError {
     Conflict(String),
     /// It existed, but is gone for good (e.g. a purged file): 410.
     Gone(String),
+    /// A tool this needs isn't on the server (e.g. yt-dlp): 503.
+    Unavailable(String),
     /// A track that was made into this extra: 404, with the extra's id (`extra_id`) to go
     /// to instead.
     BecameExtra(uuid::Uuid),
@@ -425,6 +430,7 @@ impl IntoResponse for AppError {
             AppError::Forbidden(msg) => (StatusCode::FORBIDDEN, "forbidden", msg),
             AppError::Conflict(msg) => (StatusCode::CONFLICT, "conflict", msg),
             AppError::Gone(msg) => (StatusCode::GONE, "purged", msg),
+            AppError::Unavailable(msg) => (StatusCode::SERVICE_UNAVAILABLE, "unavailable", msg),
             AppError::Internal(err) => internal_parts(&err),
         };
         let message = human_message(code, &detail);

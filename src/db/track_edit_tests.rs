@@ -42,7 +42,7 @@ async fn state(conn: &mut PgConnection, track: Uuid) -> anyhow::Result<(Uuid, Uu
 async fn meta_edit(conn: &mut PgConnection, track: Uuid, change: impl FnOnce(&mut TrackMetadata)) -> anyhow::Result<TrackEdit> {
     let (variant, base, mut data, _, _) = state(conn, track).await?;
     change(&mut data);
-    Ok(TrackEdit { track_id: track, meta: Some(MetaEdit { variant_id: variant, base_revision_id: base, data }), facts: None, along: true, sync: false, covers: None, sources: None, single: false, groups: None })
+    Ok(TrackEdit { track_id: track, meta: Some(MetaEdit { variant_id: Some(variant), base_revision_id: Some(base), new_variant: None, label: None, data }), facts: None, along: true, sync: false, covers: None, sources: None, single: false, groups: None })
 }
 
 async fn facts_edit(conn: &mut PgConnection, track: Uuid, change: impl FnOnce(&mut TrackFacts)) -> anyhow::Result<TrackEdit> {
@@ -52,7 +52,7 @@ async fn facts_edit(conn: &mut PgConnection, track: Uuid, change: impl FnOnce(&m
 }
 
 fn edit(tracks: Vec<TrackEdit>) -> Edit {
-    Edit { reason: "test".into(), new_artists: vec![], new_albums: vec![], new_groupings: vec![], tracks }
+    Edit { reason: "test".into(), new_artists: vec![], new_albums: vec![], new_groupings: vec![], artist_sources: vec![], tracks }
 }
 
 async fn run(lib: &Library, user: Uuid, edit: &Edit, keep: bool) -> anyhow::Result<Edited> {
@@ -574,5 +574,73 @@ async fn groupings_made_joined_and_left_with_the_track(_: PgPoolOptions, connect
     // Out of it again (its single with it).
     run(&lib, lib.bob, &edit(vec![with(GroupsEdit { add: vec![], remove: vec![grouping] }, false)]), true).await?;
     assert_eq!(in_it(grouping).await?, 0);
+    Ok(())
+}
+
+#[sqlx::test]
+async fn imported_metadata_is_a_version_of_its_own(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
+    let lib = setup(connect).await?;
+    let mut conn = lib.owner.acquire().await?;
+    let (shown, _, before, _, _) = state(&mut conn, lib.o).await?;
+    // A new version, "SoundCloud": only what's in it, not shown.
+    let data = TrackMetadata { title: "Other (SoundCloud)".into(), credits: vec![Credit { artist_id: lib.x, role: "primary".into(), alias_id: None }], ..Default::default() };
+    let mut change = edit(vec![TrackEdit {
+        meta: Some(MetaEdit { variant_id: None, base_revision_id: None, new_variant: Some("SoundCloud".into()), label: None, data: data.clone() }),
+        ..meta_edit(&mut conn, lib.o, |_| {}).await?
+    }]);
+    let done = run(&lib, lib.alice, &change, true).await?;
+    assert!(done.tracks[0].error.is_none(), "{:?}", done.tracks[0].error);
+    let variants: Vec<(String, serde_json::Value)> = sqlx::query_as(
+        "SELECT v.label, (SELECT data FROM track_revisions r WHERE r.variant_id = v.id ORDER BY r.id DESC LIMIT 1) FROM track_variants v WHERE v.track_id = $1 ORDER BY v.id",
+    )
+    .bind(lib.o)
+    .fetch_all(&lib.owner)
+    .await?;
+    assert_eq!(variants.len(), 2);
+    assert_eq!((variants[1].0.as_str(), serde_json::from_value::<TrackMetadata>(variants[1].1.clone())?), ("SoundCloud", data));
+    let (still, _, now, _, _) = state(&mut conn, lib.o).await?;
+    assert_eq!((still, now), (shown, before), "the shown version is as it was");
+
+    // The version edited, renamed along with it (a draft's tags' version, imported over).
+    change.tracks = vec![meta_edit(&mut conn, lib.o, |m| m.title = "Other (renamed)".into()).await?];
+    change.tracks[0].meta.as_mut().unwrap().label = Some("YouTube".into());
+    run(&lib, lib.alice, &change, true).await?;
+    let label: String = sqlx::query_scalar("SELECT label FROM track_variants WHERE id = $1").bind(shown).fetch_one(&lib.owner).await?;
+    assert_eq!((label.as_str(), title(&lib, "tracks", lib.o).await?.as_str()), ("YouTube", "Other (renamed)"));
+
+    // Neither a version nor a new one: refused.
+    change.tracks = vec![meta_edit(&mut conn, lib.o, |_| {}).await?];
+    change.tracks[0].meta.as_mut().unwrap().variant_id = None;
+    let done = run(&lib, lib.alice, &change, false).await?;
+    assert_eq!(done.tracks[0].error.as_ref().map(|e| e.code.as_str()), Some("invalid"));
+    Ok(())
+}
+
+#[sqlx::test]
+async fn artists_get_their_accounts_with_the_edit(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
+    use crate::db::track_edits::ArtistSource;
+    let lib = setup(connect).await?;
+    let mut conn = lib.owner.acquire().await?;
+    let new = Uuid::now_v7();
+    let account = |artist_id: Uuid, id: i64| ArtistSource { artist_id, platform: "soundcloud".into(), data: serde_json::json!({ "artist_id": id, "artist_permalinks": ["someone"] }) };
+    let credited = meta_edit(&mut conn, lib.o, |m| m.credits.push(Credit { artist_id: new, role: "featured".into(), alias_id: None })).await?;
+    let change = Edit {
+        new_artists: vec![NewArtist { id: new, name: "Uploader".into() }],
+        artist_sources: vec![account(new, 77), account(lib.x, 78)],
+        ..edit(vec![credited])
+    };
+    // Sources need their permission.
+    let mut tx = db::begin(&lib.app, Some(lib.alice)).await?;
+    let refused = db::track_edits::edit(&mut tx, &change, May { relations: true, sources: false }, describe).await;
+    assert!(refused.is_err());
+    drop(tx);
+
+    let done = run(&lib, lib.alice, &change, true).await?;
+    let made = done.artists[&new];
+    // Found by them, as an import looks for them.
+    let mut tx = db::begin(&lib.app, Some(lib.carol)).await?;
+    let found = db::sources::accounts(&mut tx, "soundcloud", &["77".into(), "78".into(), "79".into()]).await?;
+    let found: Vec<(&str, Uuid, &str)> = found.iter().map(|o| (o.kind, o.id, o.account.as_str())).collect();
+    assert_eq!(found, [("artist", made, "77"), ("artist", lib.x, "78")]);
     Ok(())
 }

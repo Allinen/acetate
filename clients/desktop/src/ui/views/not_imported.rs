@@ -5,7 +5,12 @@
 //!
 //! 1. **a new track**: the track editor on a draft, the file as a preview imports it (its
 //!    tags, its source), with `single:` staged when it's on no album. Importing applies
-//!    the changes with it; it needs a title and an artist in the end (see `editor::draft`);
+//!    the changes with it; it needs a title and an artist in the end (see `editor::draft`).
+//!    It can be another version of a track that's there (the relation kinds that say
+//!    this track first: instrumental, remix, alternate…): that track chosen, its title
+//!    (with "(Instrumental)"…), the relation, its status and its artists are staged. An
+//!    instrumental's artists are its producers (as primary and producer; the song's
+//!    other artists are taken off if the tags had them), any other version's the song's;
 //! 2. **a file of a track that's there** (`replace_file`): the track found by typing (the
 //!    file's name is typed in to start with), then "make it this track's file" (its file
 //!    becomes an older one) or "keep it as an older file of this track";
@@ -27,6 +32,7 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::catalog::search::Part;
+use crate::catalog::model::{Role, Track};
 use crate::catalog::Catalog;
 use crate::playback::{AudioSource, QueueItem};
 use crate::ui::edit::editor::{DraftOf, Imported, TrackEditor};
@@ -118,6 +124,10 @@ struct Draft {
     /// To be previewed again (the library changed since).
     again: bool,
     editor: TrackEditor,
+    /// It's this (`instrumental_of`…) of a track that's there: the kind chosen, and what
+    /// was staged for it (in words).
+    version: Option<String>,
+    staged_version: Option<String>,
 }
 
 #[derive(Default)]
@@ -491,6 +501,8 @@ impl NotImported {
             error: None,
             again: false,
             editor: TrackEditor::default(),
+            version: None,
+            staged_version: None,
         });
         if draft.editor.take_draft_stale() {
             draft.again = true;
@@ -577,6 +589,41 @@ impl NotImported {
                 ui.add(egui::Spinner::new());
                 ui.label(RichText::new("Previewing it again (another original file name, or the library changed)…").color(P.faint));
             });
+        }
+        // The instrumental (acapella, remix…) of a track that's there.
+        // (The kinds that say this track first: "%A is a remix of %B", not "%B is…".)
+        let kinds: Vec<String> = shell.account.vocab.as_ref().map(|v| v.relation_kinds.iter().filter(|k| k.template.starts_with("%A")).map(|k| k.kind.clone()).collect()).unwrap_or_default();
+        if !kinds.is_empty() && shell.account.can("edit_relations") {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new("Another version of a track that's there:").color(P.muted));
+                for kind in &kinds {
+                    let chosen = draft.version.as_deref() == Some(kind.as_str());
+                    if widgets::chip(ui, &version_label(kind), chosen) {
+                        draft.version = (!chosen).then(|| kind.clone());
+                    }
+                }
+            });
+            if let Some(kind) = draft.version.clone()
+                && let Some(search) = self.search.as_mut()
+            {
+                let hint = format!("the track it's a version of ({}): type its title or artist", version_label(&kind));
+                if let Some((Choice::Hit(i), _)) = search.show(ui, shell, Some(catalog), egui::Id::new("not-imported-version-of"), &hint, &[]) {
+                    let t = &catalog.tracks[i as usize];
+                    let now = draft.editor.credits_after(track).unwrap_or_default();
+                    let (lines, tracks, artists) = version_of(&kind, t, &now, catalog);
+                    let mut words = format!("Staged as a version ({}) of “{}”.", version_label(&kind), t.title);
+                    if artists.iter().all(|(_, _, added)| !added) {
+                        let whose = if kind == INSTRUMENTAL { "It has no producer credited" } else { "It has no artists" };
+                        words.push_str(&format!(" {whose}: type its artist (artist:…)."));
+                    }
+                    draft.staged_version = Some(words);
+                    let artists: Vec<(String, Uuid)> = artists.into_iter().map(|(name, id, _)| (name, id)).collect();
+                    draft.editor.stage_for_you(lines, &tracks, &artists);
+                }
+            }
+            if let Some(words) = &draft.staged_version {
+                ui.label(RichText::new(words).color(P.muted).small());
+            }
         }
         ui.add_space(4.0);
         draft.editor.offer(&[]);
@@ -723,6 +770,72 @@ impl NotImported {
     }
 }
 
+/// The relation kind whose artists are the producers of the song's.
+const INSTRUMENTAL: &str = "instrumental_of";
+
+/// A relation kind as a choice: "instrumental_of" → "instrumental", "sped_up_of" → "sped up".
+fn version_label(kind: &str) -> String {
+    kind.strip_suffix("_of").unwrap_or(kind).replace('_', " ")
+}
+
+/// What's staged to make a draft the `kind` (`instrumental_of`, `alternate`…) of `t`, as
+/// typed lines: its title (`t`'s, with "(Instrumental)" for a `…_of` kind), the relation,
+/// `t`'s status, and its artists. An instrumental's are `t`'s producers, as primary and as
+/// producer (`t`'s other primary artists taken off where `credits`, the draft's as staged,
+/// has them); any other version's are `t`'s, in their roles. With the tracks and artists
+/// the lines name: (name, id), and for artists whether it's one credited.
+fn version_of(kind: &str, t: &Track, credits: &[crate::ui::edit::editor::model::Credit], catalog: &Catalog) -> (Vec<String>, Vec<(String, Uuid)>, Vec<(String, Uuid, bool)>) {
+    use crate::ui::edit::editor::quoted;
+    let title = match kind.strip_suffix("_of") {
+        Some(word) => {
+            let word: Vec<String> = word
+                .split('_')
+                .map(|w| {
+                    let mut c = w.chars();
+                    c.next().map(|f| f.to_uppercase().chain(c).collect()).unwrap_or_default()
+                })
+                .collect();
+            format!("{} ({})", t.title, word.join(" "))
+        }
+        None => t.title.clone(),
+    };
+    let mut lines = vec![format!("title:{}", quoted(&title)), format!("related:{} kind:{kind}", quoted(&t.title)), format!("status:{}", t.status)];
+    let name = |id: Uuid| catalog.artist(id).map(|a| a.name.clone());
+    let role = |r: &Role| match r {
+        Role::Primary => Some("primary"),
+        Role::Featured => Some("featured"),
+        Role::Producer => Some("producer"),
+        Role::Other => None,
+    };
+    let mut artists = Vec::new();
+    if kind == INSTRUMENTAL {
+        let producers: Vec<Uuid> = t.credits.iter().filter(|c| c.1 == Role::Producer).map(|c| c.0).collect();
+        for c in t.credits.iter().filter(|c| c.1 == Role::Primary && !producers.contains(&c.0)) {
+            if credits.iter().any(|d| d.artist_id == c.0)
+                && let Some(n) = name(c.0)
+            {
+                lines.push(format!("-artist:{}", quoted(&n)));
+                artists.push((n, c.0, false));
+            }
+        }
+        for p in producers {
+            if let Some(n) = name(p) {
+                lines.push(format!("artist:{} role:primary", quoted(&n)));
+                lines.push(format!("artist:{} role:producer", quoted(&n)));
+                artists.push((n, p, true));
+            }
+        }
+    } else {
+        for c in &t.credits {
+            if let (Some(n), Some(r)) = (name(c.0), role(&c.1)) {
+                lines.push(format!("artist:{} role:{r}", quoted(&n)));
+                artists.push((n, c.0, true));
+            }
+        }
+    }
+    (lines, vec![(t.title.clone(), t.id)], artists)
+}
+
 /// A round play button, `size` across, in the layout.
 fn play(ui: &mut egui::Ui, id: &str, size: f32) -> bool {
     let (rect, _) = ui.allocate_exact_size(Vec2::splat(size), Sense::hover());
@@ -828,6 +941,60 @@ mod tests {
         assert_eq!(guess_kind("song (Instrumental).flac"), "instrumental");
         assert_eq!(guess_kind("drums stem.wav"), "stems");
         assert_eq!(guess_kind("bounce v3.wav"), "other");
+    }
+
+    #[test]
+    fn the_instrumental_of_a_track_is_its_producers() {
+        use crate::ui::edit::editor::model::Credit;
+        let (ann, bo, cy) = ("00000000-0000-7000-8000-0000000000a1", "00000000-0000-7000-8000-0000000000a2", "00000000-0000-7000-8000-0000000000a3");
+        let song = "00000000-0000-7000-8000-0000000000b1";
+        let body = serde_json::json!({
+            "format": 8,
+            "tracks": {"columns": ["id", "title", "artist_display", "credits", "albums", "duration_ms", "file_id", "cover_id", "cover_key",
+                                    "release_date", "year", "status", "genres", "created_at", "is_restricted", "codec", "groupings", "platforms", "original_filename", "bitrate", "sample_rate"],
+                       "rows": [[song, "Glass: Harbor", "Ann, Cy", [[ann, "primary", null], [cy, "primary", null], [bo, "producer", null], [cy, "producer", null]], [], 1000,
+                                 "00000000-0000-7000-8000-0000000000f1", null, null, null, null, "unreleased", [], "2026-01-01", false, null, [], [], null, null, null]]},
+            "albums": {"columns": ["id", "title", "kind", "artist_display", "credits", "release_date", "year", "cover_id", "cover_key", "created_at", "track_count", "duration_ms", "groupings"], "rows": []},
+            "artists": {"columns": ["id", "name", "disambiguation", "aliases", "track_count", "album_count"],
+                        "rows": [[ann, "Ann", "", [], 1, 0], [bo, "Bo Lind", "", [], 1, 0], [cy, "Cy", "", [], 1, 0]]},
+            "annotations": {"columns": ["kind", "id", "play_count", "last_played_at", "rating", "starred_at"], "rows": []},
+            "issues": {"columns": ["track_id", "flags"], "rows": []},
+            "groupings": {"columns": ["id", "kind", "name", "track_count", "album_count", "artists"], "rows": []},
+            "playlists": []
+        });
+        let catalog = Catalog::build(crate::catalog::model::parse(body.to_string().as_bytes()).unwrap());
+        let t = &catalog.tracks[0];
+        // The tags credited the song's artists.
+        let tags = [ann, cy].map(|a| Credit { artist_id: a.parse().unwrap(), role: "primary".into(), alias_id: None });
+        let (lines, tracks, artists) = version_of("instrumental_of", t, &tags, &catalog);
+        assert_eq!(
+            lines,
+            [
+                "title:\"Glass: Harbor (Instrumental)\"",
+                "related:\"Glass: Harbor\" kind:instrumental_of",
+                "status:unreleased",
+                "-artist:Ann",
+                "artist:Bo Lind role:primary",
+                "artist:Bo Lind role:producer",
+                "artist:Cy role:primary",
+                "artist:Cy role:producer",
+            ]
+        );
+        assert_eq!(tracks, [("Glass: Harbor".to_string(), song.parse().unwrap())]);
+        let producers: Vec<&str> = artists.iter().filter(|a| a.2).map(|a| a.0.as_str()).collect();
+        assert_eq!(producers, ["Bo Lind", "Cy"]);
+        assert_eq!(version_label("sped_up_of"), "sped up");
+
+        // Any other version: the song's artists, in their roles.
+        let (lines, _, _) = version_of("sped_up_of", t, &tags, &catalog);
+        assert_eq!(
+            lines[..2],
+            ["title:\"Glass: Harbor (Sped Up)\"".to_string(), "related:\"Glass: Harbor\" kind:sped_up_of".to_string()]
+        );
+        assert_eq!(lines[3..], ["artist:Ann role:primary", "artist:Cy role:primary", "artist:Bo Lind role:producer", "artist:Cy role:producer"]);
+        // An alternate version: the same title.
+        let (lines, _, _) = version_of("alternate", t, &[], &catalog);
+        assert_eq!(lines[..2], ["title:\"Glass: Harbor\"".to_string(), "related:\"Glass: Harbor\" kind:alternate".to_string()]);
     }
 
     #[test]

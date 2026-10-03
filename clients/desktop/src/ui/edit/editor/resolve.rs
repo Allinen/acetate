@@ -1090,6 +1090,21 @@ mod tests {
     }
 
     #[test]
+    fn lines_staged_for_you_resolve_to_what_they_name() {
+        // As the "Didn't import" page stages them (`version_of`): names pinned, quoted
+        // where needed.
+        let song = id("00000000-0000-7000-8000-000000000001");
+        let mut names = Names::default();
+        names.pin(PinKind::Track, "Other Song", song);
+        names.pin(PinKind::Artist, "Ann", id(ANN_UK));
+        let line = |l: &str| run(l, &names, 1).into_iter().flat_map(|u| u.unwrap().0).collect::<Vec<Op>>();
+        assert_eq!(line("title:\"Other: Song (Remix)\""), [Op::Title("Other: Song (Remix)".into())]);
+        assert_eq!(line("related:Other Song kind:remix_of"), [Op::Relate { track: song, kind: "remix_of".into() }]);
+        assert_eq!(line("artist:Ann role:primary"), [Op::Credit { artist: id(ANN_UK), role: Some("primary".into()), alias: None, at: None }]);
+        assert_eq!(line("-artist:Ann"), [Op::Uncredit { artist: id(ANN_UK), role: None }]);
+    }
+
+    #[test]
     fn fields_are_found_by_their_starts() {
         assert_eq!(
             ops("status:dem date:2020 genre:rap, trap"),

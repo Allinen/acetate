@@ -746,6 +746,37 @@ pub async fn create_variant(
     Ok((variant_id, written))
 }
 
+/// A new variant of a track, named `label`, its first revision `data` (nothing copied).
+/// Returns the variant id and that revision.
+pub async fn add_variant(
+    conn: &mut PgConnection,
+    track_id: Uuid,
+    label: &str,
+    data: &TrackMetadata,
+    source: Source,
+    reason: &str,
+) -> anyhow::Result<(Uuid, Written)> {
+    if label.trim().is_empty() {
+        return Err(invalid("label can't be empty".to_string()));
+    }
+    data.validate().map_err(invalid)?;
+    let exists = sqlx::query_scalar!("SELECT id FROM tracks WHERE id = $1 AND merged_into IS NULL FOR UPDATE", track_id)
+        .fetch_optional(&mut *conn)
+        .await?;
+    if exists.is_none() {
+        return Err(EditRejected::NotFound("track").into());
+    }
+    let variant_id = sqlx::query_scalar!(
+        "INSERT INTO track_variants (track_id, label) VALUES ($1, $2) RETURNING id",
+        track_id,
+        label.trim()
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    let written = write_internal(conn, track_id, variant_id, None, data, source, reason, false).await?;
+    Ok((variant_id, written))
+}
+
 pub async fn rename_variant(
     conn: &mut PgConnection,
     track_id: Uuid,

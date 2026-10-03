@@ -29,6 +29,11 @@
 //! * **Groupings**: the track put in some (new ones made first, like albums, under
 //!   stand-ins) and taken out of others; a single it's alone on goes along, as always
 //!   (`db::groupings::add`), the new one too.
+//! * **Versions**: the metadata goes to the version edited, or to a new one (`new_variant`,
+//!   e.g. what was imported from SoundCloud: its first revision is the data, nothing
+//!   copied), and the version edited can be renamed with it (`label`).
+//! * **Accounts of artists** (`artist_sources`): sources added to artists, new ones too,
+//!   before the tracks (e.g. the SoundCloud account of the artist an import credits).
 //! * **The flags after it**: each track's open review flags once the checks have run
 //!   (they're deferred to the commit; see migration 0030), so a preview says exactly what
 //!   would still be missing.
@@ -63,7 +68,18 @@ pub struct Edit {
     /// Groupings to make first, under stand-in ids too, used in the tracks' `groups`.
     #[serde(default)]
     pub new_groupings: Vec<NewGrouping>,
+    /// Sources added to artists (or new ones' stand-ins), after those are made. Needs
+    /// `edit_sources`.
+    #[serde(default)]
+    pub artist_sources: Vec<ArtistSource>,
     pub tracks: Vec<TrackEdit>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ArtistSource {
+    pub artist_id: Uuid,
+    pub platform: String,
+    pub data: serde_json::Value,
 }
 
 #[derive(Debug, Deserialize)]
@@ -189,10 +205,19 @@ pub struct May {
     pub sources: bool,
 }
 
+/// The metadata of the version edited (`variant_id` and `base_revision_id`), or of a new
+/// one (`new_variant`, its name).
 #[derive(Debug, Deserialize)]
 pub struct MetaEdit {
-    pub variant_id: Uuid,
-    pub base_revision_id: Uuid,
+    #[serde(default)]
+    pub variant_id: Option<Uuid>,
+    #[serde(default)]
+    pub base_revision_id: Option<Uuid>,
+    #[serde(default)]
+    pub new_variant: Option<String>,
+    /// The version edited, renamed.
+    #[serde(default)]
+    pub label: Option<String>,
     pub data: TrackMetadata,
 }
 
@@ -278,6 +303,18 @@ pub async fn edit(
     for new in &edit.new_groupings {
         groupings.insert(new.id, super::groupings::create(conn, new.kind.trim(), new.name.trim(), "", reason).await?);
     }
+    if !edit.artist_sources.is_empty() && !may.sources {
+        return Err(EditRejected::Invalid("giving artists sources needs the `edit_sources` permission".into()).into());
+    }
+    for added in &edit.artist_sources {
+        let artist = artists.get(&added.artist_id).copied().unwrap_or(added.artist_id);
+        let source = NewSource { platform: added.platform.clone(), source_id: None, captured_at: None, data: added.data.clone() };
+        let source = source_shapes::validate(Kind::Artist, source)?;
+        if !super::sources::owner_exists(conn, SourceOwner::Artist(artist)).await? {
+            return Err(EditRejected::NotFound("artist").into());
+        }
+        super::sources::add_snapshot(conn, SourceOwner::Artist(artist), &source).await?;
+    }
 
     let mut tracks = Vec::new();
     for track in &edit.tracks {
@@ -343,14 +380,24 @@ async fn edit_track(conn: &mut PgConnection, edit: &TrackEdit, made: &Made<'_>, 
     // Before anything changes: the albums it's alone on, and the shown version's metadata.
     let alone_on = if edit.along { alone_on(conn, track).await? } else { Vec::new() };
     let before = match (&edit.meta, shown) {
-        (Some(m), Some(shown)) if m.variant_id == shown && !alone_on.is_empty() => latest_meta(conn, m.variant_id).await?,
+        (Some(m), Some(shown)) if m.variant_id == Some(shown) && !alone_on.is_empty() => latest_meta(conn, shown).await?,
         _ => None,
     };
 
     let mut done = TrackEdited { track_id: track, error: None, meta: None, facts: None, along: Vec::new(), single: None, flags: Vec::new() };
     if let Some(m) = &edit.meta {
         let data = TrackMetadata { credits: real_credits(&m.data.credits, artists), ..m.data.clone() };
-        done.meta = Some(revisions::write_internal(conn, track, m.variant_id, Some(m.base_revision_id), &data, Source::Edit, reason, false).await?);
+        done.meta = Some(match (&m.new_variant, m.variant_id, m.base_revision_id) {
+            (Some(label), None, None) => revisions::add_variant(conn, track, label, &data, Source::Edit, reason).await?.1,
+            (None, Some(variant), Some(base)) => {
+                let written = revisions::write_internal(conn, track, variant, Some(base), &data, Source::Edit, reason, false).await?;
+                if let Some(label) = &m.label {
+                    revisions::rename_variant(conn, track, variant, label.trim()).await?;
+                }
+                written
+            }
+            _ => return Err(EditRejected::Invalid("the metadata is for a version (`variant_id` and `base_revision_id`) or a new one (`new_variant`)".into()).into()),
+        });
     }
     if let Some(f) = &edit.facts {
         let mut data = f.data.clone();

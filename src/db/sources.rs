@@ -678,3 +678,42 @@ pub async fn origin_changes(conn: &mut PgConnection, file_id: Uuid) -> sqlx::Res
         })
         .collect())
 }
+
+/// An artist or grouping that has an account on a platform (see `accounts`).
+#[derive(Debug, Serialize)]
+pub struct AccountOwner {
+    /// "artist" or "grouping".
+    pub kind: &'static str,
+    pub id: Uuid,
+    pub name: String,
+    /// Which of the ids asked for it has.
+    pub account: String,
+}
+
+/// The artists and groupings with an account on `platform` whose id (its source's id
+/// field, e.g. SoundCloud's `artist_id`, YouTube's `channel`) is one of `ids`.
+pub async fn accounts(conn: &mut PgConnection, platform: &str, ids: &[String]) -> sqlx::Result<Vec<AccountOwner>> {
+    let rows = sqlx::query!(
+        r#"
+        SELECT s.artist_id, s.grouping_id, s.external_id AS "account!", COALESCE(a.name, g.name) AS "name!"
+        FROM sources s
+        LEFT JOIN artists a ON a.id = s.artist_id
+        LEFT JOIN groupings g ON g.id = s.grouping_id
+        WHERE s.platform = $1 AND s.external_id = ANY($2) AND s.trashed_at IS NULL
+          AND (s.artist_id IS NOT NULL OR s.grouping_id IS NOT NULL)
+        ORDER BY s.id
+        "#,
+        platform,
+        ids
+    )
+    .fetch_all(conn)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|r| match (r.artist_id, r.grouping_id) {
+            (Some(id), _) => Some(AccountOwner { kind: "artist", id, name: r.name, account: r.account }),
+            (None, Some(id)) => Some(AccountOwner { kind: "grouping", id, name: r.name, account: r.account }),
+            _ => None,
+        })
+        .collect())
+}

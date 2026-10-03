@@ -355,7 +355,7 @@ mod tests {
             attached: Attached::default(),
         };
         let meta = Meta { title: "Song".into(), credits: vec![credit(ann, "primary"), credit(bo, "featured")], ..Default::default() };
-        let ready = Ready { position: 0, base: base.clone(), meta, facts: base.facts.clone(), attached: Attached::default(), lines: vec![], warnings: vec![], sync: false, single: false, draft: false };
+        let ready = Ready { position: 0, base: base.clone(), meta, facts: base.facts.clone(), attached: Attached::default(), lines: vec![], warnings: vec![], sync: false, single: false, draft: false, version: None };
         let now = ["credits_in_title".to_string(), "missing_album".to_string(), "missing_cover".to_string()];
         let after = ["missing_album".to_string(), "missing_cover".to_string()];
         let catalog = catalog();
@@ -395,7 +395,7 @@ mod tests {
         // Bo taken off; Ann credited under an alias.
         let alias = Uuid::from_u128(70);
         let meta = Meta { credits: vec![Credit { alias_id: Some(alias), ..credit(ann, "primary") }], ..base.meta.clone() };
-        let ready = Ready { position: 0, base: base.clone(), meta, facts: base.facts.clone(), attached: Attached::default(), lines: vec![], warnings: vec![], sync: false, single: false, draft: false };
+        let ready = Ready { position: 0, base: base.clone(), meta, facts: base.facts.clone(), attached: Attached::default(), lines: vec![], warnings: vec![], sync: false, single: false, draft: false, version: None };
         let catalog = catalog();
         let names = HashMap::new();
         let aliases = HashMap::from([(alias, "Annie".to_string())]);
@@ -443,7 +443,7 @@ mod tests {
         let mut attached = base.attached.clone();
         attached.covers = vec![Pic { image: Image::Staged, sha: "c".into() }, base.attached.covers[0].clone()];
         attached.sources.push(Src { id: Uuid::from_u128(21), new: true, platform: "netease".into(), name: "123".into(), data: serde_json::json!({}), corrected: false });
-        let ready = Ready { position: 0, base: base.clone(), meta: base.meta.clone(), facts: base.facts.clone(), attached, lines: vec![], warnings: vec![], sync: false, single: false, draft: false };
+        let ready = Ready { position: 0, base: base.clone(), meta: base.meta.clone(), facts: base.facts.clone(), attached, lines: vec![], warnings: vec![], sync: false, single: false, draft: false, version: None };
         let catalog = catalog();
         let (names, aliases) = (HashMap::new(), HashMap::new());
         let know = Know { catalog: &catalog, names: &names, aliases: &aliases, ambiguous: &[], covers: &[] };
@@ -469,7 +469,7 @@ mod tests {
         };
         // Out of one it's in, into a new one.
         let attached = Attached { groups: vec![early], ..Default::default() };
-        let ready = Ready { position: 0, base: base.clone(), meta: base.meta.clone(), facts: base.facts.clone(), attached, lines: vec![], warnings: vec![], sync: false, single: false, draft: false };
+        let ready = Ready { position: 0, base: base.clone(), meta: base.meta.clone(), facts: base.facts.clone(), attached, lines: vec![], warnings: vec![], sync: false, single: false, draft: false, version: None };
         let catalog = catalog();
         let names = HashMap::from([(early, "Early".to_string())]);
         let aliases = HashMap::new();

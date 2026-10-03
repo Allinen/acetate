@@ -35,11 +35,19 @@
 //!   along (`along:off` to leave them), and its review flags after (fixed, still there,
 //!   new), from the server's own checks. Ctrl+Enter applies what it shows; with many
 //!   tracks only once it's up to date, with one as soon as it is.
+//! * **Import metadata from**: a SoundCloud track's JSON, a yt-dlp JSON or a YouTube link
+//!   pasted (Ctrl+V, into the empty line or outside any field; one track) stages what it
+//!   says (see `import`): `version:SoundCloud` (a new version with only that, not the shown
+//!   one; on a draft, its version renamed), title, date, genre, the artists (the one whose
+//!   account it is, else one by that name, else a new one), the uploader's account given
+//!   to that artist (a chip of its own: take it back for someone else's upload), the
+//!   track's source there and its artwork as a cover.
 //! * **A draft** (`draft`): a file that didn't import, as a preview imports it. Edited like
 //!   a track (its source among the rows); applying imports it with the changes. It starts
 //!   with `single:` staged when it's on no album, so a loose track gets a single of its own.
 
 mod engine;
+mod import;
 pub mod model;
 mod panel;
 mod parse;
@@ -64,6 +72,7 @@ use crate::ui::theme::{font, medium, semibold, PALETTE as P};
 use crate::ui::{thousands, Action, Shell};
 
 pub use engine::{DraftOf, Imported};
+use import::{Metadata, Pasted};
 pub use panel::line_for;
 pub use parse::quoted;
 
@@ -77,6 +86,8 @@ struct Staged {
     /// Its text can be typed back (Backspace puts it in the line). Not for changes made
     /// for you whose names alone wouldn't say which artist (ambiguous names).
     editable: bool,
+    /// Staged by `stage_for_you` (staging for you again replaces it).
+    for_you: bool,
 }
 
 /// A tool that stays separate, opened from the line (plain words find it) by the page around
@@ -178,6 +189,27 @@ pub struct TrackEditor {
     verb: Option<Verb>,
     /// A draft applied: the track it became (taken by `take_imported`).
     imported: Option<Uuid>,
+    /// Lines to stage for you (`stage_for_you`).
+    for_you: Vec<String>,
+    /// Metadata being imported (pasted), and what was fetched for it.
+    importing: bool,
+    fetched: Arc<Mutex<Option<Result<Fetched, String>>>>,
+}
+
+/// What importing metadata fetched: what it says, who has the uploader's account, and its
+/// artwork.
+struct Fetched {
+    meta: Metadata,
+    owners: Vec<Owner>,
+    artwork: Option<Vec<u8>>,
+}
+
+/// An artist or grouping with an account (`POST /api/sources/accounts`).
+#[derive(serde::Deserialize)]
+struct Owner {
+    kind: String,
+    id: Uuid,
+    name: String,
 }
 
 impl Default for TrackEditor {
@@ -209,6 +241,9 @@ impl Default for TrackEditor {
             verbs: Vec::new(),
             verb: None,
             imported: None,
+            for_you: Vec::new(),
+            importing: false,
+            fetched: Arc::default(),
         }
     }
 }
@@ -308,9 +343,24 @@ impl TrackEditor {
     pub fn draft(&mut self, of: DraftOf, track: crate::details::TrackDetail) {
         if self.engine.draft.is_none() && self.staged.is_empty() && track.albums.is_empty() {
             let label = "a single of its own (named after it as it'll be; its primary artists, date and covers)".to_string();
-            self.staged.push(Staged { text: "single:".into(), label, ops: vec![Op::Single], warning: None, editable: true });
+            self.staged.push(Staged { text: "single:".into(), label, ops: vec![Op::Single], warning: None, editable: true, for_you: false });
         }
         self.engine.set_draft(of, track);
+    }
+
+    /// Changes staged for you, each as if typed and staged (a chip of its own, taken back
+    /// like any), the tracks and artists they name under these names being these. Those
+    /// staged for you before are taken back first. Staged when it's shown next; one that
+    /// can't be is left in the line, saying why.
+    pub fn stage_for_you(&mut self, lines: Vec<String>, tracks: &[(String, Uuid)], artists: &[(String, Uuid)]) {
+        for (name, id) in tracks {
+            self.names.pin(PinKind::Track, name, *id);
+        }
+        for (name, id) in artists {
+            self.names.pin(PinKind::Artist, name, *id);
+        }
+        self.staged.retain(|s| !s.for_you);
+        self.for_you = lines;
     }
 
     /// The draft doesn't fit its import anymore (the library changed since its preview):
@@ -358,7 +408,7 @@ impl TrackEditor {
         }
         let label = |id: Uuid| catalog.artist_label(id).unwrap_or_else(|| "(an artist)".into());
         let text = format!("artist: {} → {}", label(from), label(to));
-        self.staged.push(Staged { label: text.clone(), text, ops, warning: None, editable: false });
+        self.staged.push(Staged { label: text.clone(), text, ops, warning: None, editable: false, for_you: false });
     }
 
     fn ops(&self) -> Vec<Op> {
@@ -417,6 +467,22 @@ impl TrackEditor {
             self.row = None;
         }
         let typing = ctx.egui_wants_keyboard_input();
+        // Metadata pasted to import (into the empty line, or outside any field).
+        if phase == Phase::Editing && single && !shell.palette_open && !shell.modal_open && ((focused && self.line.trim().is_empty()) || !typing) {
+            let pasted = ctx.input(|i| i.events.iter().find_map(|e| if let egui::Event::Paste(text) = e { import::recognize(text) } else { None }));
+            if let Some(pasted) = pasted {
+                ctx.input_mut(|i| i.events.retain(|e| !matches!(e, egui::Event::Paste(_))));
+                self.fetch(shell, pasted);
+            }
+        }
+        let fetched = self.fetched.lock().unwrap().take();
+        if let Some(result) = fetched {
+            self.importing = false;
+            match result {
+                Ok(fetched) => self.stage_imported(fetched, shell, catalog),
+                Err(err) => self.notice = Some(format!("Couldn't import it: {err}")),
+            }
+        }
         // `/` outside a field: back to the line.
         if !typing && ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Text(t) if t == "/"))) {
             ctx.input_mut(|i| i.events.retain(|e| !matches!(e, egui::Event::Text(t) if t == "/")));
@@ -429,6 +495,21 @@ impl TrackEditor {
         let may_relate = shell.account.can("edit_relations");
         let may_source = shell.account.can("edit_sources");
         let here = Here { catalog, vocab: &vocab, targets: targets.len(), album, staged_album, may_relate, may_source };
+        // Staged for you (`stage_for_you`); what can't be is left in the line.
+        let mut left = Vec::new();
+        for text in std::mem::take(&mut self.for_you) {
+            let before = self.staged.len();
+            if self.stage(&text, shell, &here) {
+                self.staged[before..].iter_mut().for_each(|s| s.for_you = true);
+            } else {
+                left.push(text);
+            }
+        }
+        if !left.is_empty() {
+            self.line = left.join(" ");
+            self.focus_line = true;
+            self.place_cursor = true;
+        }
         let parsed = parse::parse(&self.line);
         let last = parsed.parts.last().cloned();
         let owner = last.as_ref().and_then(|l| {
@@ -685,7 +766,7 @@ impl TrackEditor {
 
         // ---- The line ----
         let editing = phase == Phase::Editing;
-        let hint = "What to change: artist:…  album:…  status:demo  date:2020  cover:paste  source:<link>  (Tab: the next part · Enter: stage it)";
+        let hint = "What to change: artist:…  album:…  status:demo  date:2020  cover:paste  source:<link>  (Tab: the next part · Enter: stage it · paste a SoundCloud/yt-dlp JSON or a YouTube link: its metadata)";
         let response = ui.add_enabled(editing, egui::TextEdit::singleline(&mut self.line).id(line_id).hint_text(hint).desired_width(f32::INFINITY));
         if response.changed() {
             self.highlighted = 0;
@@ -760,6 +841,12 @@ impl TrackEditor {
         }
         if let Some(notice) = &self.notice {
             ui.label(RichText::new(notice).color(P.muted).small());
+        }
+        if self.importing {
+            ui.horizontal(|ui| {
+                ui.add(egui::Spinner::new());
+                ui.label(RichText::new("Importing the metadata…").color(P.faint).small());
+            });
         }
         if self.uploading > 0 {
             ui.horizontal(|ui| {
@@ -983,7 +1070,7 @@ impl TrackEditor {
                     crate::ui::files::choose(shell, "A cover", ("Images", crate::ui::files::IMAGES), false, &self.chosen);
                 }
                 Some(Want::Correct(n)) => self.correct(n, here.vocab),
-                None => self.staged.push(Staged { text: u.text, label: r.label, ops: r.ops, warning: r.warning, editable: true }),
+                None => self.staged.push(Staged { text: u.text, label: r.label, ops: r.ops, warning: r.warning, editable: true, for_you: false }),
             }
         }
         // A Ctrl+Enter waiting was for what was staged before.
@@ -1023,12 +1110,124 @@ impl TrackEditor {
                     };
                     let warning = (targets > 1).then(|| format!("each of the {targets} tracks gets this cover"));
                     let op = Op::Cover { image: model::Image::Staged, sha, at };
-                    self.staged.push(Staged { text: format!("cover: {what}{place}"), label: format!("cover: + {what}{place}"), ops: vec![op], warning, editable: false });
+                    self.staged.push(Staged { text: format!("cover: {what}{place}"), label: format!("cover: + {what}{place}"), ops: vec![op], warning, editable: false, for_you: false });
                     self.apply_when_ready = false;
                 }
                 Err(err) => self.notice = Some(format!("The image couldn't be uploaded: {err}")),
             }
         }
+    }
+
+    /// Fetches what importing `pasted` needs, in the background: a YouTube video's
+    /// metadata (the server's yt-dlp), who has the uploader's account, the artwork.
+    fn fetch(&mut self, shell: &Shell, pasted: Pasted) {
+        self.importing = true;
+        self.notice = None;
+        let (api, out, ctx) = (shell.api.clone(), self.fetched.clone(), shell.ctx.clone());
+        shell.runtime.spawn(async move {
+            let result = async {
+                let json = match pasted {
+                    Pasted::Json(json) => json,
+                    Pasted::YouTube(link) => {
+                        let body = serde_json::json!({ "link": link });
+                        api.send_json::<serde_json::Value>(reqwest::Method::POST, "/api/metadata/youtube", Some(body)).await.map_err(|e| e.message)?
+                    }
+                };
+                let meta = import::parse(&json)?;
+                let owners = match &meta.account {
+                    Some(a) => {
+                        let body = serde_json::json!({ "platform": a.platform, "ids": a.ids });
+                        api.send_json::<Vec<Owner>>(reqwest::Method::POST, "/api/sources/accounts", Some(body)).await.map_err(|e| e.message)?
+                    }
+                    None => Vec::new(),
+                };
+                let mut artwork = None;
+                for url in &meta.artwork {
+                    if let Ok(answer) = reqwest::get(url).await
+                        && answer.status().is_success()
+                        && let Ok(bytes) = answer.bytes().await
+                    {
+                        artwork = Some(bytes.to_vec());
+                        break;
+                    }
+                }
+                Ok::<_, String>(Fetched { meta, owners, artwork })
+            }
+            .await;
+            *out.lock().unwrap() = Some(result);
+            ctx.request_repaint();
+        });
+    }
+
+    /// Stages what was imported, each its own chip (taken back like any).
+    fn stage_imported(&mut self, fetched: Fetched, shell: &mut Shell, catalog: &Catalog) {
+        let Fetched { meta: m, owners, artwork } = fetched;
+        let from = m.from;
+        let may_source = shell.account.can("edit_sources");
+        let mut chips: Vec<Staged> = Vec::new();
+        let mut chip = |text: String, label: String, ops: Vec<Op>, warning: Option<String>| chips.push(Staged { text, label, ops, warning, editable: false, for_you: false });
+        let version = match self.engine.draft.is_some() {
+            true => format!("its version named “{from}”, with only what's imported"),
+            false => format!("a new version “{from}” with only what's imported (not the shown one: choose it after)"),
+        };
+        chip(format!("version:{from}"), version, vec![Op::Version(from.to_string())], None);
+        chip(format!("title:{}", m.title), format!("title: {}", m.title), vec![Op::Title(m.title.clone())], None);
+        if let Some(date) = &m.date {
+            chip(format!("date:{date}"), format!("release date: {date}"), vec![Op::Date(Some(date.clone()))], None);
+        }
+        if let Some(genre) = &m.genre {
+            chip(format!("genre:{genre}"), format!("genre: + {genre}"), vec![Op::Genre(genre.clone())], None);
+        }
+        let credit = |artist: Uuid| Op::Credit { artist, role: Some("primary".into()), alias: None, at: None };
+        for (n, name) in m.artists.iter().enumerate() {
+            let account = m.account.as_ref().filter(|_| n == 0);
+            let has = account.map(|a| format!(" (it has the account {})", a.label)).unwrap_or_default();
+            match account.and(owners.first()) {
+                Some(o) if o.kind == "grouping" => {
+                    chip(format!("group:{}", o.name), format!("into the collective “{}”{has}, no one credited as it", o.name), vec![Op::Group(o.id)], Some("give it its artist too (artist:…)".into()));
+                }
+                Some(o) => chip(format!("artist:{}", o.name), format!("artists: + {}{has}", o.name), vec![credit(o.id)], None),
+                None => {
+                    let mut named: Vec<&crate::catalog::model::Artist> = catalog.artists.iter().filter(|a| a.name.eq_ignore_ascii_case(name.trim())).collect();
+                    named.sort_by_key(|a| std::cmp::Reverse(a.track_count));
+                    let (id, label, warning) = match named.as_slice() {
+                        [] => (self.names.new_artist(name), format!("artists: + {name} (new)"), None),
+                        [one] => (one.id, format!("artists: + {}", one.label()), None),
+                        [first, ..] => (first.id, format!("artists: + {}", first.label()), Some(format!("{} artists are named “{name}”: the one with the most tracks", named.len()))),
+                    };
+                    chip(format!("artist:{name}"), label, vec![credit(id)], warning);
+                    if let Some(a) = account.filter(|_| may_source) {
+                        let op = Op::Account { artist: id, platform: a.platform.clone(), label: a.label.clone(), data: a.data.clone() };
+                        chip(format!("account:{} → {name}", a.label), format!("{name} gets the account {} as a source (take this back for someone else's upload)", a.label), vec![op], None);
+                    }
+                }
+            }
+        }
+        if may_source {
+            let (platform, id, data) = m.source.clone();
+            // A stand-in id, as `source:` makes them.
+            let stand_in = {
+                use std::hash::{Hash, Hasher};
+                let mut h = std::hash::DefaultHasher::new();
+                (&platform, data.to_string()).hash(&mut h);
+                Uuid::from_u128(0xACE7_5000_0000_4000_8000_0000_0000_0000 | h.finish() as u128)
+            };
+            let op = Op::Source { id: stand_in, platform: platform.clone(), name: id.clone(), data };
+            chip(format!("source:{platform} {id}"), format!("source: + {platform} {id}, with what the {from} JSON says"), vec![op], None);
+        }
+        let count = chips.len();
+        self.staged.extend(chips);
+        self.apply_when_ready = false;
+        let mut notice = format!("Imported from {from}: {count} changes staged (take back what's wrong).");
+        if !may_source {
+            notice.push_str(" Its source and account aren't: they need the edit_sources permission.");
+        }
+        match artwork {
+            Some(bytes) => self.upload(shell, bytes, format!("{}-artwork.jpg", from.to_lowercase()), format!("the {from} artwork"), None),
+            None if !m.artwork.is_empty() => notice.push_str(" Its artwork couldn't be loaded."),
+            None => {}
+        }
+        self.notice = Some(notice);
     }
 
     /// Uploads an image for a cover (staged on the server; a change once it's there).
@@ -1082,7 +1281,7 @@ impl TrackEditor {
             match (form.data(shape), form.correcting) {
                 (Ok(data), Some(id)) => {
                     let label = format!("source #{} ({}) corrected", n + 1, form.platform);
-                    self.staged.push(Staged { text: format!("source:#{} corrected", n + 1), label, ops: vec![Op::CorrectSource { id, data }], warning: None, editable: false });
+                    self.staged.push(Staged { text: format!("source:#{} corrected", n + 1), label, ops: vec![Op::CorrectSource { id, data }], warning: None, editable: false, for_you: false });
                     self.correcting = None;
                     self.apply_when_ready = false;
                     self.focus_line = true;

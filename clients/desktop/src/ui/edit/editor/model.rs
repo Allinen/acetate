@@ -229,6 +229,14 @@ pub enum Op {
     NoSources,
     /// The file came from the source in this place.
     Origin(usize),
+    /// The metadata changes go to a new version named this, starting from nothing (only
+    /// what they say; e.g. what was imported from SoundCloud). On a draft: the version it
+    /// has, renamed (the last one says).
+    Version(String),
+    /// An account on a platform given to an artist (or a new one's stand-in) as its source:
+    /// `label` says it ("soundcloud someone"), `data` is in the platform's artist shape. Not
+    /// a revision; sent once, with the edit.
+    Account { artist: Uuid, platform: String, label: String, data: serde_json::Value },
 }
 
 /// `ops` on a track's metadata and facts. `position`: its place among the targets (for
@@ -286,7 +294,7 @@ pub fn apply(ops: &[Op], meta: &Meta, facts: &Facts, position: usize) -> (Meta, 
             }
             Op::Unrelate(track) => facts.relations.retain(|r| r.track_id != *track),
             Op::NoRelations => facts.relations.clear(),
-            Op::Group(_) | Op::Ungroup(_) | Op::Single | Op::Along(_) | Op::Sync | Op::Why(_) => {}
+            Op::Group(_) | Op::Ungroup(_) | Op::Single | Op::Along(_) | Op::Sync | Op::Why(_) | Op::Version(_) | Op::Account { .. } => {}
             Op::Cover { .. } | Op::MoveCover { .. } | Op::NoCover(_) | Op::NoCovers => {}
             Op::Source { .. } | Op::CorrectSource { .. } | Op::NoSource(_) | Op::NoSources | Op::Origin(_) => {}
         }
@@ -400,6 +408,24 @@ fn credit(credits: &mut Vec<Credit>, artist: Uuid, role: Option<&str>, alias: Op
 /// Whether each track gets a single of its own.
 pub fn single(ops: &[Op]) -> bool {
     ops.contains(&Op::Single)
+}
+
+/// The new version the metadata goes to (`Op::Version`, the last one).
+pub fn version(ops: &[Op]) -> Option<String> {
+    ops.iter().rev().find_map(|op| if let Op::Version(label) = op { Some(label.clone()) } else { None })
+}
+
+/// The accounts given to artists: (artist, platform, data), each once.
+pub fn accounts(ops: &[Op]) -> Vec<(Uuid, String, serde_json::Value)> {
+    let mut out: Vec<(Uuid, String, serde_json::Value)> = Vec::new();
+    for op in ops {
+        if let Op::Account { artist, platform, data, .. } = op
+            && !out.iter().any(|(a, p, d)| a == artist && p == platform && d == data)
+        {
+            out.push((*artist, platform.clone(), data.clone()));
+        }
+    }
+    out
 }
 
 /// Whether albums change along (on unless an `along:off` says otherwise, the last one
