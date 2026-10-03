@@ -17,6 +17,22 @@
 //! * `word:<keyword>=role`: a keyword of your own, working like the others
 //!   (`word:"beat by"=producer`).
 
+/// The rules as they're offered while typing: (as typed, what it finds).
+pub const RULES: &[(&str, &str)] = &[
+    ("feat", "feat. ft. featuring → featured"),
+    ("prod", "prod. produced by → producer"),
+    ("with", "w/ with → featured"),
+    ("w", "w alone → featured"),
+    ("x", "x alone → featured"),
+    ("+feat", "+ Name → featured"),
+    ("+prod", "+ Name → producer"),
+    ("[prod]", "[Name] → producer"),
+    ("[feat]", "[Name] → featured"),
+    ("(prod)", "(Name) → producer"),
+    ("(feat)", "(Name) → featured"),
+    ("prefix", "Name - Title → primary"),
+];
+
 /// Separators names are split on by default.
 pub const SPLIT: &[&str] = &[",", "&", "x", "+", "and"];
 

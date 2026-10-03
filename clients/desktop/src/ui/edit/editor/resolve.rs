@@ -16,11 +16,13 @@ use uuid::Uuid;
 
 use super::model::{Image, Numbers, Op};
 use super::parse::{self, Part, K};
+use super::title_parse::{Credited, TitlesParsed};
 use crate::account::Vocab;
 use crate::catalog::query::loosely_in;
 use crate::catalog::search::{Part as SearchPart, Search};
 use crate::catalog::Catalog;
 use crate::details::AliasInfo;
+use crate::title_credits::{NameTable, Setting};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PinKind {
@@ -154,6 +156,10 @@ pub struct Ctx<'a> {
     pub may_relate: bool,
     /// `edit_sources`: sources, and where the file came from.
     pub may_source: bool,
+    /// For `parse:`: each target's title as the staged changes leave it (None: still
+    /// loading, or not asked for), and every artist's names.
+    pub titles: Option<&'a [(Uuid, String)]>,
+    pub artist_names: Option<&'a NameTable>,
 }
 
 /// What resolving looks up in the library's details (None: still loading).
@@ -205,7 +211,7 @@ pub fn resolve(line: &str, ctx: &Ctx, look: &mut dyn Lookups) -> (Vec<Unit>, boo
     while i < parsed.parts.len() {
         let main = &parsed.parts[i];
         let mut j = i + 1;
-        while j < parsed.parts.len() && matches!(parsed.parts[j].key, K::Role | K::As | K::Kind) {
+        while j < parsed.parts.len() && parsed.parts[j].key.is_modifier() {
             j += 1;
         }
         let mods = &parsed.parts[i + 1..j];
@@ -214,7 +220,14 @@ pub fn resolve(line: &str, ctx: &Ctx, look: &mut dyn Lookups) -> (Vec<Unit>, boo
         let text = line[start..end].trim().to_string();
         // A line album for `disc:` / `track:` after it.
         let line_album = parsed.parts[..i].iter().rev().find(|p| p.key == K::Album && !p.minus).and_then(|p| album(&p.value, ctx).ok()).map(|a| a.0);
-        let result = unit(main, mods, ctx, line_album, look, &mut waiting);
+        // `parse:` reads what's typed after it itself (its own quotes and words).
+        let result = match main.key {
+            K::Parse => match mods.iter().find(|p| !matches!(p.key, K::Split | K::Whole | K::Keep | K::Word)) {
+                Some(p) => Err(format!("{}: doesn't go after parse:", p.key.name())),
+                None => parse_titles(&line[main.value_start..end], ctx, look, &mut waiting),
+            },
+            _ => unit(main, mods, ctx, line_album, look, &mut waiting),
+        };
         units.push(Unit { text, result });
         i = j;
     }
@@ -664,8 +677,85 @@ fn unit(
             }
         }
         K::Role | K::As | K::Kind => Err(format!("{}: goes after what it's about (artist:… role:…)", main.key.name())),
+        K::Parse => Err("parse: on its own".into()),
+        K::Split | K::Whole | K::Keep | K::Word => Err(format!("{}: goes after parse: (parse:feat prod {}:…)", main.key.name(), main.key.name())),
         K::Other(k) => Err(format!("{}: not something to change here", k.name())),
     }
+}
+
+/// `parse:` and what goes with it (`raw`, as typed): every target's title parsed with the
+/// rules, and each name found matched to an artist exactly (see `title_parse`).
+fn parse_titles(raw: &str, ctx: &Ctx, look: &mut dyn Lookups, waiting: &mut bool) -> Result<Resolved, String> {
+    let setting = Setting::parse(raw, &|typed| find_in(&ctx.vocab.credit_roles, typed)).map_err(|e| format!("parse: {e}"))?;
+    let (Some(titles), Some(table)) = (ctx.titles, ctx.artist_names) else {
+        *waiting = true;
+        return Err("parse: the tracks are still loading…".into());
+    };
+    // Every name's aliases are asked for at once, then it's tried again.
+    let mut looking: Vec<String> = Vec::new();
+    let mut credited = |name: &str| -> Option<Credited> {
+        let name = name.trim();
+        let mut artist = |id: Uuid| -> Credited {
+            if ctx.catalog.artist(id).is_some_and(|a| a.name.eq_ignore_ascii_case(name)) {
+                return Credited::Artist { id, alias: None };
+            }
+            match look.aliases(id) {
+                Some(list) => Credited::Artist { id, alias: list.iter().find(|a| a.name.eq_ignore_ascii_case(name)).map(|a| a.id) },
+                None => {
+                    looking.push(name.to_string());
+                    Credited::Artist { id, alias: None }
+                }
+            }
+        };
+        Some(if let Some(id) = ctx.names.pinned(PinKind::Artist, name) {
+            if ctx.names.is_new(id) { Credited::New(Some(id)) } else { artist(id) }
+        } else if let Some((id, _)) = ctx.names.new_artists.iter().find(|a| a.1.eq_ignore_ascii_case(name)) {
+            Credited::New(Some(*id))
+        } else {
+            match table.get(name) {
+                [] => Credited::New(None),
+                [id] => artist(*id),
+                ids => Credited::Undecided(ids.to_vec()),
+            }
+        })
+    };
+    let parsed = TitlesParsed::new(&setting, titles, table, &mut credited).ok_or("parse: still looking up names…")?;
+    if !looking.is_empty() {
+        *waiting = true;
+        return Err(format!("parse: looking up the names of {}…", looking.join(", ")));
+    }
+    let changing = parsed.changing(titles);
+    if changing == 0 {
+        return Err(format!("parse: {} finds nothing in {}", parsed.setting, if titles.len() == 1 { "its title" } else { "the titles" }));
+    }
+    let new = parsed.names.iter().filter(|n| matches!(n.credited, Credited::New(_))).count();
+    let undecided: Vec<String> = parsed.names.iter().filter(|n| matches!(n.credited, Credited::Undecided(_))).map(|n| format!("“{}”", n.text)).collect();
+    let mut label = format!("parse: {}", parsed.setting);
+    label.push_str(&match titles {
+        [(_, title)] => {
+            let o = &parsed.outcomes[title];
+            let names: Vec<String> = o.credits.iter().map(|(i, role)| format!("{} ({role})", parsed.names[*i].text)).collect();
+            format!(" → “{}”, {}", o.title, if names.is_empty() { "no credits".into() } else { format!("+ {}", names.join(", ")) })
+        }
+        _ => format!(" → {changing} of {} tracks, {} names", titles.len(), parsed.names.len()),
+    });
+    if new > 0 {
+        label.push_str(&format!(" ({new} new artist{})", if new == 1 { "" } else { "s" }));
+    }
+    let mut warnings = Vec::new();
+    if !undecided.is_empty() {
+        warnings.push(format!("more than one artist is named {}: its tracks are left out until one is chosen", undecided.join(", ")));
+    }
+    match titles {
+        [(_, title)] => warnings.extend(parsed.outcomes[title].warnings.iter().map(|w| w.text())),
+        _ => match parsed.to_check(titles) {
+            0 => {}
+            1 => warnings.push("1 track has something to look at".into()),
+            n => warnings.push(format!("{n} tracks have something to look at")),
+        },
+    }
+    let warning = (!warnings.is_empty()).then(|| warnings.join("; "));
+    Ok(Resolved { label, ops: vec![Op::ParseTitle(std::sync::Arc::new(parsed))], warning, ..Default::default() })
 }
 
 /// A grouping by name: chosen, new, or the library's (the same name, then one like it).
@@ -902,6 +992,16 @@ pub fn candidates(part: &Part, owner: Option<&Part>, ctx: &Ctx, hits: &[u32], tr
             }
         }
         K::Status => out = simple(&ctx.vocab.statuses, &|s| crate::ui::edit::capitalized(s)),
+        K::Parse => {
+            // The rules not typed yet, for the word being typed.
+            let mut words: Vec<&str> = value.split_whitespace().collect();
+            let typing = if value.is_empty() || part.value.ends_with(char::is_whitespace) { "" } else { words.pop().unwrap_or("") };
+            for (rule, what) in crate::title_credits::RULES.iter().filter(|(r, _)| !words.contains(r) && r.starts_with(&typing.to_lowercase())) {
+                let text = words.iter().copied().chain([*rule]).collect::<Vec<_>>().join(" ");
+                out.push(Candidate { label: rule.to_string(), sub: what.to_string(), text, pick: None, next: None });
+            }
+        }
+        K::Whole => out = simple(&["on".to_string(), "off".to_string()], &|s| format!("whole:{s} (names that are an artist's kept whole)")),
         K::Role => {
             out = simple(&ctx.vocab.credit_roles, &|s| crate::ui::edit::capitalized(s));
             for c in &mut out {
@@ -1002,6 +1102,7 @@ pub fn candidates(part: &Part, owner: Option<&Part>, ctx: &Ctx, hits: &[u32], tr
 pub fn actions(words: &str, ctx: &Ctx) -> Vec<(String, String)> {
     let mut all: Vec<(String, String)> = vec![
         ("Title…".into(), "title:".into()),
+        ("Title: its credits into credits (parse feat, prod…)".into(), "parse:".into()),
         ("Artists: add…".into(), "artist:".into()),
         ("Artists: add as featured…".into(), "feat:".into()),
         ("Artists: replace theirs with…".into(), "-artist artist:".into()),
@@ -1103,7 +1204,7 @@ mod tests {
     /// The line's units (ops, or the error), for `targets` tracks.
     fn run(line: &str, names: &Names, targets: usize) -> Vec<Result<(Vec<Op>, Option<String>), String>> {
         let (catalog, vocab) = (catalog(), vocab());
-        let ctx = Ctx { catalog: &catalog, vocab: &vocab, targets, context_album: None, staged_album: None, names, may_relate: true, may_source: true };
+        let ctx = Ctx { catalog: &catalog, vocab: &vocab, targets, context_album: None, staged_album: None, names, may_relate: true, may_source: true, titles: None, artist_names: None };
         resolve(line, &ctx, &mut Known).0.into_iter().map(|u| u.result.map(|r| (r.ops, r.warning))).collect()
     }
 
@@ -1122,6 +1223,96 @@ mod tests {
 
     fn ops(line: &str) -> Vec<Op> {
         run(line, &Names::default(), 1).into_iter().flat_map(|u| u.unwrap().0).collect()
+    }
+
+    /// Bo's alias "Bobo" (looked up), and the two Anns.
+    struct Aliases;
+
+    impl Lookups for Aliases {
+        fn aliases(&mut self, artist: Uuid) -> Option<Vec<AliasInfo>> {
+            Some(if artist == id(BO) { vec![AliasInfo { id: Uuid::from_u128(0xb0b0), name: "Bobo".into() }] } else { Vec::new() })
+        }
+
+        fn covers(&mut self, _: PinKind, _: Uuid) -> Option<Vec<(Uuid, String)>> {
+            Some(Vec::new())
+        }
+    }
+
+    /// `parse:` on tracks with `titles`: (label, the staged parse, the warning), or why not.
+    fn parse_line(line: &str, names: &Names, titles: &[&str]) -> Result<(String, std::sync::Arc<TitlesParsed>, Option<String>), String> {
+        let (catalog, vocab) = (catalog(), vocab());
+        let titles: Vec<(Uuid, String)> = titles.iter().enumerate().map(|(i, t)| (Uuid::from_u128(1000 + i as u128), t.to_string())).collect();
+        let table = NameTable::new([(id(ANN), "Ann"), (id(ANN_UK), "Ann"), (id(BO), "Bo"), (id(BO), "Bobo")]);
+        let ctx = Ctx { catalog: &catalog, vocab: &vocab, targets: titles.len(), context_album: None, staged_album: None, names, may_relate: true, may_source: true, titles: Some(&titles), artist_names: Some(&table) };
+        let (mut units, _) = resolve(line, &ctx, &mut Aliases);
+        assert_eq!(units.len(), 1, "{line}");
+        let r = units.remove(0).result?;
+        match r.ops.as_slice() {
+            [Op::ParseTitle(p)] => Ok((r.label, p.clone(), r.warning)),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_titles_names_matched_exactly() {
+        let (label, p, warning) = parse_line("parse:feat prod", &Names::default(), &["Song (feat. Bo)", "Other [prod. Cy]", "Plain"]).unwrap();
+        assert_eq!(label, "parse: prod feat → 2 of 3 tracks, 2 names (1 new artist)");
+        assert_eq!(warning, None);
+        let credited: Vec<(&str, &Credited)> = p.names.iter().map(|n| (n.text.as_str(), &n.credited)).collect();
+        assert_eq!(credited, [("Bo", &Credited::Artist { id: id(BO), alias: None }), ("Cy", &Credited::New(None))]);
+        // An alias: credited under it.
+        let (_, p, _) = parse_line("parse:feat", &Names::default(), &["Song (feat. BOBO)"]).unwrap();
+        assert_eq!(p.names[0].credited, Credited::Artist { id: id(BO), alias: Some(Uuid::from_u128(0xb0b0)) });
+        // Not "artist like": "Bob" is new, not Bo.
+        let (_, p, _) = parse_line("parse:feat", &Names::default(), &["Song (feat. Bob)"]).unwrap();
+        assert_eq!(p.names[0].credited, Credited::New(None));
+    }
+
+    #[test]
+    fn parse_titles_one_track_says_it_all() {
+        let (label, _, warning) = parse_line("parse:feat prod", &Names::default(), &["Song (feat. Bo) [prod. Bo]"]).unwrap();
+        assert_eq!(label, "parse: prod feat → “Song”, + Bo (producer), Bo (featured)");
+        assert_eq!(warning, None);
+        let (_, _, warning) = parse_line("parse:feat", &Names::default(), &["Song (feat. Bo]"]).unwrap();
+        assert!(warning.unwrap().contains("bracket"));
+    }
+
+    #[test]
+    fn parse_titles_two_anns_are_chosen_not_guessed() {
+        let (_, p, warning) = parse_line("parse:feat", &Names::default(), &["Song (feat. ann)", "Other"]).unwrap();
+        assert_eq!(p.names[0].credited, Credited::Undecided(vec![id(ANN), id(ANN_UK)]));
+        assert!(warning.unwrap().contains("more than one artist is named “ann”"));
+        // One chosen in the list for that name: that one.
+        let mut names = Names::default();
+        names.pin(PinKind::Artist, "Ann", id(ANN_UK));
+        let (_, p, warning) = parse_line("parse:feat", &names, &["Song (feat. ann)"]).unwrap();
+        assert_eq!(p.names[0].credited, Credited::Artist { id: id(ANN_UK), alias: None });
+        assert_eq!(warning, None);
+        // A new artist staged by that name already: the same one.
+        let mut names = Names::default();
+        let new = names.new_artist("Cy");
+        let (_, p, _) = parse_line("parse:feat", &names, &["Song (feat. CY)"]).unwrap();
+        assert_eq!(p.names[0].credited, Credited::New(Some(new)));
+    }
+
+    #[test]
+    fn parse_titles_overrides_and_refusals() {
+        let (_, p, _) = parse_line("parse:feat split:-x keep:tape -cover", &Names::default(), &["Song (feat. Bo x Cy)"]).unwrap();
+        assert_eq!(p.setting, "feat split:-x keep:tape -cover");
+        assert_eq!(p.names[0].text, "Bo x Cy");
+        let (_, p, _) = parse_line("parse:feat word:\"beat by\"=prod", &Names::default(), &["Song beat by Bo"]).unwrap();
+        assert_eq!(p.names[0].text, "Bo");
+        for (line, why) in [
+            ("parse:nope", "parse: no rule like “nope”"),
+            ("parse:feat role:producer", "role: doesn't go after parse:"),
+            ("parse:prod", "parse: prod finds nothing in the titles"),
+        ] {
+            let err = parse_line(line, &Names::default(), &["Song (feat. Bo)", "Plain"]).unwrap_err();
+            assert!(err.contains(why), "{line}: {err}");
+        }
+        assert!(run("split:-x", &Names::default(), 1)[0].as_ref().unwrap_err().contains("goes after parse:"));
+        // Not loaded yet.
+        assert!(run("parse:feat", &Names::default(), 1)[0].as_ref().unwrap_err().contains("still loading"));
     }
 
     #[test]
@@ -1230,7 +1421,7 @@ mod tests {
         assert!(run("cover:other song", &Names::default(), 1)[0].is_err(), "no covers of its own");
         // Pasted, and from a file: asked for first.
         let (catalog, vocab, names) = (catalog(), vocab(), Names::default());
-        let ctx = Ctx { catalog: &catalog, vocab: &vocab, targets: 2, context_album: None, staged_album: None, names: &names, may_relate: true, may_source: true };
+        let ctx = Ctx { catalog: &catalog, vocab: &vocab, targets: 2, context_album: None, staged_album: None, names: &names, may_relate: true, may_source: true, titles: None, artist_names: None };
         let (units, _) = resolve("cover:paste #1 cover:file", &ctx, &mut Known);
         let r = units[0].result.as_ref().unwrap();
         assert_eq!((r.want.clone(), r.ops.is_empty(), r.warning.is_some()), (Some(Want::Paste { at: Some(0) }), true, true));
@@ -1251,7 +1442,7 @@ mod tests {
             },
         ];
         let (catalog, names) = (catalog(), Names::default());
-        let ctx = Ctx { catalog: &catalog, vocab: &vocab, targets: 1, context_album: None, staged_album: None, names: &names, may_relate: true, may_source: true };
+        let ctx = Ctx { catalog: &catalog, vocab: &vocab, targets: 1, context_album: None, staged_album: None, names: &names, may_relate: true, may_source: true, titles: None, artist_names: None };
         let (units, _) = resolve("source:https://music.163.com/#/song?id=123 source:custom vk, sent by a friend origin:#2 -source:#1", &ctx, &mut Known);
         let ops: Vec<Op> = units.iter().flat_map(|u| u.result.clone().unwrap().ops).collect();
         let [Op::Source { platform, name, data, .. }, Op::Source { data: custom, .. }, Op::Origin(1), Op::NoSource(0)] = ops.as_slice() else { panic!("{ops:?}") };
@@ -1285,7 +1476,7 @@ mod tests {
         // Nothing is in a new one yet.
         assert!(run("-group:early days", &names, 1)[0].is_err());
         let (catalog, vocab) = (catalog(), vocab());
-        let ctx = Ctx { catalog: &catalog, vocab: &vocab, targets: 1, context_album: None, staged_album: None, names: &names, may_relate: true, may_source: true };
+        let ctx = Ctx { catalog: &catalog, vocab: &vocab, targets: 1, context_album: None, staged_album: None, names: &names, may_relate: true, may_source: true, titles: None, artist_names: None };
         let (units, _) = resolve("group:early days kind:project", &ctx, &mut Known);
         assert_eq!(units[0].result.as_ref().unwrap().new_kind, Some((early, "project".to_string())));
     }
@@ -1294,7 +1485,7 @@ mod tests {
     fn units_keep_their_text_to_type_back() {
         let (catalog, vocab) = (catalog(), vocab());
         let names = Names::default();
-        let ctx = Ctx { catalog: &catalog, vocab: &vocab, targets: 1, context_album: None, staged_album: None, names: &names, may_relate: true, may_source: true };
+        let ctx = Ctx { catalog: &catalog, vocab: &vocab, targets: 1, context_album: None, staged_album: None, names: &names, may_relate: true, may_source: true, titles: None, artist_names: None };
         let (units, _) = resolve("status:demo artist:Bo role:featured #2", &ctx, &mut Known);
         let texts: Vec<&str> = units.iter().map(|u| u.text.as_str()).collect();
         assert_eq!(texts, ["status:demo", "artist:Bo role:featured #2"]);

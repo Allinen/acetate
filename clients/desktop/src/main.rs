@@ -33,8 +33,6 @@ mod playlists;
 mod resume;
 mod review;
 mod settings;
-// Not used by the editor yet.
-#[allow(dead_code)]
 mod title_credits;
 mod video;
 mod ui;

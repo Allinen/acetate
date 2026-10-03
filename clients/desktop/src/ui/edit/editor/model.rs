@@ -7,8 +7,12 @@
 //! version. `apply` (metadata and facts) and `attach` (covers and sources, which aren't
 //! revisions) are the only places an operation means something.
 
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+
+use super::title_parse::TitlesParsed;
 
 use crate::details::TrackDetail;
 
@@ -242,12 +246,25 @@ pub enum Op {
     Flag { kind: String, name: String, new: bool },
     /// Its open flags of `kind` settled.
     Unflag { kind: String, name: String },
+    /// `parse:`: the credits in its title moved into its credits (each track its own; see
+    /// `title_parse`).
+    ParseTitle(Arc<TitlesParsed>),
 }
 
 /// `ops` on a track's metadata and facts. `position`: its place among the targets (for
 /// numbering in order).
+#[cfg(test)]
 pub fn apply(ops: &[Op], meta: &Meta, facts: &Facts, position: usize) -> (Meta, Facts) {
+    let (meta, facts, _) = apply_to(ops, meta, facts, position, Uuid::nil());
+    (meta, facts)
+}
+
+/// `ops` on `track`'s metadata and facts. `position`: its place among the targets (for
+/// numbering in order). Also why it can't be changed, if something says so (then it's
+/// refused, not written in part).
+pub fn apply_to(ops: &[Op], meta: &Meta, facts: &Facts, position: usize, track: Uuid) -> (Meta, Facts, Option<String>) {
     let (mut meta, mut facts) = (meta.clone(), facts.clone());
+    let mut refused = None;
     let text = |s: &str| Some(s.trim().to_string()).filter(|s| !s.is_empty());
     for op in ops {
         match op {
@@ -299,12 +316,22 @@ pub fn apply(ops: &[Op], meta: &Meta, facts: &Facts, position: usize) -> (Meta, 
             }
             Op::Unrelate(track) => facts.relations.retain(|r| r.track_id != *track),
             Op::NoRelations => facts.relations.clear(),
+            Op::ParseTitle(parsed) => match parsed.result(track, &meta.title) {
+                Ok(Some((title, credits))) => {
+                    meta.title = title;
+                    for (artist, role, alias) in credits {
+                        credit(&mut meta.credits, artist, Some(&role), alias.map(Some), None);
+                    }
+                }
+                Ok(None) => {}
+                Err(why) => refused = refused.or(Some(why)),
+            },
             Op::Group(_) | Op::Ungroup(_) | Op::Single | Op::Along(_) | Op::Sync | Op::Why(_) | Op::Version(_) | Op::Account { .. } | Op::Flag { .. } | Op::Unflag { .. } => {}
             Op::Cover { .. } | Op::MoveCover { .. } | Op::NoCover(_) | Op::NoCovers => {}
             Op::Source { .. } | Op::CorrectSource { .. } | Op::NoSource(_) | Op::NoSources | Op::Origin(_) => {}
         }
     }
-    (meta, facts)
+    (meta, facts, refused)
 }
 
 /// `ops` on a track's covers and sources.
@@ -506,6 +533,26 @@ mod tests {
 
     fn facts() -> Facts {
         Facts { status: "released".into(), albums: vec![], relations: vec![] }
+    }
+
+    #[test]
+    fn a_title_parsed_on_each_track() {
+        use crate::title_credits::{NameTable, Setting};
+        use super::super::title_parse::Credited;
+        let setting = Setting::parse("feat prod", &|t| ["primary", "featured", "producer"].iter().find(|r| r.starts_with(t)).map(|r| r.to_string())).unwrap();
+        let titles = [(id(10), "Song (feat. Ann) [prod. Cy]".to_string()), (id(11), "Other (feat. Ann)".to_string())];
+        let credited = |name: &str| Some(if name == "Ann" { Credited::Artist { id: id(1), alias: None } } else { Credited::New(Some(id(3))) });
+        let parsed = Arc::new(TitlesParsed::new(&setting, &titles, &NameTable::default(), &mut { credited }).unwrap());
+        let ops = [Op::ParseTitle(parsed)];
+        // Bo primary, Ann featured already: Ann isn't twice, Cy is added.
+        let meta = Meta { title: titles[0].1.clone(), credits: vec![c(2, "primary"), c(1, "featured")], ..Default::default() };
+        let (m, _, refused) = apply_to(&ops, &meta, &facts(), 0, id(10));
+        assert_eq!((m.title.as_str(), m.credits, refused), ("Song", vec![c(2, "primary"), c(1, "featured"), c(3, "producer")], None));
+        // A title it wasn't staged for: refused, left as it is.
+        let meta = Meta { title: "Other (feat. Ann) [v2]".into(), ..Default::default() };
+        let (m, _, refused) = apply_to(&ops, &meta, &facts(), 1, id(11));
+        assert_eq!(m.title, "Other (feat. Ann) [v2]");
+        assert!(refused.unwrap().contains("changed since"));
     }
 
     #[test]

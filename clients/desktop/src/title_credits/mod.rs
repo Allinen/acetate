@@ -29,7 +29,7 @@ use std::collections::HashMap;
 
 use uuid::Uuid;
 
-pub use setting::Setting;
+pub use setting::{Setting, RULES};
 
 /// Every artist's name and aliases, ignoring case: for keeping names whole (and, in the
 /// editor, for matching the names found to artists).
@@ -265,6 +265,7 @@ fn suspicious(name: &str, keywords: &[&str]) -> Option<&'static str> {
 }
 
 /// The server's "credits in the title" check (`check_track`), the same regex by hand.
+#[cfg(test)]
 const SERVER_REGEX: &str = r"(^|[[:space:](\[{-])(feat\.?|ft\.?|featuring|w/(?!o)|prod\.?|produced by)([[:space:]]|$)";
 const SERVER_KEYWORDS: &[&str] = &["featuring", "feat.", "feat", "ft.", "ft", "w/", "produced by", "prod.", "prod"];
 

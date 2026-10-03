@@ -45,6 +45,12 @@
 //!   account it is, else one by that name, else a new one), the uploader's account given
 //!   to that artist (a chip of its own: take it back for someone else's upload), the
 //!   track's source there and its artwork as a cover.
+//! * **Credits in the title**: `parse:feat prod [prod]` finds them with the rules typed
+//!   (and `split:`, `whole:`, `keep:`, `word:` after it; see `crate::title_credits`), each
+//!   track its own result (`title_parse`): its title without them, and the names credited
+//!   (an artist's name or alias exactly, ignoring case; none: a new artist, made when it's
+//!   staged; more than one: its tracks are refused until one is chosen in the list for
+//!   that name).
 //! * **A draft** (`draft`): a file that didn't import, as a preview imports it. Edited like
 //!   a track (its source among the rows); applying imports it with the changes. It starts
 //!   with `single:` staged when it's on no album, so a loose track gets a single of its own.
@@ -55,6 +61,7 @@ pub mod model;
 mod panel;
 mod parse;
 mod resolve;
+mod title_parse;
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -141,6 +148,9 @@ struct Here<'a> {
     staged_album: Option<Uuid>,
     may_relate: bool,
     may_source: bool,
+    /// For `parse:` (see `Ctx`).
+    titles: Option<&'a [(Uuid, String)]>,
+    artist_names: Option<&'a crate::title_credits::NameTable>,
 }
 
 /// An image uploaded for a cover: (its hash, what it is in words, where it goes), or why not.
@@ -197,6 +207,8 @@ pub struct TrackEditor {
     /// Metadata being imported (pasted), and what was fetched for it.
     importing: bool,
     fetched: Arc<Mutex<Option<Result<Fetched, String>>>>,
+    /// Every artist's names, for `parse:` (made from the catalog it's for, when asked).
+    artist_names: Option<(*const Catalog, Arc<crate::title_credits::NameTable>)>,
 }
 
 /// What importing metadata fetched: what it says, who has the uploader's account, and its
@@ -247,6 +259,7 @@ impl Default for TrackEditor {
             for_you: Vec::new(),
             importing: false,
             fetched: Arc::default(),
+            artist_names: None,
         }
     }
 }
@@ -507,7 +520,16 @@ impl TrackEditor {
         let staged_album = change.ops.iter().rev().find_map(|op| if let Op::Album { album, .. } = op { Some(*album) } else { None });
         let may_relate = shell.account.can("edit_relations");
         let may_source = shell.account.can("edit_sources");
-        let here = Here { catalog, vocab: &vocab, targets: targets.len(), album, staged_album, may_relate, may_source };
+        // `parse:` typed: each target's title as the staged changes leave it (once they're
+        // all loaded), and every artist's names.
+        let parsing = parse::parse(&self.line).parts.iter().any(|p| p.key == K::Parse);
+        let titles: Option<Vec<(Uuid, String)>> = parsing.then(|| targets.iter().map(|t| self.engine.ready(*t).map(|r| (*t, r.meta.title.clone()))).collect()).flatten();
+        if parsing && self.artist_names.as_ref().is_none_or(|(of, _)| !std::ptr::eq(*of, Arc::as_ptr(catalog))) {
+            let names = catalog.artists.iter().flat_map(|a| std::iter::once((a.id, a.name.as_str())).chain(a.aliases.iter().map(move |x| (a.id, x.as_str()))));
+            self.artist_names = Some((Arc::as_ptr(catalog), Arc::new(crate::title_credits::NameTable::new(names))));
+        }
+        let artist_names = self.artist_names.as_ref().filter(|_| parsing).map(|(_, t)| t.clone());
+        let here = Here { catalog, vocab: &vocab, targets: targets.len(), album, staged_album, may_relate, may_source, titles: titles.as_deref(), artist_names: artist_names.as_deref() };
         // Staged for you (`stage_for_you`); what can't be is left in the line.
         let mut left = Vec::new();
         for text in std::mem::take(&mut self.for_you) {
@@ -526,7 +548,7 @@ impl TrackEditor {
         let parsed = parse::parse(&self.line);
         let last = parsed.parts.last().cloned();
         let owner = last.as_ref().and_then(|l| {
-            matches!(l.key, K::Role | K::As | K::Kind).then(|| parsed.parts.iter().rev().find(|p| !matches!(p.key, K::Role | K::As | K::Kind)).cloned()).flatten()
+            l.key.is_modifier().then(|| parsed.parts.iter().rev().find(|p| !p.key.is_modifier()).cloned()).flatten()
         });
         // Tab or Enter takes what's listed: the matches must be for exactly what's typed
         // (found in the background, they can still be the last keystroke's), so then
@@ -558,7 +580,7 @@ impl TrackEditor {
             let key = {
                 use std::hash::{Hash, Hasher};
                 let mut h = std::hash::DefaultHasher::new();
-                (&self.line, self.names.version, staged_album, look.0.generation, targets.len()).hash(&mut h);
+                (&self.line, self.names.version, staged_album, look.0.generation, targets.len(), &titles).hash(&mut h);
                 h.finish()
             };
             let units = match &self.resolved {
@@ -1068,9 +1090,22 @@ impl TrackEditor {
         // What asking for something first says (no image in the clipboard…).
         let mut notice = None;
         for u in units {
-            let Ok(r) = u.result else { continue };
+            let Ok(mut r) = u.result else { continue };
             if let Some((id, kind)) = &r.new_kind {
                 self.names.set_kind(*id, kind);
+            }
+            // `parse:`: the new artists it credits made (their stand-ins).
+            for op in &mut r.ops {
+                if let Op::ParseTitle(parsed) = op {
+                    let mut made = (**parsed).clone();
+                    for n in &mut made.names {
+                        if n.credited == title_parse::Credited::New(None) {
+                            n.credited = title_parse::Credited::New(Some(self.names.new_artist(&n.text)));
+                        }
+                    }
+                    made.seal();
+                    *op = Op::ParseTitle(Arc::new(made));
+                }
             }
             // The aliases it credits, named (for the preview's words).
             for op in &r.ops {
@@ -1789,6 +1824,8 @@ impl Here<'_> {
             names,
             may_relate: self.may_relate,
             may_source: self.may_source,
+            titles: self.titles,
+            artist_names: self.artist_names,
         }
     }
 }

@@ -130,6 +130,8 @@ pub struct Ready {
     pub version: Option<String>,
     /// Flags raised and settled by hand (`model::flags`).
     pub flags: (Vec<String>, Vec<String>),
+    /// Why it can't be changed (a staged change says so): refused, not written in part.
+    pub refused: Option<String>,
 }
 
 impl Ready {
@@ -153,9 +155,10 @@ impl Ready {
         self.attached.groups != self.base.attached.groups
     }
 
-    /// Something to write: a revision, covers, sources, groupings, a single.
+    /// Something to write: a revision, covers, sources, groupings, a single (or a change
+    /// it's refused, said in the preview).
     pub fn writes(&self) -> bool {
-        self.draft || !self.flags.0.is_empty() || !self.flags.1.is_empty() || self.meta_changed() || self.facts_changed() || self.covers_changed() || self.sources_changed() || self.groups_changed() || self.single
+        self.refused.is_some() || self.draft || !self.flags.0.is_empty() || !self.flags.1.is_empty() || self.meta_changed() || self.facts_changed() || self.covers_changed() || self.sources_changed() || self.groups_changed() || self.single
     }
 
     /// Something for the server: a revision, or its albums to match.
@@ -478,7 +481,7 @@ impl Engine {
                                 // A new version starts from nothing: only what the changes say.
                                 let version = model::version(ops);
                                 let start = if version.is_some() { Meta::default() } else { base.meta.clone() };
-                                let (meta, facts) = model::apply(ops, &start, &base.facts, position);
+                                let (meta, facts, refused) = model::apply_to(ops, &start, &base.facts, position, track);
                                 let attached = model::attach(ops, &base.attached);
                                 let mut lines = Vec::new();
                                 if let Some(v) = &version {
@@ -518,7 +521,7 @@ impl Engine {
                                         warnings.push("it's on an album already: it gets a single too (unmark it to leave it out)".into());
                                     }
                                 }
-                                PlanState::Ready(Box::new(Ready { position, base, meta, facts, attached, lines, warnings, sync: model::sync(ops), single, draft: self.drafts.contains_key(&track), version, flags }))
+                                PlanState::Ready(Box::new(Ready { position, base, meta, facts, attached, lines, warnings, sync: model::sync(ops), single, draft: self.drafts.contains_key(&track), version, flags, refused }))
                             }
                         }
                     }
@@ -711,10 +714,10 @@ impl Engine {
                             base.attached.groups = groups.get(&track).cloned().unwrap_or_default();
                             let version = model::version(&change.ops);
                             let start = if version.is_some() { Meta::default() } else { base.meta.clone() };
-                            let (meta, facts) = model::apply(&change.ops, &start, &base.facts, position);
+                            let (meta, facts, refused) = model::apply_to(&change.ops, &start, &base.facts, position, track);
                             let attached = model::attach(&change.ops, &base.attached);
                             let single = model::single(&change.ops);
-                            Ok(Ready { position, base, meta, facts, attached, lines: Vec::new(), warnings: Vec::new(), sync: change.sync, single, draft: false, version, flags: model::flags(&change.ops) })
+                            Ok(Ready { position, base, meta, facts, attached, lines: Vec::new(), warnings: Vec::new(), sync: change.sync, single, draft: false, version, flags: model::flags(&change.ops), refused })
                         }
                         None => Err("it has no version to edit".to_string()),
                     },
@@ -852,6 +855,10 @@ fn body(chunk: &[(Uuid, Ready)], change: &Change, ids: &HashMap<Uuid, Uuid>, kin
     let mut refused = Vec::new();
     let mut used: HashSet<Uuid> = HashSet::new();
     for (track, r) in chunk {
+        if let Some(why) = &r.refused {
+            refused.push((*track, why.clone()));
+            continue;
+        }
         if r.facts_changed() && r.base.facts_base.is_none() {
             refused.push((*track, "it has no facts revision to build on yet, so its status, albums and related tracks can't change".into()));
             continue;
@@ -1065,7 +1072,7 @@ mod tests {
             facts.albums.push(Membership { album_id: id(a), disc_number: None, track_number: None });
         }
         let attached = base.attached.clone();
-        Ready { position, base, meta, facts, attached, lines: vec![], warnings: vec![], sync: false, single: false, draft: false, version: None, flags: (vec![], vec![]) }
+        Ready { position, base, meta, facts, attached, lines: vec![], warnings: vec![], sync: false, single: false, draft: false, version: None, flags: (vec![], vec![]), refused: None }
     }
 
     #[test]
@@ -1157,6 +1164,18 @@ mod tests {
         assert!(plain.sends());
         let body = draft_body(&draft, &(id(5), plain), &change, false, &Made::default(), true).unwrap();
         assert_eq!(body["track"], json!({ "track_id": id(5), "along": true, "sync": false }));
+    }
+
+    #[test]
+    fn a_refused_track_isnt_sent() {
+        let mut r = ready(0, &[1], None);
+        r.meta.title = "New".into();
+        r.refused = Some("its title changed since parse: was staged (stage it again)".into());
+        assert!(r.sends(), "said in the preview");
+        let change = Change::of(vec![], &Names::default());
+        let (body, refused) = body(&[(id(1), r)], &change, &HashMap::new(), &HashMap::new(), true, true);
+        assert_eq!(body["tracks"].as_array().map(Vec::len), Some(0));
+        assert_eq!(refused, [(id(1), "its title changed since parse: was staged (stage it again)".to_string())]);
     }
 
     #[test]

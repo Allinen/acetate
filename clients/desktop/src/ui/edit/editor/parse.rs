@@ -1,8 +1,8 @@
 //! The editor's line, as typed: `key:value` parts, the same keys (and abbreviations) as a
 //! filter (`catalog::query`) plus the editor's own (`comment:`, `related:`, `why:`,
-//! `role:`, `as:`, `along:`, `cover:`, `source:`, `origin:`, `single:`; `flag:` is the
-//! filter's). Only the syntax: what a value means is worked out by the
-//! editor, which knows the library.
+//! `role:`, `as:`, `along:`, `cover:`, `source:`, `origin:`, `single:`, `parse:` with
+//! `split:`, `whole:`, `keep:`, `word:`; `flag:` is the filter's). Only the syntax: what a
+//! value means is worked out by the editor, which knows the library.
 //!
 //! * A value runs until the next key: `artist:lil quill year:2017`.
 //! * `"…"` quotes a value that has a key-like word or a colon in it: `title:"No: Way"`
@@ -12,7 +12,8 @@
 //!   `#1+` in order from 1). After a cover or source, which one (`-cover:#2`), and where
 //!   it goes (`cover:#3 #1`: the third made the main one); right after the colon too.
 //! * `role:` and `as:` go with the artist before them, `kind:` with the album, grouping or
-//!   related track before it.
+//!   related track before it; `split:`, `whole:`, `keep:`, `word:` with `parse:`. In
+//!   `split:` and `keep:`, `-word` is part of the value (`keep:cdq -cover`), not a key.
 
 use crate::catalog::query::Key as QueryKey;
 
@@ -40,6 +41,12 @@ pub enum K {
     Origin,
     Single,
     Flag,
+    /// `parse:` the credits in the title, with the rules typed (`crate::title_credits`).
+    Parse,
+    Split,
+    Whole,
+    Keep,
+    Word,
     /// A filter's key that isn't something to change (`format:`, `og:`…).
     Other(QueryKey),
 }
@@ -70,6 +77,11 @@ impl K {
             K::Origin => "origin",
             K::Single => "single",
             K::Flag => "flag",
+            K::Parse => "parse",
+            K::Split => "split",
+            K::Whole => "whole",
+            K::Keep => "keep",
+            K::Word => "word",
             K::Other(k) => k.name(),
         }
     }
@@ -77,6 +89,12 @@ impl K {
     /// Whether `-key` alone means "clear it".
     pub fn is_list(self) -> bool {
         matches!(self, K::Genre | K::Artist | K::Featured | K::Album | K::Related | K::Group | K::Cover | K::Source)
+    }
+
+    /// Whether it goes with the part before it (`role:` after `artist:`, `split:` after
+    /// `parse:`…).
+    pub fn is_modifier(self) -> bool {
+        matches!(self, K::Role | K::As | K::Kind | K::Split | K::Whole | K::Keep | K::Word)
     }
 
     /// Whether `#…` after its value is its place or numbers.
@@ -99,6 +117,11 @@ pub fn key(name: &str) -> Option<K> {
         "source" | "sources" => Some(K::Source),
         "origin" => Some(K::Origin),
         "single" => Some(K::Single),
+        "parse" => Some(K::Parse),
+        "split" => Some(K::Split),
+        "whole" => Some(K::Whole),
+        "keep" => Some(K::Keep),
+        "word" => Some(K::Word),
         _ => None,
     };
     if own.is_some() {
@@ -170,7 +193,9 @@ pub fn parse(text: &str) -> Line {
     let mut in_quote = false;
     for (at, token) in tokens {
         let end = at + token.len();
-        if !in_quote && let Some(part) = key_token(at, token) {
+        // `keep:cdq -cover`: a value of `keep:`, not "no covers".
+        let listing = line.parts.last().is_some_and(|p| matches!(p.key, K::Split | K::Keep)) && token.starts_with('-') && !token.contains(':');
+        if !in_quote && !listing && let Some(part) = key_token(at, token) {
             in_quote = part.quoted && !closes(&text[part.value_start..end]);
             line.parts.push(part);
             if let Some(p) = line.parts.last_mut() {
@@ -349,6 +374,21 @@ mod tests {
         assert_eq!(key("rel"), Some(K::Date), "a start of a filter's key (released)");
         assert_eq!(key("why"), Some(K::Why));
         assert_eq!(key("format"), Some(K::Other(QueryKey::Format)));
+    }
+
+    #[test]
+    fn parse_and_what_goes_with_it() {
+        assert_eq!(
+            parts("parse:feat prod [prod] split:-x -and keep:cdq -cover word:vs=featured"),
+            [
+                (K::Parse, false, "feat prod [prod]".into(), None),
+                (K::Split, false, "-x -and".into(), None),
+                (K::Keep, false, "cdq -cover".into(), None),
+                (K::Word, false, "vs=featured".into(), None),
+            ]
+        );
+        // Elsewhere `-cover` is still "no covers".
+        assert_eq!(parts("status:demo -cover")[1].0, K::Cover);
     }
 
     #[test]
