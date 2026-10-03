@@ -1149,6 +1149,7 @@ impl TrackEditor {
             let result = async {
                 let json = match pasted {
                     Pasted::Json(json) => json,
+                    Pasted::Broken(why) => return Err(why),
                     Pasted::YouTube(link) => {
                         let body = serde_json::json!({ "link": link });
                         api.send_json::<serde_json::Value>(reqwest::Method::POST, "/api/metadata/youtube", Some(body)).await.map_err(|e| e.message)?

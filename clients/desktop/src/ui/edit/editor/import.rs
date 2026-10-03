@@ -16,6 +16,8 @@ pub enum Pasted {
     Json(Value),
     /// A YouTube video's link: its metadata is asked for.
     YouTube(String),
+    /// Text that starts like a JSON object but isn't one: why.
+    Broken(String),
 }
 
 /// What a platform says about a track.
@@ -49,10 +51,21 @@ pub struct Account {
 }
 
 /// Whether `text` (pasted) is something to import from: a JSON object, or a YouTube link.
+/// Line breaks are left out of JSON first: copied from a terminal, its line is cut where
+/// the terminal wrapped it, words included (a JSON string can't have one, and JSON needs
+/// no whitespace between its parts, so taking them out never changes what it says).
 pub fn recognize(text: &str) -> Option<Pasted> {
     let text = text.trim();
     if text.starts_with('{') {
-        return serde_json::from_str::<Value>(text).ok().filter(Value::is_object).map(Pasted::Json);
+        let joined: String = text.chars().filter(|c| *c != '\n' && *c != '\r').collect();
+        return Some(match serde_json::from_str::<Value>(&joined) {
+            Ok(json) if json.is_object() => Pasted::Json(json),
+            Ok(_) => Pasted::Broken("it's JSON, but not an object".into()),
+            Err(err) => Pasted::Broken(format!(
+                "it isn't valid JSON ({err}; around “{}”). Copied from a terminal? Its wrapping can put spaces into words",
+                joined.chars().skip(err.column().saturating_sub(15)).take(30).collect::<String>()
+            )),
+        });
     }
     let lower = text.to_lowercase();
     let starts = ["http://", "https://", "youtu.be/", "youtube.com/", "www.youtube.com/", "m.youtube.com/", "music.youtube.com/"].iter().any(|p| lower.starts_with(p));
@@ -310,7 +323,10 @@ mod tests {
     fn what_is_pasted() {
         assert_eq!(recognize("  https://youtu.be/dQw4w9WgXcQ "), Some(Pasted::YouTube("https://youtu.be/dQw4w9WgXcQ".into())));
         assert!(matches!(recognize("{\"id\": 1}"), Some(Pasted::Json(_))));
-        assert_eq!(recognize("{not json"), None);
+        assert!(matches!(recognize("{not json"), Some(Pasted::Broken(_))));
+        // Wrapped by a terminal (here every 20 characters): one line again.
+        let wrapped = "{\"id\": 941058670, \"t\nitle\": \"Anime\", \"x\": nu\r\nll}";
+        assert_eq!(recognize(wrapped), Some(Pasted::Json(json!({ "id": 941058670, "title": "Anime", "x": null }))));
         assert_eq!(recognize("artist:Ann"), None);
         assert_eq!(recognize("source:https://youtu.be/x"), None);
         assert_eq!(recognize("https://soundcloud.com/a/b"), None);
