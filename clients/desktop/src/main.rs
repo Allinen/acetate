@@ -11,6 +11,7 @@
 //! - `playlists`: playlists, kept locally like the catalog.
 //! - `resume`: the queue kept between runs.
 //! - `settings`: volume and sound output.
+//! - `title_credits`: credits written into titles, found by the rules the user picks.
 //! - `ui`: the window, its pages and the pieces they're drawn with.
 
 // Answers from background work arrive in shared slots (`Arc<Mutex<Option<…>>>`), which
@@ -32,6 +33,9 @@ mod playlists;
 mod resume;
 mod review;
 mod settings;
+// Not used by the editor yet.
+#[allow(dead_code)]
+mod title_credits;
 mod video;
 mod ui;
 
