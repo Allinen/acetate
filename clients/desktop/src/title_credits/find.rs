@@ -122,6 +122,15 @@ pub fn keyword_at(text: &str, at: usize, words: &[&str]) -> Option<usize> {
 /// A dash between parts (" - ", " – ", " — ") starting with the whitespace at `at`:
 /// where it ends (after the whitespace following it).
 pub fn dash_at(text: &str, at: usize) -> Option<usize> {
+    divider_at(text, at, "-–—")
+}
+
+/// A dash or a bar between parts (" | ", "Song | prod. Ann | Remix"): where credits stop.
+fn stop_at(text: &str, at: usize) -> Option<usize> {
+    divider_at(text, at, "-–—|")
+}
+
+fn divider_at(text: &str, at: usize, signs: &str) -> Option<usize> {
     if !text[at..].starts_with(char::is_whitespace) {
         return None;
     }
@@ -129,7 +138,7 @@ pub fn dash_at(text: &str, at: usize) -> Option<usize> {
     let c = text[d..].chars().next()?;
     let after = d + c.len_utf8();
     let spaced = text[after..].chars().next().is_none_or(char::is_whitespace);
-    ("-–—".contains(c) && spaced).then(|| skip_space(text, after))
+    (signs.contains(c) && spaced).then(|| skip_space(text, after))
 }
 
 /// A credit found: what's cut from the title, and where its names are.
@@ -152,6 +161,7 @@ pub fn find(text: &str, rule: &Rule, setting: &Setting, keywords: &[&str]) -> Ve
             plus.then_some(i + 1)
         }),
         Kind::Bracket(shape) => bare(text, *shape, setting),
+        Kind::Own => own(text, &rule.kind.keywords()),
         Kind::Prefix => prefix(text).into_iter().collect(),
         kind => {
             let words = kind.keywords();
@@ -186,11 +196,34 @@ fn marked(text: &str, keywords: &[&str], mark: impl Fn(usize) -> Option<usize>) 
     out
 }
 
-/// Where names starting at `from` stop: an opening bracket, a keyword, a dash, or `stop`.
+/// `(self-prod.)`, `self-produced`: a mark with no names (found as a keyword is, not at the
+/// very start).
+fn own(text: &str, marks: &[&str]) -> Vec<Found> {
+    let (groups, _) = groups(text);
+    let mut out = Vec::new();
+    let mut from = 0;
+    for (i, _) in text.char_indices() {
+        if i < from || text[..i].trim().is_empty() {
+            continue;
+        }
+        // Nothing comes after a mark: it can end at a closing bracket too.
+        let before = text[..i].chars().next_back().is_none_or(|c| c.is_whitespace() || is_opener(c) || c == '-');
+        let end = marks.iter().filter_map(|m| match_ci(text, i, m)).filter(|&e| text[e..].chars().next().is_none_or(|c| c.is_whitespace() || is_closer(c))).max();
+        if before && let Some(e) = end {
+            let unclosed = enclosing(&groups, i, i).is_some_and(|g| !g.closed);
+            out.push(Found { cut: i..e, names: e..e, unclosed });
+            from = e;
+        }
+    }
+    out
+}
+
+/// Where names starting at `from` stop: an opening bracket, a keyword, a dash or a bar, or
+/// `stop`.
 fn names_end(text: &str, from: usize, stop: usize, keywords: &[&str]) -> usize {
     for (i, c) in text[from..stop].char_indices() {
         let i = from + i;
-        if is_opener(c) || (i > from && keyword_at(text, i, keywords).is_some()) || dash_at(text, i).is_some() {
+        if is_opener(c) || (i > from && keyword_at(text, i, keywords).is_some()) || stop_at(text, i).is_some() {
             return i;
         }
     }

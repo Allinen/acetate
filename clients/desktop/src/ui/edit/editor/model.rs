@@ -316,7 +316,7 @@ pub fn apply_to(ops: &[Op], meta: &Meta, facts: &Facts, position: usize, track: 
             }
             Op::Unrelate(track) => facts.relations.retain(|r| r.track_id != *track),
             Op::NoRelations => facts.relations.clear(),
-            Op::ParseTitle(parsed) => match parsed.result(track, &meta.title) {
+            Op::ParseTitle(parsed) => match parsed.result(track, &meta.title, &meta.credits.iter().filter(|c| c.role == "primary").map(|c| c.artist_id).collect::<Vec<_>>()) {
                 Ok(Some((title, credits))) => {
                     meta.title = title;
                     for (artist, role, alias) in credits {

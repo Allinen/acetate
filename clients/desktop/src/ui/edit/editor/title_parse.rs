@@ -33,6 +33,8 @@ pub enum Credited {
     New(Option<Uuid>),
     /// More than one artist has the name: one has to be chosen.
     Undecided(Vec<Uuid>),
+    /// Each track's own primary artists (`prod. himself`; the `self` rule).
+    Own,
 }
 
 /// A name found in the titles (the same name in any case is one).
@@ -128,7 +130,8 @@ impl TitlesParsed {
             let mut credits = Vec::new();
             for c in &parsed.credits {
                 let i = *index.entry(c.name.to_lowercase()).or_insert_with(|| {
-                    names.push(Name { text: c.name.clone(), credited: Credited::New(None), tracks: 0, whole: c.whole, why: None, roles: Vec::new(), part: c.part.clone() });
+                    let credited = if c.own { Credited::Own } else { Credited::New(None) };
+                    names.push(Name { text: c.name.clone(), credited, tracks: 0, whole: c.whole, why: None, roles: Vec::new(), part: c.part.clone() });
                     names.len() - 1
                 });
                 if !names[i].roles.contains(&c.role) {
@@ -154,7 +157,7 @@ impl TitlesParsed {
                 names[i].tracks += 1;
             }
         }
-        for name in &mut names {
+        for name in names.iter_mut().filter(|n| n.credited != Credited::Own) {
             name.credited = credited(&name.text)?;
         }
         let mut parsed = TitlesParsed { rules: setting.clone(), setting: setting.to_text(), titles, fixes, outcomes, names, skip: Vec::new(), key: 0 };
@@ -191,8 +194,8 @@ impl TitlesParsed {
     }
 
     /// What `track`'s title (as it is when this applies) becomes: None, left alone; Err,
-    /// why it can't be.
-    pub fn result(&self, track: Uuid, title: &str) -> Result<Option<Becomes>, String> {
+    /// why it can't be. `primary`: its primary artists then (who `himself` is).
+    pub fn result(&self, track: Uuid, title: &str, primary: &[Uuid]) -> Result<Option<Becomes>, String> {
         if self.skip.contains(&track) {
             return Ok(None);
         }
@@ -211,6 +214,8 @@ impl TitlesParsed {
                 Credited::New(Some(id)) => credits.push((*id, c.role.clone(), None)),
                 Credited::New(None) => return Err(format!("“{}” isn't made yet (stage parse: again)", name.text)),
                 Credited::Undecided(_) => undecided.push(format!("“{}”", name.text)),
+                Credited::Own if primary.is_empty() => return Err(format!("“{}” is its own artist, and it has no primary artist", name.text)),
+                Credited::Own => credits.extend(primary.iter().map(|id| (*id, c.role.clone(), None))),
             }
         }
         if !undecided.is_empty() {
@@ -278,27 +283,27 @@ mod tests {
         assert_eq!(p.outcomes.len(), 3, "the same title once");
         assert_eq!(p.changing(), 3);
         assert_eq!(p.names.iter().map(|n| (n.text.as_str(), n.tracks)).collect::<Vec<_>>(), [("Ann", 2), ("Cy", 1)]);
-        assert_eq!(p.result(t[0].0, "Song (feat. Ann)"), Ok(Some(("Song".into(), vec![(id(1), "featured".into(), None)]))));
+        assert_eq!(p.result(t[0].0, "Song (feat. Ann)", &[]), Ok(Some(("Song".into(), vec![(id(1), "featured".into(), None)]))));
         // A new artist has to be made first (staging does it).
-        assert!(p.result(t[1].0, "Other [prod. Cy]").is_err());
+        assert!(p.result(t[1].0, "Other [prod. Cy]", &[]).is_err());
         p.names[1].credited = Credited::New(Some(id(9)));
         p.seal();
-        assert_eq!(p.result(t[1].0, "Other [prod. Cy]"), Ok(Some(("Other".into(), vec![(id(9), "producer".into(), None)]))));
+        assert_eq!(p.result(t[1].0, "Other [prod. Cy]", &[]), Ok(Some(("Other".into(), vec![(id(9), "producer".into(), None)]))));
         // Nothing found: the same title, no credits.
-        assert_eq!(p.result(t[2].0, "Plain"), Ok(Some(("Plain".into(), vec![]))));
+        assert_eq!(p.result(t[2].0, "Plain", &[]), Ok(Some(("Plain".into(), vec![]))));
     }
 
     #[test]
     fn refused_when_it_cant_say() {
         let t = titles(&["Song (feat. Bo)", "(feat. Ann)"]);
         let p = TitlesParsed::new(&setting("feat"), t.clone(), Fixes::default(), &NameTable::default(), &mut credited).unwrap();
-        assert!(p.result(t[0].0, "Song (feat. Bo)").unwrap_err().contains("more than one artist"));
-        assert!(p.result(t[1].0, "(feat. Ann)").unwrap_err().contains("empty"));
-        assert!(p.result(t[0].0, "Song (feat. Bo) [v2]").unwrap_err().contains("changed since"));
+        assert!(p.result(t[0].0, "Song (feat. Bo)", &[]).unwrap_err().contains("more than one artist"));
+        assert!(p.result(t[1].0, "(feat. Ann)", &[]).unwrap_err().contains("empty"));
+        assert!(p.result(t[0].0, "Song (feat. Bo) [v2]", &[]).unwrap_err().contains("changed since"));
         let mut skipped = p.clone();
         skipped.skip.push(t[0].0);
         skipped.seal();
-        assert_eq!(skipped.result(t[0].0, "Song (feat. Bo)"), Ok(None));
+        assert_eq!(skipped.result(t[0].0, "Song (feat. Bo)", &[]), Ok(None));
         assert_ne!(skipped, p, "a change makes another key");
     }
 
@@ -315,6 +320,19 @@ mod tests {
         assert_eq!(again.names.iter().map(|n| n.text.as_str()).collect::<Vec<_>>(), ["Bo"]);
         assert!(again.undecided().is_empty(), "its track is left alone");
         assert_eq!(again.changing(), 0);
+    }
+
+    #[test]
+    fn himself_is_each_tracks_own_artist() {
+        let t = titles(&["Song | PROD. BY HIMSELF", "Other (self-prod.)", "Third (prod. me)"]);
+        let p = TitlesParsed::new(&setting("prod self"), t.clone(), Fixes::default(), &NameTable::default(), &mut credited).unwrap();
+        assert!(p.names.iter().all(|n| n.credited == Credited::Own), "{:?}", p.names);
+        assert_eq!(p.result(t[0].0, &t[0].1, &[id(7)]), Ok(Some(("Song".into(), vec![(id(7), "producer".into(), None)]))));
+        assert_eq!(p.result(t[1].0, &t[1].1, &[id(8), id(9)]), Ok(Some(("Other".into(), vec![(id(8), "producer".into(), None), (id(9), "producer".into(), None)]))));
+        assert!(p.result(t[2].0, &t[2].1, &[]).unwrap_err().contains("no primary artist"));
+        // Without the rule, it's a name like any (and the check says what it may mean).
+        let p = TitlesParsed::new(&setting("prod"), t[..1].to_vec(), Fixes::default(), &NameTable::default(), &mut credited).unwrap();
+        assert_eq!((p.names[0].credited.clone(), p.names[0].why), (Credited::New(None), Some("means the track's own artist? (the self rule)")));
     }
 
     #[test]

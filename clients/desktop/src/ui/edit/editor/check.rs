@@ -65,7 +65,7 @@ pub fn entries(p: &TitlesParsed, names: &Names, engine: &Engine) -> Vec<Entry> {
             _ if n.why.is_some() => 1,
             Credited::Undecided(_) => 1,
             Credited::New(_) => 2,
-            Credited::Artist { .. } => 3,
+            Credited::Artist { .. } | Credited::Own => 3,
         };
         (rank, std::cmp::Reverse(n.tracks), n.text.to_lowercase())
     });
@@ -196,6 +196,7 @@ fn row(view: &View, entry: &Entry, plans: &HashMap<Uuid, usize>) -> (String, Str
                 Credited::Artist { id, alias: None } => (artist(*id), P.text),
                 Credited::New(_) => ("a new artist".to_string(), P.accent),
                 Credited::Undecided(ids) => (format!("{} artists have this name: c chooses one, Enter another", ids.len()), P.danger),
+                Credited::Own => ("each track's own primary artists".to_string(), P.text),
             };
             let mut bottom = vec![format!("{} track{}", n.tracks, if n.tracks == 1 { "" } else { "s" }), n.roles.join(", ")];
             if chosen {

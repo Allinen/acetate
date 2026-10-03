@@ -139,6 +139,28 @@ fn prefix() {
 }
 
 #[test]
+fn bars_between_parts() {
+    case("prod", "Song One | Second Name | PROD. BY DEE", "Song One | Second Name", &[("DEE", P)]);
+    case("prod", "Song | prod. Dee | Remix", "Song | Remix", &[("Dee", P)]);
+    case("prod", "Feeling Fine PRODUCED BY DEEJAYDEE", "Feeling Fine", &[("DEEJAYDEE", P)]);
+    // Not for `prefix`: that's " - ".
+    case("prefix", "Ann | Song", "Ann | Song", &[]);
+}
+
+#[test]
+fn self_produced() {
+    let own = |rules: &str, title: &str| with_names(rules, title, &NameTable::default()).credits.into_iter().map(|c| (c.name, c.role, c.own)).collect::<Vec<_>>();
+    assert_eq!(own("prod self", "Song | PROD. BY HIMSELF"), [("HIMSELF".to_string(), P.to_string(), true)]);
+    assert_eq!(own("prod self", "Song (prod. me & Dee)"), [("me".to_string(), P.to_string(), true), ("Dee".to_string(), P.to_string(), false)]);
+    assert_eq!(own("feat self", "Song (feat. Ann) (self-prod.)"), [("Ann".to_string(), F.to_string(), false), ("self-prod.".to_string(), P.to_string(), true)]);
+    case("self", "Song [Self-Produced]", "Song", &[("Self-Produced", P)]);
+    case("self", "Self Prod. Song", "Self Prod. Song", &[]);
+    // Without the rule: a name, said to be worth a look.
+    assert_eq!(warns("prod", "Song (prod. himself)"), [Warning::Name { name: "himself".into(), why: "means the track's own artist? (the self rule)" }]);
+    assert!(warns("prod self", "Song (prod. himself)").is_empty());
+}
+
+#[test]
 fn the_order_typed_doesnt_matter() {
     assert_eq!(setting("[prod] prefix feat prod"), setting("prod feat [prod] prefix"));
 }
@@ -287,3 +309,4 @@ fn the_servers_regex_is_the_same() {
     let regex = line.split("~* '").nth(1).unwrap().split("' THEN").next().unwrap();
     assert_eq!(regex, SERVER_REGEX);
 }
+

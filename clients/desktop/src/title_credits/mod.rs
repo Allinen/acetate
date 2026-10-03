@@ -8,12 +8,12 @@
 //! * `parse`: one title → the title without its credits, the credits (name, role, which
 //!   rule found it), and warnings.
 //! * The rules run in a fixed order whatever order they're typed in: the keywords
-//!   (`prod`, `feat`, `with`, `w`, `x`, `word:`), then `+`, then bare brackets, then
-//!   `prefix`. So `[prod. Dee]` is always taken by `prod`, never by `[prod]` as a name
+//!   (`prod`, `feat`, `with`, `w`, `x`, `word:`), then `self`, then `+`, then bare
+//!   brackets, then `prefix`. So `[prod. Dee]` is always taken by `prod`, never by `[prod]` as a name
 //!   "prod. Dee".
 //! * Where a credit ends (`find`): a keyword right after an opening bracket runs to its
 //!   closing bracket; elsewhere to the first of an opening bracket, another rule's keyword,
-//!   ` - `, the closing bracket around it, the end.
+//!   ` - ` or ` | `, the closing bracket around it, the end.
 //! * Names are split on the separators (`, ` ` & ` ` x ` ` + ` ` and ` by default),
 //!   except where pieces next to each other are exactly the name of an artist in the
 //!   library ("keep whole", `NameTable`).
@@ -30,6 +30,7 @@ use std::collections::HashMap;
 use uuid::Uuid;
 
 pub use setting::{Setting, RULES};
+use setting::SELF_WORDS;
 
 /// Every artist's name and aliases, ignoring case: for keeping names whole (and, in the
 /// editor, for matching the names found to artists).
@@ -96,6 +97,8 @@ pub struct Credit {
     pub rule: String,
     /// Kept whole: separators in it, but it's an artist's name in the library.
     pub whole: bool,
+    /// The track's own primary artists (`prod. himself`, `(self-prod.)`; the `self` rule).
+    pub own: bool,
 }
 
 /// What looks wrong about a result.
@@ -138,19 +141,28 @@ pub struct Parsed {
 /// corrections always give the same result.
 pub fn parse(title: &str, setting: &Setting, names: &NameTable, fixes: &Fixes) -> Parsed {
     let keywords = setting.keywords();
+    let own_rule = setting.rules.iter().any(|r| r.kind == setting::Kind::Own);
     let mut text = title.to_string();
     let mut credits: Vec<Credit> = Vec::new();
     let mut warnings = Vec::new();
     for rule in &setting.rules {
-        let mut found = find::find(&text, rule, setting, &keywords);
-        // A part with a name that isn't one stays as it is.
-        found.retain(|f| !split(&text[f.names.clone()], setting, names, fixes).iter().any(|(n, _)| Fixes::has(&fixes.not_names, n)));
-        for f in &found {
+        // Each part's names (a self-production mark: the mark itself stands for them); a
+        // part with a name that isn't one stays as it is.
+        let found: Vec<(find::Found, Vec<(String, bool)>)> = find::find(&text, rule, setting, &keywords)
+            .into_iter()
+            .map(|f| {
+                let named = if f.names.is_empty() { vec![(text[f.cut.clone()].to_string(), false)] } else { split(&text[f.names.clone()], setting, names, fixes) };
+                (f, named)
+            })
+            .filter(|(_, named)| !named.iter().any(|(n, _)| Fixes::has(&fixes.not_names, n)))
+            .collect();
+        for (f, named) in &found {
             let part = &text[f.names.clone()];
-            for (name, whole) in split(part, setting, names, fixes) {
+            for (name, whole) in named.iter().cloned() {
                 let lower = name.to_lowercase();
+                let own = own_rule && (f.names.is_empty() || SELF_WORDS.contains(&lower.as_str()));
                 if !credits.iter().any(|c| c.role == rule.role && c.name.to_lowercase() == lower) {
-                    credits.push(Credit { name, part: part.to_string(), role: rule.role.clone(), rule: rule.token(), whole });
+                    credits.push(Credit { name, part: part.to_string(), role: rule.role.clone(), rule: rule.token(), whole, own });
                 }
             }
             if f.unclosed {
@@ -158,15 +170,15 @@ pub fn parse(title: &str, setting: &Setting, names: &NameTable, fixes: &Fixes) -
             }
         }
         // From the right, so the places of the ones before stay as they were.
-        for f in found.iter().rev() {
+        for (f, _) in found.iter().rev() {
             text = cut_out(&text, f.cut.start, f.cut.end);
         }
     }
     if text != title {
-        text = text.trim_end_matches(|c: char| c.is_whitespace() || "-–—,&+".contains(c)).to_string();
+        text = text.trim_end_matches(|c: char| c.is_whitespace() || "-–—|,&+".contains(c)).to_string();
     }
 
-    for c in credits.iter().filter(|c| !c.whole) {
+    for c in credits.iter().filter(|c| !c.whole && !c.own) {
         if let Some(why) = suspicious(&c.name, &keywords) {
             push(&mut warnings, Warning::Name { name: c.name.clone(), why });
         }
@@ -203,7 +215,13 @@ fn cut_out(text: &str, mut a: usize, mut b: usize) -> String {
         (a, b) = (g.open, g.end);
     }
     let (left, right) = (&text[..a], &text[b..]);
-    let (l, r) = (left.trim_end(), right.trim_start());
+    let (l, mut r) = (left.trim_end(), right.trim_start());
+    // "Song | prod. Dee | Remix": one bar (or dash) left between the parts, not two.
+    let divider = |s: &str| s.chars().next().filter(|c| "|-–—".contains(*c)).filter(|c| s[c.len_utf8()..].chars().next().is_none_or(char::is_whitespace));
+    let ends_in_divider = l.chars().next_back().is_some_and(|c| "|-–—".contains(c)) && l[..l.len() - l.chars().next_back().map_or(0, char::len_utf8)].ends_with(char::is_whitespace);
+    if ends_in_divider && let Some(c) = divider(r) {
+        r = r[c.len_utf8()..].trim_start();
+    }
     if l.is_empty() || r.is_empty() {
         return format!("{l}{r}");
     }
@@ -302,6 +320,8 @@ fn suspicious(name: &str, keywords: &[&str]) -> Option<&'static str> {
         Some("has a keyword in it")
     } else if name.contains([',', '&', '+']) || has_word(&["x", "and"]) {
         Some("might be more than one artist")
+    } else if SELF_WORDS.contains(&name.trim().to_lowercase().as_str()) {
+        Some("means the track's own artist? (the self rule)")
     } else if name.chars().count() == 1 {
         Some("one character")
     } else if name.chars().count() > 40 {

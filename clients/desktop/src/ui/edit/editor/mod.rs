@@ -515,6 +515,12 @@ impl TrackEditor {
     fn check_key(&mut self, entry: &check::Entry, key: Key, here: &Here) {
         use check::{Entry, Fix};
         let Some(p) = self.staged_parse() else { return };
+        if let (Entry::Name(i), Key::Enter | Key::C) = (entry, key)
+            && p.names[*i].credited == title_parse::Credited::Own
+        {
+            self.notice = Some(format!("“{}” stands for each track's own primary artists (n: it isn't a credit).", p.names[*i].text));
+            return;
+        }
         match (entry, key) {
             (Entry::Name(i), Key::Enter) => {
                 let name = p.names[*i].text.clone();

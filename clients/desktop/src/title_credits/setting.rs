@@ -7,8 +7,9 @@
 //!
 //! * Rules: `prod`, `feat` (`ft`), `with` (`w/`), `w`, `x`, `prefix`, each in its own role
 //!   or another (`with=prod`); `+feat` / `+prod` (`+=role`, the role is needed); `[prod]`,
-//!   `(prod)`, `{prod}` (`[]=role`; `[]` alone: producer). Roles as the vocabulary has
-//!   them, any start of one.
+//!   `(prod)`, `{prod}` (`[]=role`; `[]` alone: producer); `self`: `himself`, `me`… among
+//!   the names are the track's own primary artists, and `(self-prod.)` credits them as
+//!   producers. Roles as the vocabulary has them, any start of one.
 //! * `split:` the separators names are split on: only these (`split:, &`), or the default
 //!   without some (`split:-x -and`).
 //! * `whole:off`: names aren't kept whole (see `parse`).
@@ -31,7 +32,14 @@ pub const RULES: &[(&str, &str)] = &[
     ("(prod)", "(Name) → producer"),
     ("(feat)", "(Name) → featured"),
     ("prefix", "Name - Title → primary"),
+    ("self", "prod. himself / me, (self-prod.) → the track's own artists"),
 ];
+
+/// Names that mean the track's own artists (with the `self` rule).
+pub const SELF_WORDS: &[&str] = &["himself", "herself", "themselves", "themself", "myself", "me", "self", "yours truly"];
+
+/// Self-production written without a name (the `self` rule).
+const SELF_MARKS: &[&str] = &["self-produced", "self produced", "self-prod.", "self-prod", "self prod.", "self prod"];
 
 /// Separators names are split on by default.
 pub const SPLIT: &[&str] = &[",", "&", "x", "+", "and"];
@@ -78,6 +86,8 @@ pub enum Kind {
     X,
     /// A keyword of the user's own (lowercase, single spaces).
     Word(String),
+    /// `prod. himself`, `prod. me`, `(self-prod.)`: the track's own primary artists.
+    Own,
     Plus,
     Bracket(Shape),
     Prefix,
@@ -92,9 +102,10 @@ impl Kind {
             Kind::W => 3,
             Kind::X => 4,
             Kind::Word(_) => 5,
-            Kind::Plus => 6,
-            Kind::Bracket(_) => 7,
-            Kind::Prefix => 8,
+            Kind::Own => 6,
+            Kind::Plus => 7,
+            Kind::Bracket(_) => 8,
+            Kind::Prefix => 9,
         }
     }
 
@@ -107,6 +118,7 @@ impl Kind {
             Kind::W => vec!["w"],
             Kind::X => vec!["x"],
             Kind::Word(w) => vec![w.as_str()],
+            Kind::Own => SELF_MARKS.to_vec(),
             Kind::Plus | Kind::Bracket(_) | Kind::Prefix => vec![],
         }
     }
@@ -120,13 +132,14 @@ impl Kind {
             Kind::W => "w",
             Kind::X => "x",
             Kind::Prefix => "prefix",
+            Kind::Own => "self",
             _ => return None,
         })
     }
 
     fn default_role(&self) -> Option<&'static str> {
         match self {
-            Kind::Prod | Kind::Bracket(_) => Some("producer"),
+            Kind::Prod | Kind::Bracket(_) | Kind::Own => Some("producer"),
             Kind::Feat | Kind::With | Kind::W | Kind::X => Some("featured"),
             Kind::Prefix => Some("primary"),
             Kind::Word(_) | Kind::Plus => None,
@@ -304,7 +317,7 @@ impl Setting {
 
 /// A rule typed (lowercase).
 fn rule(token: &str, role_of: &dyn Fn(&str) -> Result<String, String>) -> Result<Rule, String> {
-    let unknown = || format!("no rule like “{token}” (feat, prod, with, w, x, +feat, +prod, [prod], (prod), {{prod}}, prefix, word:…=role)");
+    let unknown = || format!("no rule like “{token}” (feat, prod, with, w, x, +feat, +prod, [prod], (prod), {{prod}}, prefix, self, word:…=role)");
     if let Some(rest) = token.strip_prefix('+') {
         let typed = rest.strip_prefix('=').unwrap_or(rest);
         if typed.is_empty() {
@@ -338,6 +351,7 @@ fn rule(token: &str, role_of: &dyn Fn(&str) -> Result<String, String>) -> Result
         "w" => Kind::W,
         "x" => Kind::X,
         "prefix" => Kind::Prefix,
+        "self" => Kind::Own,
         _ => return Err(unknown()),
     };
     let role = match typed {
