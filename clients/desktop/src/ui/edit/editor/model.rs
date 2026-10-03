@@ -249,6 +249,41 @@ pub enum Op {
     /// `parse:`: the credits in its title moved into its credits (each track its own; see
     /// `title_parse`).
     ParseTitle(Arc<TitlesParsed>),
+    /// `-suffix:`: taken off the end of the title, where it ends with it: that text (any
+    /// case), or (a divider, `|`) everything from the last ` | ` on. Kept for `suffix:`.
+    CutSuffix(String),
+    /// `suffix:`: added to the end (with a space; not if it ends with it already), or (None)
+    /// what was taken off put back, as it was.
+    AddSuffix(Option<String>),
+}
+
+/// A divider between parts of a title (`-suffix:|` takes off everything after the last).
+pub fn is_divider(text: &str) -> bool {
+    ["|", "-", "–", "—", "/", "·", "•"].contains(&text)
+}
+
+/// `title` without `what` at its end (see `Op::CutSuffix`): the title, and what was taken
+/// off as it was (its space before too).
+fn cut_suffix(title: &str, what: &str) -> Option<(String, String)> {
+    let t = title.trim_end();
+    let at = if is_divider(what) {
+        // The last ` | ` (spaces on both sides): from the space before it.
+        let mut found = None;
+        for (i, _) in t.match_indices(what) {
+            let spaced = t[..i].ends_with(char::is_whitespace) && t[i + what.len()..].chars().next().is_none_or(char::is_whitespace);
+            if spaced {
+                found = Some(t[..i].trim_end().len());
+            }
+        }
+        found?
+    } else {
+        let start = t.len().checked_sub(what.len()).filter(|&s| t.is_char_boundary(s))?;
+        if !t[start..].eq_ignore_ascii_case(what) {
+            return None;
+        }
+        t[..start].trim_end().len()
+    };
+    (at > 0).then(|| (t[..at].to_string(), t[at..].to_string()))
 }
 
 /// `ops` on a track's metadata and facts. `position`: its place among the targets (for
@@ -265,6 +300,8 @@ pub fn apply(ops: &[Op], meta: &Meta, facts: &Facts, position: usize) -> (Meta, 
 pub fn apply_to(ops: &[Op], meta: &Meta, facts: &Facts, position: usize, track: Uuid) -> (Meta, Facts, Option<String>) {
     let (mut meta, mut facts) = (meta.clone(), facts.clone());
     let mut refused = None;
+    // What `-suffix:` took off, for `suffix:` alone.
+    let mut taken = String::new();
     let text = |s: &str| Some(s.trim().to_string()).filter(|s| !s.is_empty());
     for op in ops {
         match op {
@@ -316,6 +353,20 @@ pub fn apply_to(ops: &[Op], meta: &Meta, facts: &Facts, position: usize, track: 
             }
             Op::Unrelate(track) => facts.relations.retain(|r| r.track_id != *track),
             Op::NoRelations => facts.relations.clear(),
+            Op::CutSuffix(what) => {
+                if let Some((title, off)) = cut_suffix(&meta.title, what) {
+                    meta.title = title;
+                    taken = off + &taken;
+                }
+            }
+            Op::AddSuffix(Some(what)) => {
+                let t = meta.title.trim_end();
+                let has = t.len() >= what.len() && t.is_char_boundary(t.len() - what.len()) && t[t.len() - what.len()..].eq_ignore_ascii_case(what);
+                if !has {
+                    meta.title = format!("{t} {what}");
+                }
+            }
+            Op::AddSuffix(None) => meta.title = format!("{}{}", meta.title.trim_end(), std::mem::take(&mut taken)),
             Op::ParseTitle(parsed) => match parsed.result(track, &meta.title, &meta.credits.iter().filter(|c| c.role == "primary").map(|c| c.artist_id).collect::<Vec<_>>()) {
                 Ok(Some((title, credits))) => {
                     meta.title = title;
@@ -536,6 +587,27 @@ mod tests {
     }
 
     #[test]
+    fn suffixes_taken_off_and_put_back() {
+        let title = |ops: &[Op], t: &str| apply(ops, &Meta { title: t.into(), ..Default::default() }, &facts(), 0).0.title;
+        let cut = |s: &str| Op::CutSuffix(s.into());
+        // A divider: everything after the last one.
+        assert_eq!(title(&[cut("|")], "Song w/ Ann | Some Tape"), "Song w/ Ann");
+        assert_eq!(title(&[cut("|")], "One | Two | Three"), "One | Two");
+        assert_eq!(title(&[cut("|")], "No|Bar Here"), "No|Bar Here");
+        // The text, any case; titles without it are left as they are.
+        assert_eq!(title(&[cut("| some tape")], "Song | Some Tape"), "Song");
+        assert_eq!(title(&[cut("| Some Tape")], "Other Song"), "Other Song");
+        // Nothing left: not taken off.
+        assert_eq!(title(&[cut("| Some Tape")], "| Some Tape"), "| Some Tape");
+        // Put back as it was, after something else changed the title.
+        let back = [cut("|"), Op::Title("Song".into()), Op::AddSuffix(None)];
+        assert_eq!(title(&back, "Song w/ Ann  |  Some Tape"), "Song  |  Some Tape");
+        // Added with a space, not twice.
+        assert_eq!(title(&[Op::AddSuffix(Some("| Some Tape".into()))], "Song"), "Song | Some Tape");
+        assert_eq!(title(&[Op::AddSuffix(Some("| Some Tape".into()))], "Song | some tape"), "Song | some tape");
+    }
+
+    #[test]
     fn a_title_parsed_on_each_track() {
         use crate::title_credits::{NameTable, Setting};
         use super::super::title_parse::Credited;
@@ -548,6 +620,14 @@ mod tests {
         let meta = Meta { title: titles[0].1.clone(), credits: vec![c(2, "primary"), c(1, "featured")], ..Default::default() };
         let (m, _, refused) = apply_to(&ops, &meta, &facts(), 0, id(10));
         assert_eq!((m.title.as_str(), m.credits, refused), ("Song", vec![c(2, "primary"), c(1, "featured"), c(3, "producer")], None));
+        // Its suffix taken off first, parsed, then put back.
+        let titles = [(id(12), "Song w/ Ann".to_string())];
+        let with = Setting::parse("with", &|t| ["primary", "featured", "producer"].iter().find(|r| r.starts_with(t)).map(|r| r.to_string())).unwrap();
+        let parsed = Arc::new(TitlesParsed::new(&with, titles.to_vec(), Default::default(), &NameTable::default(), &mut { credited }).unwrap());
+        let chain = [Op::CutSuffix("|".into()), Op::ParseTitle(parsed), Op::AddSuffix(None)];
+        let meta = Meta { title: "Song w/ Ann | Some Tape".into(), ..Default::default() };
+        let (m, _, refused) = apply_to(&chain, &meta, &facts(), 0, id(12));
+        assert_eq!((m.title.as_str(), m.credits, refused), ("Song | Some Tape", vec![c(1, "featured")], None));
         // A title it wasn't staged for: refused, left as it is.
         let meta = Meta { title: "Other (feat. Ann) [v2]".into(), ..Default::default() };
         let (m, _, refused) = apply_to(&ops, &meta, &facts(), 1, id(11));

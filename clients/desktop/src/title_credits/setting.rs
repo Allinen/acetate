@@ -6,7 +6,8 @@
 //! ```
 //!
 //! * Rules: `prod`, `feat` (`ft`), `with` (`w/`), `w`, `x`, `prefix`, each in its own role
-//!   or another (`with=prod`); `+feat` / `+prod` (`+=role`, the role is needed); `[prod]`,
+//!   or another (`with=prod`), or one for each name in order, the last for the rest
+//!   (`prefix=primary,featured`: "Ann x Bo x Cy - Song" → Ann primary, Bo and Cy featured); `+feat` / `+prod` (`+=role`, the role is needed); `[prod]`,
 //!   `(prod)`, `{prod}` (`[]=role`; `[]` alone: producer); `self`: `himself`, `me`… among
 //!   the names are the track's own primary artists, and `(self-prod.)` credits them as
 //!   producers. Roles as the vocabulary has them, any start of one.
@@ -147,27 +148,35 @@ impl Kind {
     }
 }
 
-/// A rule, in the role what it finds is credited in.
+/// A rule, and the roles what it finds is credited in: one for all the names of a credit,
+/// or one for each in order, the last for the rest (`primary,featured`: the first name
+/// primary, the others featured).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Rule {
     pub kind: Kind,
-    pub role: String,
+    pub roles: Vec<String>,
 }
 
 impl Rule {
+    /// The role of a credit's `n`th name (from 0).
+    pub fn role(&self, n: usize) -> &str {
+        self.roles.get(n).or(self.roles.last()).map(String::as_str).unwrap_or_default()
+    }
+
     /// As it's written in a setting (`feat`, `with=producer`, `+featured`, `[producer]`,
-    /// `word:vs=featured`).
+    /// `prefix=primary,featured`, `word:vs=featured`).
     pub fn token(&self) -> String {
+        let roles = self.roles.join(",");
         match &self.kind {
-            Kind::Word(w) => format!("word:{}={}", quoted(w), self.role),
-            Kind::Plus => format!("+{}", self.role),
+            Kind::Word(w) => format!("word:{}={roles}", quoted(w)),
+            Kind::Plus => format!("+{roles}"),
             Kind::Bracket(shape) => {
                 let (o, c) = shape.chars();
-                format!("{o}{}{c}", self.role)
+                format!("{o}{roles}{c}")
             }
             kind => match kind.default_role() {
-                Some(d) if d == self.role => kind.name().unwrap_or_default().to_string(),
-                _ => format!("{}={}", kind.name().unwrap_or_default(), self.role),
+                Some(d) if self.roles == [d] => kind.name().unwrap_or_default().to_string(),
+                _ => format!("{}={roles}", kind.name().unwrap_or_default()),
             },
         }
     }
@@ -188,11 +197,18 @@ pub struct Setting {
 impl Setting {
     /// `text` read (see the module's notes). `role`: the role a typed one means, if any.
     pub fn parse(text: &str, role: &dyn Fn(&str) -> Option<String>) -> Result<Setting, String> {
-        let role_of = |typed: &str| -> Result<String, String> {
+        // One role, or one for each name in order (`primary,featured`).
+        let role_of = |typed: &str| -> Result<Vec<String>, String> {
             if typed.is_empty() {
                 return Err("which role? (after the =)".into());
             }
-            role(typed).ok_or_else(|| format!("no role like “{typed}”"))
+            typed
+                .split(',')
+                .map(|t| match t.trim() {
+                    "" => Err(format!("“{typed}”: a role between each comma")),
+                    t => role(t).ok_or_else(|| format!("no role like “{t}”")),
+                })
+                .collect()
         };
         let mut rules: Vec<Rule> = Vec::new();
         let (mut only, mut without): (Vec<String>, Vec<String>) = (Vec::new(), Vec::new());
@@ -254,7 +270,7 @@ impl Setting {
                     if word.is_empty() {
                         return Err("word: which keyword? (word:vs=featured)".into());
                     }
-                    let rule = Rule { kind: Kind::Word(word), role: role_of(typed)? };
+                    let rule = Rule { kind: Kind::Word(word), roles: role_of(typed)? };
                     if rules.iter().any(|r| r.kind == rule.kind) {
                         return Err(format!("word:{value}: that keyword is there already"));
                     }
@@ -316,28 +332,28 @@ impl Setting {
 }
 
 /// A rule typed (lowercase).
-fn rule(token: &str, role_of: &dyn Fn(&str) -> Result<String, String>) -> Result<Rule, String> {
+fn rule(token: &str, role_of: &dyn Fn(&str) -> Result<Vec<String>, String>) -> Result<Rule, String> {
     let unknown = || format!("no rule like “{token}” (feat, prod, with, w, x, +feat, +prod, [prod], (prod), {{prod}}, prefix, self, word:…=role)");
     if let Some(rest) = token.strip_prefix('+') {
         let typed = rest.strip_prefix('=').unwrap_or(rest);
         if typed.is_empty() {
             return Err("+ needs a role: +feat or +prod".into());
         }
-        return Ok(Rule { kind: Kind::Plus, role: role_of(typed)? });
+        return Ok(Rule { kind: Kind::Plus, roles: role_of(typed)? });
     }
     for shape in Shape::ALL {
         let (o, c) = shape.chars();
         if let Some(rest) = token.strip_prefix(o) {
-            let role = if let Some(typed) = rest.strip_prefix(c).and_then(|r| r.strip_prefix('=')) {
+            let roles = if let Some(typed) = rest.strip_prefix(c).and_then(|r| r.strip_prefix('=')) {
                 role_of(typed)?
             } else if rest == c.to_string() {
-                "producer".to_string()
+                vec!["producer".to_string()]
             } else if let Some(typed) = rest.strip_suffix(c) {
                 role_of(typed)?
             } else {
                 return Err(unknown());
             };
-            return Ok(Rule { kind: Kind::Bracket(shape), role });
+            return Ok(Rule { kind: Kind::Bracket(shape), roles });
         }
     }
     let (name, typed) = match token.split_once('=') {
@@ -354,11 +370,11 @@ fn rule(token: &str, role_of: &dyn Fn(&str) -> Result<String, String>) -> Result
         "self" => Kind::Own,
         _ => return Err(unknown()),
     };
-    let role = match typed {
+    let roles = match typed {
         Some(typed) => role_of(typed)?,
-        None => kind.default_role().unwrap_or_default().to_string(),
+        None => vec![kind.default_role().unwrap_or_default().to_string()],
     };
-    Ok(Rule { kind, role })
+    Ok(Rule { kind, roles })
 }
 
 /// Whitespace-separated, `"…"` keeping spaces in.

@@ -1,6 +1,6 @@
 //! The editor's line, as typed: `key:value` parts, the same keys (and abbreviations) as a
 //! filter (`catalog::query`) plus the editor's own (`comment:`, `related:`, `why:`,
-//! `role:`, `as:`, `along:`, `cover:`, `source:`, `origin:`, `single:`, `parse:` with
+//! `role:`, `as:`, `along:`, `cover:`, `source:`, `origin:`, `single:`, `suffix:`, `parse:` with
 //! `split:`, `whole:`, `keep:`, `word:`; `flag:` is the filter's). Only the syntax: what a
 //! value means is worked out by the editor, which knows the library.
 //!
@@ -41,6 +41,8 @@ pub enum K {
     Origin,
     Single,
     Flag,
+    /// `suffix:` adds to the end of the title, `-suffix:` takes off it.
+    Suffix,
     /// `parse:` the credits in the title, with the rules typed (`crate::title_credits`).
     Parse,
     Split,
@@ -76,6 +78,7 @@ impl K {
             K::Source => "source",
             K::Origin => "origin",
             K::Single => "single",
+            K::Suffix => "suffix",
             K::Flag => "flag",
             K::Parse => "parse",
             K::Split => "split",
@@ -117,6 +120,7 @@ pub fn key(name: &str) -> Option<K> {
         "source" | "sources" => Some(K::Source),
         "origin" => Some(K::Origin),
         "single" => Some(K::Single),
+        "suffix" => Some(K::Suffix),
         "parse" => Some(K::Parse),
         "split" => Some(K::Split),
         "whole" => Some(K::Whole),

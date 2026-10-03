@@ -14,7 +14,7 @@ use std::collections::HashMap;
 
 use uuid::Uuid;
 
-use super::model::{Image, Numbers, Op};
+use super::model::{self, Image, Numbers, Op};
 use super::parse::{self, Part, K};
 use super::title_parse::{Credited, TitlesParsed};
 use crate::account::Vocab;
@@ -520,6 +520,21 @@ fn unit(
                 return Err("single: alone (a single of its own for each track); nothing after it".into());
             }
             done("a single of its own, for each (named after it as it'll be; its primary artists, date and covers)".into(), vec![Op::Single])
+        }
+        K::Suffix => {
+            only(&[])?;
+            let v = main.value.trim();
+            if main.minus {
+                return match v {
+                    "" => Err("-suffix: what to take off the end: the text (-suffix:\"| Some Tape\"), or a divider, for everything after the last one (-suffix:|)".into()),
+                    _ if model::is_divider(v) => done(format!("title: everything after the last “ {v} ” taken off (suffix: alone puts it back)"), vec![Op::CutSuffix(v.into())]),
+                    _ => done(format!("title: “{v}” taken off the end, where it ends with it (suffix: alone puts it back)"), vec![Op::CutSuffix(v.into())]),
+                };
+            }
+            match v {
+                "" => done("title: what -suffix: took off, put back".into(), vec![Op::AddSuffix(None)]),
+                _ => done(format!("title: + “{v}” at the end, where it doesn't end with it"), vec![Op::AddSuffix(Some(v.into()))]),
+            }
         }
         K::Why => {
             only(&[])?;
@@ -1113,7 +1128,10 @@ pub fn candidates(part: &Part, owner: Option<&Part>, ctx: &Ctx, hits: &[u32], tr
         }
         _ => {}
     }
-    out.truncate(10);
+    // (Every rule of `parse:`: there are a dozen, and the last ones were cut off.)
+    if part.key != K::Parse {
+        out.truncate(10);
+    }
     out
 }
 
@@ -1122,6 +1140,8 @@ pub fn actions(words: &str, ctx: &Ctx) -> Vec<(String, String)> {
     let mut all: Vec<(String, String)> = vec![
         ("Title…".into(), "title:".into()),
         ("Title: its credits into credits (parse feat, prod…)".into(), "parse:".into()),
+        ("Title: take a suffix off the end…".into(), "-suffix:".into()),
+        ("Title: add a suffix (alone: put back what was taken off)…".into(), "suffix:".into()),
         ("Artists: add…".into(), "artist:".into()),
         ("Artists: add as featured…".into(), "feat:".into()),
         ("Artists: replace theirs with…".into(), "-artist artist:".into()),
@@ -1270,6 +1290,15 @@ mod tests {
             [Op::ParseTitle(p)] => Ok((r.label, p.clone(), r.warning)),
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn suffixes() {
+        assert_eq!(ops("-suffix:|"), [Op::CutSuffix("|".into())]);
+        assert_eq!(ops("-suffix:\"| Some Tape\""), [Op::CutSuffix("| Some Tape".into())]);
+        assert_eq!(ops("suffix:"), [Op::AddSuffix(None)]);
+        assert_eq!(ops("suffix:| Some Tape"), [Op::AddSuffix(Some("| Some Tape".into()))]);
+        assert!(run("-suffix:", &Names::default(), 1)[0].as_ref().unwrap_err().contains("what to take off"));
     }
 
     #[test]

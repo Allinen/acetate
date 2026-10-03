@@ -158,11 +158,12 @@ pub fn parse(title: &str, setting: &Setting, names: &NameTable, fixes: &Fixes) -
             .collect();
         for (f, named) in &found {
             let part = &text[f.names.clone()];
-            for (name, whole) in named.iter().cloned() {
+            for (n, (name, whole)) in named.iter().cloned().enumerate() {
                 let lower = name.to_lowercase();
                 let own = own_rule && (f.names.is_empty() || SELF_WORDS.contains(&lower.as_str()));
-                if !credits.iter().any(|c| c.role == rule.role && c.name.to_lowercase() == lower) {
-                    credits.push(Credit { name, part: part.to_string(), role: rule.role.clone(), rule: rule.token(), whole, own });
+                let role = rule.role(n);
+                if !credits.iter().any(|c| c.role == role && c.name.to_lowercase() == lower) {
+                    credits.push(Credit { name, part: part.to_string(), role: role.to_string(), rule: rule.token(), whole, own });
                 }
             }
             if f.unclosed {

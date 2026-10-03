@@ -82,6 +82,11 @@ fn the_keywords() {
     // Roles changed.
     case("with=prod", "Song w/ Dee", "Song", &[("Dee", P)]);
     case("x=primary", "Song x Ann", "Song", &[("Ann", M)]);
+    // A role for each name in order, the last for the rest.
+    case("prefix=primary,featured", "Ann x Bo x Cy - Song", "Song", &[("Ann", M), ("Bo", F), ("Cy", F)]);
+    case("prefix=primary,primary,featured", "Ann x Bo x Cy - Song", "Song", &[("Ann", M), ("Bo", M), ("Cy", F)]);
+    case("[prod,feat]", "Song [Dee & Ann]", "Song", &[("Dee", P), ("Ann", F)]);
+    case("+=prim,feat", "Song + Ann + Bo", "Song", &[("Ann", M), ("Bo", F)]);
     // Your own.
     case("word:vs=featured", "Song (vs Ann)", "Song", &[("Ann", F)]);
     case("word:\"beat by\"=producer", "Song beat by Dee", "Song", &[("Dee", P)]);
@@ -250,6 +255,7 @@ fn settings_read_back_the_same() {
         "feat whole:off",
         "feat keep:cdq2 \"bass boosted\" -live",
         "feat word:\"beat by\"=producer word:vs=featured",
+        "prefix=primary,featured [producer,featured] +primary,featured",
     ] {
         let s = setting(text);
         assert_eq!(setting(&s.to_text()), s, "{text} → {}", s.to_text());
@@ -265,6 +271,8 @@ fn settings_refused() {
         ("nope", "no rule like “nope”"),
         ("+", "+ needs a role"),
         ("with=nobody", "no role like “nobody”"),
+        ("prefix=primary,", "a role between each comma"),
+        ("prefix=primary,nobody", "no role like “nobody”"),
         ("feat ft", "there already"),
         ("[prod] [feat]", "there already"),
         ("word:vs", "needs a role"),
