@@ -155,6 +155,19 @@ pub struct Imported {
     /// What the track still lacks to be imported ("title", "artist"): a preview says so,
     /// importing refuses.
     missing: Vec<&'static str>,
+    /// What the changes made first: stand-in id → the artist, album or grouping made; a new
+    /// kind of flag's name → its kind (as `/api/tracks/edit` answers them). To use in the
+    /// next file's changes, so they're made once.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    made: Option<Made>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct Made {
+    artists: HashMap<Uuid, Uuid>,
+    albums: HashMap<Uuid, Uuid>,
+    groupings: HashMap<Uuid, Uuid>,
+    review_kinds: HashMap<String, String>,
 }
 
 /// `POST /api/ingest-problems/{id}/import`: imports the kept file again, with what it was
@@ -226,7 +239,7 @@ pub async fn import(
         } else {
             tx.commit().await?;
         }
-        return Ok(Json(Imported { track_id: report.track_id, report, track: None, draft: None, edited: None, missing: Vec::new() }));
+        return Ok(Json(Imported { track_id: report.track_id, report, track: None, draft: None, edited: None, missing: Vec::new(), made: None }));
     };
 
     // The track before the changes, and its ids by place.
@@ -274,13 +287,14 @@ pub async fn import(
     // to refuse the whole import with.
     let may = db::track_edits::May { relations: user.has(Permission::EditRelations), sources: user.has(Permission::EditSources) };
     let failed = std::sync::Mutex::new(None);
-    let mut edited = db::track_edits::edit(&mut tx, &edit, may, |err| {
+    let db::track_edits::Edited { artists, albums, groupings, review_kinds, mut tracks } = db::track_edits::edit(&mut tx, &edit, may, |err| {
         let failure = super::failure_of(&err);
         *failed.lock().unwrap() = Some(err);
         failure
     })
     .await?;
-    let mut edited = edited.tracks.pop().context("the edit answers its track")?;
+    let made = Made { artists, albums, groupings, review_kinds };
+    let mut edited = tracks.pop().context("the edit answers its track")?;
 
     // A title and an artist, from the tags or the changes (a collective's account counts:
     // its grouping has the track, as when importing).
@@ -328,7 +342,7 @@ pub async fn import(
         }
         tx.commit().await?;
     }
-    Ok(Json(Imported { track_id: Some(track_id), report, track: Some(track), draft: Some(draft), edited: Some(edited), missing }))
+    Ok(Json(Imported { track_id: Some(track_id), report, track: Some(track), draft: Some(draft), edited: Some(edited), missing, made: Some(made) }))
 }
 
 #[derive(Debug, Deserialize)]

@@ -190,8 +190,8 @@ pub struct TrackEditor {
     /// The tools the page around it has, and the one asked for (taken by the page).
     verbs: Vec<Verb>,
     verb: Option<Verb>,
-    /// A draft applied: the track it became (taken by `take_imported`).
-    imported: Option<Uuid>,
+    /// Drafts applied: (the file, the track it became) (taken by `take_imported`).
+    imported: Vec<(Uuid, Uuid)>,
     /// Lines to stage for you (`stage_for_you`).
     for_you: Vec<String>,
     /// Metadata being imported (pasted), and what was fetched for it.
@@ -243,7 +243,7 @@ impl Default for TrackEditor {
             correcting: None,
             verbs: Vec::new(),
             verb: None,
-            imported: None,
+            imported: Vec::new(),
             for_you: Vec::new(),
             importing: false,
             fetched: Arc::default(),
@@ -272,6 +272,11 @@ impl TrackEditor {
     /// Applying, or applied and its outcome not closed yet.
     pub fn applying_or_applied(&self) -> bool {
         self.engine.applied.lock().unwrap().phase != Phase::Editing
+    }
+
+    /// Applying, right now.
+    pub fn applying(&self) -> bool {
+        self.engine.applied.lock().unwrap().phase == Phase::Applying
     }
 
     /// Changes are staged (Esc is the editor's then: it asks before discarding them).
@@ -341,14 +346,19 @@ impl TrackEditor {
         self.verb.take()
     }
 
-    /// Edits a draft (see the module's notes): `track` as the preview made it. Again with a
-    /// newer preview of it (made with other `with`): the changes staged stay.
+    /// Edits a draft (see the module's notes), one of the targets: `track` as the preview
+    /// made it. Again with a newer preview of the same file: the changes staged stay.
     pub fn draft(&mut self, of: DraftOf, track: crate::details::TrackDetail) {
-        if self.engine.draft.is_none() && self.staged.is_empty() && track.albums.is_empty() {
-            let label = "a single of its own (named after it as it'll be; its primary artists, date and covers)".to_string();
+        self.engine.set_draft(of, track);
+    }
+
+    /// Stages `single:` if nothing is staged yet: for drafts on no album (a loose track
+    /// becomes a single of its own, instead of one more on "No album").
+    pub fn start_single(&mut self) {
+        if self.staged.is_empty() {
+            let label = "a single of its own, for each (named after it as it'll be; its primary artists, date and covers)".to_string();
             self.staged.push(Staged { text: "single:".into(), label, ops: vec![Op::Single], warning: None, editable: true, for_you: false });
         }
-        self.engine.set_draft(of, track);
     }
 
     /// Changes staged for you, each as if typed and staged (a chip of its own, taken back
@@ -366,20 +376,20 @@ impl TrackEditor {
         self.for_you = lines;
     }
 
-    /// The draft doesn't fit its import anymore (the library changed since its preview):
-    /// once, and what was answered is cleared. The page previews it again (`draft`), the
-    /// changes staged staying.
-    pub fn take_draft_stale(&mut self) -> bool {
-        let stale = self.engine.draft_stale.swap(false, std::sync::atomic::Ordering::Relaxed);
-        if stale && self.engine.applied.lock().unwrap().phase != Phase::Applying {
+    /// The files whose drafts don't fit their import anymore (the library changed since
+    /// their preview): once. The page previews them again (`draft`), the changes staged
+    /// staying.
+    pub fn take_stale_drafts(&mut self) -> Vec<Uuid> {
+        let stale: Vec<Uuid> = self.engine.stale_drafts.lock().unwrap().drain().collect();
+        if !stale.is_empty() && self.engine.applied.lock().unwrap().phase == Phase::Editing {
             self.engine.forget();
         }
         stale
     }
 
-    /// The draft applied: the track it became (once).
-    pub fn take_imported(&mut self) -> Option<Uuid> {
-        self.imported.take()
+    /// Drafts imported: (the file, the track it became), once.
+    pub fn take_imported(&mut self) -> Vec<(Uuid, Uuid)> {
+        std::mem::take(&mut self.imported)
     }
 
     /// The flags after a one-track edit just applied (once).
@@ -570,7 +580,7 @@ impl TrackEditor {
             (true, Some(r)) => {
                 let track = targets[0];
                 let done = &shell.flags.done;
-                let now: Vec<String> = match &self.engine.draft {
+                let now: Vec<String> = match self.engine.drafts.get(&track) {
                     Some(d) => d.flags.clone(),
                     None => catalog.issues.get(&track).map(|f| f.iter().filter(|(id, _)| !done.contains(id)).map(|(_, k)| k.clone()).collect()).unwrap_or_default(),
                 };
@@ -951,7 +961,7 @@ impl TrackEditor {
         }
         drop(applied);
         let preview = self.engine.preview.lock().unwrap();
-        (preview.key == self.engine.plan_key && !preview.running && (!self.staged.is_empty() || self.engine.draft.is_some()))
+        (preview.key == self.engine.plan_key && !preview.running && (!self.staged.is_empty() || self.engine.is_draft()))
             .then(|| preview.answers.get(&track).filter(|a| a.error.is_none()).map(|a| a.flags.clone()))
             .flatten()
     }
@@ -974,16 +984,19 @@ impl TrackEditor {
             shell.account.refresh_vocab(&api, shell.runtime.handle(), &shell.ctx);
         }
         // (A draft is gone: the track it became is new.)
-        if targets.len() <= 100 && self.engine.draft.is_none() {
+        if targets.len() <= 100 && !self.engine.is_draft() {
             for t in targets {
                 shell.track_details.refresh(*t);
             }
         }
-        // A draft imported: the page takes the track it became (the draft is gone).
-        if self.engine.draft.is_some() {
-            if outcomes.values().all(|o| matches!(o, Outcome::Done)) {
-                self.imported = self.engine.applied.lock().unwrap().made;
-            }
+        // Drafts imported: the page takes the tracks they became (the drafts are gone).
+        if self.engine.is_draft() {
+            let made = self.engine.applied.lock().unwrap().made.clone();
+            self.imported = outcomes
+                .iter()
+                .filter(|(_, o)| matches!(o, Outcome::Done))
+                .filter_map(|(track, _)| Some((self.engine.drafts.get(track)?.problem, *made.get(track)?)))
+                .collect();
             return;
         }
         let all_done = !outcomes.is_empty() && outcomes.values().all(|o| matches!(o, Outcome::Done));
@@ -1176,7 +1189,7 @@ impl TrackEditor {
         let may_source = shell.account.can("edit_sources");
         let mut chips: Vec<Staged> = Vec::new();
         let mut chip = |text: String, label: String, ops: Vec<Op>, warning: Option<String>| chips.push(Staged { text, label, ops, warning, editable: false, for_you: false });
-        let version = match self.engine.draft.is_some() {
+        let version = match self.engine.is_draft() {
             true => format!("its version named “{from}”, with only what's imported"),
             false => format!("a new version “{from}” with only what's imported (not the shown one: choose it after)"),
         };
@@ -1584,7 +1597,7 @@ impl TrackEditor {
         match phase {
             Phase::Editing => {
                 let can = current && changing > refused && !loading && self.line.trim().is_empty() && self.uploading == 0;
-                let text = if self.engine.draft.is_some() { "Import  (Ctrl+Enter)".to_string() } else if single { "Apply  (Ctrl+Enter)".to_string() } else { format!("Apply to {} tracks  (Ctrl+Enter)", thousands(changing - refused.min(changing))) };
+                let text = if self.engine.is_draft() && single { "Import  (Ctrl+Enter)".to_string() } else if self.engine.is_draft() { format!("Import {} files  (Ctrl+Enter)", thousands(changing - refused.min(changing))) } else if single { "Apply  (Ctrl+Enter)".to_string() } else { format!("Apply to {} tracks  (Ctrl+Enter)", thousands(changing - refused.min(changing))) };
                 let mut apply = false;
                 ui.horizontal(|ui| {
                     if changing > 0 {
@@ -1604,7 +1617,7 @@ impl TrackEditor {
                         apply = true;
                     } else if self.uploading > 0 {
                         self.notice = Some("An image is still uploading: Ctrl+Enter again once it's a change.".into());
-                    } else if single && (!self.staged.is_empty() || self.engine.draft.is_some()) && self.line.trim().is_empty() {
+                    } else if single && (!self.staged.is_empty() || self.engine.is_draft()) && self.line.trim().is_empty() {
                         // (What was typed may have been staged just now: its preview comes
                         // next.) Applied once the preview's there, if it can be.
                         self.apply_when_ready = true;

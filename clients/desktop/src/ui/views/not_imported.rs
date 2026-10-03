@@ -23,8 +23,15 @@
 //! Review's filter works here too: words in the name, the path (folders), the reason or
 //! the tags.
 //!
+//! **Many at once**: files marked in the list (`x`, Ctrl+click, Shift+click a range, Ctrl+A
+//! every one shown, Esc clears) go somewhere together: as new tracks (each previewed, then
+//! the track editor over all their drafts: what's staged goes on every one, each keeping
+//! its own title and source; imported one request each, a few at a time), or as extras of
+//! one thing. A file of a track and another version of a track stay one file at a time.
+//!
 //! Done ones leave the list at once (the server resolves them too).
 
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use eframe::egui::{self, RichText, Sense, Vec2};
@@ -130,6 +137,43 @@ struct Draft {
     staged_version: Option<String>,
 }
 
+/// Many files going somewhere together (see the module's notes).
+struct Bulk {
+    fate: Fate,
+    /// New tracks: each file's draft as it's previewed (its track, or why there's none).
+    drafts: HashMap<Uuid, Result<Uuid, String>>,
+    /// Files being previewed.
+    asking: HashSet<Uuid>,
+    arrived: Arc<Mutex<Vec<(Uuid, Result<Imported, String>)>>>,
+    /// Drafts on an album already (no `single:` to start with then).
+    on_albums: HashSet<Uuid>,
+    /// WAV files are said to be original files (named as they were uploaded).
+    og_wavs: bool,
+    /// `single:` was considered (once every draft is there).
+    started: bool,
+    editor: TrackEditor,
+    /// Extras being kept: how many done, of how many; and what came of it.
+    sending: Option<(Arc<std::sync::atomic::AtomicUsize>, usize)>,
+    sent: Arc<Mutex<Option<(Vec<Uuid>, Vec<String>)>>>,
+}
+
+impl Bulk {
+    fn new() -> Bulk {
+        Bulk {
+            fate: Fate::NewTrack,
+            drafts: HashMap::new(),
+            asking: HashSet::new(),
+            arrived: Arc::default(),
+            on_albums: HashSet::new(),
+            og_wavs: true,
+            started: false,
+            editor: TrackEditor::default(),
+            sending: None,
+            sent: Arc::default(),
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct NotImported {
     pub list: Vec<Problem>,
@@ -160,6 +204,11 @@ pub struct NotImported {
     filled_for: Option<Uuid>,
     draft: Option<Draft>,
     drafts_asked: u64,
+    /// Marked files (by id), and where a range of marks starts (a row shown).
+    marked: HashSet<Uuid>,
+    anchor: Option<usize>,
+    /// The marked files, going somewhere together.
+    bulk: Option<Bulk>,
     sending: bool,
     done: Arc<Mutex<Option<Done>>>,
     /// The last thing done (or why not), with the track it went to.
@@ -218,6 +267,7 @@ impl NotImported {
                     // Gone from the list at once; on to the one in its place.
                     let at = self.list.iter().position(|p| p.id == problem);
                     self.list.retain(|p| p.id != problem);
+                    self.marked.remove(&problem);
                     if let Some(at) = at {
                         self.selected = self.list.get(at.min(self.list.len().saturating_sub(1))).map(|p| p.id);
                     }
@@ -275,13 +325,53 @@ impl NotImported {
             });
             ui.add_space(6.0);
         }
+        // Marks: only of files still listed.
+        let listed: HashSet<Uuid> = self.list.iter().map(|p| p.id).collect();
+        self.marked.retain(|id| listed.contains(id));
+        let ids: Vec<Uuid> = shown.iter().map(|&n| self.list[n].id).collect();
+        let selected_at = self.selected.and_then(|id| ids.iter().position(|x| *x == id)).unwrap_or(0);
+        // Many files being imported or kept: shown until they're done.
+        let busy = self.bulk.as_ref().is_some_and(|b| b.editor.applying() || b.sending.is_some());
+        if !ui.ctx().egui_wants_keyboard_input() && !shell.modal_open && !shell.palette_open && !busy {
+            let (toggle, all, clear) = ui.ctx().input_mut(|i| {
+                (
+                    i.key_pressed(egui::Key::X) && i.modifiers.is_none(),
+                    i.consume_key(egui::Modifiers::COMMAND, egui::Key::A),
+                    !self.marked.is_empty() && i.consume_key(egui::Modifiers::NONE, egui::Key::Escape),
+                )
+            });
+            if toggle && let Some(id) = ids.get(selected_at) {
+                if !self.marked.remove(id) {
+                    self.marked.insert(*id);
+                }
+                self.anchor = Some(selected_at);
+            }
+            if all {
+                self.marked.extend(ids.iter().copied());
+            }
+            if clear {
+                self.marked.clear();
+            }
+        }
+        if !self.marked.is_empty() {
+            // Esc is for the marks, not "back".
+            shell.page_takes_back = true;
+        }
+        if self.marked.is_empty() && !busy {
+            self.bulk = None;
+        }
         let rest = ui.available_rect_before_wrap();
         let list_rect = egui::Rect::from_min_size(rest.min, Vec2::new(LIST_WIDTH, rest.height()));
         let detail_rect = egui::Rect::from_min_max(egui::pos2(list_rect.right() + 24.0, rest.top()), rest.max);
         let mut list_ui = ui.new_child(egui::UiBuilder::new().max_rect(list_rect));
         self.list(&mut list_ui, &shown);
         let mut detail_ui = ui.new_child(egui::UiBuilder::new().max_rect(detail_rect));
-        self.detail(&mut detail_ui, shell, catalog);
+        if self.marked.is_empty() && !busy {
+            self.detail(&mut detail_ui, shell, catalog);
+        } else {
+            let marked: Vec<Uuid> = self.list.iter().map(|p| p.id).filter(|id| self.marked.contains(id)).collect();
+            self.many(&mut detail_ui, shell, catalog, &marked);
+        }
         ui.allocate_rect(rest, Sense::hover());
     }
 
@@ -299,20 +389,50 @@ impl NotImported {
             ui.label(RichText::new(text).color(P.muted));
             return;
         }
+        let ids: Vec<Uuid> = shown.iter().map(|&n| self.list[n].id).collect();
+        let selected_at = self.selected.and_then(|id| ids.iter().position(|x| *x == id)).unwrap_or(0);
+        if !self.marked.is_empty() {
+            ui.label(RichText::new(format!("{} marked · x marks · Esc clears", crate::ui::thousands(self.marked.len()))).color(P.accent).small());
+        }
         egui::ScrollArea::vertical().id_salt("not-imported-list").auto_shrink([false, false]).show_rows(ui, ROW, shown.len(), |ui, range| {
             for n in range {
                 let p = &self.list[shown[n]];
                 let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW), Sense::click());
                 let chosen = self.selected == Some(p.id);
+                let marked = self.marked.contains(&p.id);
                 if chosen || response.hovered() {
                     ui.painter().rect_filled(rect, 8, if chosen { P.accent_soft } else { P.surface });
                 }
+                // The mark's box (a click on it marks or unmarks).
+                let mark = egui::Rect::from_center_size(egui::pos2(rect.left() + 16.0, rect.center().y), Vec2::splat(16.0));
+                let on_box = response.hover_pos().is_some_and(|pos| mark.expand(6.0).contains(pos));
+                super::marking::paint_box(ui.painter(), mark, marked, on_box);
                 let painter = ui.painter();
-                widgets::text_in(painter, egui::Rect::from_min_size(rect.min + Vec2::new(10.0, 6.0), Vec2::new(rect.width() - 20.0, 18.0)), &p.uploaded_filename, font(13.5, medium()), P.text);
+                widgets::text_in(painter, egui::Rect::from_min_size(rect.min + Vec2::new(34.0, 6.0), Vec2::new(rect.width() - 44.0, 18.0)), &p.uploaded_filename, font(13.5, medium()), P.text);
                 let sub = p.path.as_deref().map(folder).filter(|f| !f.is_empty()).map(|f| format!("{} · {f}", p.reason)).unwrap_or_else(|| p.reason.clone());
-                widgets::text_in(painter, egui::Rect::from_min_size(rect.min + Vec2::new(10.0, 25.0), Vec2::new(rect.width() - 20.0, 16.0)), &sub, font(12.0, medium()), P.muted);
+                widgets::text_in(painter, egui::Rect::from_min_size(rect.min + Vec2::new(34.0, 25.0), Vec2::new(rect.width() - 44.0, 16.0)), &sub, font(12.0, medium()), P.muted);
                 if response.clicked() {
-                    self.selected = Some(p.id);
+                    let modifiers = ui.input(|i| i.modifiers);
+                    if modifiers.command || on_box {
+                        if !self.marked.remove(&p.id) {
+                            self.marked.insert(p.id);
+                        }
+                        self.anchor = Some(n);
+                    } else if modifiers.shift {
+                        // The range gets the state of the row it starts from.
+                        let start = self.anchor.unwrap_or(selected_at);
+                        let on = ids.get(start).is_none_or(|id| self.marked.contains(id) || self.anchor.is_none());
+                        for id in &ids[start.min(n)..=start.max(n).min(ids.len() - 1)] {
+                            if on {
+                                self.marked.insert(*id);
+                            } else {
+                                self.marked.remove(id);
+                            }
+                        }
+                    } else {
+                        self.selected = Some(p.id);
+                        self.anchor = Some(n);
+                    }
                 }
             }
         });
@@ -504,7 +624,7 @@ impl NotImported {
             version: None,
             staged_version: None,
         });
-        if draft.editor.take_draft_stale() {
+        if !draft.editor.take_stale_drafts().is_empty() {
             draft.again = true;
         }
         let arrived = draft.arrived.lock().unwrap().take();
@@ -520,8 +640,12 @@ impl NotImported {
                         draft.missing = imported.missing;
                         let flags = imported.edited.map(|e| e.flags).unwrap_or_default();
                         let with = serde_json::json!({ "original_filename": draft.og });
+                        let loose = track.albums.is_empty();
                         draft.editor.draft(DraftOf { problem: p.id, ids, with, flags }, track);
                         if first {
+                            if loose {
+                                draft.editor.start_single();
+                            }
                             draft.editor.opened();
                         }
                     }
@@ -628,7 +752,7 @@ impl NotImported {
         ui.add_space(4.0);
         draft.editor.offer(&[]);
         draft.editor.show(ui, shell, catalog, &[track], None);
-        if let Some(made) = draft.editor.take_imported() {
+        if let Some((_, made)) = draft.editor.take_imported().into_iter().next() {
             *self.done.lock().unwrap() = Some((p.id, Ok(("Imported.".into(), Some(made)))));
         }
     }
@@ -637,6 +761,19 @@ impl NotImported {
     fn extra(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: &Arc<Catalog>, p: &Problem) {
         ui.label(RichText::new("Not a track of its own: kept with what it's of (vocals, a stem, a video…), and seen like it.").color(P.muted));
         ui.add_space(4.0);
+        let Some((links, what, track)) = self.extra_of(ui, shell, catalog) else { return };
+        ui.add(egui::TextEdit::singleline(&mut self.reason).hint_text("Why (optional: kept with it)").desired_width(420.0));
+        let label = format!("Keep it as an extra ({}) of {what}", self.extra_kind);
+        if ui.add_enabled(!self.sending, egui::Button::new(label)).clicked() {
+            let body = serde_json::json!({ "name": searchable_name(&p.uploaded_filename), "kind": self.extra_kind, "links": links, "reason": self.reason.trim() });
+            let text = format!("Kept as an extra ({}) of {what}.", self.extra_kind);
+            self.send(shell, p.id, format!("/api/ingest-problems/{}/extra", p.id), body, track, text);
+        }
+    }
+
+    /// An extra's kind and what it's of, chosen: (its links, what it's of in words, the
+    /// track it's of). None: nothing chosen yet (it says so).
+    fn extra_of(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: &Arc<Catalog>) -> Option<(Vec<serde_json::Value>, String, Option<Uuid>)> {
         ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new("Kind:").color(P.muted));
             for k in crate::ui::edit::extras::KINDS {
@@ -663,9 +800,8 @@ impl NotImported {
         // What it's of: (its id, in words).
         let target: Option<(Uuid, String)> = match self.of {
             Of::Track => {
-                if let Some(search) = self.search.as_mut()
-                    && let Some((Choice::Hit(i), _)) = search.show(ui, shell, Some(catalog), egui::Id::new("not-imported-track"), "the track: type its title or artist", &[])
-                {
+                let search = self.search.get_or_insert_with(|| InlineSearch::new(Part::Tracks));
+                if let Some((Choice::Hit(i), _)) = search.show(ui, shell, Some(catalog), egui::Id::new("not-imported-track"), "the track: type its title or artist", &[]) {
                     self.target = Some(i);
                 }
                 self.target.and_then(|i| catalog.tracks.get(i as usize)).map(|t| (t.id, format!("the track “{}” ({})", t.title, t.artist_display)))
@@ -705,17 +841,196 @@ impl NotImported {
             (Some((_, words)), _) => words.clone(),
             (None, _) => {
                 ui.label(RichText::new("Choose what it's of.").color(P.faint));
-                return;
+                return None;
             }
         };
-        ui.add(egui::TextEdit::singleline(&mut self.reason).hint_text("Why (optional: kept with it)").desired_width(420.0));
-        let label = format!("Keep it as an extra ({}) of {what}", self.extra_kind);
-        if ui.add_enabled(!self.sending, egui::Button::new(label)).clicked() {
-            let links: Vec<serde_json::Value> = target.iter().map(|(id, _)| serde_json::json!({ "kind": self.of.link(), "id": id })).collect();
-            let body = serde_json::json!({ "name": searchable_name(&p.uploaded_filename), "kind": self.extra_kind, "links": links, "reason": self.reason.trim() });
-            let track = (self.of == Of::Track).then(|| target.as_ref().map(|t| t.0)).flatten();
-            let text = format!("Kept as an extra ({}) of {what}.", self.extra_kind);
-            self.send(shell, p.id, format!("/api/ingest-problems/{}/extra", p.id), body, track, text);
+        let links: Vec<serde_json::Value> = target.iter().map(|(id, _)| serde_json::json!({ "kind": self.of.link(), "id": id })).collect();
+        let track = (self.of == Of::Track).then(|| target.as_ref().map(|t| t.0)).flatten();
+        Some((links, what, track))
+    }
+
+    /// The marked files, going somewhere together: as new tracks (the editor over their
+    /// drafts) or as extras of one thing.
+    fn many(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: &Arc<Catalog>, marked: &[Uuid]) {
+        self.notice_line(ui, shell);
+        let bulk = self.bulk.get_or_insert_with(Bulk::new);
+        // Alt+1/3: where they go (a file of a track is one at a time).
+        if !shell.modal_open && !bulk.editor.applying_or_applied() && bulk.sending.is_none() {
+            for (fate, key) in [(Fate::NewTrack, egui::Key::Num1), (Fate::Extra, egui::Key::Num3)] {
+                if ui.ctx().input_mut(|i| i.consume_key(egui::Modifiers::ALT, key)) {
+                    bulk.fate = fate;
+                }
+            }
+        }
+        ui.label(RichText::new(format!("{} files", crate::ui::thousands(marked.len()))).font(font(22.0, bold())));
+        ui.horizontal(|ui| {
+            for (fate, label, key) in [(Fate::NewTrack, "New tracks", "Alt+1"), (Fate::Extra, "Extras", "Alt+3")] {
+                if widgets::chip(ui, label, bulk.fate == fate) && !bulk.editor.applying_or_applied() && bulk.sending.is_none() {
+                    bulk.fate = fate;
+                }
+                ui.label(RichText::new(key).color(P.faint).small());
+                ui.add_space(6.0);
+            }
+            ui.label(RichText::new("(a file of a track, or a version of one: one file at a time)").color(P.faint).small());
+        });
+        ui.add_space(8.0);
+        match bulk.fate {
+            Fate::Extra => self.many_extras(ui, shell, catalog, marked),
+            _ => self.many_tracks(ui, shell, catalog, marked),
+        }
+    }
+
+    /// The marked files as new tracks: each previewed, then the editor over the drafts.
+    fn many_tracks(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: &Arc<Catalog>, marked: &[Uuid]) {
+        let wav: HashSet<Uuid> = self.list.iter().filter(|p| is_wav(&p.uploaded_filename)).map(|p| p.id).collect();
+        let names: HashMap<Uuid, String> = self.list.iter().map(|p| (p.id, p.uploaded_filename.clone())).collect();
+        let Some(bulk) = self.bulk.as_mut() else { return };
+        // What's arrived.
+        let arrived = std::mem::take(&mut *bulk.arrived.lock().unwrap());
+        for (problem, answer) in arrived {
+            bulk.asking.remove(&problem);
+            let result = match answer {
+                Ok(imported) => match (imported.track, imported.draft) {
+                    (Some(track), Some(ids)) => {
+                        let id = track.id;
+                        if track.albums.is_empty() {
+                            bulk.on_albums.remove(&problem);
+                        } else {
+                            bulk.on_albums.insert(problem);
+                        }
+                        let og = (bulk.og_wavs && wav.contains(&problem)).then(|| names.get(&problem).cloned()).flatten();
+                        let flags = imported.edited.map(|e| e.flags).unwrap_or_default();
+                        bulk.editor.draft(DraftOf { problem, ids, with: serde_json::json!({ "original_filename": og }), flags }, track);
+                        Ok(id)
+                    }
+                    _ => Err("this exact file is a track's already".to_string()),
+                },
+                Err(err) => Err(err),
+            };
+            bulk.drafts.insert(problem, result);
+        }
+        // Stale ones (the library changed since): previewed again.
+        for problem in bulk.editor.take_stale_drafts() {
+            bulk.drafts.remove(&problem);
+        }
+        // WAVs as original files, or not: theirs previewed again.
+        let applying = bulk.editor.applying_or_applied();
+        ui.add_enabled_ui(!applying, |ui| {
+            if ui.checkbox(&mut bulk.og_wavs, "WAV files are original files (og files, named as uploaded)").changed() {
+                for problem in &wav {
+                    bulk.drafts.remove(problem);
+                }
+            }
+        });
+        // Each file previewed (a few at a time).
+        if !applying {
+            let limit = Arc::new(tokio::sync::Semaphore::new(4));
+            let ask: Vec<&Uuid> = marked.iter().filter(|p| !bulk.drafts.contains_key(p) && !bulk.asking.contains(p)).collect();
+            for problem in ask {
+                bulk.asking.insert(*problem);
+                let og = (bulk.og_wavs && wav.contains(problem)).then(|| names.get(problem).cloned()).flatten();
+                let body = serde_json::json!({ "preview": true, "original_filename": og });
+                let (api, arrived, ctx, limit, problem) = (shell.api.clone(), bulk.arrived.clone(), shell.ctx.clone(), limit.clone(), *problem);
+                shell.runtime.spawn(async move {
+                    let _permit = limit.acquire().await;
+                    let answer = api.send_json::<Imported>(reqwest::Method::POST, &format!("/api/ingest-problems/{problem}/import"), Some(body)).await.map_err(|e| e.message);
+                    arrived.lock().unwrap().push((problem, answer));
+                    ctx.request_repaint();
+                });
+            }
+        }
+        let waiting = marked.iter().filter(|p| !bulk.drafts.contains_key(p)).count();
+        if waiting > 0 {
+            ui.horizontal(|ui| {
+                ui.add(egui::Spinner::new());
+                ui.label(RichText::new(format!("Importing them as a preview… {} of {}", marked.len() - waiting, marked.len())).color(P.faint));
+            });
+            return;
+        }
+        let refused: Vec<String> = marked.iter().filter_map(|p| Some(format!("{}: {}", names.get(p)?, bulk.drafts.get(p)?.as_ref().err()?))).collect();
+        if !refused.is_empty() {
+            egui::CollapsingHeader::new(RichText::new(format!("{} of them left out", refused.len())).color(P.danger)).id_salt("not-imported-left-out").show(ui, |ui| {
+                for line in &refused {
+                    ui.label(RichText::new(line).color(P.muted).small());
+                }
+            });
+        }
+        let targets: Vec<Uuid> = marked.iter().filter_map(|p| bulk.drafts.get(p)?.as_ref().ok().copied()).collect();
+        if targets.is_empty() {
+            return;
+        }
+        // A loose track becomes a single of its own: when none of them is on an album.
+        if !bulk.started {
+            bulk.started = true;
+            if marked.iter().all(|p| !bulk.on_albums.contains(p)) {
+                bulk.editor.start_single();
+            }
+        }
+        bulk.editor.offer(&[]);
+        bulk.editor.show(ui, shell, catalog, &targets, None);
+        let imported = bulk.editor.take_imported();
+        if !imported.is_empty() {
+            let gone: HashSet<Uuid> = imported.iter().map(|(problem, _)| *problem).collect();
+            self.list.retain(|p| !gone.contains(&p.id));
+            self.marked.retain(|id| !gone.contains(id));
+            let failed = self.marked.len();
+            let mut text = format!("Imported {} files.", crate::ui::thousands(gone.len()));
+            if failed > 0 {
+                text.push_str(&format!(" {failed} weren't (still marked: the editor says why)."));
+            }
+            self.notice = Some((Ok(text), imported.first().map(|(_, track)| *track).filter(|_| gone.len() == 1)));
+            shell.act(Action::RefreshLibrary);
+        }
+    }
+
+    /// The marked files as extras of one thing, one after another.
+    fn many_extras(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: &Arc<Catalog>, marked: &[Uuid]) {
+        let sent = self.bulk.as_ref().and_then(|b| b.sent.lock().unwrap().take());
+        if let Some((kept, failed)) = sent {
+            let gone: HashSet<Uuid> = kept.iter().copied().collect();
+            self.list.retain(|p| !gone.contains(&p.id));
+            self.marked.retain(|id| !gone.contains(id));
+            let mut text = format!("Kept {} files as extras.", crate::ui::thousands(kept.len()));
+            if !failed.is_empty() {
+                text.push_str(&format!(" Not these: {}", failed.join("; ")));
+            }
+            self.notice = Some((if failed.is_empty() { Ok(text) } else { Err(text) }, None));
+            if let Some(b) = self.bulk.as_mut() {
+                b.sending = None;
+            }
+            shell.act(Action::RefreshLibrary);
+            return;
+        }
+        if let Some((done, of)) = self.bulk.as_ref().and_then(|b| b.sending.clone()) {
+            ui.add(egui::ProgressBar::new(done.load(std::sync::atomic::Ordering::Relaxed) as f32 / of.max(1) as f32).text("Keeping them as extras…"));
+            return;
+        }
+        ui.label(RichText::new("Not tracks of their own: each kept with what it's of (named after its file), and seen like it.").color(P.muted));
+        ui.add_space(4.0);
+        let Some((links, what, _)) = self.extra_of(ui, shell, catalog) else { return };
+        ui.add(egui::TextEdit::singleline(&mut self.reason).hint_text("Why (optional: kept with each)").desired_width(420.0));
+        let label = format!("Keep the {} files as extras ({}) of {what}", crate::ui::thousands(marked.len()), self.extra_kind);
+        if ui.button(label).clicked() {
+            let files: Vec<(Uuid, String)> = self.list.iter().filter(|p| marked.contains(&p.id)).map(|p| (p.id, p.uploaded_filename.clone())).collect();
+            let done = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let Some(bulk) = self.bulk.as_mut() else { return };
+            bulk.sending = Some((done.clone(), files.len()));
+            let (api, ctx, sent) = (shell.api.clone(), shell.ctx.clone(), bulk.sent.clone());
+            let (kind, reason) = (self.extra_kind.clone(), self.reason.trim().to_string());
+            shell.runtime.spawn(async move {
+                let (mut kept, mut failed) = (Vec::new(), Vec::new());
+                for (id, file) in files {
+                    let body = serde_json::json!({ "name": searchable_name(&file), "kind": kind, "links": links, "reason": reason });
+                    match api.send_json::<serde_json::Value>(reqwest::Method::POST, &format!("/api/ingest-problems/{id}/extra"), Some(body)).await {
+                        Ok(_) => kept.push(id),
+                        Err(err) => failed.push(format!("{file}: {}", err.message)),
+                    }
+                    done.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    ctx.request_repaint();
+                }
+                *sent.lock().unwrap() = Some((kept, failed));
+                ctx.request_repaint();
+            });
         }
     }
 

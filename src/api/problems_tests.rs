@@ -184,9 +184,15 @@ async fn a_file_imports_with_the_editors_changes(_: PgPoolOptions, connect: PgCo
     assert_eq!(artists, 0);
 
     // Done: one track (and its single), the file resolved with it.
-    let (status, done) = s.import(changes(&draft, "Typed Title")).await;
+    let body = changes(&draft, "Typed Title");
+    let (status, done) = s.import(body.clone()).await;
     assert_eq!(status, StatusCode::OK, "{done}");
     let track: Uuid = serde_json::from_value(done["track_id"].clone())?;
+    // What it made, for the next file's changes (so it's made once).
+    let stand_in = body["new_artists"][0]["id"].as_str().unwrap();
+    let made: Uuid = serde_json::from_value(done["made"]["artists"][stand_in].clone())?;
+    let named: String = sqlx::query_scalar("SELECT name FROM artists WHERE id = $1").bind(made).fetch_one(&s.owner).await?;
+    assert_eq!(named, "Typed Artist");
     assert_eq!(s.left().await?, (1, false));
     let resolved: Option<Uuid> = sqlx::query_scalar("SELECT track_id FROM ingest_problems").fetch_one(&s.owner).await?;
     assert_eq!(resolved, Some(track));

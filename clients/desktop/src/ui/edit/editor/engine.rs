@@ -14,8 +14,10 @@
 //! A **draft** (`DraftOf`) is a track only a preview has made: a file that didn't import,
 //! imported with the edit. Its details come with it (they can't be loaded), and its
 //! preview and apply go to `POST /api/ingest-problems/{id}/import` instead, with the
-//! draft's ids (the server matches them to the ones it makes). Applying it imports the
-//! file; `Applied::made` is the track it became.
+//! draft's ids (the server matches them to the ones it makes): one request per file, a
+//! few at a time. Applying imports the files: one at a time until one is (it makes what
+//! the edit makes new: artists, albums…), then the others with what it made, a few at a
+//! time. `Applied::made` has the track each became.
 
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
@@ -35,6 +37,8 @@ use crate::ui::Shell;
 
 const PREVIEW_CHUNK: usize = 200;
 const APPLY_CHUNK: usize = 25;
+/// Drafts previewed or imported at once (each is a request, an import on the server).
+const DRAFTS_AT_ONCE: usize = 4;
 /// The preview waits this long after the last change (typing settles first).
 const SETTLE: Duration = Duration::from_millis(250);
 
@@ -66,6 +70,21 @@ pub struct Imported {
     /// What it lacks to be imported ("title", "artist").
     #[serde(default)]
     pub missing: Vec<String>,
+    /// What the changes made first (new artists, albums, groupings, kinds of flag).
+    #[serde(default)]
+    made: Option<Made>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct Made {
+    #[serde(default)]
+    artists: HashMap<Uuid, Uuid>,
+    #[serde(default)]
+    albums: HashMap<Uuid, Uuid>,
+    #[serde(default)]
+    groupings: HashMap<Uuid, Uuid>,
+    #[serde(default)]
+    review_kinds: HashMap<String, String>,
 }
 
 #[derive(Default)]
@@ -197,6 +216,8 @@ pub struct Preview {
     pub running: bool,
     pub answers: HashMap<Uuid, Answer>,
     pub error: Option<String>,
+    /// Drafts: how many have answered so far.
+    pub checked: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -222,8 +243,8 @@ pub struct Applied {
     pub answers: HashMap<Uuid, Answer>,
     /// Finished, and the library hasn't been asked to catch up yet.
     pub finished_unseen: bool,
-    /// A draft applied: the track it became.
-    pub made: Option<Uuid>,
+    /// Drafts applied: the track each became.
+    pub made: HashMap<Uuid, Uuid>,
 }
 
 pub struct Engine {
@@ -233,11 +254,11 @@ pub struct Engine {
     changed_at: Instant,
     pub preview: Arc<Mutex<Preview>>,
     pub applied: Arc<Mutex<Applied>>,
-    /// The target is a draft (one track).
-    pub draft: Option<DraftOf>,
-    /// The server said the draft's import comes out differently now: it's to be previewed
-    /// again.
-    pub draft_stale: Arc<std::sync::atomic::AtomicBool>,
+    /// The targets that are drafts (by their tracks).
+    pub drafts: HashMap<Uuid, DraftOf>,
+    /// Files whose drafts the server says don't fit their import anymore: they're to be
+    /// previewed again.
+    pub stale_drafts: Arc<Mutex<HashSet<Uuid>>>,
 }
 
 impl Default for Engine {
@@ -249,8 +270,8 @@ impl Default for Engine {
             changed_at: Instant::now(),
             preview: Arc::default(),
             applied: Arc::default(),
-            draft: None,
-            draft_stale: Arc::default(),
+            drafts: HashMap::new(),
+            stale_drafts: Arc::default(),
         }
     }
 }
@@ -287,7 +308,9 @@ impl Engine {
         let version = self.loaded.lock().unwrap().version;
         let mut hasher = std::hash::DefaultHasher::new();
         (targets, format!("{:?}", change.ops), names.version, version, shell.generation, change.along, change.sync, &change.why, variant).hash(&mut hasher);
-        self.draft.as_ref().map(|d| d.with.to_string()).hash(&mut hasher);
+        let mut drafts: Vec<(&Uuid, String)> = self.drafts.iter().map(|(t, d)| (t, d.with.to_string())).collect();
+        drafts.sort();
+        drafts.hash(&mut hasher);
         let key = hasher.finish();
         if key != self.plan_key {
             self.plans = self.plan(catalog, targets, &change.ops, names, variant);
@@ -332,21 +355,30 @@ impl Engine {
         preview.key == self.plan_key && !preview.running
     }
 
-    /// Edits `track`, a draft (its details as the preview made them).
+    /// Edits `track`, a draft (its details as the preview made them), instead of the
+    /// file's draft before (a newer preview of it).
     pub fn set_draft(&mut self, of: DraftOf, track: TrackDetail) {
         let mut loaded = self.loaded.lock().unwrap();
-        loaded.details.clear();
-        loaded.asked.clear();
+        let before: Vec<Uuid> = self.drafts.iter().filter(|(_, d)| d.problem == of.problem).map(|(t, _)| *t).collect();
+        for t in before {
+            self.drafts.remove(&t);
+            loaded.details.remove(&t);
+        }
         loaded.asked.insert(track.id);
+        self.drafts.insert(track.id, of);
         loaded.details.insert(track.id, Ok(Arc::new(track)));
         loaded.version += 1;
-        self.draft = Some(of);
+    }
+
+    /// Its targets are drafts.
+    pub fn is_draft(&self) -> bool {
+        !self.drafts.is_empty()
     }
 
     /// Everything loaded again (after applying: the tracks have changed). A draft's details
     /// can't be: they're kept (and planned again).
     pub fn forget(&mut self) {
-        if self.draft.is_none() {
+        if self.drafts.is_empty() {
             *self.loaded.lock().unwrap() = Loaded::default();
         }
         *self.preview.lock().unwrap() = Preview::default();
@@ -450,7 +482,7 @@ impl Engine {
                                 let attached = model::attach(ops, &base.attached);
                                 let mut lines = Vec::new();
                                 if let Some(v) = &version {
-                                    lines.push(match self.draft.is_some() {
+                                    lines.push(match self.drafts.contains_key(&track) {
                                         true => format!("version: its version named “{v}”, with only what's given here"),
                                         false => format!("version: + “{v}”, with only what's given here (not the shown one: choose it after)"),
                                     });
@@ -486,7 +518,7 @@ impl Engine {
                                         warnings.push("it's on an album already: it gets a single too (unmark it to leave it out)".into());
                                     }
                                 }
-                                PlanState::Ready(Box::new(Ready { position, base, meta, facts, attached, lines, warnings, sync: model::sync(ops), single, draft: self.draft.is_some(), version, flags }))
+                                PlanState::Ready(Box::new(Ready { position, base, meta, facts, attached, lines, warnings, sync: model::sync(ops), single, draft: self.drafts.contains_key(&track), version, flags }))
                             }
                         }
                     }
@@ -508,18 +540,37 @@ impl Engine {
         if ready.is_empty() {
             return;
         }
-        if let Some(draft) = self.draft.clone() {
-            let (api, preview, ctx, change, stale) = (shell.api.clone(), self.preview.clone(), shell.ctx.clone(), change.clone(), self.draft_stale.clone());
+        if !self.drafts.is_empty() {
+            let (api, preview, ctx, change, stale, drafts) = (shell.api.clone(), self.preview.clone(), shell.ctx.clone(), change.clone(), self.stale_drafts.clone(), self.drafts.clone());
             shell.runtime.spawn(async move {
-                let answer = import(&api, &draft, &ready[0], &change, true, &stale).await;
+                let limit = Arc::new(tokio::sync::Semaphore::new(DRAFTS_AT_ONCE));
+                let mut tasks = Vec::new();
+                for write in ready {
+                    let Some(draft) = drafts.get(&write.0).cloned() else { continue };
+                    let (api, preview, ctx, change, stale, limit) = (api.clone(), preview.clone(), ctx.clone(), change.clone(), stale.clone(), limit.clone());
+                    tasks.push(tokio::spawn(async move {
+                        let _permit = limit.acquire().await;
+                        if preview.lock().unwrap().key != key {
+                            return;
+                        }
+                        let track = write.0;
+                        let answer = match import(&api, &draft, &write, &change, true, &Made::default(), true, &stale).await {
+                            Ok((answer, _, _)) => answer,
+                            Err(err) => refused_answer(track, err),
+                        };
+                        let mut p = preview.lock().unwrap();
+                        if p.key == key {
+                            p.answers.insert(track, answer);
+                            p.checked += 1;
+                        }
+                        ctx.request_repaint();
+                    }));
+                }
+                for task in tasks {
+                    let _ = task.await;
+                }
                 let mut p = preview.lock().unwrap();
                 if p.key == key {
-                    match answer {
-                        Ok((answer, _)) => {
-                            p.answers.insert(answer.track_id, answer);
-                        }
-                        Err(err) => p.error = Some(err),
-                    }
                     p.running = false;
                 }
                 ctx.request_repaint();
@@ -567,19 +618,66 @@ impl Engine {
             let mut applied = self.applied.lock().unwrap();
             *applied = Applied { phase: Phase::Applying, total: ready.len(), ..Applied::default() };
         }
-        if let (Some(draft), Some(write)) = (self.draft.clone(), writes.first().cloned()) {
-            let (api, applied, ctx, change, stale) = (shell.api.clone(), self.applied.clone(), shell.ctx.clone(), change.clone(), self.draft_stale.clone());
+        if !self.drafts.is_empty() {
+            let (api, applied, ctx, change, stale, drafts) = (shell.api.clone(), self.applied.clone(), shell.ctx.clone(), change.clone(), self.stale_drafts.clone(), self.drafts.clone());
             shell.runtime.spawn(async move {
-                let track = write.0;
-                match import(&api, &draft, &write, &change, false, &stale).await {
-                    Ok((answer, made)) => {
-                        let mut a = applied.lock().unwrap();
-                        a.answers.insert(track, answer);
-                        a.made = made;
-                        drop(a);
-                        record(&applied, track, Outcome::Done);
+                let writes: Vec<(DraftOf, (Uuid, Ready))> = writes.into_iter().filter_map(|w| Some((drafts.get(&w.0)?.clone(), w))).collect();
+                let outcome = |answer: Result<(Answer, Option<Uuid>, Option<Made>), String>, track: Uuid| -> Option<Made> {
+                    match answer {
+                        Ok((answer, became, made)) => {
+                            let mut a = applied.lock().unwrap();
+                            a.answers.insert(track, answer);
+                            if let Some(became) = became {
+                                a.made.insert(track, became);
+                            }
+                            drop(a);
+                            record(&applied, track, Outcome::Done);
+                            Some(made.unwrap_or_default())
+                        }
+                        Err(err) => {
+                            record(&applied, track, Outcome::Failed(err));
+                            None
+                        }
                     }
-                    Err(err) => record(&applied, track, Outcome::Failed(err)),
+                };
+                // One at a time until one is imported: it makes what's new (artists,
+                // albums, kinds of flag), the others use it.
+                let mut rest = writes.into_iter();
+                let mut made = None;
+                for (draft, write) in rest.by_ref() {
+                    let track = write.0;
+                    made = outcome(import(&api, &draft, &write, &change, false, &Made::default(), true, &stale).await, track);
+                    ctx.request_repaint();
+                    if made.is_some() {
+                        break;
+                    }
+                }
+                if let Some(made) = made {
+                    let (made, limit) = (Arc::new(made), Arc::new(tokio::sync::Semaphore::new(DRAFTS_AT_ONCE)));
+                    let mut tasks = Vec::new();
+                    for (draft, write) in rest {
+                        let (api, change, stale, made, limit, applied, ctx) = (api.clone(), change.clone(), stale.clone(), made.clone(), limit.clone(), applied.clone(), ctx.clone());
+                        tasks.push(tokio::spawn(async move {
+                            let _permit = limit.acquire().await;
+                            let track = write.0;
+                            match import(&api, &draft, &write, &change, false, &made, false, &stale).await {
+                                Ok((answer, became, _)) => {
+                                    let mut a = applied.lock().unwrap();
+                                    a.answers.insert(track, answer);
+                                    if let Some(became) = became {
+                                        a.made.insert(track, became);
+                                    }
+                                    drop(a);
+                                    record(&applied, track, Outcome::Done);
+                                }
+                                Err(err) => record(&applied, track, Outcome::Failed(err)),
+                            }
+                            ctx.request_repaint();
+                        }));
+                    }
+                    for task in tasks {
+                        let _ = task.await;
+                    }
                 }
                 let mut a = applied.lock().unwrap();
                 a.done = a.total;
@@ -647,14 +745,17 @@ impl Engine {
 }
 
 /// A draft's edit sent to its import (`preview` or for real): the answer for the draft
-/// (its id the draft's; what it still lacks said as its error), and the track it became.
-/// `stale`: set when the draft doesn't fit the import anymore.
-async fn import(api: &Api, draft: &DraftOf, write: &(Uuid, Ready), change: &Change, preview: bool, stale: &std::sync::atomic::AtomicBool) -> Result<(Answer, Option<Uuid>), String> {
-    let body = draft_body(draft, write, change, preview)?;
+/// (its id the draft's; what it still lacks said as its error), the track it became, and
+/// what it made. `made`: what an earlier file's import made (used instead of making it
+/// again); `first`: the edit's first file (the accounts given to artists go with it).
+/// `stale`: gets the file when its draft doesn't fit the import anymore.
+#[allow(clippy::too_many_arguments)]
+async fn import(api: &Api, draft: &DraftOf, write: &(Uuid, Ready), change: &Change, preview: bool, made: &Made, first: bool, stale: &Mutex<HashSet<Uuid>>) -> Result<(Answer, Option<Uuid>, Option<Made>), String> {
+    let body = draft_body(draft, write, change, preview, made, first)?;
     let path = format!("/api/ingest-problems/{}/import", draft.problem);
     let imported = api.send_json::<Imported>(reqwest::Method::POST, &path, Some(body)).await.map_err(|e| {
         if e.code == "conflict" {
-            stale.store(true, std::sync::atomic::Ordering::Relaxed);
+            stale.lock().unwrap().insert(draft.problem);
         }
         e.message
     })?;
@@ -664,13 +765,17 @@ async fn import(api: &Api, draft: &DraftOf, write: &(Uuid, Ready), change: &Chan
         let message = format!("a track needs a title and an artist: this one has no {} yet", imported.missing.join(" and no "));
         answer.error = Some(Failure { code: "invalid".into(), message });
     }
-    Ok((answer, imported.track_id))
+    if let Some(error) = answer.error.clone().filter(|_| !preview) {
+        return Err(error.message);
+    }
+    Ok((answer, imported.track_id, imported.made))
 }
 
 /// The request importing a draft with its edit: the edit's one track as `track`, the draft's
 /// ids, and what it's sent with.
-fn draft_body(draft: &DraftOf, write: &(Uuid, Ready), change: &Change, preview: bool) -> Result<Value, String> {
-    let (mut body, refused) = body(std::slice::from_ref(write), change, &HashMap::new(), &HashMap::new(), preview, true);
+fn draft_body(draft: &DraftOf, write: &(Uuid, Ready), change: &Change, preview: bool, made: &Made, first: bool) -> Result<Value, String> {
+    let ids: HashMap<Uuid, Uuid> = made.artists.iter().chain(&made.albums).chain(&made.groupings).map(|(a, b)| (*a, *b)).collect();
+    let (mut body, refused) = body(std::slice::from_ref(write), change, &ids, &made.review_kinds, preview, first);
     if let Some((_, why)) = refused.into_iter().next() {
         return Err(why);
     }
@@ -1038,7 +1143,7 @@ mod tests {
         r.draft = true;
         r.single = true;
         let draft = DraftOf { problem: id(1), ids: json!({ "ids": {}, "shape": "ab" }), with: json!({ "original_filename": "a.wav" }), flags: vec![] };
-        let body = draft_body(&draft, &(id(5), r), &change, true).unwrap();
+        let body = draft_body(&draft, &(id(5), r), &change, true, &Made::default(), true).unwrap();
         assert_eq!(body["track"]["track_id"], json!(id(5)));
         assert_eq!(body["track"]["meta"]["data"]["credits"][0]["artist_id"], json!(id(9)));
         assert_eq!(body["track"]["single"], json!(true));
@@ -1050,7 +1155,7 @@ mod tests {
         let mut plain = ready(0, &[], None);
         plain.draft = true;
         assert!(plain.sends());
-        let body = draft_body(&draft, &(id(5), plain), &change, false).unwrap();
+        let body = draft_body(&draft, &(id(5), plain), &change, false, &Made::default(), true).unwrap();
         assert_eq!(body["track"], json!({ "track_id": id(5), "along": true, "sync": false }));
     }
 
