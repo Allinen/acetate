@@ -515,6 +515,43 @@ async fn edit_track(conn: &mut PgConnection, edit: &TrackEdit, made: &Made<'_>, 
     Ok(done)
 }
 
+/// A track's place on an album as it's to be: its disc and number there.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Place {
+    pub track_id: Uuid,
+    pub disc_number: Option<i16>,
+    pub track_number: Option<i16>,
+}
+
+/// Tracks moved in an album's tracklist: each given its new disc and number on `album`, in
+/// a facts revision of its own with nothing else changed (its other albums, status and
+/// relations as they are). All of them or none. How many revisions it wrote (a track
+/// already there writes none).
+pub async fn place_on_album(conn: &mut PgConnection, album: Uuid, places: &[Place], reason: &str) -> anyhow::Result<usize> {
+    // In id order, as every edit locks tracks (two can't wait on each other forever).
+    let mut places = places.to_vec();
+    places.sort_by_key(|p| p.track_id);
+    if places.windows(2).any(|w| w[0].track_id == w[1].track_id) {
+        return Err(EditRejected::Invalid("a track is given two places".into()).into());
+    }
+    let mut written = 0;
+    for place in &places {
+        let mut facts = match revisions::current_facts(conn, place.track_id).await {
+            Err(sqlx::Error::RowNotFound) => return Err(EditRejected::NotFound("track").into()),
+            facts => facts?,
+        };
+        let Some(on) = facts.albums.iter_mut().find(|m| m.album_id == album) else {
+            return Err(EditRejected::Invalid(format!("track {} isn't on this album", place.track_id)).into());
+        };
+        on.disc_number = place.disc_number;
+        on.track_number = place.track_number;
+        if revisions::write_external(conn, place.track_id, None, &facts, Source::Edit, reason).await?.changed {
+            written += 1;
+        }
+    }
+    Ok(written)
+}
+
 /// The album with the track's changes (from `before` to `after`) along: its title, release
 /// date and performers, where the track's changed.
 pub fn along(album: &AlbumData, before: &TrackMetadata, after: &TrackMetadata) -> AlbumData {

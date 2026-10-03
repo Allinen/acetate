@@ -258,6 +258,7 @@ pub fn router(state: AppState) -> Router {
             require(&[Browse], get(catalog::get_album))
                 .merge(require(&[EditMetadata], put(catalog::edit_album))),
         )
+        .route("/api/albums/{id}/track-numbers", require(&[EditMetadata], put(catalog::place_album_tracks)))
         .route("/api/albums/{id}/merge", require(&[EditMetadata], post(catalog::merge_album)))
         .route(
             "/api/album-merges/{id}/undo",

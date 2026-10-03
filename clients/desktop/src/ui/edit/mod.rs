@@ -21,6 +21,7 @@ pub mod lyrics;
 pub mod lyrics_sync;
 pub mod part_of;
 pub mod sources;
+pub mod track_order;
 pub mod versions;
 
 use std::sync::{Arc, Mutex};

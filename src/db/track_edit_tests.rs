@@ -696,3 +696,46 @@ async fn flags_by_hand_of_kinds_people_make(_: PgPoolOptions, connect: PgConnect
     assert_eq!(done.tracks[0].error.as_ref().map(|e| e.code.as_str()), Some("invalid"));
     Ok(())
 }
+
+#[sqlx::test]
+async fn tracks_moved_on_an_album_change_only_their_place(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
+    use crate::db::track_edits::Place;
+    let lib = setup(connect).await?;
+    let place = |track_id: Uuid, number: i16| Place { track_id, disc_number: Some(1), track_number: Some(number) };
+    let places = |lib: &Library| {
+        let pool = lib.owner.clone();
+        let album = lib.album;
+        async move {
+            sqlx::query_as::<_, (Uuid, Option<i16>, Option<i16>)>("SELECT track_id, disc_number, track_number FROM album_tracks WHERE album_id = $1 ORDER BY track_number")
+                .bind(album)
+                .fetch_all(&pool)
+                .await
+        }
+    };
+    let status = |track: Uuid| {
+        let pool = lib.owner.clone();
+        async move { sqlx::query_scalar::<_, String>("SELECT status FROM tracks WHERE id = $1").bind(track).fetch_one(&pool).await }
+    };
+    let before = (revisions(&lib, lib.v).await?, revisions(&lib, lib.h).await?, status(lib.v).await?);
+
+    // V and H numbered, then swapped: one revision each time a place changes.
+    let mut tx = db::begin(&lib.app, Some(lib.bob)).await?;
+    assert_eq!(db::track_edits::place_on_album(&mut tx, lib.album, &[place(lib.v, 1), place(lib.h, 2)], "").await?, 2);
+    assert_eq!(db::track_edits::place_on_album(&mut tx, lib.album, &[place(lib.v, 2), place(lib.h, 1)], "").await?, 2);
+    // Already there: nothing written.
+    assert_eq!(db::track_edits::place_on_album(&mut tx, lib.album, &[place(lib.v, 2)], "").await?, 0);
+    tx.commit().await?;
+    assert_eq!(places(&lib).await?, [(lib.h, Some(1), Some(1)), (lib.v, Some(1), Some(2))]);
+    assert_eq!((revisions(&lib, lib.v).await?, revisions(&lib, lib.h).await?, status(lib.v).await?), (before.0 + 2, before.1 + 2, before.2));
+
+    // O isn't on the album; Carol can't see H; one track twice: refused, nothing kept.
+    let refused = async |user: Uuid, given: &[Place]| -> anyhow::Result<bool> {
+        let mut tx = db::begin(&lib.app, Some(user)).await?;
+        Ok(db::track_edits::place_on_album(&mut tx, lib.album, given, "").await.is_err())
+    };
+    assert!(refused(lib.bob, &[place(lib.v, 1), place(lib.o, 2)]).await?);
+    assert!(refused(lib.carol, &[place(lib.h, 2)]).await?);
+    assert!(refused(lib.bob, &[place(lib.v, 1), place(lib.v, 2)]).await?);
+    assert_eq!(places(&lib).await?, [(lib.h, Some(1), Some(1)), (lib.v, Some(1), Some(2))]);
+    Ok(())
+}

@@ -1,5 +1,7 @@
 //! An album's page: its cover and facts, a Play button, and its tracks. Also the track
-//! list used here and on artist pages. Keys: arrows or jk move, Enter plays from there.
+//! list used here and on artist pages. Keys: arrows or jk move, Enter plays from there;
+//! in edit mode, Alt+↑/↓ or Alt+K/J moves the selected track in the tracklist (see
+//! `edit::track_order`).
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -49,6 +51,8 @@ pub struct AlbumPage {
     covers: crate::ui::edit::cover_list::CoverList,
     /// The groupings it's in.
     part_of: crate::ui::edit::part_of::PartOf,
+    /// Tracks moved in its tracklist (edit mode), until the library has them.
+    order: crate::ui::edit::track_order::TrackOrder,
 }
 
 impl AlbumPage {
@@ -69,7 +73,9 @@ impl AlbumPage {
             ui.label(RichText::new("This album isn't in the library (anymore).").color(P.muted));
             return;
         };
-        let tracks = catalog.album_tracks(id);
+        self.order.update(shell, catalog, id);
+        let moved = self.order.tracks(catalog, id, catalog.album_tracks(id));
+        let tracks: &[u32] = moved.as_deref().unwrap_or(catalog.album_tracks(id));
         // One scroll for the whole page (header, edit panels, notes, the tracks as tall
         // as they are): nothing in it scrolls on its own.
         egui::ScrollArea::vertical().id_salt(("album-page", id)).auto_shrink([false, false]).show(ui, |ui| {
@@ -262,10 +268,51 @@ impl AlbumPage {
                 self.extras.show(ui, shell, crate::ui::edit::extras::Owner::Album(id), &d.extras, false, true);
                 ui.add_space(10.0);
             }
-            let options = Options { key: "album", columns: ALBUM_COLUMNS, added: None, filter_hint: None, album: Some((id, &album.artist_display)), keys: true, scroll: false };
-            self.list.show(ui, shell, catalog, &rows, shell.generation, player, &options);
+            let options = Options { key: "album", columns: ALBUM_COLUMNS, added: None, filter_hint: None, album: Some((id, &album.artist_display)), places: self.order.places(), keys: true, scroll: false };
+            let shown = self.list.show(ui, shell, catalog, &rows, version(shell.generation, tracks), player, &options);
+
+            // Alt+↑/↓ or Alt+K/J: the selected track a place earlier or later (edit mode).
+            if !self.list.popup_open() && !shell.palette_open && !ui.ctx().egui_wants_keyboard_input() {
+                use egui::{Key, Modifiers};
+                let (up, down) = ui.ctx().input_mut(|i| {
+                    let up = i.consume_key(Modifiers::ALT, Key::ArrowUp) || i.consume_key(Modifiers::ALT, Key::K);
+                    let down = i.consume_key(Modifiers::ALT, Key::ArrowDown) || i.consume_key(Modifiers::ALT, Key::J);
+                    (up, down)
+                });
+                let by: isize = if up { -1 } else if down { 1 } else { 0 };
+                if by != 0
+                    && let Some(row) = shown.selected
+                {
+                    let notice = if !shell.edit_mode {
+                        Some("Moving tracks is in edit mode: e, then Alt+↑/↓.")
+                    } else if !shell.account.can("edit_metadata") {
+                        Some("Moving tracks needs the edit_metadata permission.")
+                    } else if !shown.in_own_order {
+                        Some("To move tracks, sort by # and clear the filter")
+                    } else {
+                        None
+                    };
+                    match notice {
+                        Some(text) => shell.playlists.notice = Some((text.into(), std::time::Instant::now())),
+                        None => {
+                            if let Some(to) = self.order.move_track(shell, catalog, id, tracks, row, by) {
+                                self.list.select(to);
+                            }
+                        }
+                    }
+                }
+            }
         });
     }
+}
+
+/// The list's version: the library's, and the order shown (moved tracks change it).
+fn version(generation: u64, tracks: &[u32]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::hash::DefaultHasher::new();
+    generation.hash(&mut hasher);
+    tracks.hash(&mut hasher);
+    hasher.finish()
 }
 
 /// The album's form (edit mode). Kept in the shell per album, so changes not saved yet

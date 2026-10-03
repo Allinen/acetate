@@ -173,6 +173,7 @@ impl GroupingPage {
                     added: None,
                     filter_hint: Some("Filter: words, or artist:… album:… year:…"),
                     album: None,
+                    places: None,
                     keys: true,
                     scroll: false,
                 };

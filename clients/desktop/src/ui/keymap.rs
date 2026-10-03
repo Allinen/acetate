@@ -110,6 +110,7 @@ pub const GROUPS: &[(&str, &[Binding])] = &[
             ("Enter  or  Ctrl+E", "a track's page: the cursor to its editor's line"),
             ("Ctrl+Enter", "apply the editor's changes; an album's or artist's form: save it"),
             ("Ctrl+Enter in the lyrics", "save the lyrics (their own revision)"),
+            ("Alt+↑ / Alt+↓  or  Alt+K / Alt+J", "an album's tracks: move the selected one up / down (its number, on its disc)"),
             ("Esc", "discard the changes (asks first: Esc again)"),
         ],
     ),

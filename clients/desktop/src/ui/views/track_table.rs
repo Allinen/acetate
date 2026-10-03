@@ -22,6 +22,7 @@
 //! two marked compares them side by side, to merge (see `merge`), in a popup too. (All of
 //! it is `marking`'s, shared with Review's list.)
 
+use std::collections::HashMap;
 use std::time::Duration;
 
 use eframe::egui::{self, Label, RichText, Sense, Vec2};
@@ -32,6 +33,7 @@ use crate::catalog::index::{TrackRows, TrackSort};
 use crate::catalog::marks::Kind;
 use crate::catalog::Catalog;
 use crate::playback::PlayerView;
+use crate::ui::edit::track_order::Place;
 use crate::ui::theme::{font, medium, semibold, PALETTE as P};
 use crate::ui::{playing_track, thousands, widgets, Action, Shell};
 
@@ -151,6 +153,9 @@ pub struct Options<'a> {
     /// An album's list: the album and its artists (for numbers, discs, and the artist
     /// column showing only other ones).
     pub album: Option<(Uuid, &'a str)>,
+    /// On an album: tracks moved, their places as they're to be (not in the library yet),
+    /// shown in place of theirs.
+    pub places: Option<&'a HashMap<Uuid, Place>>,
     /// It takes the keys (arrows, Enter, marking…): on a page with several tables, only
     /// the one in use does.
     pub keys: bool,
@@ -234,6 +239,11 @@ impl TrackTable {
         }
         // The rows follow at once.
         self.made_for = None;
+    }
+
+    /// The marked tracks' popup is open (it takes the keys).
+    pub fn popup_open(&self) -> bool {
+        self.marking.popup_open()
     }
 
     /// Ctrl+M is the table's (merging the marked tracks) rather than the page's (merging
@@ -360,7 +370,7 @@ impl TrackTable {
         let columns = TrackTable::columns(shell, options);
         let playing = playing_track(player);
         // On an album: numbers as disc-track when any track is on another disc.
-        let numbers = options.album.map(|(album, _)| AlbumNumbers::new(catalog, rows, album));
+        let numbers = options.album.map(|(album, _)| AlbumNumbers::new(catalog, rows, album, options.places));
         // Its own id (by the kind of list): tables side by side don't share a scroll.
         // No gap between rows (it's in `ROW`): the row's background is painted half a gap
         // past each side, and the first row's top half would be cut off by the table's top.
@@ -614,7 +624,7 @@ impl TrackTable {
         self.selected = self.selected.min(self.order.len().saturating_sub(1));
         // Disc names between discs: an album's, in its own order, when it has several.
         let own_order = self.sort == TrackSort::Natural && !self.descending;
-        let discs = options.album.filter(|_| own_order).map(|(album, _)| AlbumNumbers::new(catalog, rows, album));
+        let discs = options.album.filter(|_| own_order).map(|(album, _)| AlbumNumbers::new(catalog, rows, album, options.places));
         self.lines = match discs.filter(|d| d.several_discs) {
             Some(numbers) => lines_with_discs(&self.order.iter().map(|&r| numbers.disc(&catalog.tracks[rows.track(r) as usize])).collect::<Vec<_>>()),
             None => (0..self.order.len()).map(Line::Track).collect(),
@@ -643,30 +653,35 @@ fn lines_with_discs(discs: &[i16]) -> Vec<Line> {
 }
 
 /// Tracks' numbers on one album: whether it has several discs, and each track's label.
-struct AlbumNumbers {
+struct AlbumNumbers<'a> {
     album: Uuid,
     several_discs: bool,
+    /// Moved tracks' places as they're to be.
+    places: Option<&'a HashMap<Uuid, Place>>,
 }
 
-impl AlbumNumbers {
-    fn new(catalog: &Catalog, rows: &TrackRows, album: Uuid) -> AlbumNumbers {
-        let several_discs = (0..rows.len(catalog)).any(|r| {
-            let t = &catalog.tracks[rows.track(r) as usize];
-            t.albums.iter().any(|m| m.0 == album && m.1.is_some_and(|d| d != 1))
-        });
-        AlbumNumbers { album, several_discs }
+impl<'a> AlbumNumbers<'a> {
+    fn new(catalog: &Catalog, rows: &TrackRows, album: Uuid, places: Option<&'a HashMap<Uuid, Place>>) -> AlbumNumbers<'a> {
+        let numbers = AlbumNumbers { album, several_discs: false, places };
+        let several_discs = (0..rows.len(catalog)).any(|r| numbers.place(&catalog.tracks[rows.track(r) as usize]).is_some_and(|p| p.0.is_some_and(|d| d != 1)));
+        AlbumNumbers { several_discs, ..numbers }
+    }
+
+    /// The track's disc and number on the album (None: it isn't on it).
+    fn place(&self, t: &crate::catalog::model::Track) -> Option<Place> {
+        self.places.and_then(|p| p.get(&t.id).copied()).or_else(|| t.albums.iter().find(|m| m.0 == self.album).map(|m| (m.1, m.2)))
     }
 
     /// The track's disc on the album (1 when it has none).
     fn disc(&self, t: &crate::catalog::model::Track) -> i16 {
-        t.albums.iter().find(|m| m.0 == self.album).and_then(|m| m.1).unwrap_or(1)
+        self.place(t).and_then(|p| p.0).unwrap_or(1)
     }
 
     /// "5", or "2-5" on an album with several discs; "·" without a number.
     fn label(&self, t: &crate::catalog::model::Track) -> String {
-        let Some(m) = t.albums.iter().find(|m| m.0 == self.album) else { return String::new() };
-        match (m.2, self.several_discs) {
-            (Some(n), true) => format!("{}-{n}", m.1.unwrap_or(1)),
+        let Some((disc, number)) = self.place(t) else { return String::new() };
+        match (number, self.several_discs) {
+            (Some(n), true) => format!("{}-{n}", disc.unwrap_or(1)),
             (Some(n), false) => n.to_string(),
             (None, _) => "·".into(),
         }

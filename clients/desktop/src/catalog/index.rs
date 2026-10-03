@@ -90,11 +90,7 @@ impl Catalog {
         let album_tracks = album_tracks
             .into_iter()
             .map(|(album, mut list)| {
-                // Disc and number, missing ones last, then title.
-                list.sort_by(|a, b| {
-                    let key = |x: &(Option<i16>, Option<i16>, u32)| (x.0.unwrap_or(i16::MAX), x.1.unwrap_or(i16::MAX));
-                    key(a).cmp(&key(b)).then_with(|| tracks[a.2 as usize].title.cmp(&tracks[b.2 as usize].title))
-                });
+                list.sort_by(|a, b| album_order((a.0, a.1), &tracks[a.2 as usize].title, (b.0, b.1), &tracks[b.2 as usize].title));
                 (album, list.into_iter().map(|x| x.2).collect())
             })
             .collect();
@@ -428,6 +424,12 @@ pub enum TrackSort {
     Plays,
     /// Original files (og files) first, the rest after, each in the list's order.
     Og,
+}
+
+/// How an album's tracks are ordered: by disc and number (missing ones last), then title.
+pub fn album_order(a: (Option<i16>, Option<i16>), a_title: &str, b: (Option<i16>, Option<i16>), b_title: &str) -> std::cmp::Ordering {
+    let key = |x: (Option<i16>, Option<i16>)| (x.0.unwrap_or(i16::MAX), x.1.unwrap_or(i16::MAX));
+    key(a).cmp(&key(b)).then_with(|| a_title.cmp(b_title))
 }
 
 /// Tracks to list: `tracks` (positions in the catalog; None: all of them), and when each

@@ -400,6 +400,37 @@ pub async fn edit_album(
 }
 
 #[derive(Debug, Deserialize)]
+pub struct PlaceTracks {
+    tracks: Vec<db::track_edits::Place>,
+    #[serde(default)]
+    reason: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct Placed {
+    /// Revisions written (tracks already in their place need none).
+    written: usize,
+}
+
+/// `PUT /api/albums/{id}/track-numbers`, JSON `{"tracks": [{"track_id", "disc_number",
+/// "track_number"}], "reason"}`: the tracks moved in the album's tracklist, each given its
+/// disc and number on it (a facts revision each, nothing else changed). All or none.
+pub async fn place_album_tracks(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<Uuid>,
+    Json(body): Json<PlaceTracks>,
+) -> Result<Json<Placed>, AppError> {
+    if body.tracks.len() > db::track_edits::MAX_TRACKS {
+        return Err(AppError::BadRequest(format!("at most {} tracks at once", db::track_edits::MAX_TRACKS)));
+    }
+    let mut tx = state.db(&user).await?;
+    let written = db::track_edits::place_on_album(&mut tx, id, &body.tracks, &body.reason).await?;
+    tx.commit().await?;
+    Ok(Json(Placed { written }))
+}
+
+#[derive(Debug, Deserialize)]
 pub struct MergeAlbum {
     /// The album to merge this one into (the one that stays).
     into: Uuid,
