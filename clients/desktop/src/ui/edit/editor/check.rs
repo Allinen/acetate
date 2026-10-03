@@ -1,7 +1,8 @@
-//! The check under a staged `parse:`: every name found and what it credits, the
-//! corrections made by hand, and every track it changes (before → after, its credits, what
-//! looks wrong), the ones to look at first. One list, a row each, kept to what's on screen
-//! (thousands of tracks).
+//! The check under the staged `parse:` chips (all of them): every name found and what it
+//! credits, the corrections made by hand, and every track they change, as the whole edit
+//! leaves it (its title now → after every chip, the credits it gains, what looks wrong),
+//! the ones to look at first. One list, a row each, kept to what's on screen (thousands of
+//! tracks).
 //!
 //! Keys (the editor handles them, `TrackEditor::check_key`): on a name, Enter says who it
 //! is (the line finds the artist), `c` the next artist with that name, `s` splits it, `w`
@@ -10,6 +11,7 @@
 //! back in); on a correction, Delete takes it back.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use eframe::egui::{self, Align2, Pos2, Rect, Sense, Vec2};
 use uuid::Uuid;
@@ -29,16 +31,16 @@ pub enum Fix {
     Whole,
 }
 
-/// A row of the check.
+/// A row of the check. `usize` first: which `parse:` chip (the nth staged).
 #[derive(Debug, Clone, PartialEq)]
 pub enum Entry {
     Heading(String),
-    /// A name found (its place in `TitlesParsed::names`).
-    Name(usize),
-    Fixed(Fix, String),
+    /// A name found (its place in the chip's `TitlesParsed::names`).
+    Name(usize, usize),
+    Fixed(usize, Fix, String),
     /// An artist chosen for a name.
     Chosen(String, Uuid),
-    /// A track, and its title before.
+    /// A track, and its title as the first chip with it saw it (until it's planned).
     Track(Uuid, String),
 }
 
@@ -50,74 +52,110 @@ impl Entry {
 
 const ROW: f32 = 40.0;
 
+/// Whether every chip with `track` leaves it out.
+pub fn left_out(parses: &[Arc<TitlesParsed>], track: Uuid) -> bool {
+    let with: Vec<&Arc<TitlesParsed>> = parses.iter().filter(|p| p.titles.iter().any(|(t, _)| *t == track)).collect();
+    !with.is_empty() && with.iter().all(|p| p.skip.contains(&track))
+}
+
 /// The rows: names (to choose first, then what looks wrong, then new ones), corrections,
-/// tracks (refused first, then with something to look at, then the rest; left out last).
-pub fn entries(p: &TitlesParsed, names: &Names, engine: &Engine) -> Vec<Entry> {
-    let refused: HashMap<Uuid, bool> = engine.plans.iter().map(|plan| (plan.track, matches!(&plan.state, PlanState::Ready(r) if r.refused.is_some()))).collect();
+/// tracks (can't be changed first, then with something to look at, then the rest; left
+/// out last).
+pub fn entries(parses: &[Arc<TitlesParsed>], names: &Names, engine: &Engine) -> Vec<Entry> {
+    let plans: HashMap<Uuid, &PlanState> = engine.plans.iter().map(|plan| (plan.track, &plan.state)).collect();
     let mut out = Vec::new();
 
-    let undecided: Vec<&str> = p.undecided().iter().map(|n| n.text.as_str()).collect();
-    let mut order: Vec<usize> = (0..p.names.len()).collect();
-    order.sort_by_key(|&i| {
-        let n = &p.names[i];
-        let rank = match &n.credited {
-            _ if undecided.contains(&n.text.as_str()) => 0,
-            _ if n.why.is_some() => 1,
-            Credited::Undecided(_) => 1,
-            Credited::New(_) => 2,
-            Credited::Artist { .. } | Credited::Own => 3,
-        };
-        (rank, std::cmp::Reverse(n.tracks), n.text.to_lowercase())
-    });
-    let new = p.names.iter().filter(|n| matches!(n.credited, Credited::New(_))).count();
-    let mut heading = format!("Names · {}", p.names.len());
+    let mut order: Vec<(u8, usize, String, usize, usize)> = Vec::new();
+    let (mut new, mut undecided_count) = (0, 0);
+    for (k, p) in parses.iter().enumerate() {
+        let undecided: Vec<&str> = p.undecided().iter().map(|n| n.text.as_str()).collect();
+        undecided_count += undecided.len();
+        new += p.names.iter().filter(|n| matches!(n.credited, Credited::New(_))).count();
+        for (i, n) in p.names.iter().enumerate() {
+            let rank = match &n.credited {
+                _ if undecided.contains(&n.text.as_str()) => 0,
+                _ if n.why.is_some() => 1,
+                Credited::Undecided(_) => 1,
+                Credited::New(_) => 2,
+                Credited::Artist { .. } | Credited::Own => 3,
+            };
+            order.push((rank, usize::MAX - n.tracks, n.text.to_lowercase(), k, i));
+        }
+    }
+    order.sort();
+    let mut heading = format!("Names · {}", order.len());
     if new > 0 {
         heading.push_str(&format!(" · {new} new"));
     }
-    if !undecided.is_empty() {
-        heading.push_str(&format!(" · {} to choose", undecided.len()));
+    if undecided_count > 0 {
+        heading.push_str(&format!(" · {undecided_count} to choose"));
     }
     out.push(Entry::Heading(heading));
-    out.extend(order.into_iter().map(Entry::Name));
+    out.extend(order.into_iter().map(|(.., k, i)| Entry::Name(k, i)));
 
-    let chosen: Vec<Entry> = p.names.iter().filter_map(|n| names.pinned(PinKind::Artist, &n.text).map(|id| Entry::Chosen(n.text.clone(), id))).collect();
-    if !p.fixes.is_empty() || !chosen.is_empty() {
+    let mut by_hand = Vec::new();
+    for (k, p) in parses.iter().enumerate() {
+        by_hand.extend(p.fixes.not_names.iter().map(|n| Entry::Fixed(k, Fix::NotName, n.clone())));
+        by_hand.extend(p.fixes.split.iter().map(|n| Entry::Fixed(k, Fix::Split, n.clone())));
+        by_hand.extend(p.fixes.whole.iter().map(|n| Entry::Fixed(k, Fix::Whole, n.clone())));
+    }
+    let mut chosen: Vec<String> = Vec::new();
+    for n in parses.iter().flat_map(|p| p.names.iter()) {
+        if let Some(id) = names.pinned(PinKind::Artist, &n.text)
+            && !chosen.contains(&n.text.to_lowercase())
+        {
+            chosen.push(n.text.to_lowercase());
+            by_hand.push(Entry::Chosen(n.text.clone(), id));
+        }
+    }
+    if !by_hand.is_empty() {
         out.push(Entry::Heading("By hand · Delete takes one back".into()));
-        out.extend(p.fixes.not_names.iter().map(|n| Entry::Fixed(Fix::NotName, n.clone())));
-        out.extend(p.fixes.split.iter().map(|n| Entry::Fixed(Fix::Split, n.clone())));
-        out.extend(p.fixes.whole.iter().map(|n| Entry::Fixed(Fix::Whole, n.clone())));
-        out.extend(chosen);
+        out.extend(by_hand);
     }
 
-    let mut tracks: Vec<(u8, usize)> = Vec::new();
+    // Every track a chip has, once, in the order they come.
+    let mut seen: std::collections::HashSet<Uuid> = std::collections::HashSet::new();
+    let mut tracks: Vec<(u8, Uuid, String)> = Vec::new();
     let mut unchanged = 0;
-    for (i, (track, title)) in p.titles.iter().enumerate() {
-        let Some(o) = p.outcomes.get(title) else { continue };
-        let undecided = o.credits.iter().any(|c| matches!(p.names[c.name].credited, Credited::Undecided(_)));
-        let rank = if p.skip.contains(track) {
-            3
-        } else if refused.get(track) == Some(&true) || undecided || o.problem.is_some() {
-            0
-        } else if !o.warnings.is_empty() {
-            1
-        } else if o.changes(title) {
-            2
-        } else {
-            unchanged += 1;
-            continue;
-        };
-        tracks.push((rank, i));
+    for p in parses {
+        for (track, title) in &p.titles {
+            if !seen.insert(*track) {
+                continue;
+            }
+            let outcomes: Vec<(&TitlesParsed, &super::title_parse::Outcome)> =
+                parses.iter().filter_map(|p| p.titles.iter().find(|(t, _)| t == track).and_then(|(_, title)| Some((&**p, p.outcomes.get(title)?)))).collect();
+            let undecided = outcomes.iter().any(|(p, o)| !p.skip.contains(track) && o.credits.iter().any(|c| matches!(p.names[c.name].credited, Credited::Undecided(_))));
+            let problem = outcomes.iter().any(|(p, o)| !p.skip.contains(track) && o.problem.is_some());
+            let warnings = outcomes.iter().any(|(_, o)| !o.warnings.is_empty());
+            let (refused, changes) = match plans.get(track) {
+                Some(PlanState::Ready(r)) => (r.refused.is_some(), r.meta.title != r.base.meta.title || r.meta.credits != r.base.meta.credits),
+                _ => (false, outcomes.iter().any(|(_, o)| o.changes(title))),
+            };
+            let rank = if left_out(parses, *track) {
+                3
+            } else if refused || undecided || problem {
+                0
+            } else if warnings {
+                1
+            } else if changes {
+                2
+            } else {
+                unchanged += 1;
+                continue;
+            };
+            tracks.push((rank, *track, title.clone()));
+        }
     }
     tracks.sort_by_key(|t| t.0);
     let count = |r: u8| tracks.iter().filter(|t| t.0 == r).count();
-    let mut heading = format!("Tracks · {} change", p.changing());
+    let mut heading = format!("Tracks · {} change", count(0) + count(1) + count(2));
     for (n, what) in [(count(0), "can't be"), (count(1), "to look at"), (count(3), "left out"), (unchanged, "unchanged")] {
         if n > 0 {
             heading.push_str(&format!(" · {n} {what}"));
         }
     }
     out.push(Entry::Heading(heading));
-    out.extend(tracks.into_iter().map(|(_, i)| Entry::Track(p.titles[i].0, p.titles[i].1.clone())));
+    out.extend(tracks.into_iter().map(|(_, t, title)| Entry::Track(t, title)));
     out
 }
 
@@ -132,7 +170,7 @@ pub fn selectable(entries: &[Entry], at: usize, down: bool) -> Option<usize> {
 
 /// What the rows are drawn from.
 pub struct View<'a> {
-    pub parsed: &'a TitlesParsed,
+    pub parses: &'a [Arc<TitlesParsed>],
     pub names: &'a Names,
     pub catalog: &'a Catalog,
     pub engine: &'a Engine,
@@ -184,12 +222,14 @@ pub fn draw(ui: &mut egui::Ui, view: &View, entries: &[Entry], cursor: Option<us
 
 /// A row's two lines and the first one's color.
 fn row(view: &View, entry: &Entry, plans: &HashMap<Uuid, usize>) -> (String, String, egui::Color32) {
-    let p = view.parsed;
-    let artist = |id: Uuid| view.catalog.artist_label(id).or_else(|| view.names.stand_ins().get(&id).map(|n| format!("{n} (new)"))).unwrap_or_else(|| "(an artist)".into());
+    let stand_ins = view.names.stand_ins();
+    let artist = |id: Uuid| view.catalog.artist_label(id).or_else(|| stand_ins.get(&id).map(|n| format!("{n} (new)"))).unwrap_or_else(|| "(an artist)".into());
+    // Which chip, when there's more than one.
+    let chip = |k: usize| if view.parses.len() > 1 { format!("parse {}", k + 1) } else { String::new() };
     match entry {
         Entry::Heading(text) => (text.clone(), String::new(), P.muted),
-        Entry::Name(i) => {
-            let n = &p.names[*i];
+        Entry::Name(k, i) => {
+            let n = &view.parses[*k].names[*i];
             let chosen = view.names.pinned(PinKind::Artist, &n.text).is_some();
             let (what, color) = match &n.credited {
                 Credited::Artist { id, alias: Some(_) } => (format!("{} (credited as this name)", artist(*id)), P.text),
@@ -208,53 +248,64 @@ fn row(view: &View, entry: &Entry, plans: &HashMap<Uuid, usize>) -> (String, Str
             if let Some(why) = n.why {
                 bottom.push(format!("⚠ {why}"));
             }
+            bottom.push(chip(*k));
+            bottom.retain(|b| !b.is_empty());
             (format!("“{}”  →  {what}", n.text), bottom.join(" · "), color)
         }
-        Entry::Fixed(fix, name) => {
+        Entry::Fixed(k, fix, name) => {
             let what = match fix {
                 Fix::NotName => "not a name",
                 Fix::Split => "split",
                 Fix::Whole => "kept whole",
             };
-            (format!("{what}: “{name}”"), "by hand".into(), P.text)
+            let bottom = match chip(*k) {
+                c if c.is_empty() => "by hand".to_string(),
+                c => format!("by hand · {c}"),
+            };
+            (format!("{what}: “{name}”"), bottom, P.text)
         }
         Entry::Chosen(name, id) => (format!("“{name}” is {}", artist(*id)), "chosen".into(), P.text),
-        Entry::Track(track, before) => {
-            let Some(o) = p.outcomes.get(before) else { return (before.clone(), String::new(), P.faint) };
-            let refused = plans.get(track).and_then(|&i| match &view.engine.plans[i].state {
-                PlanState::Ready(r) => r.refused.clone(),
-                _ => None,
-            });
-            let skipped = p.skip.contains(track);
-            let top = if skipped { format!("{before}  (left out)") } else if o.title == *before { before.clone() } else { format!("{before}  →  {}", o.title) };
+        Entry::Track(track, title) => {
+            let plan = plans.get(track).map(|&i| &view.engine.plans[i].state);
+            let skipped = left_out(view.parses, *track);
             let mut bottom: Vec<String> = Vec::new();
-            let credits: Vec<String> = o.credits.iter().map(|c| format!("{} ({})", p.names[c.name].text, c.role)).collect();
-            if !credits.is_empty() {
-                bottom.push(format!("+ {}", credits.join(", ")));
-            }
-            // Credited in another role already: worth a look.
-            if let Some(PlanState::Ready(r)) = plans.get(track).map(|&i| &view.engine.plans[i].state) {
-                for c in &o.credits {
-                    if let Credited::Artist { id, .. } = p.names[c.name].credited
-                        && let Some(had) = r.base.meta.credits.iter().find(|x| x.artist_id == id && x.role != c.role)
-                    {
-                        bottom.push(format!("{} is {} already", p.names[c.name].text, had.role));
+            let (top, refused) = match plan {
+                // As the whole edit leaves it: the title, and the credits it gains.
+                Some(PlanState::Ready(r)) => {
+                    let (before, after) = (&r.base.meta.title, &r.meta.title);
+                    let top = if skipped { format!("{before}  (left out)") } else if before == after { before.clone() } else { format!("{before}  →  {after}") };
+                    let gained: Vec<&super::model::Credit> = r.meta.credits.iter().filter(|c| !r.base.meta.credits.iter().any(|b| b.artist_id == c.artist_id && b.role == c.role)).collect();
+                    if !gained.is_empty() {
+                        bottom.push(format!("+ {}", gained.iter().map(|c| format!("{} ({})", artist(c.artist_id), c.role)).collect::<Vec<_>>().join(", ")));
                     }
+                    // Credited in another role already: worth a look.
+                    for c in &gained {
+                        if let Some(had) = r.base.meta.credits.iter().find(|b| b.artist_id == c.artist_id && b.role != c.role) {
+                            bottom.push(format!("{} is {} already", artist(c.artist_id), had.role));
+                        }
+                    }
+                    (top, r.refused.clone())
+                }
+                _ => (title.clone(), None),
+            };
+            for p in view.parses {
+                if let Some(o) = p.titles.iter().find(|(t, _)| t == track).and_then(|(_, title)| p.outcomes.get(title)) {
+                    bottom.extend(o.warnings.iter().map(|w| format!("⚠ {}", w.text())));
                 }
             }
-            bottom.extend(o.warnings.iter().map(|w| format!("⚠ {}", w.text())));
+            let warned = bottom.iter().any(|b| b.starts_with('⚠'));
+            let color = if skipped {
+                P.faint
+            } else if refused.is_some() {
+                P.danger
+            } else if warned {
+                P.text
+            } else {
+                P.accent
+            };
             if let Some(why) = refused.filter(|_| !skipped) {
                 bottom.push(why);
             }
-            let color = if skipped {
-                P.faint
-            } else if plans.get(track).is_some_and(|&i| matches!(&view.engine.plans[i].state, PlanState::Ready(r) if r.refused.is_some())) {
-                P.danger
-            } else if o.warnings.is_empty() {
-                P.accent
-            } else {
-                P.text
-            };
             (top, bottom.join(" · "), color)
         }
     }
@@ -284,8 +335,8 @@ mod tests {
             .iter()
             .map(|e| match e {
                 Entry::Heading(h) => format!("# {h}"),
-                Entry::Name(i) => p.names[*i].text.clone(),
-                Entry::Fixed(_, n) => format!("fixed {n}"),
+                Entry::Name(_, i) => p.names[*i].text.clone(),
+                Entry::Fixed(_, _, n) => format!("fixed {n}"),
                 Entry::Chosen(n, _) => format!("chosen {n}"),
                 Entry::Track(_, t) => format!("track {t}"),
             })
@@ -295,7 +346,7 @@ mod tests {
     #[test]
     fn what_needs_a_look_comes_first() {
         let p = parsed(&["Song (feat. Ann)", "Plain", "Other (feat. Cy)", "Third (feat. Bo)", "Odd (feat. Dee]"], Fixes::default());
-        let e = entries(&p, &Names::default(), &Engine::default());
+        let e = entries(&[Arc::new(p.clone())], &Names::default(), &Engine::default());
         assert_eq!(
             shown(&e, &p),
             [
@@ -317,13 +368,30 @@ mod tests {
     }
 
     #[test]
+    fn every_chip_is_in_it() {
+        // Two chips on the same tracks: the second parses what the first left.
+        let first = Arc::new(parsed(&["Song (feat. Ann) [Dee]", "Other"], Fixes::default()));
+        let mut second = parsed(&["Song [Dee]", "Other"], Fixes::default());
+        second.skip.push(Uuid::from_u128(101));
+        let parses = [first.clone(), Arc::new(second)];
+        let e = entries(&parses, &Names::default(), &Engine::default());
+        let names: Vec<(usize, &str)> = e.iter().filter_map(|x| if let Entry::Name(k, i) = x { Some((*k, parses[*k].names[*i].text.as_str())) } else { None }).collect();
+        assert!(names.contains(&(0, "Ann")) && names.contains(&(1, "Dee")), "{names:?}");
+        // A track once, even if both chips have it.
+        assert_eq!(e.iter().filter(|x| matches!(x, Entry::Track(t, _) if *t == Uuid::from_u128(100))).count(), 1);
+        // Left out only when every chip with it leaves it out.
+        assert!(!left_out(&parses, Uuid::from_u128(101)));
+        assert!(left_out(&parses[1..], Uuid::from_u128(101)));
+    }
+
+    #[test]
     fn corrections_are_listed_to_take_back() {
         let fixes = Fixes { not_names: vec!["bong".into()], ..Default::default() };
         let mut p = parsed(&["Cool song! [bong]", "Song (feat. Bo)"], fixes);
         p.skip.push(Uuid::from_u128(101));
         let mut names = Names::default();
         names.pin(PinKind::Artist, "Bo", Uuid::from_u128(3));
-        let e = entries(&p, &names, &Engine::default());
+        let e = entries(&[Arc::new(p.clone())], &names, &Engine::default());
         let shown = shown(&e, &p);
         assert!(shown.contains(&"fixed bong".to_string()) && shown.contains(&"chosen Bo".to_string()), "{shown:?}");
         assert_eq!(shown.last().map(String::as_str), Some("track Song (feat. Bo)"), "left out: last");

@@ -162,7 +162,8 @@ pub fn find(text: &str, rule: &Rule, setting: &Setting, keywords: &[&str]) -> Ve
         }),
         Kind::Bracket(shape) => bare(text, *shape, setting),
         Kind::Own => own(text, &rule.kind.keywords()),
-        Kind::Prefix => prefix(text).into_iter().collect(),
+        Kind::Prefix => prefix(text, false).into_iter().collect(),
+        Kind::LoosePrefix => prefix(text, true).into_iter().collect(),
         kind => {
             let words = kind.keywords();
             marked(text, keywords, |i| keyword_at(text, i, &words))
@@ -265,13 +266,20 @@ fn kept(contents: &str, keep: &[String]) -> bool {
 }
 
 /// "Ann x Bo - Song": everything before the first dash that isn't in a bracket, if
-/// something comes after it.
-fn prefix(text: &str) -> Option<Found> {
+/// something comes after it. `loose`: a dash with a space on one side only counts too
+/// ("Ann- Song", "Ann -Song"); one with none never does ("Jay-Ann").
+fn prefix(text: &str, loose: bool) -> Option<Found> {
     let (groups, _) = groups(text);
-    let (at, end) = text
-        .char_indices()
-        .filter(|&(i, _)| !groups.iter().any(|g| g.open < i && i < g.end))
-        .find_map(|(i, _)| dash_at(text, i).map(|e| (i, e)))?;
+    let dash = |i: usize| -> Option<(usize, usize)> {
+        if let Some(e) = dash_at(text, i) {
+            return Some((i, e));
+        }
+        let c = text[i..].chars().next()?;
+        let after = i + c.len_utf8();
+        let spaced = text[..i].ends_with(char::is_whitespace) || text[after..].starts_with(char::is_whitespace);
+        (loose && "-–—".contains(c) && spaced).then(|| (i, skip_space(text, after)))
+    };
+    let (at, end) = text.char_indices().filter(|&(i, _)| !groups.iter().any(|g| g.open < i && i < g.end)).find_map(|(i, _)| dash(i))?;
     let names = &text[..at];
     let (s, e) = (names.len() - names.trim_start().len(), names.trim_end().len());
     (s < e && !text[end..].trim().is_empty()).then_some(Found { cut: 0..end, names: s..e, unclosed: false })

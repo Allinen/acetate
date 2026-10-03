@@ -7,7 +7,8 @@
 //!
 //! * Rules: `prod`, `feat` (`ft`), `w/`, `with`, `w`, `x`, `prefix`, each in its own role
 //!   or another (`with=prod`), or one for each name in order, the last for the rest
-//!   (`prefix=primary,featured`: "Ann x Bo x Cy - Song" → Ann primary, Bo and Cy featured); `+feat` / `+prod` (`+=role`, the role is needed); `[prod]`,
+//!   (`prefix=primary,featured`: "Ann x Bo x Cy - Song" → Ann primary, Bo and Cy featured);
+//!   `prefix loose`: and a dash with a space on one side only too ("Ann- Song"); `+feat` / `+prod` (`+=role`, the role is needed); `[prod]`,
 //!   `(prod)`, `{prod}` (`[]=role`; `[]` alone: producer); `self`: `himself`, `me`… among
 //!   the names are the track's own primary artists, and `(self-prod.)` credits them as
 //!   producers. Roles as the vocabulary has them, any start of one.
@@ -34,6 +35,7 @@ pub const RULES: &[(&str, &str)] = &[
     ("(prod)", "(Name) → producer"),
     ("(feat)", "(Name) → featured"),
     ("prefix", "Name - Title → primary"),
+    ("loose", "after prefix: Name- Title, Name -Title too"),
     ("self", "prod. himself / me, (self-prod.) → the track's own artists"),
 ];
 
@@ -96,6 +98,8 @@ pub enum Kind {
     Plus,
     Bracket(Shape),
     Prefix,
+    /// `prefix loose`: and a dash with a space on one side only too ("Ann x Bo- Song").
+    LoosePrefix,
 }
 
 impl Kind {
@@ -111,7 +115,7 @@ impl Kind {
             Kind::Own => 7,
             Kind::Plus => 8,
             Kind::Bracket(_) => 9,
-            Kind::Prefix => 10,
+            Kind::Prefix | Kind::LoosePrefix => 10,
         }
     }
 
@@ -126,7 +130,7 @@ impl Kind {
             Kind::X => vec!["x"],
             Kind::Word(w) => vec![w.as_str()],
             Kind::Own => SELF_MARKS.to_vec(),
-            Kind::Plus | Kind::Bracket(_) | Kind::Prefix => vec![],
+            Kind::Plus | Kind::Bracket(_) | Kind::Prefix | Kind::LoosePrefix => vec![],
         }
     }
 
@@ -140,6 +144,7 @@ impl Kind {
             Kind::W => "w",
             Kind::X => "x",
             Kind::Prefix => "prefix",
+            Kind::LoosePrefix => "prefix",
             Kind::Own => "self",
             _ => return None,
         })
@@ -149,7 +154,7 @@ impl Kind {
         match self {
             Kind::Prod | Kind::Bracket(_) | Kind::Own => Some("producer"),
             Kind::Feat | Kind::Slash | Kind::With | Kind::W | Kind::X => Some("featured"),
-            Kind::Prefix => Some("primary"),
+            Kind::Prefix | Kind::LoosePrefix => Some("primary"),
             Kind::Word(_) | Kind::Plus => None,
         }
     }
@@ -181,10 +186,13 @@ impl Rule {
                 let (o, c) = shape.chars();
                 format!("{o}{roles}{c}")
             }
-            kind => match kind.default_role() {
-                Some(d) if self.roles == [d] => kind.name().unwrap_or_default().to_string(),
-                _ => format!("{}={roles}", kind.name().unwrap_or_default()),
-            },
+            kind => {
+                let name = match kind.default_role() {
+                    Some(d) if self.roles == [d] => kind.name().unwrap_or_default().to_string(),
+                    _ => format!("{}={roles}", kind.name().unwrap_or_default()),
+                };
+                if *kind == Kind::LoosePrefix { format!("{name} loose") } else { name }
+            }
         }
     }
 }
@@ -236,9 +244,15 @@ impl Setting {
             };
             let lower = value.to_lowercase();
             match key.as_deref() {
+                // `loose` changes the `prefix` right before it.
+                None if lower == "loose" => match rules.last_mut() {
+                    Some(r) if r.kind == Kind::Prefix => r.kind = Kind::LoosePrefix,
+                    _ => return Err("loose goes right after prefix (parse:prefix loose)".into()),
+                },
                 None => {
                     let rule = rule(&lower, &role_of)?;
-                    if rules.iter().any(|r| r.kind == rule.kind) {
+                    let prefix = |k: &Kind| matches!(k, Kind::Prefix | Kind::LoosePrefix);
+                    if rules.iter().any(|r| r.kind == rule.kind || (prefix(&r.kind) && prefix(&rule.kind))) {
                         return Err(format!("“{value}”: that rule is there already"));
                     }
                     rules.push(rule);

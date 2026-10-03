@@ -219,8 +219,9 @@ pub struct TrackEditor {
     check_scroll: bool,
     /// The line asked for something for the check (who a name is, a name kept whole).
     prompt: Option<Prompt>,
-    /// The staged `parse:` corrected, to parse again (once the names it needs are there).
-    pending_parse: Option<title_parse::TitlesParsed>,
+    /// Staged `parse:` chips corrected, to parse again (once the names they need are there):
+    /// (the chip's change as staged, corrected).
+    pending_parse: Vec<(Arc<title_parse::TitlesParsed>, title_parse::TitlesParsed)>,
     /// Back to the check from the line (a prompt answered).
     to_check: bool,
 }
@@ -230,8 +231,8 @@ pub struct TrackEditor {
 enum Prompt {
     /// Which artist a name is (the line finds it).
     Who(String),
-    /// A name kept whole: the line has the text it was found in.
-    Whole(String),
+    /// A name kept whole (in the nth `parse:` chip): the line has the text it was found in.
+    Whole(usize, String),
 }
 
 /// What importing metadata fetched: what it says, who has the uploader's account, and its
@@ -286,7 +287,7 @@ impl Default for TrackEditor {
             check: None,
             check_scroll: false,
             prompt: None,
-            pending_parse: None,
+            pending_parse: Vec::new(),
             to_check: false,
         }
     }
@@ -469,68 +470,92 @@ impl TrackEditor {
         self.staged.iter().flat_map(|s| s.ops.clone()).collect()
     }
 
-    /// The `parse:` staged last (the check is its).
-    fn staged_parse(&self) -> Option<Arc<title_parse::TitlesParsed>> {
-        self.staged.iter().rev().flat_map(|s| s.ops.iter()).find_map(|op| if let Op::ParseTitle(p) = op { Some(p.clone()) } else { None })
+    /// The staged `parse:` chips' changes, in the order staged (the check is theirs).
+    fn staged_parses(&self) -> Vec<Arc<title_parse::TitlesParsed>> {
+        self.staged.iter().flat_map(|s| s.ops.iter()).filter_map(|op| if let Op::ParseTitle(p) = op { Some(p.clone()) } else { None }).collect()
     }
 
-    /// The staged `parse:` corrected by `change`, then parsed again (`settle_parse`).
-    fn reparse(&mut self, change: impl FnOnce(&mut title_parse::TitlesParsed)) {
-        let Some(mut p) = self.pending_parse.take().or_else(|| self.staged_parse().map(|p| (*p).clone())) else { return };
-        change(&mut p);
-        self.pending_parse = Some(p);
+    /// The nth staged `parse:` corrected by `change`, then parsed again (`settle_parse`).
+    fn reparse(&mut self, k: usize, change: impl FnOnce(&mut title_parse::TitlesParsed)) {
+        let Some(from) = self.staged_parses().get(k).cloned() else { return };
+        match self.pending_parse.iter_mut().find(|(f, _)| Arc::ptr_eq(f, &from)) {
+            Some((_, p)) => change(p),
+            None => {
+                let mut p = (*from).clone();
+                change(&mut p);
+                self.pending_parse.push((from, p));
+            }
+        }
         self.apply_when_ready = false;
     }
 
-    /// A corrected `parse:` parsed again and staged in its place, once the names it needs
-    /// are looked up (tried again each frame until then).
+    /// Every staged `parse:` parsed again (a name chosen: it's in any of them), corrected
+    /// by `change` first.
+    fn reparse_all(&mut self, change: impl Fn(&mut title_parse::TitlesParsed)) {
+        for k in 0..self.staged_parses().len() {
+            self.reparse(k, &change);
+        }
+    }
+
+    /// Corrected `parse:` chips parsed again and staged in their place, once the names they
+    /// need are looked up (tried again each frame until then).
     fn settle_parse(&mut self, shell: &mut Shell, here: &Here) {
-        let (Some(pending), Some(table)) = (self.pending_parse.take(), here.artist_names) else { return };
-        let mut looking = Vec::new();
-        let again = {
-            let ctx = here.ctx(&self.names);
-            let mut look = Look(&mut *shell);
-            pending.again(table, &mut |name| Some(resolve::credited(name, &ctx, &mut look, &mut looking)))
-        };
-        let Some(mut again) = again.filter(|_| looking.is_empty()) else {
-            self.pending_parse = Some(pending);
-            shell.ctx.request_repaint_after(std::time::Duration::from_millis(100));
-            return;
-        };
-        again.make_new(&mut |name| self.names.new_artist(name));
-        let (label, warning) = resolve::parse_label(&again);
-        let again = Arc::new(again);
-        if let Some(s) = self.staged.iter_mut().rev().find(|s| s.ops.iter().any(|op| matches!(op, Op::ParseTitle(_)))) {
-            for op in &mut s.ops {
-                if let Op::ParseTitle(p) = op {
-                    *p = again.clone();
+        let Some(table) = here.artist_names else { return };
+        for (from, pending) in std::mem::take(&mut self.pending_parse) {
+            let mut looking = Vec::new();
+            let again = {
+                let ctx = here.ctx(&self.names);
+                let mut look = Look(&mut *shell);
+                pending.again(table, &mut |name| Some(resolve::credited(name, &ctx, &mut look, &mut looking)))
+            };
+            let Some(mut again) = again.filter(|_| looking.is_empty()) else {
+                self.pending_parse.push((from, pending));
+                shell.ctx.request_repaint_after(std::time::Duration::from_millis(100));
+                continue;
+            };
+            again.make_new(&mut |name| self.names.new_artist(name));
+            let (label, warning) = resolve::parse_label(&again);
+            let again = Arc::new(again);
+            // The chip it came from (taken back meanwhile: nothing to do).
+            for s in &mut self.staged {
+                let mut here = false;
+                for op in &mut s.ops {
+                    if let Op::ParseTitle(p) = op
+                        && Arc::ptr_eq(p, &from)
+                    {
+                        *p = again.clone();
+                        here = true;
+                    }
+                }
+                if here {
+                    (s.label, s.warning) = (label.clone(), warning.clone());
                 }
             }
-            (s.label, s.warning) = (label, warning);
+            self.resolved = None;
         }
-        self.resolved = None;
     }
 
     /// A key on the check's row `n`.
     fn check_key(&mut self, entry: &check::Entry, key: Key, here: &Here) {
         use check::{Entry, Fix};
-        let Some(p) = self.staged_parse() else { return };
-        if let (Entry::Name(i), Key::Enter | Key::C) = (entry, key)
-            && p.names[*i].credited == title_parse::Credited::Own
+        let parses = self.staged_parses();
+        let name_of = |k: usize, i: usize| parses.get(k).and_then(|p| p.names.get(i));
+        if let (Entry::Name(k, i), Key::Enter | Key::C) = (entry, key)
+            && let Some(n) = name_of(*k, *i).filter(|n| n.credited == title_parse::Credited::Own)
         {
-            self.notice = Some(format!("“{}” stands for each track's own primary artists (n: it isn't a credit).", p.names[*i].text));
+            self.notice = Some(format!("“{}” stands for each track's own primary artists (n: it isn't a credit).", n.text));
             return;
         }
         match (entry, key) {
-            (Entry::Name(i), Key::Enter) => {
-                let name = p.names[*i].text.clone();
+            (Entry::Name(k, i), Key::Enter) => {
+                let Some(name) = name_of(*k, *i).map(|n| n.text.clone()) else { return };
                 self.line = format!("artist:{}", parse::quoted(&name));
                 self.prompt = Some(Prompt::Who(name));
                 self.focus_line = true;
                 self.place_cursor = true;
             }
-            (Entry::Name(i), Key::C) => {
-                let name = p.names[*i].text.clone();
+            (Entry::Name(k, i), Key::C) => {
+                let Some(name) = name_of(*k, *i).map(|n| n.text.clone()) else { return };
                 let candidates = here.artist_names.map(|t| t.get(&name).to_vec()).unwrap_or_default();
                 if candidates.len() < 2 {
                     self.notice = Some(format!("Only {} artist has the name “{name}” (Enter chooses another).", if candidates.is_empty() { "no" } else { "one" }));
@@ -539,45 +564,48 @@ impl TrackEditor {
                 let now = self.names.pinned(PinKind::Artist, &name).and_then(|id| candidates.iter().position(|c| *c == id));
                 let next = candidates[now.map_or(0, |at| (at + 1) % candidates.len())];
                 self.names.pin(PinKind::Artist, &name, next);
-                self.reparse(|_| {});
+                self.reparse_all(|_| {});
             }
-            (Entry::Name(i), Key::S) => {
-                let name = p.names[*i].text.clone();
-                let pieces = crate::title_credits::split_by_hand(&name, &p.rules);
+            (Entry::Name(k, i), Key::S) => {
+                let Some(name) = name_of(*k, *i).map(|n| n.text.clone()) else { return };
+                let pieces = crate::title_credits::split_by_hand(&name, &parses[*k].rules);
                 if pieces.len() < 2 {
                     self.notice = Some(format!("“{name}” has no separator to split on (, & + x and)."));
                     return;
                 }
                 self.notice = Some(format!("“{name}” split: {}.", pieces.join(", ")));
-                self.reparse(|p| p.fixes.split.push(name));
+                self.reparse(*k, |p| p.fixes.split.push(name));
             }
             (Entry::Track(..), Key::S | Key::W | Key::N | Key::C) => {
                 self.notice = Some("On a track, x leaves it out; s, w, n and c are for a name's row (above).".into());
             }
-            (Entry::Name(i), Key::W) => {
-                let n = &p.names[*i];
+            (Entry::Name(k, i), Key::W) => {
+                let Some(n) = name_of(*k, *i) else { return };
                 self.line = n.part.clone();
-                self.prompt = Some(Prompt::Whole(n.text.clone()));
+                self.prompt = Some(Prompt::Whole(*k, n.text.clone()));
                 self.focus_line = true;
                 self.place_cursor = true;
             }
-            (Entry::Name(i), Key::N) => {
-                let name = p.names[*i].text.clone();
-                self.reparse(|p| p.fixes.not_names.push(name));
+            (Entry::Name(k, i), Key::N) => {
+                let Some(name) = name_of(*k, *i).map(|n| n.text.clone()) else { return };
+                self.reparse(*k, |p| p.fixes.not_names.push(name));
             }
             (Entry::Track(track, _), Key::X) => {
-                let track = *track;
-                self.reparse(|p| {
-                    if p.skip.contains(&track) {
-                        p.skip.retain(|t| *t != track);
-                    } else {
+                // Out of every chip that has it (or back into all of them).
+                let (track, out) = (*track, check::left_out(&parses, *track));
+                self.reparse_all(|p| {
+                    if !p.titles.iter().any(|(t, _)| *t == track) {
+                        return;
+                    }
+                    p.skip.retain(|t| *t != track);
+                    if !out {
                         p.skip.push(track);
                     }
                 });
             }
-            (Entry::Fixed(fix, name), Key::Delete) => {
+            (Entry::Fixed(k, fix, name), Key::Delete) => {
                 let (fix, name) = (*fix, name.clone());
-                self.reparse(|p| {
+                self.reparse(*k, |p| {
                     let list = match fix {
                         Fix::NotName => &mut p.fixes.not_names,
                         Fix::Split => &mut p.fixes.split,
@@ -588,7 +616,7 @@ impl TrackEditor {
             }
             (Entry::Chosen(name, _), Key::Delete) => {
                 self.names.unpin(PinKind::Artist, name);
-                self.reparse(|_| {});
+                self.reparse_all(|_| {});
             }
             _ => {}
         }
@@ -601,13 +629,13 @@ impl TrackEditor {
                 self.notice = Some(format!("Choose who “{name}” is in the list (Esc: never mind)."));
                 return;
             }
-            Prompt::Whole(_) => {
+            Prompt::Whole(k, _) => {
                 let whole = self.line.split_whitespace().collect::<Vec<_>>().join(" ");
                 if whole.is_empty() {
                     self.notice = Some("Leave the name to keep whole in the line (Esc: never mind).".into());
                     return;
                 }
-                self.reparse(|p| p.fixes.whole.push(whole));
+                self.reparse(k, |p| p.fixes.whole.push(whole));
             }
         }
         self.line.clear();
@@ -670,6 +698,7 @@ impl TrackEditor {
             }
         }
         let typing = ctx.egui_wants_keyboard_input();
+        let free = keys_free(&ctx, ui.layer_id(), shell.palette_open, shell.modal_was_open);
         // Metadata pasted to import (into the empty line, or outside any field).
         if phase == Phase::Editing && single && !shell.palette_open && !shell.modal_open && ((focused && self.line.trim().is_empty()) || !typing) {
             let pasted = ctx.input(|i| i.events.iter().find_map(|e| if let egui::Event::Paste(text) = e { import::recognize(text) } else { None }));
@@ -700,7 +729,7 @@ impl TrackEditor {
         // `parse:` typed: each target's title as the staged changes leave it (once they're
         // all loaded), and every artist's names.
         let typed_parse = parse::parse(&self.line).parts.iter().any(|p| p.key == K::Parse);
-        let parsing = typed_parse || self.staged_parse().is_some();
+        let parsing = typed_parse || !self.staged_parses().is_empty();
         let titles: Option<Vec<(Uuid, String)>> = typed_parse.then(|| targets.iter().map(|t| self.engine.ready(*t).map(|r| (*t, r.meta.title.clone()))).collect()).flatten();
         if parsing && self.artist_names.as_ref().is_none_or(|(of, _)| !std::ptr::eq(*of, Arc::as_ptr(catalog))) {
             let names = catalog.artists.iter().flat_map(|a| std::iter::once((a.id, a.name.as_str())).chain(a.aliases.iter().map(move |x| (a.id, x.as_str()))));
@@ -746,7 +775,7 @@ impl TrackEditor {
             None => Vec::new(),
         };
         // (A name kept whole is typed as plain words: they find nothing then.)
-        let words = parsed.parts.is_empty() && !parsed.words.is_empty() && !matches!(self.prompt, Some(Prompt::Whole(_)));
+        let words = parsed.parts.is_empty() && !parsed.words.is_empty() && !matches!(self.prompt, Some(Prompt::Whole(..)));
         let (candidates, actions, units) = {
             let mut look = Look(&mut *shell);
             let rctx = here.ctx(&self.names);
@@ -817,9 +846,10 @@ impl TrackEditor {
             self.row = (!rows.is_empty()).then(|| row.min(rows.len() - 1));
         }
         // The check of a staged `parse:`, and the row of it the keys are on.
-        let checking: Option<(Arc<title_parse::TitlesParsed>, Vec<check::Entry>)> = self.staged_parse().map(|p| {
-            let entries = check::entries(&p, &self.names, &self.engine);
-            (p, entries)
+        let parses = self.staged_parses();
+        let checking: Option<(Vec<Arc<title_parse::TitlesParsed>>, Vec<check::Entry>)> = (!parses.is_empty()).then(|| {
+            let entries = check::entries(&parses, &self.names, &self.engine);
+            (parses, entries)
         });
         self.check = match (&checking, self.check) {
             (Some((_, e)), Some(n)) => check::selectable(e, n.min(e.len().saturating_sub(1)), false).or_else(|| check::selectable(e, 0, true)),
@@ -889,7 +919,7 @@ impl TrackEditor {
             }
         }
         // ---- Keys on a row ----
-        if let Some(n) = self.row.filter(|_| !typing && !shell.palette_open && !shell.modal_was_open)
+        if let Some(n) = self.row.filter(|_| !typing && free)
             && let Some(row) = rows.get(n)
             && let Some(r) = targets.first().and_then(|t| self.engine.ready(*t)).cloned()
         {
@@ -970,7 +1000,7 @@ impl TrackEditor {
             }
         }
         // ---- Keys on the check ----
-        if let (Some(n), Some((_, entries))) = (self.check.filter(|_| !typing && !shell.palette_open && !shell.modal_was_open), &checking) {
+        if let (Some(n), Some((_, entries))) = (self.check.filter(|_| !typing && free), &checking) {
             let pressed = |k: Key| ctx.input_mut(|i| i.consume_key(Modifiers::NONE, k));
             if pressed(Key::ArrowDown) || pressed(Key::J) {
                 self.check = check::selectable(entries, n + 1, true).or(Some(n));
@@ -998,7 +1028,7 @@ impl TrackEditor {
             }
         }
         // Ctrl+Enter: what's typed is staged first; then the preview is applied.
-        let ctrl_enter = !shell.palette_open && !shell.modal_was_open && ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Enter));
+        let ctrl_enter = free && ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Enter));
         if ctrl_enter && !self.line.trim().is_empty() {
             stage = true;
         }
@@ -1099,7 +1129,7 @@ impl TrackEditor {
         if let Some(prompt) = &self.prompt {
             let text = match prompt {
                 Prompt::Who(name) => format!("Who is “{name}”? Choose the artist in the list (or a new one) · Esc: never mind"),
-                Prompt::Whole(name) => format!("Keep a name whole: leave exactly the name in the line (it has where “{name}” was found), then Enter · Esc: never mind"),
+                Prompt::Whole(_, name) => format!("Keep a name whole: leave exactly the name in the line (it has where “{name}” was found), then Enter · Esc: never mind"),
             };
             ui.label(RichText::new(text).color(P.accent).small());
         }
@@ -1193,7 +1223,7 @@ impl TrackEditor {
             self.rows_view(ui, shell, catalog, targets[0], &rows, &vocab);
             if let Some((p, entries)) = &checking {
                 ui.add_space(10.0);
-                let view = check::View { parsed: p, names: &self.names, catalog, engine: &self.engine };
+                let view = check::View { parses: p, names: &self.names, catalog, engine: &self.engine };
                 ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), 260.0), egui::Layout::top_down(egui::Align::Min), |ui| {
                     ui.set_min_height(260.0);
                     check_clicked = check::draw(ui, &view, entries, self.check, self.check_scroll, check_id);
@@ -1209,7 +1239,7 @@ impl TrackEditor {
                     ui.set_min_height(height);
                     match &checking {
                         Some((p, entries)) => {
-                            let view = check::View { parsed: p, names: &self.names, catalog, engine: &self.engine };
+                            let view = check::View { parses: p, names: &self.names, catalog, engine: &self.engine };
                             check_clicked = check::draw(ui, &view, entries, self.check, self.check_scroll, check_id);
                         }
                         None => {
@@ -1328,7 +1358,7 @@ impl TrackEditor {
             };
             if let Some(id) = id {
                 self.names.pin(PinKind::Artist, &name, id);
-                self.reparse(|_| {});
+                self.reparse_all(|_| {});
                 self.line.clear();
                 self.prompt = None;
                 self.resolved = None;
@@ -1391,7 +1421,6 @@ impl TrackEditor {
                     let mut made = (**parsed).clone();
                     made.make_new(&mut |name| self.names.new_artist(name));
                     *op = Op::ParseTitle(Arc::new(made));
-                    self.pending_parse = None;
                 }
             }
             // The aliases it credits, named (for the preview's words).
@@ -1920,7 +1949,8 @@ impl TrackEditor {
         match phase {
             Phase::Editing => {
                 // A name more than one artist has: chosen first (or its tracks left out).
-                let undecided: Vec<String> = self.staged_parse().map(|p| p.undecided().iter().map(|n| format!("“{}”", n.text)).collect()).unwrap_or_default();
+                let mut undecided: Vec<String> = self.staged_parses().iter().flat_map(|p| p.undecided().iter().map(|n| format!("“{}”", n.text)).collect::<Vec<_>>()).collect();
+                undecided.dedup();
                 let can = current && changing > refused && !loading && self.line.trim().is_empty() && self.uploading == 0 && undecided.is_empty();
                 let text = if self.engine.is_draft() && single { "Import  (Ctrl+Enter)".to_string() } else if self.engine.is_draft() { format!("Import {} files  (Ctrl+Enter)", thousands(changing - refused.min(changing))) } else if single { "Apply  (Ctrl+Enter)".to_string() } else { format!("Apply to {} tracks  (Ctrl+Enter)", thousands(changing - refused.min(changing))) };
                 let mut apply = false;
@@ -2160,6 +2190,17 @@ impl resolve::Lookups for Look<'_> {
     }
 }
 
+/// Whether the keys are the editor's (drawn on `layer`): not if something is over it. On a
+/// page, any popup; in a popup (the bulk editor), another one opened on top of it (it sets
+/// `modal_open` itself, so that alone can't say).
+fn keys_free(ctx: &egui::Context, layer: egui::LayerId, palette_open: bool, modal_was_open: bool) -> bool {
+    !palette_open
+        && match layer.order {
+            egui::Order::Foreground => ctx.memory(|m| m.areas().visible_layer_ids().iter().all(|l| l.order != egui::Order::Foreground || *l == layer)),
+            _ => !modal_was_open,
+        }
+}
+
 /// A list under the line: (label, what tells it apart), the chosen one lit. A click sets
 /// `clicked`.
 fn list(ui: &mut egui::Ui, rows: Vec<(String, String)>, highlighted: usize, clicked: &mut Option<usize>) {
@@ -2327,8 +2368,40 @@ impl Lookup {
 
 #[cfg(test)]
 mod tests {
-    use super::Verb;
+    use super::{keys_free, Verb};
     use crate::catalog::query::loosely_in;
+
+    /// In the bulk editor's popup the keys are the editor's (Ctrl+Enter, the check's), until
+    /// another popup opens over it.
+    #[test]
+    fn keys_in_a_popup_are_its_own() {
+        use eframe::egui;
+        let ctx = egui::Context::default();
+        crate::ui::theme::apply(&ctx);
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::Vec2::new(1200.0, 900.0));
+        let mut layer = None;
+        let frame = |over: bool, layer: &mut Option<egui::LayerId>| {
+            let input = egui::RawInput { screen_rect: Some(screen), ..Default::default() };
+            let mut output = ctx.run_ui(input, |ui| {
+                crate::ui::modal::show(ui.ctx(), "bulk", "Change 3 tracks", egui::Vec2::new(600.0, 400.0), |ui| *layer = Some(ui.layer_id()));
+                if over {
+                    crate::ui::modal::show(ui.ctx(), "original", "Original", egui::Vec2::new(300.0, 200.0), |_| {});
+                }
+            });
+            // No renderer here: the textures it would upload are let go.
+            output.textures_delta.clear();
+        };
+        frame(false, &mut layer);
+        frame(false, &mut layer);
+        let layer = layer.unwrap();
+        assert!(keys_free(&ctx, layer, false, true), "its own popup");
+        assert!(!keys_free(&ctx, layer, true, true), "the palette is over it");
+        frame(true, &mut Some(layer));
+        assert!(!keys_free(&ctx, layer, false, true), "another popup over it");
+        // On a page: any popup takes them.
+        assert!(!keys_free(&ctx, egui::LayerId::background(), false, true));
+        assert!(keys_free(&ctx, egui::LayerId::background(), false, false));
+    }
 
     /// Plain words find the tools as the line lists them (by their label).
     #[test]

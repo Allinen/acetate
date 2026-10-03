@@ -76,10 +76,6 @@ pub struct Fixes {
 }
 
 impl Fixes {
-    pub fn is_empty(&self) -> bool {
-        self.not_names.is_empty() && self.split.is_empty() && self.whole.is_empty()
-    }
-
     fn has(list: &[String], name: &str) -> bool {
         let name = name.trim().to_lowercase();
         list.iter().any(|n| n.trim().to_lowercase() == name)

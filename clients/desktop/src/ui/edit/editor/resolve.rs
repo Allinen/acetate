@@ -1029,7 +1029,9 @@ pub fn candidates(part: &Part, owner: Option<&Part>, ctx: &Ctx, hits: &[u32], tr
             // The rules not typed yet, for the word being typed.
             let mut words: Vec<&str> = value.split_whitespace().collect();
             let typing = if value.is_empty() || part.value.ends_with(char::is_whitespace) { "" } else { words.pop().unwrap_or("") };
-            for (rule, what) in crate::title_credits::RULES.iter().filter(|(r, _)| !words.contains(r) && r.starts_with(&typing.to_lowercase())) {
+            // (`loose` only after `prefix`.)
+            let fits = |r: &str| r != "loose" || words.last().is_some_and(|w| w.to_lowercase().starts_with("prefix"));
+            for (rule, what) in crate::title_credits::RULES.iter().filter(|(r, _)| !words.contains(r) && fits(r) && r.starts_with(&typing.to_lowercase())) {
                 let text = words.iter().copied().chain([*rule]).collect::<Vec<_>>().join(" ");
                 out.push(Candidate { label: rule.to_string(), sub: what.to_string(), text, pick: None, next: None });
             }

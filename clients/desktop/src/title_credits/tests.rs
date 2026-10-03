@@ -145,6 +145,15 @@ fn prefix() {
     case("prefix", "Song (Remix - Live)", "Song (Remix - Live)", &[]);
     case("prefix", "Ann -", "Ann -", &[]);
     case("prefix feat", "Ann feat. Bo - Song", "Song", &[("Bo", F), ("Ann", M)]);
+    // A dash with a space on one side only: `prefix loose`, not `prefix`.
+    case("prefix", "Ann x Lil Bo- Song", "Ann x Lil Bo- Song", &[]);
+    case("prefix loose", "Ann x Lil Bo- Song", "Song", &[("Ann", M), ("Lil Bo", M)]);
+    case("prefix loose", "Ann -Song", "Song", &[("Ann", M)]);
+    case("prefix loose", "Ann - Song", "Song", &[("Ann", M)]);
+    // No space on either side: a hyphen, never a divider.
+    case("prefix loose", "Jay-Ann - Song", "Song", &[("Jay-Ann", M)]);
+    case("prefix loose", "Jay-Ann", "Jay-Ann", &[]);
+    case("prefix=primary,featured loose feat", "Ann x Bo- Song", "Song", &[("Ann", M), ("Bo", F)]);
 }
 
 #[test]
@@ -268,6 +277,8 @@ fn settings_read_back_the_same() {
         "feat keep:cdq2 \"bass boosted\" -live",
         "feat word:\"beat by\"=producer word:vs=featured",
         "prefix=primary,featured [producer,featured] +primary,featured",
+        "prefix loose feat",
+        "prefix=primary,featured loose",
     ] {
         let s = setting(text);
         assert_eq!(setting(&s.to_text()), s, "{text} → {}", s.to_text());
@@ -287,6 +298,9 @@ fn settings_refused() {
         ("prefix=primary,nobody", "no role like “nobody”"),
         ("feat ft", "there already"),
         ("[prod] [feat]", "there already"),
+        ("prefix prefix", "there already"),
+        ("loose prefix", "loose goes right after prefix"),
+        ("feat loose", "loose goes right after prefix"),
         ("word:vs", "needs a role"),
         ("feat split:, -x", "not both"),
         ("feat split:-y", "isn't split on by default"),
