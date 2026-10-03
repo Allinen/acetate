@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT btrim(title) = '' AS \"untitled!\",\n                  NOT EXISTS (SELECT 1 FROM track_credits WHERE track_id = t.id) AS \"uncredited!\"\n           FROM tracks t WHERE id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "untitled!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "uncredited!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "b7533cb59674de66a8ced0f29497016b62c306b6149d733328dfbd9816256263"
+}

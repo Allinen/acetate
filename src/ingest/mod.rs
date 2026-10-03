@@ -86,6 +86,11 @@ pub struct Given {
     pub title: Option<String>,
     /// Split on `;` like the ARTIST tag.
     pub artists: Vec<String>,
+    /// The track is edited right after, in the same transaction (the editor on a file that
+    /// didn't import, see `api::problems::import`): a missing title or artist isn't refused
+    /// here. Revision 0 says what the tags say, even no title; the caller refuses the file
+    /// if the edit doesn't give what's missing.
+    pub edited_after: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -686,7 +691,7 @@ async fn new_track(
     .into_iter()
     .filter_map(|(name, is_missing)| is_missing.then_some(name))
     .collect();
-    if !missing.is_empty() {
+    if !missing.is_empty() && !options.given.edited_after {
         return Err(Rejected::MissingTags(missing).into());
     }
     let album_covers = checked_album_covers(options)?;
@@ -786,6 +791,21 @@ async fn new_track(
     system.end(conn).await?;
     describe::hide_invisible(conn, &mut report).await?;
     Ok(report)
+}
+
+/// Flags a track imported with `Given::edited_after` as a possible duplicate of tracks by
+/// the same artists with a similar title, as an import does, once the edit has given its
+/// title and artists. `same_song_as`: from the import's report (already flagged as such).
+pub async fn flag_possible_duplicates(conn: &mut PgConnection, track_id: Uuid, same_song_as: &[Uuid]) -> anyhow::Result<()> {
+    // Across the whole library, like the import (see `new_track`).
+    let system = db::as_system(conn).await?;
+    let title = sqlx::query_scalar!("SELECT title FROM tracks WHERE id = $1", track_id).fetch_one(&mut *conn).await?;
+    let artist_ids = sqlx::query_scalar!("SELECT artist_id FROM track_credits WHERE track_id = $1 ORDER BY position", track_id)
+        .fetch_all(&mut *conn)
+        .await?;
+    db::review::flag_possible_duplicates(conn, track_id, &title, &artist_ids, same_song_as).await?;
+    system.end(conn).await?;
+    Ok(())
 }
 
 /// The description's album covers, with what kind of image each is. Refuses the file if
@@ -1255,9 +1275,14 @@ async fn create_track_rows(
         });
     }
 
-    // Revision 0: exactly what the tags said. (Title presence was checked by the caller.)
+    // Revision 0: exactly what the tags said. (Title presence was checked by the caller,
+    // unless an edit follows.)
     let metadata = TrackMetadata {
-        title: tags.title.clone().context("title is required")?,
+        title: match &tags.title {
+            Some(title) => title.clone(),
+            None if options.given.edited_after => String::new(),
+            None => anyhow::bail!("title is required"),
+        },
         release_date: tags.date.clone(),
         genres: tags.genres.clone(),
         comment: tags.comment.clone(),
@@ -1483,9 +1508,12 @@ async fn create_track_rows(
         db::review::flag_same_song(conn, track_id, &same_song_as, &same_song_reasons.join(", "))
             .await?;
     }
-    let artist_ids: Vec<Uuid> = metadata.credits.iter().map(|c| c.artist_id).collect();
-    db::review::flag_possible_duplicates(conn, track_id, &metadata.title, &artist_ids, &same_song_as)
-        .await?;
+    // With an edit to follow, on what it leaves instead (`flag_possible_duplicates`).
+    if !options.given.edited_after {
+        let artist_ids: Vec<Uuid> = metadata.credits.iter().map(|c| c.artist_id).collect();
+        db::review::flag_possible_duplicates(conn, track_id, &metadata.title, &artist_ids, &same_song_as)
+            .await?;
+    }
 
     if let Some(groups) = &options.restrict_to {
         db::access::set(conn, track_id, true, groups, "restricted when uploaded").await?;

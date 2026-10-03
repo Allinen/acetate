@@ -6,6 +6,7 @@
 //! compatible: a field added later is simply missing from them and reads as its default,
 //! no data migration needed. Fields a newer version wrote are ignored by an older one.
 
+pub mod draft;
 pub mod sources;
 
 use std::collections::HashSet;
@@ -176,6 +177,11 @@ impl TrackMetadata {
         if self.title.trim().is_empty() {
             return Err("title can't be empty".to_string());
         }
+        self.validate_credits()
+    }
+
+    /// `validate` without requiring a title.
+    pub fn validate_credits(&self) -> Result<(), String> {
         validate_credits(&self.credits)
     }
 }

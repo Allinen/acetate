@@ -479,7 +479,7 @@ async fn listed_files_import_with_values_given_by_hand(
     let description = description.validate(|_| None).map_err(anyhow::Error::msg)?;
     let again = IngestOptions {
         restrict_to: description.restrict_to,
-        given: ingest::Given { title: None, artists: vec!["Typed Artist; Another".into()] },
+        given: ingest::Given { title: None, artists: vec!["Typed Artist; Another".into()], edited_after: false },
         uploaded_filename: "no-artist.opus".into(),
         ..opts.clone()
     };
@@ -794,7 +794,7 @@ async fn a_described_release_date_is_only_used_without_one_in_the_tags(
 
     // They don't: the described one, and the revision says so.
     let opts = IngestOptions {
-        given: ingest::Given { title: None, artists: vec!["Typed Artist".into()] },
+        given: ingest::Given { title: None, artists: vec!["Typed Artist".into()], edited_after: false },
         ..options(None, 2, dated)
     };
     let undated = ingest_file(&lib.owner, &store, "no-artist.opus", &opts, false).await?;

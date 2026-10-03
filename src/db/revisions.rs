@@ -164,7 +164,10 @@ async fn create_track_from(
     .execute(&mut *conn)
     .await?;
 
-    write_internal(conn, track_id, variant_id, None, meta, source, reason, false).await?;
+    // Revision 0 may lack a title: what the file's tags said, when an edit in the same
+    // transaction gives one (see `ingest::Given::edited_after`, whose caller checks it does).
+    meta.validate_credits().map_err(invalid)?;
+    write_internal_unchecked(conn, track_id, variant_id, None, meta, source, reason, false).await?;
     write_external(conn, track_id, None, facts, source, reason).await?;
     Ok(track_id)
 }
@@ -240,6 +243,21 @@ pub async fn write_internal(
     is_canon: bool,
 ) -> anyhow::Result<Written> {
     data.validate().map_err(invalid)?;
+    write_internal_unchecked(conn, track_id, variant_id, base, data, source, reason, is_canon).await
+}
+
+/// `write_internal` without checking the data first (the caller has).
+#[allow(clippy::too_many_arguments)]
+async fn write_internal_unchecked(
+    conn: &mut PgConnection,
+    track_id: Uuid,
+    variant_id: Uuid,
+    base: Option<Uuid>,
+    data: &TrackMetadata,
+    source: Source,
+    reason: &str,
+    is_canon: bool,
+) -> anyhow::Result<Written> {
     // Credits to merged artists/aliases point at where they were merged into.
     let resolved = TrackMetadata {
         credits: resolve_credits(conn, &data.credits).await?,

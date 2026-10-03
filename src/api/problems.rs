@@ -1,10 +1,14 @@
 //! Files that didn't import (see `db::problems`): listed for review, with their audio.
 
+use std::collections::HashMap;
+
+use anyhow::Context;
 use axum::Json;
 use axum::extract::{Path, Query, Request, State};
 use axum::http::StatusCode;
 use axum::response::Response;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 use uuid::Uuid;
 
 use super::media::serve_blob;
@@ -12,8 +16,11 @@ use super::{AppError, AppState};
 use crate::auth::{CurrentUser, Permission};
 use crate::db;
 use crate::db::problems::Problem;
-use crate::ingest::describe::{NewDescription, Report, ValidDescription};
-use crate::ingest::{self, AddAs, Given, IngestOptions, ReplaceOptions};
+use crate::db::track_edits::TrackEdited;
+use crate::db::tracks::TrackDetail;
+use crate::ingest::describe::{NewDescription, Report, ReportStatus, ValidDescription};
+use crate::ingest::{self, AddAs, Given, IngestOptions, Rejected, ReplaceOptions};
+use crate::model::draft::{Draft, replace_ids};
 
 #[derive(Debug, Deserialize)]
 pub struct ListParams {
@@ -142,20 +149,66 @@ pub struct ImportWith {
     artists: Vec<String>,
     /// The file is an original file (an og file) with this name, when its tags don't say.
     original_filename: Option<String>,
+    /// The editor's changes to the new track: one of `/api/tracks/edit`'s `tracks`, made on
+    /// the track a preview answered, with its ids (`track_id` can be left out).
+    track: Option<Value>,
+    /// What the track's changes refer to that's to be made first, as in `/api/tracks/edit`.
+    new_artists: Vec<Value>,
+    new_albums: Vec<Value>,
+    new_groupings: Vec<Value>,
+    /// The edit's reason (default: that it was made while importing the file).
+    reason: String,
+    /// The `draft` a preview answered, whose ids `track` uses.
+    draft: Option<Draft>,
+    /// Only say what would happen (nothing is kept).
+    preview: bool,
 }
 
-/// `POST /api/ingest-problems/{id}/import`, JSON `{"title": "...", "artists": ["..."],
-/// "original_filename": "..."}` (the last: it's an original file, when its tags don't say):
-/// imports the kept file again, with what it was imported with the first time, using these
-/// values for what its tags lack. The file and its raw tags aren't changed; the track's
-/// first revision says which values were given by hand. Returns the ingest report; if it's
-/// refused again, the entry is updated with the new reason.
+/// What importing a file that didn't import did (or would).
+#[derive(Debug, Serialize)]
+pub struct Imported {
+    /// The new track, or (a duplicate) the one that has the file already; None for one
+    /// the user can't see.
+    track_id: Option<Uuid>,
+    report: Report,
+    /// The new track as the import made it, before the edit: what the editor works on.
+    /// None for a duplicate.
+    track: Option<TrackDetail>,
+    /// Its ids, to send back with an edit made on it.
+    draft: Option<Draft>,
+    /// What the edit did (or would), the new track's open flags after it included. Its
+    /// `error`: why it can't be (then nothing is kept).
+    edited: Option<TrackEdited>,
+    /// What the track still lacks to be imported ("title", "artist"): a preview says so,
+    /// importing refuses.
+    missing: Vec<&'static str>,
+}
+
+/// `POST /api/ingest-problems/{id}/import`: imports the kept file again, with what it was
+/// imported with the first time (its source included), and the track editor's changes to
+/// the new track, in one transaction. JSON:
+///
+/// * `track`, `new_artists`, `new_albums`, `new_groupings`, `reason`: the changes, as for
+///   `POST /api/tracks/edit` (one track; needs `edit_metadata`). A new track's ids only
+///   come from a preview, so changes are made on the `track` a preview answers, and sent
+///   with its `draft` (see `model::draft`); 409 if the import has come out differently
+///   since.
+/// * `preview`: the same, rolled back. Answers the track before the changes (to edit), its
+///   draft, and what the changes did, the flags after them included.
+/// * `original_filename`: it's an original file with this name, when its tags don't say.
+/// * `title`, `artists`: values for what the tags lack, written into the track's first
+///   revision (which says they were given by hand).
+///
+/// The file and its raw tags aren't changed. Revision 0 is what the tags say (even no
+/// title); the changes come after it. Refused if the track has no title or no artist in
+/// the end (from the tags, or the changes). A file whose bytes are a track's already isn't
+/// changed: that's said, and nothing is edited.
 pub async fn import(
     State(state): State<AppState>,
     user: CurrentUser,
     Path(id): Path<Uuid>,
     Json(with): Json<ImportWith>,
-) -> Result<Json<Report>, AppError> {
+) -> Result<Json<Imported>, AppError> {
     let (file, problem, mut description) = load_open(&state, &user, id).await?;
     if let Some(name) = with.original_filename.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
         description.hints.original_filename = Some(name.to_string());
@@ -165,9 +218,18 @@ pub async fn import(
             "this file was to be restricted; importing it needs the manage_access permission".to_string(),
         ));
     }
+    let editing = with.track.is_some();
+    if editing && !user.has(Permission::EditMetadata) {
+        return Err(AppError::Forbidden("changing the new track needs the `edit_metadata` permission".to_string()));
+    }
+    // A new track, which the changes are for: not merged into one that has the same file.
+    if editing {
+        description.hints.no_duplicate_merge = true;
+    }
+    let uploaded_filename = problem.uploaded_filename;
     let options = IngestOptions {
         user: user.id(),
-        uploaded_filename: problem.uploaded_filename,
+        uploaded_filename: uploaded_filename.clone(),
         origin: description.origin,
         status: description.status.unwrap_or_else(|| "released".to_string()),
         sources: description.track_sources,
@@ -177,12 +239,112 @@ pub async fn import(
         given: Given {
             title: with.title,
             artists: with.artists,
+            edited_after: true,
         },
         volume: None,
         tags_from: None, // a tagged copy was only there for the original request
     };
-    let report = ingest::ingest_staged(&state.pool, &state.store, &file, &options, false).await?;
-    Ok(Json(report))
+
+    let mut tx = state.db(&user).await?;
+    let report = ingest::ingest_in(&mut tx, &state.store, &file, &options, with.preview)
+        .await
+        .map_err(ingest::as_rejected)?;
+    let new_track = report.track_id.filter(|_| report.status == ReportStatus::Created);
+    let Some(track_id) = new_track else {
+        // Already stored: its track got the sources, as any import of it does.
+        if with.preview {
+            tx.rollback().await?;
+        } else {
+            tx.commit().await?;
+        }
+        return Ok(Json(Imported { track_id: report.track_id, report, track: None, draft: None, edited: None, missing: Vec::new() }));
+    };
+
+    // The track before the changes, and its ids by place.
+    let track = db::tracks::get_track(&mut tx, track_id, user.has(Permission::ViewHistory))
+        .await?
+        .ok_or_else(|| AppError::BadRequest("the new track would be restricted so that you can't see it: import it without changes".to_string()))?;
+    let draft = Draft::of(&serde_json::to_value(&track).map_err(anyhow::Error::from)?);
+
+    // The changes, their ids the new track's.
+    let map = match &with.draft {
+        Some(sent) => sent.map_to(&draft).map_err(AppError::Conflict)?,
+        None => HashMap::new(),
+    };
+    let mut entry = with.track.unwrap_or_else(|| json!({}));
+    replace_ids(&mut entry, &map);
+    let mut new_albums = Value::Array(with.new_albums);
+    replace_ids(&mut new_albums, &map);
+    let Some(fields) = entry.as_object_mut() else {
+        return Err(AppError::BadRequest("`track` is the new track's changes, an object".to_string()));
+    };
+    match fields.get("track_id").map(|t| t.as_str().and_then(|t| t.parse::<Uuid>().ok())) {
+        None => {}
+        Some(Some(id)) if id == track_id => {}
+        Some(_) => return Err(AppError::BadRequest("`track.track_id` isn't the draft's track".to_string())),
+    }
+    fields.insert("track_id".into(), json!(track_id));
+    let reason = match with.reason.trim() {
+        "" => format!("while importing \"{uploaded_filename}\""),
+        reason => reason.to_string(),
+    };
+    let edit: db::track_edits::Edit = serde_json::from_value(json!({
+        "reason": reason,
+        "new_artists": with.new_artists,
+        "new_albums": new_albums,
+        "new_groupings": with.new_groupings,
+        "tracks": [entry],
+    }))
+    .map_err(|err| AppError::BadRequest(format!("the changes don't fit: {err}")))?;
+
+    // Each track of an edit fails on its own (its savepoint rolled back): the error is kept
+    // to refuse the whole import with.
+    let may = db::track_edits::May { relations: user.has(Permission::EditRelations), sources: user.has(Permission::EditSources) };
+    let failed = std::sync::Mutex::new(None);
+    let mut edited = db::track_edits::edit(&mut tx, &edit, may, |err| {
+        let failure = super::failure_of(&err);
+        *failed.lock().unwrap() = Some(err);
+        failure
+    })
+    .await?;
+    let mut edited = edited.tracks.pop().context("the edit answers its track")?;
+
+    // A title and an artist, from the tags or the changes (a collective's account counts:
+    // its grouping has the track, as when importing).
+    let lacks = sqlx::query!(
+        r#"SELECT btrim(title) = '' AS "untitled!",
+                  NOT EXISTS (SELECT 1 FROM track_credits WHERE track_id = t.id) AS "uncredited!"
+           FROM tracks t WHERE id = $1"#,
+        track_id
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    let mut missing = Vec::new();
+    if lacks.untitled {
+        missing.push("title");
+    }
+    if lacks.uncredited && report.collectives.is_empty() {
+        missing.push("artist");
+    }
+    if missing.is_empty() {
+        ingest::flag_possible_duplicates(&mut tx, track_id, &report.same_song_as).await?;
+        db::track_edits::read_flags(&mut tx, std::slice::from_mut(&mut edited)).await?;
+    }
+
+    if with.preview {
+        tx.rollback().await?;
+    } else {
+        if let Some(err) = failed.into_inner().unwrap() {
+            return Err(AppError::Internal(err));
+        }
+        if !missing.is_empty() {
+            return Err(AppError::Internal(
+                Rejected::Invalid(format!("a track needs a title and an artist, and this one has no {}", missing.join(" and no "))).into(),
+            ));
+        }
+        tx.commit().await?;
+    }
+    Ok(Json(Imported { track_id: Some(track_id), report, track: Some(track), draft: Some(draft), edited: Some(edited), missing }))
 }
 
 #[derive(Debug, Deserialize)]

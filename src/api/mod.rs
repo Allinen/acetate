@@ -19,6 +19,8 @@ mod media;
 mod playlists;
 mod rate_limit;
 mod problems;
+#[cfg(test)]
+mod problems_tests;
 mod review;
 mod shares;
 mod storage;
@@ -434,7 +436,12 @@ impl IntoResponse for AppError {
 /// What a track that couldn't be written in a many-track edit says: the same `code` and
 /// `message` as the error would have as a response.
 pub(crate) fn failure(err: anyhow::Error) -> db::track_edits::Failure {
-    let (_, code, detail) = internal_parts(&err);
+    failure_of(&err)
+}
+
+/// `failure`, keeping the error.
+pub(crate) fn failure_of(err: &anyhow::Error) -> db::track_edits::Failure {
+    let (_, code, detail) = internal_parts(err);
     db::track_edits::Failure { code: code.to_string(), message: human_message(code, &detail) }
 }
 

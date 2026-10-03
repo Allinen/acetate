@@ -297,6 +297,12 @@ pub async fn edit(
         tracks.push(done);
     }
 
+    read_flags(conn, &mut tracks).await?;
+    Ok(Edited { artists, albums, groupings, tracks })
+}
+
+/// Fills in the tracks' `flags`: their open review flags, the checks run first.
+pub async fn read_flags(conn: &mut PgConnection, tracks: &mut [TrackEdited]) -> anyhow::Result<()> {
     // The checks run now instead of at the commit, so their flags can be read.
     sqlx::query("SET CONSTRAINTS ALL IMMEDIATE").execute(&mut *conn).await?;
     let ids: Vec<Uuid> = tracks.iter().map(|t| t.track_id).collect();
@@ -308,14 +314,15 @@ pub async fn edit(
     )
     .fetch_all(&mut *conn)
     .await?;
-    for t in &mut tracks {
+    for t in tracks {
+        t.flags.clear();
         for flag in open.iter().filter(|f| f.track_id == t.track_id) {
             if !t.flags.contains(&flag.kind) {
                 t.flags.push(flag.kind.clone());
             }
         }
     }
-    Ok(Edited { artists, albums, groupings, tracks })
+    Ok(())
 }
 
 /// What the edit made first: stand-in id → the real one.
