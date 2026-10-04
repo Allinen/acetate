@@ -42,6 +42,21 @@ These are changes like the rest, applied together with them:
 - `cover:paste` (or `Ctrl+V` with an image, or drop an image file), `cover:file`,
   `cover:<album or track>` (a copy of its cover), `-cover:#2`
 - `source:<link>`, `-source:#1`, `origin:#2`
+- `source:custom vk, sent by a friend`: a source with no platform. The label goes before
+  the comma; anything after it is the description.
+- `source:distrokid album_uuid:0b358691-d0db-4fa4-b494-1cdf92f034dc index:1`: a platform
+  and its fields, typed one by one. Use this when a link doesn't say enough. It works for
+  every platform, and fields chain like `artist:` → `role:` → `as:`. `Tab` on a platform
+  adds its first field (`source:distr` → `source:distrokid album_uuid:`). After a value,
+  `Tab` adds the next field not given yet, needed ones first. The choices under the line
+  say what each field takes. A value runs until the next field, and a list field is given
+  once per item (`song_permalinks:a/b song_permalinks:a/c`).
+- Fields can follow a link or a custom label too: `source:<link> description:sent by a
+  friend`, `source:custom vk url:https://…`.
+- `name:` and `status:` are editor keys (the title, the status), so Traktrain's fields of
+  those names can't be typed after `source:`: they'd change the track's title or status.
+- `source:=…` makes it the track's only source, and the file comes from it. This is generally
+  the preferred method for fixing generic sources.
 
 ## Singles and groupings
 

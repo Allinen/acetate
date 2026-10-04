@@ -12,7 +12,8 @@
 //!   `#1+` in order from 1). After a cover or source, which one (`-cover:#2`), and where
 //!   it goes (`cover:#3 #1`: the third made the main one); right after the colon too.
 //! * `role:` and `as:` go with the artist before them, `kind:` with the album, grouping or
-//!   related track before it; `split:`, `whole:`, `keep:`, `word:` with `parse:`. In
+//!   related track before it; `split:`, `whole:`, `keep:`, `word:` with `parse:`; after
+//!   `source:`, any other `name:` is one of its fields (`source:distrokid index:1`). In
 //!   `split:` and `keep:`, `-word` is part of the value (`keep:cdq -cover`), not a key.
 
 use crate::catalog::query::Key as QueryKey;
@@ -49,6 +50,9 @@ pub enum K {
     Whole,
     Keep,
     Word,
+    /// One of a source's fields, after `source:<platform>` (`album_uuid:`, `index:`): its
+    /// name is the part's `field`.
+    Field,
     /// A filter's key that isn't something to change (`format:`, `og:`…).
     Other(QueryKey),
 }
@@ -85,6 +89,7 @@ impl K {
             K::Whole => "whole",
             K::Keep => "keep",
             K::Word => "word",
+            K::Field => "field",
             K::Other(k) => k.name(),
         }
     }
@@ -95,9 +100,9 @@ impl K {
     }
 
     /// Whether it goes with the part before it (`role:` after `artist:`, `split:` after
-    /// `parse:`…).
+    /// `parse:`, a field after `source:`…).
     pub fn is_modifier(self) -> bool {
-        matches!(self, K::Role | K::As | K::Kind | K::Split | K::Whole | K::Keep | K::Word)
+        matches!(self, K::Role | K::As | K::Kind | K::Split | K::Whole | K::Keep | K::Word | K::Field)
     }
 
     /// Whether `#…` after its value is its place or numbers.
@@ -151,6 +156,8 @@ pub fn key(name: &str) -> Option<K> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Part {
     pub key: K,
+    /// A source's field: its name, as typed.
+    pub field: Option<String>,
     /// `-key…`: off, or (without a colon) clear.
     pub minus: bool,
     /// `key:` (vs `-key` alone).
@@ -166,6 +173,13 @@ pub struct Part {
     /// value from here to `end`.
     pub value_start: usize,
     pub end: usize,
+}
+
+impl Part {
+    /// Its key's name (a source's field: the field's).
+    pub fn name(&self) -> &str {
+        self.field.as_deref().unwrap_or(self.key.name())
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -199,7 +213,7 @@ pub fn parse(text: &str) -> Line {
         let end = at + token.len();
         // `keep:cdq -cover`: a value of `keep:`, not "no covers".
         let listing = line.parts.last().is_some_and(|p| matches!(p.key, K::Split | K::Keep)) && token.starts_with('-') && !token.contains(':');
-        if !in_quote && !listing && let Some(part) = key_token(at, token) {
+        if !in_quote && !listing && let Some(part) = key_token(at, token).or_else(|| field_token(at, token, &line)) {
             in_quote = part.quoted && !closes(&text[part.value_start..end]);
             line.parts.push(part);
             if let Some(p) = line.parts.last_mut() {
@@ -256,7 +270,24 @@ fn key_token(at: usize, token: &str) -> Option<Part> {
     // `cover:#3`: a `#` right after the colon.
     let hashes: Vec<String> = if k.takes_hash() && !value.is_empty() && is_hash(value) { vec![value[1..].to_string()] } else { Vec::new() };
     let hash = hashes.last().cloned();
-    Some(Part { key: k, minus, colon, value: String::new(), quoted: value.starts_with('"'), hash, hashes, value_start, end: at + token.len() })
+    Some(Part { key: k, field: None, minus, colon, value: String::new(), quoted: value.starts_with('"'), hash, hashes, value_start, end: at + token.len() })
+}
+
+/// After `source:…` (and its fields): `name:…` that isn't an editor key is one of the
+/// source's fields (`album_uuid:…`, `index:1`). Which fields a platform has is the
+/// editor's to know; `https://…` isn't one.
+fn field_token(at: usize, token: &str, line: &Line) -> Option<Part> {
+    let owner = line.parts.iter().rev().find(|p| p.key != K::Field)?;
+    if owner.key != K::Source || owner.minus {
+        return None;
+    }
+    let (name, value) = token.split_once(':')?;
+    let named = name.starts_with(|c: char| c.is_ascii_alphabetic()) && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+    if !named || value.starts_with("//") || key(name).is_some() {
+        return None;
+    }
+    let value_start = at + name.len() + 1;
+    Some(Part { key: K::Field, field: Some(name.to_string()), minus: false, colon: true, value: String::new(), quoted: value.starts_with('"'), hash: None, hashes: Vec::new(), value_start, end: at + token.len() })
 }
 
 /// A value without the `#…` words at its end.
@@ -366,6 +397,18 @@ mod tests {
         assert_eq!((p[3].key, p[3].value.as_str()), (K::Source, "https://youtu.be/x"));
         assert_eq!((p[4].key, p[4].hash.as_deref()), (K::Origin, Some("1")));
         assert!(!parse("-cover").parts[0].colon);
+    }
+
+    #[test]
+    fn a_sources_fields() {
+        let line = parse("source:distrokid album_uuid:x-1 index:2 url:https://a.b/c status:demo");
+        let p: Vec<(K, &str, &str)> = line.parts.iter().map(|p| (p.key, p.name(), p.value.as_str())).collect();
+        assert_eq!(p, [(K::Source, "source", "distrokid"), (K::Field, "album_uuid", "x-1"), (K::Field, "index", "2"), (K::Field, "url", "https://a.b/c"), (K::Status, "status", "demo")]);
+        // A link's `https:` isn't a field; elsewhere a field is part of the value.
+        assert_eq!(parts("source:custom vk, see https://a.b")[0].2, "custom vk, see https://a.b");
+        assert_eq!(parts("title:a index:1")[0].2, "a index:1");
+        assert_eq!(parts("-source:#1 index:1")[0].0, K::Source);
+        assert_eq!(parse("-source:#1 index:1").parts.len(), 1);
     }
 
     #[test]

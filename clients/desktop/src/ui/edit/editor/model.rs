@@ -102,7 +102,7 @@ pub struct Src {
     pub id: Uuid,
     pub new: bool,
     pub platform: String,
-    /// What tells it apart: its id on the platform, or a custom one's label.
+    /// What tells it apart (see `source_name`).
     pub name: String,
     /// Its newest data (corrected: as corrected).
     pub data: serde_json::Value,
@@ -118,6 +118,29 @@ impl Src {
             (p, name) => format!("{p} {name}"),
         }
     }
+}
+
+/// What tells a source apart: its id on the platform, a custom one's label, else (one
+/// without an id, like a DistroKid track) its single values as typed in `source:`
+/// (`album_uuid:… index:1`, by name: the same whichever order the data has them in).
+pub fn source_name(external_id: Option<&str>, data: &serde_json::Value) -> String {
+    if let Some(id) = external_id {
+        return id.to_string();
+    }
+    if let Some(label) = data.get("label").and_then(|l| l.as_str()) {
+        return label.to_string();
+    }
+    let Some(fields) = data.as_object() else { return String::new() };
+    let mut single: Vec<String> = fields
+        .iter()
+        .filter_map(|(name, v)| match v {
+            serde_json::Value::String(s) => Some(format!("{name}:{s}")),
+            serde_json::Value::Number(n) => Some(format!("{name}:{n}")),
+            _ => None,
+        })
+        .collect();
+    single.sort();
+    single.join(" ")
 }
 
 /// A track as the editor starts from it: its shown version (id, latest revision,
@@ -153,7 +176,7 @@ impl Base {
                 .iter()
                 .map(|s| {
                     let data = s.snapshots.first().map(|x| x.data.clone()).unwrap_or_default();
-                    let name = s.external_id.clone().or_else(|| data.get("label").and_then(|l| l.as_str()).map(str::to_string)).unwrap_or_default();
+                    let name = source_name(s.external_id.as_deref(), &data);
                     Src { id: s.id, new: false, platform: s.platform.clone(), name, data, corrected: false }
                 })
                 .collect(),

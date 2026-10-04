@@ -17,7 +17,7 @@ use uuid::Uuid;
 use super::model::{Image, Numbers, Op};
 use super::parse::{self, Part, K};
 use super::title_parse::{Credited, TitlesParsed};
-use crate::account::Vocab;
+use crate::account::{ShapeField, SourceShape, Vocab};
 use crate::catalog::query::loosely_in;
 use crate::catalog::search::{Part as SearchPart, Search};
 use crate::catalog::Catalog;
@@ -230,7 +230,7 @@ pub fn resolve(line: &str, ctx: &Ctx, look: &mut dyn Lookups) -> (Vec<Unit>, boo
         // `parse:` reads what's typed after it itself (its own quotes and words).
         let result = match main.key {
             K::Parse => match mods.iter().find(|p| !matches!(p.key, K::Split | K::Whole | K::Keep | K::Word)) {
-                Some(p) => Err(format!("{}: doesn't go after parse:", p.key.name())),
+                Some(p) => Err(format!("{}: doesn't go after parse:", p.name())),
                 None => parse_titles(&line[main.value_start..end], ctx, look, &mut waiting),
             },
             _ => unit(main, mods, ctx, line_album, look, &mut waiting),
@@ -258,7 +258,7 @@ fn unit(
     let hash = mods.iter().rev().chain(std::iter::once(main)).find_map(|p| p.hash.clone());
     let only = |allowed: &[K]| -> Result<(), String> {
         match mods.iter().find(|p| !allowed.contains(&p.key)) {
-            Some(p) => Err(format!("{}: doesn't go after {}:", p.key.name(), main.key.name())),
+            Some(p) => Err(format!("{}: doesn't go after {}:", p.name(), main.key.name())),
             None => Ok(()),
         }
     };
@@ -616,7 +616,7 @@ fn unit(
             }
         }
         K::Source => {
-            only(&[])?;
+            only(&[K::Field])?;
             if !ctx.may_source {
                 return Err("sources need the edit_sources permission".into());
             }
@@ -648,31 +648,44 @@ fn unit(
                     _ => Err("source: a link, or custom and where it's from (custom vk, sent by a friend)".into()),
                 };
             }
-            let lower = value.to_lowercase();
-            let (platform, values) = if lower == "custom" || lower.starts_with("custom ") {
-                let rest = value[6..].trim();
-                let (label, description) = rest.split_once(',').map(|(l, d)| (l.trim(), d.trim())).unwrap_or((rest, ""));
-                if label.is_empty() {
+            let (first, rest) = value.split_once(char::is_whitespace).map(|(f, r)| (f, r.trim())).unwrap_or((value, ""));
+            let typed_shape = ctx.vocab.source_shapes.iter().find(|s| s.kind == "track" && s.platform.eq_ignore_ascii_case(first));
+            // What the value says (a link, `custom vk, …`); the fields after it add to it.
+            let (platform, said, by_fields) = match typed_shape {
+                // `source:custom vk, sent by a friend`: the label, then a comma and more.
+                Some(shape) if shape.platform == "custom" && !rest.is_empty() => {
+                    let (label, description) = rest.split_once(',').map(|(l, d)| (l.trim(), d.trim())).unwrap_or((rest, ""));
+                    ("custom".to_string(), vec![("label".to_string(), label.to_string()), ("description".to_string(), description.to_string())], !mods.is_empty())
+                }
+                Some(shape) if shape.platform == "custom" && mods.is_empty() => {
                     return Err("source:custom and where it's from (a label: custom vk), then a comma and more if there's more".into());
                 }
-                ("custom".to_string(), vec![("label".to_string(), label.to_string()), ("description".to_string(), description.to_string())])
-            } else {
-                crate::ui::edit::sources::from_link(value, "track").ok_or_else(|| "source: a link (https://…), or custom and where it's from".to_string())?
+                // `source:distrokid album_uuid:… index:1`: field by field.
+                Some(shape) if rest.is_empty() => (shape.platform.clone(), Vec::new(), true),
+                Some(shape) => return Err(format!("“{rest}”: after source:{}, its fields: {}", shape.platform, field_list(shape))),
+                None => {
+                    let (platform, values) = crate::ui::edit::sources::from_link(value, "track")
+                        .ok_or_else(|| "source: a link (https://…), a platform and its fields (distrokid album_uuid:… index:1), or custom and where it's from".to_string())?;
+                    (platform, values, !mods.is_empty())
+                }
             };
             let shape = ctx.vocab.source_shapes.iter().find(|s| s.platform == platform && s.kind == "track").ok_or_else(|| format!("no {platform} sources for tracks"))?;
-            let data = crate::ui::edit::sources::data_from(shape, &values)?;
-            let text = |v: &serde_json::Value| v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string());
-            let name = match &shape.id_field {
-                Some(field) => data.get(field).map(text).unwrap_or_default(),
-                None => data.get("label").map(text).unwrap_or_default(),
-            };
+            let values = typed_fields(shape, said, mods)?;
+            let data = crate::ui::edit::sources::data_from(shape, &values).map_err(|err| if by_fields { format!("{err} source:{platform} {}", field_list(shape)) } else { err })?;
+            let id_value = shape.id_field.as_ref().and_then(|field| data.get(field)).map(|v| v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string()));
+            let name = super::model::source_name(id_value.as_deref(), &data);
             let id = {
                 use std::hash::{Hash, Hasher};
                 let mut h = std::hash::DefaultHasher::new();
                 (&platform, data.to_string()).hash(&mut h);
                 Uuid::from_u128(0xACE7_5000_0000_4000_8000_0000_0000_0000 | h.finish() as u128)
             };
-            let shown = super::model::Src { id, new: true, platform: platform.clone(), name: name.clone(), data: data.clone(), corrected: false }.label();
+            // Typed field by field: every field shown, as typed back (a typo shows).
+            let shown = if by_fields {
+                format!("{platform} {}", fields_typed(&data))
+            } else {
+                super::model::Src { id, new: true, platform: platform.clone(), name: name.clone(), data: data.clone(), corrected: false }.label()
+            };
             let source = Op::Source { id, platform, name, data };
             if replace {
                 let label = format!("sources → only {shown}, and the file came from it (the others to the trash)");
@@ -699,9 +712,74 @@ fn unit(
         }
         K::Role | K::As | K::Kind => Err(format!("{}: goes after what it's about (artist:… role:…)", main.key.name())),
         K::Parse => Err("parse: on its own".into()),
+        K::Field => Err(format!("{}: goes after source: and its platform (source:distrokid album_uuid:…)", main.name())),
         K::Split | K::Whole | K::Keep | K::Word => Err(format!("{}: goes after parse: (parse:feat prod {}:…)", main.key.name(), main.key.name())),
         K::Other(k) => Err(format!("{}: not something to change here", k.name())),
     }
+}
+
+/// One of the platform's fields, by name as typed (any case).
+fn field_named<'a>(shape: &'a SourceShape, name: &str) -> Option<&'a ShapeField> {
+    shape.fields.iter().find(|f| f.name.eq_ignore_ascii_case(name))
+}
+
+/// Each of the platform's fields and its text, as the form takes them: what the value said
+/// (`said`: a link's, `custom vk`'s), and the fields typed after it (`fields`, which win).
+/// A list's field is given again for each item.
+fn typed_fields(shape: &SourceShape, said: Vec<(String, String)>, fields: &[Part]) -> Result<Vec<(String, String)>, String> {
+    let mut given: Vec<(&ShapeField, &str)> = Vec::new();
+    for part in fields {
+        let field = field_named(shape, part.name()).ok_or_else(|| format!("{}: {} sources have no such field; theirs: {}", part.name(), shape.platform, field_list(shape)))?;
+        given.push((field, part.value.trim()));
+    }
+    let mut values = Vec::new();
+    for field in &shape.fields {
+        let texts: Vec<&str> = given.iter().filter(|(f, _)| f.name == field.name).map(|(_, t)| *t).collect();
+        if texts.len() > 1 && field.kind != "strs" {
+            return Err(format!("{}: twice (it's one value)", field.name));
+        }
+        let text = if texts.is_empty() { said.iter().find(|(n, _)| *n == field.name).map(|(_, v)| v.clone()).unwrap_or_default() } else { texts.join("\n") };
+        values.push((field.name.clone(), text));
+    }
+    Ok(values)
+}
+
+/// The next of the platform's fields to type, after `given` (names as typed): the first
+/// it needs, else the first it may have. None: every one is there.
+fn next_field<'a>(shape: &'a SourceShape, given: &[&str]) -> Option<&'a ShapeField> {
+    let missing = || shape.fields.iter().filter(|f| !given.iter().any(|g| f.name.eq_ignore_ascii_case(g)));
+    missing().find(|f| f.required).or_else(|| missing().next())
+}
+
+/// The platform `source:`'s value names (typed, or a link's), for its fields.
+fn source_shape<'a>(value: &str, ctx: &Ctx<'a>) -> Option<&'a SourceShape> {
+    let value = value.trim().trim_start_matches('=').trim();
+    let first = value.split_whitespace().next()?;
+    let platform = match ctx.vocab.source_shapes.iter().find(|s| s.kind == "track" && s.platform.eq_ignore_ascii_case(first)) {
+        Some(shape) => return Some(shape),
+        None => crate::ui::edit::sources::from_link(value, "track")?.0,
+    };
+    ctx.vocab.source_shapes.iter().find(|s| s.kind == "track" && s.platform == platform)
+}
+
+/// The platform's fields, as typed: `album_uuid:… (needed) index:…`.
+fn field_list(shape: &SourceShape) -> String {
+    shape.fields.iter().map(|f| format!("{}:…{}", f.name, if f.required { " (needed)" } else { "" })).collect::<Vec<_>>().join(" ")
+}
+
+/// A source's data as `source:` takes it back: `album_uuid:… index:1` (a list: its field
+/// once per item).
+fn fields_typed(data: &serde_json::Value) -> String {
+    let Some(fields) = data.as_object() else { return String::new() };
+    let mut typed = Vec::new();
+    for (name, value) in fields {
+        match value {
+            serde_json::Value::String(s) => typed.push(format!("{name}:{s}")),
+            serde_json::Value::Array(items) => typed.extend(items.iter().map(|i| format!("{name}:{}", i.as_str().map(str::to_string).unwrap_or_else(|| i.to_string())))),
+            other => typed.push(format!("{name}:{other}")),
+        }
+    }
+    typed.join(" ")
 }
 
 /// `parse:` and what goes with it (`raw`, as typed): every target's title parsed with the
@@ -951,8 +1029,9 @@ pub struct Candidate {
     pub text: String,
     /// What the text stands for from then on.
     pub pick: Option<Pick>,
-    /// The next part to type after it, on Tab (`role:`, `as:`, `kind:`, `#`).
-    pub next: Option<&'static str>,
+    /// The next part to type after it, on Tab (`role:`, `as:`, `kind:`, `#`, a source's
+    /// first needed field).
+    pub next: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -984,10 +1063,12 @@ pub fn cover_value(part: &Part) -> Option<String> {
     (part.key == K::Cover && !part.minus && !value.is_empty() && !word && part.hash.is_none()).then(|| value.to_string())
 }
 
-/// The choices for the last part of the line. `owner`: the part it goes with (`role:`
-/// after `artist:`…); `hits`: the library's matches for its value (see `search_for`);
-/// `track_hits`: tracks' too, for a cover.
-pub fn candidates(part: &Part, owner: Option<&Part>, ctx: &Ctx, hits: &[u32], track_hits: &[u32], look: &mut dyn Lookups) -> Vec<Candidate> {
+/// The choices for the last part of the line. `group`: for a modifier, the part it goes
+/// with (`role:` after `artist:`…) and the modifiers between (a source's fields given
+/// already); `hits`: the library's matches for its value (see `search_for`); `track_hits`:
+/// tracks' too, for a cover.
+pub fn candidates(part: &Part, group: &[Part], ctx: &Ctx, hits: &[u32], track_hits: &[u32], look: &mut dyn Lookups) -> Vec<Candidate> {
+    let owner = group.first();
     let value = part.value.trim();
     let simple = |list: &[String], label: &dyn Fn(&str) -> String| -> Vec<Candidate> {
         list.iter()
@@ -1001,27 +1082,27 @@ pub fn candidates(part: &Part, owner: Option<&Part>, ctx: &Ctx, hits: &[u32], tr
             for &i in hits {
                 let (name, sub) = crate::ui::edit::inline_search::describe(ctx.catalog, SearchPart::Artists, i);
                 let a = &ctx.catalog.artists[i as usize];
-                out.push(Candidate { label: name.clone(), sub, text: a.label(), pick: Some(Pick::Pin(PinKind::Artist, a.id)), next: (!part.minus).then_some("role:") });
+                out.push(Candidate { label: name.clone(), sub, text: a.label(), pick: Some(Pick::Pin(PinKind::Artist, a.id)), next: (!part.minus).then(|| "role:".into()) });
             }
             if !value.is_empty() && !part.minus {
-                out.push(Candidate { label: format!("New artist “{value}”"), sub: "made when it's applied".into(), text: value.to_string(), pick: Some(Pick::NewArtist), next: Some("role:") });
+                out.push(Candidate { label: format!("New artist “{value}”"), sub: "made when it's applied".into(), text: value.to_string(), pick: Some(Pick::NewArtist), next: Some("role:".into()) });
             }
         }
         K::Album => {
             for &i in hits {
                 let (title, sub) = crate::ui::edit::inline_search::describe(ctx.catalog, SearchPart::Albums, i);
                 let a = &ctx.catalog.albums[i as usize];
-                out.push(Candidate { label: title, sub, text: a.title.clone(), pick: Some(Pick::Pin(PinKind::Album, a.id)), next: (!part.minus).then_some("#") });
+                out.push(Candidate { label: title, sub, text: a.title.clone(), pick: Some(Pick::Pin(PinKind::Album, a.id)), next: (!part.minus).then(|| "#".into()) });
             }
             if !value.is_empty() && !part.minus {
-                out.push(Candidate { label: format!("New album “{value}”"), sub: "made when it's applied".into(), text: value.to_string(), pick: Some(Pick::NewAlbum), next: Some("kind:") });
+                out.push(Candidate { label: format!("New album “{value}”"), sub: "made when it's applied".into(), text: value.to_string(), pick: Some(Pick::NewAlbum), next: Some("kind:".into()) });
             }
         }
         K::Related => {
             for &i in hits {
                 let (title, sub) = crate::ui::edit::inline_search::describe(ctx.catalog, SearchPart::Tracks, i);
                 let t = &ctx.catalog.tracks[i as usize];
-                out.push(Candidate { label: title, sub, text: t.title.clone(), pick: Some(Pick::Pin(PinKind::Track, t.id)), next: (!part.minus).then_some("kind:") });
+                out.push(Candidate { label: title, sub, text: t.title.clone(), pick: Some(Pick::Pin(PinKind::Track, t.id)), next: (!part.minus).then(|| "kind:".into()) });
             }
         }
         K::Status => out = simple(&ctx.vocab.statuses, &|s| crate::ui::edit::capitalized(s)),
@@ -1040,7 +1121,7 @@ pub fn candidates(part: &Part, owner: Option<&Part>, ctx: &Ctx, hits: &[u32], tr
         K::Role => {
             out = simple(&ctx.vocab.credit_roles, &|s| crate::ui::edit::capitalized(s));
             for c in &mut out {
-                c.next = Some("as:");
+                c.next = Some("as:".into());
             }
         }
         K::As => {
@@ -1052,7 +1133,7 @@ pub fn candidates(part: &Part, owner: Option<&Part>, ctx: &Ctx, hits: &[u32], tr
                 }
                 out = simple(&names, &|s| if s == name { format!("{s} (its own name)") } else { s.to_string() });
                 for c in &mut out {
-                    c.next = Some("#");
+                    c.next = Some("#".into());
                 }
             }
         }
@@ -1089,25 +1170,25 @@ pub fn candidates(part: &Part, owner: Option<&Part>, ctx: &Ctx, hits: &[u32], tr
                 out.push(Candidate { label: g.name.clone(), sub: g.kind.clone(), text: g.name.clone(), pick: Some(Pick::Pin(PinKind::Grouping, g.id)), next: None });
             }
             if !value.is_empty() && !part.minus && !ctx.catalog.groupings.iter().any(|g| g.name.eq_ignore_ascii_case(value)) {
-                out.push(Candidate { label: format!("New grouping “{value}”"), sub: "made when it's applied".into(), text: value.to_string(), pick: Some(Pick::NewGrouping), next: Some("kind:") });
+                out.push(Candidate { label: format!("New grouping “{value}”"), sub: "made when it's applied".into(), text: value.to_string(), pick: Some(Pick::NewGrouping), next: Some("kind:".into()) });
             }
         }
         K::Cover if !part.minus && part.hash.is_none() => {
             let words = [("paste", "the image in the clipboard (or Ctrl+V anywhere here)"), ("file", "choose an image file")];
             for (word, sub) in words {
                 if value.is_empty() || word.starts_with(&value.to_lowercase()) {
-                    out.push(Candidate { label: word.into(), sub: sub.into(), text: word.into(), pick: None, next: Some("#") });
+                    out.push(Candidate { label: word.into(), sub: sub.into(), text: word.into(), pick: None, next: Some("#".into()) });
                 }
             }
             for &i in hits.iter().take(5) {
                 let (title, sub) = crate::ui::edit::inline_search::describe(ctx.catalog, SearchPart::Albums, i);
                 let a = &ctx.catalog.albums[i as usize];
-                out.push(Candidate { label: format!("its cover: {title}"), sub, text: a.title.clone(), pick: Some(Pick::Pin(PinKind::Album, a.id)), next: Some("#") });
+                out.push(Candidate { label: format!("its cover: {title}"), sub, text: a.title.clone(), pick: Some(Pick::Pin(PinKind::Album, a.id)), next: Some("#".into()) });
             }
             for &i in track_hits.iter().take(5) {
                 let (title, sub) = crate::ui::edit::inline_search::describe(ctx.catalog, SearchPart::Tracks, i);
                 let t = &ctx.catalog.tracks[i as usize];
-                out.push(Candidate { label: format!("its cover: {title}"), sub, text: t.title.clone(), pick: Some(Pick::Pin(PinKind::Track, t.id)), next: Some("#") });
+                out.push(Candidate { label: format!("its cover: {title}"), sub, text: t.title.clone(), pick: Some(Pick::Pin(PinKind::Track, t.id)), next: Some("#".into()) });
             }
         }
         K::Source if !part.minus && part.hash.is_none() && ctx.may_source => {
@@ -1115,9 +1196,46 @@ pub fn candidates(part: &Part, owner: Option<&Part>, ctx: &Ctx, hits: &[u32], tr
                 Some(rest) => ("=", rest.trim()),
                 None => ("", value),
             };
-            if "custom".starts_with(&rest.to_lowercase()) {
-                let sub = "where it's from, then a comma and more: custom vk, sent by a friend";
-                out.push(Candidate { label: format!("{equals}custom"), sub: sub.into(), text: format!("{equals}custom"), pick: None, next: None });
+            // The platforms, each with its fields to type after it. Tab adds the first field
+            // (`distrokid album_uuid:`), as `artist:` adds `role:`; custom takes its label as
+            // it is (`custom vk`).
+            for shape in ctx.vocab.source_shapes.iter().filter(|s| s.kind == "track" && s.platform.starts_with(&rest.to_lowercase())) {
+                let (sub, next) = match shape.platform.as_str() {
+                    "custom" => ("where it's from, then a comma and more: custom vk, sent by a friend".to_string(), None),
+                    _ => (field_list(shape), next_field(shape, &[]).map(|f| format!("{}:", f.name))),
+                };
+                out.push(Candidate { label: format!("{equals}{}", shape.platform), sub, text: format!("{equals}{}", shape.platform), pick: None, next });
+            }
+        }
+        // A source's field: what it takes, and on Tab the next field (needed ones first).
+        K::Field => {
+            let Some(shape) = owner.filter(|o| o.key == K::Source).and_then(|o| source_shape(&o.value, ctx)) else { return out };
+            let given: Vec<&str> = group.iter().skip(1).chain([part]).map(|p| p.name()).collect();
+            let needed = |f: &ShapeField| if f.required { " (needed)" } else { "" };
+            match field_named(shape, part.name()) {
+                Some(field) => {
+                    let what = match field.kind.as_str() {
+                        "int" => "a number",
+                        "strs" => "text; the field again for another",
+                        _ => "text",
+                    };
+                    // (Nothing typed yet: Tab doesn't skip it.)
+                    let then = next_field(shape, &given).filter(|_| !value.is_empty());
+                    let sub = match (then, value.is_empty()) {
+                        (_, true) => format!("{what}{}", needed(field)),
+                        (Some(f), false) => format!("{what} · Tab: {}:…{}", f.name, needed(f)),
+                        (None, false) => format!("{what} · every field is there"),
+                    };
+                    let label = if value.is_empty() { format!("{}:…", field.name) } else { format!("{}:{value}", field.name) };
+                    out.push(Candidate { label, sub, text: value.to_string(), pick: None, next: then.map(|f| format!("{}:", f.name)) });
+                }
+                // Not one of its fields: the ones it has.
+                None => {
+                    for f in shape.fields.iter().filter(|f| !given.iter().any(|g| f.name.eq_ignore_ascii_case(g))) {
+                        let sub = format!("{} sources have no {}:", shape.platform, part.name());
+                        out.push(Candidate { label: format!("{}:…{}", f.name, needed(f)), sub, text: value.to_string(), pick: None, next: None });
+                    }
+                }
             }
         }
         K::Along => {
@@ -1512,6 +1630,78 @@ mod tests {
         assert!(resolve("source:somewhere", &ctx, &mut Known).0[0].result.is_err());
         let ctx = Ctx { may_source: false, ..ctx };
         assert!(resolve("origin:#1", &ctx, &mut Known).0[0].result.is_err());
+    }
+
+    #[test]
+    fn sources_typed_field_by_field() {
+        let mut vocab = vocab();
+        let field = |name: &str, kind: &str, required| crate::account::ShapeField { name: name.into(), kind: kind.into(), required };
+        vocab.source_shapes = vec![
+            crate::account::SourceShape { platform: "distrokid".into(), kind: "track".into(), id_field: None, fields: vec![field("album_uuid", "str", true), field("index", "int", false)] },
+            crate::account::SourceShape {
+                platform: "soundcloud".into(),
+                kind: "track".into(),
+                id_field: Some("song_id".into()),
+                fields: vec![field("song_id", "int", false), field("song_permalinks", "strs", false)],
+            },
+            crate::account::SourceShape {
+                platform: "custom".into(),
+                kind: "track".into(),
+                id_field: None,
+                fields: vec![field("label", "str", true), field("description", "str", false), field("url", "str", false)],
+            },
+        ];
+        let (catalog, names) = (catalog(), Names::default());
+        let ctx = Ctx { catalog: &catalog, vocab: &vocab, targets: 1, context_album: None, staged_album: None, names: &names, may_relate: true, may_source: true, titles: None, artist_names: None };
+        let one = |line: &str| resolve(line, &ctx, &mut Known).0.remove(0).result;
+
+        let r = one("source:distrokid album_uuid:0b358691-d0db-4fa4-b494-1cdf92f034dc index:1").unwrap();
+        let [Op::Source { platform, name, data, .. }] = r.ops.as_slice() else { panic!("{:?}", r.ops) };
+        assert_eq!(data, &serde_json::json!({ "album_uuid": "0b358691-d0db-4fa4-b494-1cdf92f034dc", "index": 1 }));
+        assert_eq!((platform.as_str(), name.as_str()), ("distrokid", "album_uuid:0b358691-d0db-4fa4-b494-1cdf92f034dc index:1"));
+        assert_eq!(r.label, "source: + distrokid album_uuid:0b358691-d0db-4fa4-b494-1cdf92f034dc index:1");
+        // Its only source, the file from it; any order, any case.
+        let r = one("source:= DistroKid index:2 album_uuid:x").unwrap();
+        let [Op::NoSources, Op::Source { data, .. }, Op::Origin(0)] = r.ops.as_slice() else { panic!("{:?}", r.ops) };
+        assert_eq!(data, &serde_json::json!({ "album_uuid": "x", "index": 2 }));
+        // A list: its field once per item; a value runs until the next field.
+        let r = one("source:soundcloud song_permalinks:a/b song_permalinks:a/c song_id:5").unwrap();
+        let [Op::Source { name, data, .. }] = r.ops.as_slice() else { panic!("{:?}", r.ops) };
+        assert_eq!((name.as_str(), data.clone()), ("5", serde_json::json!({ "song_id": 5, "song_permalinks": ["a/b", "a/c"] })));
+        let r = one("source:custom label:vk description:sent by a friend url:https://vk.com/x").unwrap();
+        let [Op::Source { data, .. }] = r.ops.as_slice() else { panic!("{:?}", r.ops) };
+        assert_eq!(data, &serde_json::json!({ "label": "vk", "description": "sent by a friend", "url": "https://vk.com/x" }));
+        // Missing, twice, not a number, not a field.
+        for line in ["source:distrokid", "source:distrokid index:1", "source:distrokid album_uuid:x album_uuid:y", "source:distrokid album_uuid:x index:one", "source:distrokid uuid:x"] {
+            assert!(one(line).is_err(), "{line}");
+        }
+        assert!(one("source:distrokid index:1").unwrap_err().contains("album_uuid:… (needed)"));
+
+        // A link or a custom label, and fields after it.
+        let r = one("source:https://drive.google.com/x description:sent by a friend").unwrap();
+        let [Op::Source { data, .. }] = r.ops.as_slice() else { panic!("{:?}", r.ops) };
+        assert_eq!(data, &serde_json::json!({ "label": "drive.google.com", "url": "https://drive.google.com/x", "description": "sent by a friend" }));
+        let r = one("source:custom vk url:https://vk.com/x").unwrap();
+        let [Op::Source { data, .. }] = r.ops.as_slice() else { panic!("{:?}", r.ops) };
+        assert_eq!(data, &serde_json::json!({ "label": "vk", "url": "https://vk.com/x" }));
+        assert!(one("source:distrokid 0b358691 index:1").is_err(), "a platform's value is its name alone");
+
+        // The choices, as `artist:` → `role:` → `as:`: Tab adds the next field, needed first.
+        let choices = |line: &str| {
+            let parts = parse::parse(line).parts;
+            let (last, group) = parts.split_last().unwrap();
+            let group = if last.key.is_modifier() { &group[group.iter().rposition(|p| !p.key.is_modifier()).unwrap()..] } else { &[] };
+            candidates(last, group, &ctx, &[], &[], &mut Known).into_iter().map(|c| (c.label, c.next)).collect::<Vec<_>>()
+        };
+        let next = |s: &str| Some(s.to_string());
+        assert_eq!(choices("source:distr"), [("distrokid".to_string(), next("album_uuid:"))]);
+        assert_eq!(choices("source:=s"), [("=soundcloud".to_string(), next("song_id:"))]);
+        assert_eq!(choices("source:cus"), [("custom".to_string(), None)]);
+        assert_eq!(choices("source:distrokid album_uuid:"), [("album_uuid:…".to_string(), None)]);
+        assert_eq!(choices("source:distrokid album_uuid:0b358691"), [("album_uuid:0b358691".to_string(), next("index:"))]);
+        assert_eq!(choices("source:distrokid album_uuid:0b358691 index:3"), [("index:3".to_string(), None)]);
+        assert_eq!(choices("source:distrokid index:3"), [("index:3".to_string(), next("album_uuid:"))]);
+        assert_eq!(choices("source:distrokid uuid:x"), [("album_uuid:… (needed)".to_string(), None), ("index:…".to_string(), None)]);
     }
 
     #[test]

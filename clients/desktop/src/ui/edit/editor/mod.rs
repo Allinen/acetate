@@ -28,7 +28,9 @@
 //! * **Covers and sources** are changes like the rest, applied with them: `cover:paste`
 //!   (or Ctrl+V with an image, or an image dropped, anywhere in the editor), `cover:file`,
 //!   `cover:<album or track>` (a copy of its cover), `cover:#3 #1`, `-cover:#2`;
-//!   `source:<link>`, `source:custom vk, …`, `-source:#1`, `origin:#2`. An image is
+//!   `source:<link>`, `source:custom vk, …`, `source:distrokid album_uuid:… index:1` (any
+//!   platform, field by field, as the server's shapes have them), `-source:#1`,
+//!   `origin:#2`. An image is
 //!   uploaded as soon as it's given (staged on the server), and only becomes a cover when
 //!   the edit is applied.
 //! * **Preview**: each track's changes in the history's words, the albums that change
@@ -775,9 +777,15 @@ impl TrackEditor {
         }
         let parsed = parse::parse(&self.line);
         let last = parsed.parts.last().cloned();
-        let owner = last.as_ref().and_then(|l| {
-            l.key.is_modifier().then(|| parsed.parts.iter().rev().find(|p| !p.key.is_modifier()).cloned()).flatten()
-        });
+        // What the last part goes with: the part before its modifiers, and those (none: it
+        // isn't a modifier).
+        let group: &[parse::Part] = match &last {
+            Some(l) if l.key.is_modifier() => {
+                let before = &parsed.parts[..parsed.parts.len() - 1];
+                before.iter().rposition(|p| !p.key.is_modifier()).map_or(&[], |at| &before[at..])
+            }
+            _ => &[],
+        };
         // Tab or Enter takes what's listed: the matches must be for exactly what's typed
         // (found in the background, they can still be the last keystroke's), so then
         // they're found now.
@@ -800,7 +808,7 @@ impl TrackEditor {
             let mut look = Look(&mut *shell);
             let rctx = here.ctx(&self.names);
             let candidates: Vec<Candidate> = match &last {
-                Some(l) if !words => resolve::candidates(l, owner.as_ref(), &rctx, &hits, &track_hits, &mut look),
+                Some(l) if !words => resolve::candidates(l, group, &rctx, &hits, &track_hits, &mut look),
                 _ => Vec::new(),
             };
             let actions = if words { resolve::actions(&parsed.words.join(" "), &rctx) } else { Vec::new() };
@@ -1387,10 +1395,13 @@ impl TrackEditor {
             }
             return;
         }
-        let text = parse::quoted(&c.text);
-        let end = part.end.min(self.line.len());
-        let start = part.value_start.min(end);
-        self.line.replace_range(start..end, &text);
+        // (What's typed already stays as typed: not quoted.)
+        if c.text != part.value {
+            let text = parse::quoted(&c.text);
+            let end = part.end.min(self.line.len());
+            let start = part.value_start.min(end);
+            self.line.replace_range(start..end, &text);
+        }
         match &c.pick {
             Some(Pick::Pin(kind, id)) => self.names.pin(*kind, &c.text, *id),
             Some(Pick::NewArtist) => {
@@ -1407,7 +1418,7 @@ impl TrackEditor {
             }
             None => {}
         }
-        if next && let Some(after) = c.next {
+        if next && let Some(after) = &c.next {
             self.line.push(' ');
             self.line.push_str(after);
         }
