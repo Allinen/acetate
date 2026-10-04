@@ -147,6 +147,7 @@ pub fn read_tags(path: &Path, extension: Option<&str>) -> anyhow::Result<TagInfo
             }
         }
     }
+    strip_nuls(&mut info.raw);
     info.original_filename = find_original_filename(&info.raw);
     let primary_format = raw_format_name(tagged_file.primary_tag_type());
 
@@ -355,13 +356,57 @@ fn raw_format_name(tag_type: TagType) -> Option<&'static str> {
 
 /// A text value as JSON. Some formats (ID3v2.4) separate multiple values with NUL
 /// characters; those become an array, since Postgres can't store NUL in text/jsonb.
-/// A single trailing NUL is the string terminator some writers add, not a value.
+/// Trailing NULs are a terminator or padding some writers add (ffmpeg pads COMM frames
+/// with hundreds), not values.
 fn text_value(text: &str) -> serde_json::Value {
-    let text = text.strip_suffix('\0').unwrap_or(text);
+    let text = text.trim_end_matches('\0');
     if text.contains('\0') {
         json!(text.split('\0').collect::<Vec<_>>())
     } else {
         json!(text)
+    }
+}
+
+/// Removes NUL characters left anywhere in the raw dump, since Postgres can't store them
+/// in jsonb. Values were already split on NULs by `text_value`; this catches the fields
+/// that weren't, e.g. ffmpeg writes a COMM frame's language as three NULs. A description
+/// or language that was only NULs becomes none.
+fn strip_nuls(raw: &mut [RawTag]) {
+    fn clean(s: &mut String) {
+        if s.contains('\0') {
+            s.retain(|c| c != '\0');
+        }
+    }
+    fn clean_value(value: &mut serde_json::Value) {
+        match value {
+            serde_json::Value::String(s) => clean(s),
+            serde_json::Value::Array(values) => values.iter_mut().for_each(clean_value),
+            serde_json::Value::Object(map) => {
+                // Keys can't be changed in place; rebuild only when one has a NUL.
+                if map.keys().any(|k| k.contains('\0')) {
+                    *map = std::mem::take(map)
+                        .into_iter()
+                        .map(|(k, v)| (k.replace('\0', ""), v))
+                        .collect();
+                }
+                map.values_mut().for_each(clean_value);
+            }
+            _ => {}
+        }
+    }
+    fn clean_field(field: &mut Option<String>) {
+        if let Some(s) = field.as_mut().filter(|s| s.contains('\0')) {
+            clean(s);
+            if s.is_empty() {
+                *field = None;
+            }
+        }
+    }
+    for item in raw.iter_mut().flat_map(|tag| tag.items.iter_mut()) {
+        clean(&mut item.key);
+        clean_value(&mut item.value);
+        clean_field(&mut item.description);
+        clean_field(&mut item.language);
     }
 }
 
@@ -759,7 +804,27 @@ mod tests {
     fn nul_separated_values_become_arrays() {
         assert_eq!(text_value("A\0B"), json!(["A", "B"]));
         assert_eq!(text_value("a.wav\0"), json!("a.wav"));
+        assert_eq!(text_value("A\0B\0\0\0"), json!(["A", "B"]));
         assert_eq!(text_value("A, B"), json!("A, B"));
+    }
+
+    #[test]
+    fn nuls_are_stripped_from_the_raw_dump() {
+        // As ffmpeg writes a COMM frame: language is three NULs.
+        let comm = RawItem {
+            language: Some("\0\0\0".into()),
+            ..RawItem::new("COMM", json!("hi"))
+        };
+        let txxx = RawItem {
+            description: Some(String::new()),
+            ..RawItem::new("TXXX", json!({ "k\0": ["a\0b"] }))
+        };
+        let mut raw = vec![tag("id3v2", vec![comm, txxx])];
+        strip_nuls(&mut raw);
+        assert_eq!(raw[0].items[0].language, None);
+        // An empty description that had no NULs is kept as it was.
+        assert_eq!(raw[0].items[1].description.as_deref(), Some(""));
+        assert_eq!(raw[0].items[1].value, json!({ "k": ["ab"] }));
     }
 
     #[test]
