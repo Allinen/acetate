@@ -28,7 +28,7 @@ refused or failed on, which you can fix as drafts and import.
 | `j k` / `↓ ↑` | next / previous (outside a field) |
 | `Space` | play the track |
 | `u` | skip it |
-| `d` | mark its flags done (the chosen chip's kind, or all) |
+| `d` (`Ctrl+D` in a text field too) | mark its flags done (the chosen chip's kind, or all) |
 | `Ctrl+M` | compare with its possible duplicate, to [merge](editing/merging.md) |
 | `c` on the artist | ambiguous artist: credit the next candidate |
 | `Ctrl+V` | paste an image: a new cover |

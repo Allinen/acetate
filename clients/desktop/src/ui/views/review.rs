@@ -15,7 +15,7 @@
 //!
 //! Keys: Ctrl+Enter saves; then, if the server says nothing's missing anymore, "fix
 //! later" is marked done and the next track comes. Ctrl+↓/↑ next/previous (anywhere);
-//! outside text fields also j/k or ↓/↑, Space plays the track (or pauses it), u skips, d
+//! outside text fields also j/k or ↓/↑, Space plays the track (or pauses it), u skips, d (Ctrl+D anywhere)
 //! marks its flags done (of the chip's kind, if one's chosen). Ctrl+M compares a possible
 //! duplicate side by side (to merge), and closes it again. b (or "Bulk…"), with a chip
 //! chosen: the bulk tools for what's shown (`review_bulk`).
@@ -589,6 +589,14 @@ impl Review {
         {
             self.mark_done(shell, catalog, id, "checked: fine as it is", true);
         }
+        // Ctrl+D: done, in a text field too (plain d is typed there).
+        if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::D))
+            && self.marking.is_empty()
+            && let Some(id) = self.selected
+        {
+            self.mark_done(shell, catalog, id, "done", false);
+            return;
+        }
         // In a text field, or on the editor's rows: the keys are theirs.
         if ctx.egui_wants_keyboard_input() || rows {
             return;
@@ -863,7 +871,9 @@ impl Review {
             ui.add_space(8.0);
 
             // A line prefilled for a flag that's gone since (fixed by a bulk edit) goes too;
-            // only that one, not the same text typed by hand.
+            // only that one, not the same text typed by hand. (Typing exactly the prefill
+            // in the very frame its flag goes would lose it too: harmless, nobody wants
+            // "source:" once the source is fixed.)
             if let Some((track, kind, line)) = &self.prefilled
                 && *track == id
                 && !missing.iter().any(|k| k == kind)
