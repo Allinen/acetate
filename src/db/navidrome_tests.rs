@@ -102,9 +102,9 @@ async fn navidrome_users_and_annotations_move_over(
         "INSERT INTO annotation VALUES ('u1', 'mf2', 'media_file', 3, NULL, 0, 0, NULL, NULL)",
         "INSERT INTO annotation VALUES ('u1', 'al1', 'album', 20, NULL, 5, 0, NULL, NULL)",
         "INSERT INTO annotation VALUES ('u2', 'ar1', 'artist', 7, NULL, 0, 1, NULL, NULL)",
-        "CREATE TABLE scrobbles (id integer primary key, media_file_id varchar, user_id varchar, submission_time integer)",
+        "CREATE TABLE scrobbles (media_file_id varchar, user_id varchar, submission_time integer)",
         // Two plays of Glass Harbor, one of a file not in Acetate, one in the other library.
-        "INSERT INTO scrobbles VALUES (1, 'mf1', 'u1', 1785015389), (2, 'mf1', 'u1', 1785065930), (3, 'mf2', 'u1', 1785070000), (4, 'mfb', 'u1', 1785080000)",
+        "INSERT INTO scrobbles VALUES ('mf1', 'u1', 1785015389), ('mf1', 'u1', 1785065930), ('mf2', 'u1', 1785070000), ('mfb', 'u1', 1785080000)",
     ] {
         sqlx::query(sql).execute(&nd).await?;
     }
@@ -118,6 +118,7 @@ async fn navidrome_users_and_annotations_move_over(
     // Only the first library, found here at test-audio/.
     let run = |dry_run| navidrome::Options {
         db: nd_path.clone(),
+        parts: navidrome::Part::ALL.into(),
         path_maps: Vec::new(),
         libraries: vec![navidrome::parse_library(&format!("1={}", audio.display()))],
         password_key: navidrome::DEFAULT_PASSWORD_KEY.into(),

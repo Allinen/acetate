@@ -39,8 +39,27 @@ pub const DEFAULT_PASSWORD_KEY: &str = "just for obfuscation";
 /// How many of an album's or artist's files are hashed at most to find it in Acetate.
 const SAMPLE_FILES: i64 = 5;
 
+/// A kind of thing that can be brought over; `--only` picks which.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, clap::ValueEnum)]
+pub enum Part {
+    /// Accounts (without it, Navidrome's users are matched to existing ones by name).
+    Users,
+    /// Play counts, last played, stars and ratings.
+    Annotations,
+    /// Regular playlists.
+    Playlists,
+    /// The play log: each play with its time.
+    Scrobbles,
+}
+
+impl Part {
+    pub const ALL: [Part; 4] = [Part::Users, Part::Annotations, Part::Playlists, Part::Scrobbles];
+}
+
 pub struct Options {
     pub db: PathBuf,
+    /// What to bring over.
+    pub parts: HashSet<Part>,
     /// Navidrome path prefix → where those files are here, longest prefix first.
     pub path_maps: Vec<(String, PathBuf)>,
     /// Only these Navidrome libraries (by name or id), each optionally with where its
@@ -68,6 +87,7 @@ pub fn parse_path_map(text: &str) -> anyhow::Result<(String, PathBuf)> {
 
 pub async fn run(pool: &PgPool, mut options: Options) -> anyhow::Result<()> {
     let nd = open(&options.db).await?;
+    let wants = |part: Part| options.parts.contains(&part);
     let has_libraries = check_schema(&nd).await?;
 
     // Which libraries, and where they are here.
@@ -109,7 +129,7 @@ pub async fn run(pool: &PgPool, mut options: Options) -> anyhow::Result<()> {
     // rolls it back.
     let mut tx = db::begin(pool, None).await?;
     let mut user_ids: HashMap<String, Uuid> = HashMap::new();
-    let (mut created, mut matched, mut no_password) = (0, 0, Vec::new());
+    let (mut created, mut matched, mut no_password, mut left_out) = (0, 0, Vec::new(), Vec::<String>::new());
     for row in &users {
         let nd_id: String = row.try_get("id")?;
         let name: String = row.try_get("user_name")?;
@@ -117,6 +137,10 @@ pub async fn run(pool: &PgPool, mut options: Options) -> anyhow::Result<()> {
         if let Some(id) = db::users::find_user_id(&mut tx, &name).await? {
             matched += 1;
             user_ids.insert(nd_id, id);
+            continue;
+        }
+        if !wants(Part::Users) {
+            left_out.push(name);
             continue;
         }
         let encrypted: String = row.try_get("password")?;
@@ -138,6 +162,9 @@ pub async fn run(pool: &PgPool, mut options: Options) -> anyhow::Result<()> {
         user_ids.insert(nd_id, id);
     }
     println!("users: {created} created, {matched} already in Acetate (left as they are)");
+    if !left_out.is_empty() {
+        println!("  not in Acetate, and users aren't being imported, so their data is left out: {}", left_out.join(", "));
+    }
     if !no_password.is_empty() {
         println!(
             "  passwords that didn't decrypt (wrong --password-key?), set one by hand: {}",
@@ -146,12 +173,16 @@ pub async fn run(pool: &PgPool, mut options: Options) -> anyhow::Result<()> {
     }
 
     // ---- What was annotated, found in Acetate ----
-    let rows = sqlx::query(
-        r#"SELECT user_id, item_id, item_type, play_count, play_date, rating, starred, starred_at, rated_at
-           FROM annotation ORDER BY item_type, item_id"#,
-    )
-    .fetch_all(&nd)
-    .await?;
+    let rows = if wants(Part::Annotations) {
+        sqlx::query(
+            r#"SELECT user_id, item_id, item_type, play_count, play_date, rating, starred, starred_at, rated_at
+               FROM annotation ORDER BY item_type, item_id"#,
+        )
+        .fetch_all(&nd)
+        .await?
+    } else {
+        Vec::new()
+    };
     let mut matcher = Matcher {
         nd: &nd,
         has_libraries,
@@ -202,11 +233,13 @@ pub async fn run(pool: &PgPool, mut options: Options) -> anyhow::Result<()> {
     // In Navidrome's order; the owner mapped like annotations. Smart playlists (rules)
     // have no fixed tracks and are left out. One imported before is brought up to date
     // if nobody changed it since, else left as it is (see `playlists::import`).
-    let playlist_rows = sqlx::query(
-        "SELECT id, name, comment, public, owner_id, COALESCE(rules, '') AS rules FROM playlist ORDER BY name",
-    )
-    .fetch_all(&nd)
-    .await?;
+    let playlist_rows = if wants(Part::Playlists) {
+        sqlx::query("SELECT id, name, comment, public, owner_id, COALESCE(rules, '') AS rules FROM playlist ORDER BY name")
+            .fetch_all(&nd)
+            .await?
+    } else {
+        Vec::new()
+    };
     let mut playlist_lines = Vec::new();
     let (mut playlists_made, mut playlists_refreshed, mut playlists_there, mut smart) = (0, 0, 0, 0);
     for row in &playlist_rows {
@@ -284,9 +317,17 @@ pub async fn run(pool: &PgPool, mut options: Options) -> anyhow::Result<()> {
         .fetch_one(&nd)
         .await?;
     let (mut plays_added, mut plays_unmatched) = (0, 0);
-    if has_scrobbles {
-        let scrobbles = sqlx::query("SELECT id, media_file_id, user_id, submission_time FROM scrobbles ORDER BY id").fetch_all(&nd).await?;
-        for row in &scrobbles {
+    if wants(Part::Scrobbles) && !has_scrobbles {
+        println!("this Navidrome has no play log (scrobbles; Navidrome 0.55 or later): no plays with times to import");
+    }
+    if wants(Part::Scrobbles) && has_scrobbles {
+        let scrobbles = sqlx::query("SELECT media_file_id, user_id, submission_time FROM scrobbles ORDER BY submission_time")
+            .fetch_all(&nd)
+            .await?;
+        for (n, row) in scrobbles.iter().enumerate() {
+            if n % 5000 == 0 {
+                println!("  plays {n}/{}", scrobbles.len());
+            }
             let nd_user: String = row.try_get("user_id")?;
             let Some(&user_id) = user_ids.get(&nd_user) else { continue };
             let media_file: String = row.try_get("media_file_id")?;
@@ -297,8 +338,9 @@ pub async fn run(pool: &PgPool, mut options: Options) -> anyhow::Result<()> {
                 plays_unmatched += 1;
                 continue;
             };
-            let id: i64 = row.try_get("id")?;
-            let at = DateTime::<Utc>::from_timestamp(row.try_get::<i64, _>("submission_time")?, 0).unwrap_or_default();
+            let time: i64 = row.try_get("submission_time")?;
+            let at = DateTime::<Utc>::from_timestamp(time, 0).unwrap_or_default();
+            // Navidrome's play log has no id of its own: who, what and when is the identity.
             let added = sqlx::query(
                 "INSERT INTO plays (user_id, track_id, played_at, source, imported_key) VALUES ($1, $2, $3, 'navidrome', $4)
                  ON CONFLICT (imported_key) DO NOTHING",
@@ -306,7 +348,7 @@ pub async fn run(pool: &PgPool, mut options: Options) -> anyhow::Result<()> {
             .bind(user_id)
             .bind(track)
             .bind(at)
-            .bind(format!("navidrome:{id}"))
+            .bind(format!("navidrome:{nd_user}:{media_file}:{time}"))
             .execute(&mut *tx)
             .await?
             .rows_affected();
@@ -328,17 +370,21 @@ pub async fn run(pool: &PgPool, mut options: Options) -> anyhow::Result<()> {
     if s.notes.len() > 40 {
         println!("  ... and {} more", s.notes.len() - 40);
     }
-    println!("annotations: {written} written ({} matched)", found.len());
-    if has_scrobbles {
+    if wants(Part::Annotations) {
+        println!("annotations: {written} written ({} matched)", found.len());
+    }
+    if wants(Part::Scrobbles) && has_scrobbles {
         println!("plays (with their times): {plays_added} added, {plays_unmatched} of tracks not matched");
     }
-    println!(
-        "playlists: {playlists_made} imported, {playlists_refreshed} brought up to date (unchanged since imported), \
-         {playlists_there} left as they are (changed since imported){}",
-        if smart > 0 { format!(", {smart} smart playlists left out (no fixed tracks)") } else { String::new() }
-    );
-    for line in &playlist_lines {
-        println!("  {line}");
+    if wants(Part::Playlists) {
+        println!(
+            "playlists: {playlists_made} imported, {playlists_refreshed} brought up to date (unchanged since imported), \
+             {playlists_there} left as they are (changed since imported){}",
+            if smart > 0 { format!(", {smart} smart playlists left out (no fixed tracks)") } else { String::new() }
+        );
+        for line in &playlist_lines {
+            println!("  {line}");
+        }
     }
     if options.dry_run {
         tx.rollback().await?;

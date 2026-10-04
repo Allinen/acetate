@@ -221,6 +221,11 @@ enum Command {
         /// Navidrome's `PasswordEncryptionKey`, if it was set.
         #[arg(long, default_value = navidrome::DEFAULT_PASSWORD_KEY)]
         password_key: String,
+        /// What to bring over, comma separated: users, annotations (counts, stars, ratings),
+        /// playlists, scrobbles (the play log with times). Default: all. Everything needing
+        /// a user finds it by name, so without `users` only those already in Acetate count.
+        #[arg(long, value_delimiter = ',', value_enum)]
+        only: Vec<navidrome::Part>,
         /// Work out and print what would happen, without changing anything.
         #[arg(long)]
         dry_run: bool,
@@ -515,13 +520,14 @@ async fn main() -> anyhow::Result<()> {
         Command::MeasureCovers { apply } => measure_command::run(&pool, &store, apply).await,
         Command::OwnAlbumCovers { apply } => album_covers_command::run(&pool, apply).await,
         Command::ProducersFromComposer { before, apply } => producers_command::run(&pool, &store, before, apply).await,
-        Command::ImportNavidrome { db, path_maps, libraries, password_key, dry_run } => {
+        Command::ImportNavidrome { db, path_maps, libraries, password_key, only, dry_run } => {
             let path_maps = path_maps
                 .iter()
                 .map(|m| navidrome::parse_path_map(m))
                 .collect::<anyhow::Result<Vec<_>>>()?;
             let libraries = libraries.iter().map(|l| navidrome::parse_library(l)).collect();
-            let options = navidrome::Options { db, path_maps, libraries, password_key, dry_run };
+            let parts = if only.is_empty() { navidrome::Part::ALL.into() } else { only.into_iter().collect() };
+            let options = navidrome::Options { db, parts, path_maps, libraries, password_key, dry_run };
             navidrome::run(&pool, options).await
         }
         Command::ReplaceFile {
