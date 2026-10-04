@@ -105,6 +105,8 @@ pub struct Review {
     scroll_to_selected: bool,
     /// Put the line that fixes the first thing missing in the editor (once it's there).
     focus_first: bool,
+    /// The line last prefilled for a flag: (the track, the flag's kind, the line).
+    prefilled: Option<(Uuid, String, String)>,
     /// Tracks fixed or marked done here, this session.
     done: usize,
     notice: Option<String>,
@@ -860,13 +862,14 @@ impl Review {
             ui.label(RichText::new("Ctrl+Enter apply and next · Ctrl+↓/↑ next/previous · Esc leaves the line; then j/k, Space play, u skip, d done").color(P.faint).small());
             ui.add_space(8.0);
 
-            // A line prefilled for a flag that's gone since (fixed by a bulk edit) goes too.
-            for kind in ["missing_title", "missing_artists", "missing_album", "missing_date", "missing_cover", "weak_source"] {
-                if !missing.iter().any(|k| k == kind)
-                    && let Some(line) = crate::ui::edit::editor::line_for(kind, "")
-                {
-                    editor.clear_line_if(&line);
-                }
+            // A line prefilled for a flag that's gone since (fixed by a bulk edit) goes too;
+            // only that one, not the same text typed by hand.
+            if let Some((track, kind, line)) = &self.prefilled
+                && *track == id
+                && !missing.iter().any(|k| k == kind)
+            {
+                editor.clear_line_if(line);
+                self.prefilled = None;
             }
 
             // The line that fixes the first thing missing (once, when the track is shown),
@@ -875,7 +878,11 @@ impl Review {
                 && let Some(title) = editor.title(id)
             {
                 self.focus_first = false;
-                let line = missing.iter().find_map(|k| crate::ui::edit::editor::line_for(k, &title));
+                let line = missing.iter().find_map(|k| crate::ui::edit::editor::line_for(k, &title).map(|l| (k.clone(), l)));
+                let line = line.map(|(kind, l)| {
+                    self.prefilled = Some((id, kind, l.clone()));
+                    l
+                });
                 match line {
                     Some(line) if editor.is_blank() => editor.prefill(&line),
                     _ => editor.opened(),
