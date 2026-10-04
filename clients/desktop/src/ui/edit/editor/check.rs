@@ -20,6 +20,7 @@ use super::engine::{Engine, PlanState};
 use super::resolve::{Names, PinKind};
 use super::title_parse::{Credited, TitlesParsed};
 use crate::catalog::Catalog;
+use crate::title_credits::Warning;
 use crate::ui::theme::{font, medium, semibold, PALETTE as P};
 use crate::ui::widgets;
 
@@ -51,6 +52,30 @@ impl Entry {
 }
 
 const ROW: f32 = 40.0;
+
+/// What looks wrong about a track: about what each chip found in it (an odd name…), and
+/// about the title the whole edit leaves it (`plan`: a keyword left in it… once a later
+/// chip has fixed what an earlier one couldn't, it's gone).
+fn track_warnings(parses: &[Arc<TitlesParsed>], track: Uuid, plan: Option<&PlanState>) -> Vec<Warning> {
+    let mut out: Vec<Warning> = Vec::new();
+    let mut last_title: Option<(&str, &str)> = None;
+    for p in parses {
+        if let Some((before, o)) = p.titles.iter().find(|(t, _)| *t == track).and_then(|(_, title)| Some((title.as_str(), p.outcomes.get(title)?))) {
+            for w in o.warnings.iter().filter(|w| !w.about_title()) {
+                if !out.contains(w) {
+                    out.push(w.clone());
+                }
+            }
+            last_title = Some((last_title.map_or(before, |l| l.0), o.title.as_str()));
+        }
+    }
+    let after = match plan {
+        Some(PlanState::Ready(r)) => crate::title_credits::title_warnings(&r.base.meta.title, &r.meta.title),
+        _ => last_title.map(|(before, after)| crate::title_credits::title_warnings(before, after)).unwrap_or_default(),
+    };
+    out.extend(after);
+    out
+}
 
 /// Whether every chip with `track` leaves it out.
 pub fn left_out(parses: &[Arc<TitlesParsed>], track: Uuid) -> bool {
@@ -126,7 +151,7 @@ pub fn entries(parses: &[Arc<TitlesParsed>], names: &Names, engine: &Engine) -> 
                 parses.iter().filter_map(|p| p.titles.iter().find(|(t, _)| t == track).and_then(|(_, title)| Some((&**p, p.outcomes.get(title)?)))).collect();
             let undecided = outcomes.iter().any(|(p, o)| !p.skip.contains(track) && o.credits.iter().any(|c| matches!(p.names[c.name].credited, Credited::Undecided(_))));
             let problem = outcomes.iter().any(|(p, o)| !p.skip.contains(track) && o.problem.is_some());
-            let warnings = outcomes.iter().any(|(_, o)| !o.warnings.is_empty());
+            let warnings = !track_warnings(parses, *track, plans.get(track).copied()).is_empty();
             let (refused, changes) = match plans.get(track) {
                 Some(PlanState::Ready(r)) => (r.refused.is_some(), r.meta.title != r.base.meta.title || r.meta.credits != r.base.meta.credits),
                 _ => (false, outcomes.iter().any(|(_, o)| o.changes(title))),
@@ -288,11 +313,7 @@ fn row(view: &View, entry: &Entry, plans: &HashMap<Uuid, usize>) -> (String, Str
                 }
                 _ => (title.clone(), None),
             };
-            for p in view.parses {
-                if let Some(o) = p.titles.iter().find(|(t, _)| t == track).and_then(|(_, title)| p.outcomes.get(title)) {
-                    bottom.extend(o.warnings.iter().map(|w| format!("⚠ {}", w.text())));
-                }
-            }
+            bottom.extend(track_warnings(view.parses, *track, plan).iter().map(|w| format!("⚠ {}", w.text())));
             let warned = bottom.iter().any(|b| b.starts_with('⚠'));
             let color = if skipped {
                 P.faint
@@ -382,6 +403,20 @@ mod tests {
         // Left out only when every chip with it leaves it out.
         assert!(!left_out(&parses, Uuid::from_u128(101)));
         assert!(left_out(&parses[1..], Uuid::from_u128(101)));
+    }
+
+    #[test]
+    fn a_later_chip_fixes_what_an_earlier_one_left() {
+        // `feat` leaves "w/" in the title (flagged), `w/` takes it out after.
+        let setting = |text: &str| Setting::parse(text, &|t| ["primary", "featured", "producer"].iter().find(|r| r.starts_with(t)).map(|r| r.to_string())).unwrap();
+        let titles = vec![(Uuid::from_u128(100), "Song w/ Ann".to_string())];
+        let mut credited = |_: &str| Some(Credited::Artist { id: Uuid::from_u128(1), alias: None });
+        let first = TitlesParsed::new(&setting("feat"), titles.clone(), Fixes::default(), &NameTable::default(), &mut credited).unwrap();
+        assert_eq!(first.outcomes["Song w/ Ann"].warnings, [Warning::KeywordLeft]);
+        let second = TitlesParsed::new(&setting("w/"), titles, Fixes::default(), &NameTable::default(), &mut credited).unwrap();
+        let parses = [Arc::new(first.clone()), Arc::new(second)];
+        assert!(track_warnings(&parses, Uuid::from_u128(100), None).is_empty(), "the title the edit leaves is clean");
+        assert_eq!(track_warnings(&parses[..1], Uuid::from_u128(100), None), [Warning::KeywordLeft], "with the first alone, it isn't");
     }
 
     #[test]

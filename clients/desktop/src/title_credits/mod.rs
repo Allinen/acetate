@@ -114,6 +114,11 @@ pub enum Warning {
 }
 
 impl Warning {
+    /// About the title it leaves (`title_warnings`), not about what was found.
+    pub fn about_title(&self) -> bool {
+        matches!(self, Warning::KeywordLeft | Warning::Brackets | Warning::EmptyTitle)
+    }
+
     pub fn text(&self) -> String {
         match self {
             Warning::KeywordLeft => "still has “feat.”, “prod.” or the like in it (stays flagged)".into(),
@@ -181,19 +186,30 @@ pub fn parse(title: &str, setting: &Setting, names: &NameTable, fixes: &Fixes) -
             push(&mut warnings, Warning::Name { name: c.name.clone(), why });
         }
     }
-    if server_flags(&text) {
-        push(&mut warnings, Warning::KeywordLeft);
-    }
-    if text != title {
-        let (groups, strays) = find::groups(&text);
-        if strays > 0 || groups.iter().any(|g| !g.closed) {
-            push(&mut warnings, Warning::Brackets);
-        }
-    }
-    if text.trim().is_empty() {
-        push(&mut warnings, Warning::EmptyTitle);
+    for w in title_warnings(title, &text) {
+        push(&mut warnings, w);
     }
     Parsed { title: text, credits, warnings }
+}
+
+/// What looks wrong about a title `before` became `after` (a keyword left in it, brackets
+/// that don't match, nothing left): for the title a whole edit leaves too, not only one
+/// parse's.
+pub fn title_warnings(before: &str, after: &str) -> Vec<Warning> {
+    let mut out = Vec::new();
+    if server_flags(after) {
+        out.push(Warning::KeywordLeft);
+    }
+    if after != before {
+        let (groups, strays) = find::groups(after);
+        if strays > 0 || groups.iter().any(|g| !g.closed) {
+            out.push(Warning::Brackets);
+        }
+    }
+    if after.trim().is_empty() {
+        out.push(Warning::EmptyTitle);
+    }
+    out
 }
 
 fn push(warnings: &mut Vec<Warning>, w: Warning) {
