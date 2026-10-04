@@ -354,6 +354,14 @@ impl TrackEditor {
         self.staged.is_empty() && self.line.trim().is_empty()
     }
 
+    /// Empties the line if it holds exactly `text` (a prefill nobody touched).
+    pub fn clear_line_if(&mut self, text: &str) {
+        if self.line == text {
+            self.line.clear();
+            self.resolved = None;
+        }
+    }
+
     /// Types `text` in the line (replacing what's there), with the cursor after it.
     pub fn prefill(&mut self, text: &str) {
         self.line = text.to_string();

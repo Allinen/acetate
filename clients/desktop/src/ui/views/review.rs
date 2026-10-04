@@ -860,6 +860,15 @@ impl Review {
             ui.label(RichText::new("Ctrl+Enter apply and next · Ctrl+↓/↑ next/previous · Esc leaves the line; then j/k, Space play, u skip, d done").color(P.faint).small());
             ui.add_space(8.0);
 
+            // A line prefilled for a flag that's gone since (fixed by a bulk edit) goes too.
+            for kind in ["missing_title", "missing_artists", "missing_album", "missing_date", "missing_cover", "weak_source"] {
+                if !missing.iter().any(|k| k == kind)
+                    && let Some(line) = crate::ui::edit::editor::line_for(kind, "")
+                {
+                    editor.clear_line_if(&line);
+                }
+            }
+
             // The line that fixes the first thing missing (once, when the track is shown),
             // once the editor has the track as it is (its title, not the library's older one).
             if self.focus_first
