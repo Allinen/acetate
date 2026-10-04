@@ -666,8 +666,10 @@ impl Review {
         }
         let playing = playing_track(player);
         let (mut clicked, mut boxed) = (None, None);
+        // No gap between rows, set before `show_rows` so its row pitch is exactly ROW (the scroll offsets above rely on it).
+        ui.scope(|ui| {
+        ui.spacing_mut().item_spacing.y = 0.0;
         area.show_rows(ui, ROW, self.rows.len(), |ui, range| {
-            ui.spacing_mut().item_spacing.y = 0.0;
             for r in range {
                 let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW), Sense::click());
                 let painter = ui.painter();
@@ -715,6 +717,7 @@ impl Review {
                     }
                 }
             }
+        });
         });
         // Marking leaves the form as it is; a plain click opens the track.
         let modifiers = ui.input(|i| i.modifiers);
