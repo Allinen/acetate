@@ -741,6 +741,8 @@ fn edit(ui: &mut egui::Ui, shell: &mut Shell, catalog: &Arc<Catalog>, d: &TrackD
     if enter || (free && ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::E))) {
         editor.opened();
     }
+    // A version just saved as new is chosen for editing, so it isn't lost from view.
+    editor.choose_new_version(&d.variants);
     let editing = editor.variant().filter(|v| d.variants.iter().any(|x| x.id == *v)).or(d.primary_variant_id).or_else(|| d.variants.first().map(|v| v.id));
     if let Some(editing) = editing
         && let Some(other) = versions.show(ui, shell, d, editing, editor.has_changes())

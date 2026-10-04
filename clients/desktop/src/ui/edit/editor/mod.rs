@@ -186,6 +186,8 @@ pub struct TrackEditor {
     resolved: Option<(u64, Vec<Unit>)>,
     /// The version edited (one track; None: the shown one).
     variant: Option<Uuid>,
+    /// A new version was just saved with this name: it's chosen for editing once the page has it.
+    choose_version: Option<String>,
     /// The row the keys are on (one track); None: the line.
     row: Option<usize>,
     /// A one-track edit was just applied: its flags after (taken by `take_saved`).
@@ -268,6 +270,7 @@ impl Default for TrackEditor {
             notice: None,
             resolved: None,
             variant: None,
+            choose_version: None,
             row: None,
             saved: None,
             apply_when_ready: false,
@@ -365,6 +368,15 @@ impl TrackEditor {
     /// The version edited (one track), if another than the shown one was chosen.
     pub fn variant(&self) -> Option<Uuid> {
         self.variant
+    }
+
+    /// Chooses the version just made by saving once the page has it (it takes a refresh).
+    pub fn choose_new_version(&mut self, variants: &[crate::details::Variant]) {
+        let Some(label) = &self.choose_version else { return };
+        if let Some(v) = variants.iter().rev().find(|v| &v.label == label) {
+            self.variant = Some(v.id);
+            self.choose_version = None;
+        }
     }
 
     /// Edits `variant` (one track). Only without staged changes: they're for the version
@@ -1327,6 +1339,7 @@ impl TrackEditor {
         }
         let all_done = !outcomes.is_empty() && outcomes.values().all(|o| matches!(o, Outcome::Done));
         if targets.len() == 1 && all_done {
+            self.choose_version = model::version(&self.ops());
             self.saved = Some(answers.get(&targets[0]).map(|a| a.flags.clone()).unwrap_or_default());
             self.staged.clear();
             self.correcting = None;
