@@ -133,7 +133,7 @@ pub const GROUPS: &[(&str, &[Binding])] = &[
         &[
             ("↑ ↓  or  j k", "a row (rows that are the same are passed over)"),
             ("← →  or  h l", "take the left or the right one"),
-            ("s", "swap sides (left is kept)"),
+            ("s", "take everything from the right, again for the left (sides stay)"),
             ("Space / Shift+Space", "play the left / right file: from the middle, the other from the same moment"),
             ("a", "merge their singles along or not (each alone on one)"),
             ("Ctrl+Enter", "merge"),

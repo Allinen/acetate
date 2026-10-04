@@ -14,7 +14,7 @@
 //! user can't see.
 //!
 //! Keys: ↑/↓ (or j/k) a row (passing over rows where both are the same), ←/→ (or h/l)
-//! its side, s swaps the sides, Space plays the left file and Shift+Space the right (from
+//! its side, s picks everything from the right, and again from the left, Space plays the left file and Shift+Space the right (from
 //! the middle; switching goes on from the same moment, to hear the difference), a merges
 //! the singles along or not, Ctrl+Enter merges, n says they're not the same, Esc closes
 //! it.
@@ -163,14 +163,11 @@ impl MergeView {
         self
     }
 
-    fn swap(&mut self) {
-        std::mem::swap(&mut self.left, &mut self.right);
-        if let Some((l, r)) = self.access.lock().unwrap().as_mut() {
-            std::mem::swap(l, r);
-        }
-        for pick in &mut self.picks {
-            *pick = if *pick == Side::Left { Side::Right } else { Side::Left };
-        }
+    /// Picks everything from the right, or from the left if that's already so. The sides
+    /// stay where they are; only the picks change.
+    fn flip_all(&mut self) {
+        let to = if self.picks.iter().all(|p| *p == Side::Right) { Side::Left } else { Side::Right };
+        self.picks = [to; 8];
     }
 
     /// The view; returns what happened when it's over.
@@ -235,7 +232,7 @@ impl MergeView {
                 } else if key(Key::ArrowRight) || key(Key::L) {
                     self.picks[self.row] = Side::Right;
                 } else if key(Key::S) {
-                    self.swap();
+                    self.flip_all();
                 } else if key(Key::A) && singles.is_some() {
                     shell.settings.merge_along = !shell.settings.merge_along;
                     shell.settings.save(&shell.data_dir);
@@ -262,8 +259,8 @@ impl MergeView {
                 ui.label(RichText::new("Merge").font(font(20.0, bold())));
             }
             ui.label(RichText::new("left is kept; right is merged into it").color(P.muted));
-            if ui.small_button("Swap sides  (s)").clicked() {
-                self.swap();
+            if ui.small_button("Pick all from the other side  (s)").clicked() {
+                self.flip_all();
             }
         });
         // Who may see them: with `manage_access`, which groups (asked once); else only
@@ -411,7 +408,7 @@ impl MergeView {
         if let Some(err) = &self.error {
             ui.label(RichText::new(err).color(P.danger));
         }
-        ui.label(RichText::new("↑/↓ row · ←/→ side · s swap · Space / Shift+Space play left / right · a singles along · n not the same · Esc close").color(P.faint).small());
+        ui.label(RichText::new("↑/↓ row · ←/→ side · s all right / all left · Space / Shift+Space play left / right · a singles along · n not the same · Esc close").color(P.faint).small());
         outcome
     }
 
