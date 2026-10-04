@@ -217,6 +217,7 @@ impl TrackPage {
             }
             if !shell.edit_mode {
                 self.editor_opened = None;
+                self.undo_asked = None;
             }
             self.revealing = self.reveal.take();
             if shell.edit_mode {
@@ -336,9 +337,9 @@ impl TrackPage {
         if !d.sources.is_empty() {
             section(ui, &format!("Sources ({})", d.sources.len()), false, |ui| sources(ui, &d.sources));
         }
-        if !d.merges.is_empty() {
-            let open = self.undo_asked.is_some() || self.undo_result.is_some();
-            section(ui, "Merged into this track", open, |ui| self.merges(ui, shell, d));
+        // Undoing one edits both tracks: edit mode only.
+        if shell.edit_mode && !d.merges.is_empty() {
+            section(ui, "Merged into this track", true, |ui| self.merges(ui, shell, d));
         }
         if d.covers.len() > 1 {
             section(ui, &format!("Covers ({})", d.covers.len()), false, |ui| {
@@ -700,8 +701,8 @@ fn artist_named(ctx: &egui::Context, shell: &Shell, name: &str) -> Option<Uuid> 
     found
 }
 
-/// A section with a heading; closed ones open on a click.
-fn section(ui: &mut egui::Ui, title: &str, open: bool, add: impl FnOnce(&mut egui::Ui)) {
+/// A section with a heading; closed ones open on a click (the album page's too).
+pub fn section(ui: &mut egui::Ui, title: &str, open: bool, add: impl FnOnce(&mut egui::Ui)) {
     section_at(ui, title, open, false, add);
 }
 

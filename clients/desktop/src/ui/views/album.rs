@@ -37,13 +37,11 @@ pub struct AlbumPage {
     notes: crate::ui::edit::notes::NotesView,
     /// Its extras, and attaching them in edit mode.
     extras: crate::ui::edit::extras::ExtrasView,
-    /// The details panel is open.
-    details: bool,
     /// This album and another side by side, to merge (edit mode), in place of the list.
     merge: Option<super::album_merge::AlbumMergeView>,
     /// "Merge into another album…" asked the palette for the other one.
     picking_merge: bool,
-    /// Undoing merges into this album (in the details).
+    /// Undoing merges into this album (edit mode).
     undo: super::album_merge::UndoPanel,
     /// Its sources (edit mode).
     sources: crate::ui::edit::sources::SourcesEditor,
@@ -68,6 +66,9 @@ impl AlbumPage {
                 self.picking_merge = true;
                 shell.act(Action::Pick { kind: crate::ui::edit::PickKind::Album, except: Some(id) });
             }
+        }
+        if !shell.edit_mode {
+            self.undo.close();
         }
         let Some(album) = catalog.album(id) else {
             ui.label(RichText::new("This album isn't in the library (anymore).").color(P.muted));
@@ -121,10 +122,6 @@ impl AlbumPage {
             let mut marks_ui = ui.new_child(egui::UiBuilder::new().max_rect(marks_rect).layout(egui::Layout::left_to_right(egui::Align::Center)));
             marks(&mut marks_ui, shell, Kind::Album, id);
             marks_ui.add_space(8.0);
-            if widgets::chip(&mut marks_ui, "Details", self.details) {
-                self.details = !self.details;
-            }
-            marks_ui.add_space(4.0);
             widgets::share_chip(&mut marks_ui, shell, crate::links::Target::Album(id));
             // Its original files (og files): a chip that shows only those (`og:` in the filter).
             if og_count > 0 {
@@ -175,57 +172,14 @@ impl AlbumPage {
                 }
                 return;
             }
-            if self.details {
-                panel(ui, "album-details", |ui| {
-                    let cached = shell.album_details.get(id);
-                    let Some(d) = cached.value.clone() else {
-                        ui.label(RichText::new(if cached.refreshing { "Loading…" } else { "Couldn't load the details" }).color(P.muted));
-                        return;
-                    };
-                    if !d.credits.is_empty() {
-                        ui.label(RichText::new("Credits").font(font(14.0, semibold())));
-                        for c in &d.credits {
-                            ui.horizontal(|ui| {
-                                ui.label(RichText::new(&c.role).color(P.faint));
-                                let name = c.alias.clone().unwrap_or_else(|| c.artist_name.clone());
-                                if widgets::link(ui, &name, font(14.0, medium()), P.text) {
-                                    shell.act(Action::Go(crate::ui::Page::Artist(c.artist_id)));
-                                }
-                            });
-                        }
-                        ui.add_space(8.0);
-                    }
-                    if !d.covers.is_empty() {
-                        ui.label(RichText::new(format!("Covers ({})", d.covers.len())).font(font(14.0, semibold())));
-                        ui.horizontal_wrapped(|ui| {
-                            for c in &d.covers {
-                                let (rect, response) = ui.allocate_exact_size(Vec2::splat(110.0), Sense::click());
-                                shell.cover(ui, c.cover(), c.id, rect, 6, 0.1);
-                                let size = match (c.width, c.height) {
-                                    (Some(w), Some(h)) => format!("{w}×{h} · {}", c.source),
-                                    _ => c.source.clone(),
-                                };
-                                let response = response.on_hover_cursor(egui::CursorIcon::ZoomIn).on_hover_text(format!("{size} · click: the original"));
-                                if response.clicked()
-                                    && let Some(cover) = c.cover()
-                                {
-                                    shell.open_original(ui.ctx(), cover);
-                                }
-                            }
-                        });
-                        ui.add_space(8.0);
-                    }
-                    if !d.sources.is_empty() {
-                        ui.label(RichText::new(format!("Sources ({})", d.sources.len())).font(font(14.0, semibold())));
-                        super::track::sources(ui, &d.sources);
-                    }
-                    if !d.merges.is_empty() {
-                        ui.label(RichText::new("Merged into this album").font(font(14.0, semibold())));
-                        let can = shell.account.can("edit_metadata");
-                        self.undo.show(ui, shell, id, &d.merges, can);
-                    }
-                });
-                ui.add_space(12.0);
+            // Listen mode: the rest of what's known about it, folded (opt-in, as on a
+            // track's page). Edit mode has all of it in its panels below.
+            if !shell.edit_mode
+                && let Some(d) = shell.album_details.get(id).value.clone()
+            {
+                // An id of their own (not this album's): what's opened stays open on
+                // the next album.
+                ui.scope_builder(egui::UiBuilder::new().id(egui::Id::new("album-sections")), |ui| view_sections(ui, shell, &d));
             }
 
             // Edit mode: the album's own data (title, kind, date, artists).
@@ -245,6 +199,14 @@ impl AlbumPage {
                         self.sources.show(ui, shell, crate::ui::edit::sources::Owner::Album(id), &d.sources);
                     });
                     ui.add_space(12.0);
+                    if !d.merges.is_empty() {
+                        panel(ui, "album-merges", |ui| {
+                            ui.label(RichText::new("Merged into this album").font(font(14.0, semibold())));
+                            let can = shell.account.can("edit_metadata");
+                            self.undo.show(ui, shell, id, &d.merges, can);
+                        });
+                        ui.add_space(12.0);
+                    }
                 }
             }
 
@@ -314,6 +276,48 @@ fn version(generation: u64, tracks: &[u32]) -> u64 {
     generation.hash(&mut hasher);
     tracks.hash(&mut hasher);
     hasher.finish()
+}
+
+/// Listen mode: its credits, covers (more than the one shown) and sources, each folded
+/// until opened.
+fn view_sections(ui: &mut egui::Ui, shell: &mut Shell, d: &crate::details::AlbumDetail) {
+    use super::track::section;
+    if !d.credits.is_empty() {
+        section(ui, "Credits", false, |ui| {
+            for c in &d.credits {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(&c.role).color(P.faint));
+                    let name = c.alias.clone().unwrap_or_else(|| c.artist_name.clone());
+                    if widgets::link(ui, &name, font(14.0, medium()), P.text) {
+                        shell.act(Action::Go(crate::ui::Page::Artist(c.artist_id)));
+                    }
+                });
+            }
+        });
+    }
+    if d.covers.len() > 1 {
+        section(ui, &format!("Covers ({})", d.covers.len()), false, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                for c in &d.covers {
+                    let (rect, response) = ui.allocate_exact_size(Vec2::splat(140.0), Sense::click());
+                    shell.cover(ui, c.cover(), c.id, rect, 8, 0.2);
+                    let size = match (c.width, c.height) {
+                        (Some(w), Some(h)) => format!("{w}×{h} · {}", c.source),
+                        _ => c.source.clone(),
+                    };
+                    let response = response.on_hover_cursor(egui::CursorIcon::ZoomIn).on_hover_text(format!("{size} · click: the original"));
+                    if response.clicked()
+                        && let Some(cover) = c.cover()
+                    {
+                        shell.open_original(ui.ctx(), cover);
+                    }
+                }
+            });
+        });
+    }
+    if !d.sources.is_empty() {
+        section(ui, &format!("Sources ({})", d.sources.len()), false, |ui| super::track::sources(ui, &d.sources));
+    }
 }
 
 /// The album's form (edit mode). Kept in the shell per album, so changes not saved yet

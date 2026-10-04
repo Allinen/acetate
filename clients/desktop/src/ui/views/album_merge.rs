@@ -321,6 +321,12 @@ pub struct UndoPanel {
 }
 
 impl UndoPanel {
+    /// Out of edit mode: the preview (and a finished undo's notice) closed.
+    pub fn close(&mut self) {
+        self.open = None;
+        self.done = None;
+    }
+
     /// The merges into album `album`, each with Undo… (`can`: allowed to).
     pub fn show(&mut self, ui: &mut egui::Ui, shell: &mut Shell, album: Uuid, merges: &[crate::details::AlbumMerge], can: bool) {
         if let Some((merge, done, result)) = self.answer.lock().unwrap().take() {

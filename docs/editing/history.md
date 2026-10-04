@@ -7,7 +7,9 @@ when, how (an edit, an import, a merge…), why, and what changed in words:
 - **Restore** on a revision writes a *new* revision with that one's data. The ones in between
   stay in the history. It asks first, and needs `restore_revision`.
 - Seeing history needs `view_history`.
-- Track and album **merges** can be undone from the kept track's page or album's page.
+- Track and album **merges** can be undone in edit mode, under **Merged into this track**
+  or **Merged into this album** on the kept one's page. An album merge shows what goes back
+  and what stays before anything happens.
 - Saves give an optional **reason**; it appears in the history.
 
 
