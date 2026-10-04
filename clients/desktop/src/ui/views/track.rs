@@ -764,9 +764,14 @@ fn edit(ui: &mut egui::Ui, shell: &mut Shell, catalog: &Arc<Catalog>, d: &TrackD
 
 /// Every credit, by role: the artist (a link) and the name it's credited under.
 fn credits(ui: &mut egui::Ui, shell: &mut Shell, d: &TrackDetail) {
+    // A fixed order, each role once; any role not listed follows.
     let roles: Vec<&str> = {
-        let mut roles: Vec<&str> = d.credits.iter().map(|c| c.role.as_str()).collect();
-        roles.dedup();
+        let mut roles: Vec<&str> = ["primary", "featured", "producer"].into_iter().filter(|r| d.credits.iter().any(|c| c.role == *r)).collect();
+        for c in &d.credits {
+            if !roles.contains(&c.role.as_str()) {
+                roles.push(c.role.as_str());
+            }
+        }
         roles
     };
     if roles.is_empty() {
