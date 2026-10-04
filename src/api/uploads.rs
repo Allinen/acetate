@@ -196,7 +196,7 @@ pub async fn receive(state: &AppState, user: &CurrentUser, mut field: Field<'_>)
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use sha2::{Digest, Sha256};
@@ -208,7 +208,7 @@ mod tests {
     use crate::storage::BlobStore;
 
     /// A user with a session: its token.
-    async fn user(owner: &sqlx::PgPool, name: &str) -> anyhow::Result<String> {
+    pub(crate) async fn user(owner: &sqlx::PgPool, name: &str) -> anyhow::Result<String> {
         let mut tx = db::begin(owner, None).await?;
         let id = db::users::create_user(&mut tx, name, "not a real hash").await?;
         db::users::set_groups(&mut tx, id, &["admin".to_string()]).await?.map_err(anyhow::Error::msg)?;
@@ -218,22 +218,11 @@ mod tests {
         Ok(token)
     }
 
-    async fn send(app: &axum::Router, method: &str, path: &str, token: &str, body: Body, content_type: Option<&str>) -> (StatusCode, serde_json::Value) {
-        let mut request = Request::builder().method(method).uri(path).header("authorization", format!("Bearer {token}"));
-        if let Some(kind) = content_type {
-            request = request.header("content-type", kind);
-        }
-        let response = app.clone().oneshot(request.body(body).unwrap()).await.unwrap();
-        let status = response.status();
-        let bytes = axum::body::to_bytes(response.into_body(), 1_000_000).await.unwrap();
-        (status, serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null))
-    }
-
-    #[sqlx::test]
-    async fn a_file_in_chunks_is_the_same_file(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
+    /// The API on a test database, with storage in a temp folder (kept while it lives), and
+    /// the database's owner pool (no RLS).
+    pub(crate) async fn app(connect: PgConnectOptions) -> anyhow::Result<(sqlx::PgPool, axum::Router, tempfile::TempDir)> {
         let owner = PgPoolOptions::new().connect_with(connect.clone()).await?;
         let pool = db::app_pool_options().connect_with(connect).await?;
-        let (alice, bob) = (user(&owner, "alice").await?, user(&owner, "bob").await?);
         let dir = tempfile::tempdir()?;
         let app = api::router(AppState {
             uploads: Default::default(),
@@ -246,6 +235,24 @@ mod tests {
             images: std::sync::Arc::new(crate::storage::images::ImageCache::new(dir.path().join("cache"))),
             upload_limits: std::sync::Arc::new(api::upload_limits::UploadLimits::new(0, 0)),
         });
+        Ok((owner, app, dir))
+    }
+
+    pub(crate) async fn send(app: &axum::Router, method: &str, path: &str, token: &str, body: Body, content_type: Option<&str>) -> (StatusCode, serde_json::Value) {
+        let mut request = Request::builder().method(method).uri(path).header("authorization", format!("Bearer {token}"));
+        if let Some(kind) = content_type {
+            request = request.header("content-type", kind);
+        }
+        let response = app.clone().oneshot(request.body(body).unwrap()).await.unwrap();
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), 1_000_000).await.unwrap();
+        (status, serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null))
+    }
+
+    #[sqlx::test]
+    async fn a_file_in_chunks_is_the_same_file(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
+        let (owner, app, _dir) = app(connect).await?;
+        let (alice, bob) = (user(&owner, "alice").await?, user(&owner, "bob").await?);
 
         let (status, started) = send(&app, "POST", "/api/uploads", &alice, Body::empty(), None).await;
         assert_eq!(status, StatusCode::CREATED);

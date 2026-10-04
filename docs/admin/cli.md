@@ -8,9 +8,9 @@ act as the system with no login. Many one-off tools list what they would do unle
 |---|---|
 | `serve` | run the HTTP server (migrations run first) |
 | `user create\|set-password\|set-groups\|list` | [manage users](users.md) |
-| `ingest <dir> --layout …` | [import a folder](../library/ingest.md) |
+| `ingest <dir> --layout …` | [import a folder](../library/ingest.md) (videos in it as extras) |
+| `ingest <dir> --videos` | [only the videos in a folder](../library/ingest.md#videos), as extras |
 | `import --origin … <files>` | import individual files |
-| `videos <dir>` | import music videos as extras |
 | `replace-file <track> <path> --origin …` | swap in a better file; the old one stays |
 | `import-navidrome --db …` | [users, plays, stars, ratings from Navidrome](../library/navidrome.md) |
 | `verify [dir] [--blobs]` | check files are safely stored (read-only) |

@@ -17,7 +17,8 @@ the editor in either mode, for a quick fix.)
 - **Groupings:** a collective, label, era or project. Members are added by hand; being
   credited on a song isn't enough. Browse them from Artists.
 - **Extras:** vocals, stems, samples, music videos: files linked to a track, album, artist
-  or grouping, with their own page.
+  or grouping, with their own page. A file an extra has already (the same bytes) isn't added
+  again: the upload says which extra has it.
 - **Original files:** mark tracks whose file is a real original ("OG") file, with the name
   it was uploaded as. Needs `edit_files`; you have to *know* it's an original.
 

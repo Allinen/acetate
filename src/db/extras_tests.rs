@@ -18,6 +18,9 @@ async fn extras_are_made_filled_linked_and_kept(_: PgPoolOptions, connect: PgCon
     db::blobs::register(&mut tx, SHA, "main", Some(3)).await?;
     let facts = FileFacts { codec: Some("pcm_s16le".into()), duration_ms: Some(1000), ..Default::default() };
     let file = db::extras::add_file(&mut tx, id, SHA, "vox.wav", 3, &facts, "").await?;
+    let stored = db::extras::StoredAs { extra_id: id, name: "V vocals".into(), hidden: false };
+    assert_eq!(db::extras::stored_as(&mut tx, SHA).await?, Some(stored), "the same bytes: not added again");
+    assert_eq!(db::extras::stored_as(&mut tx, &"b".repeat(64)).await?, None);
     assert!(db::extras::link(&mut tx, id, Link::Artist(lib.both), "").await?);
     assert!(!db::extras::link(&mut tx, id, Link::Artist(lib.both), "").await?, "once");
     assert!(db::extras::edit(&mut tx, id, "V vocals (dry)", "vocals", &About::default(), "").await?);
@@ -32,6 +35,7 @@ async fn extras_are_made_filled_linked_and_kept(_: PgPoolOptions, connect: PgCon
 
     // Taken off (a file, then the extra): kept, and back.
     assert!(db::extras::set_file_hidden(&mut tx, file, true, "wrong take").await?);
+    assert!(db::extras::stored_as(&mut tx, SHA).await?.unwrap().hidden, "still there, taken off");
     assert!(db::extras::set_hidden(&mut tx, id, true, "").await?);
     assert!(db::extras::get(&mut tx, id).await?.unwrap().hidden);
     assert!(db::extras::set_hidden(&mut tx, id, false, "").await?);

@@ -4,7 +4,7 @@
 acetate ingest <dir> --layout <layout> [options]
 ```
 
-Reads every audio file under `<dir>`. The metadata comes from the tags; the *layout* says what
+Reads every audio file under `<dir>` (videos become extras, see [Videos](#videos)). The metadata comes from the tags; the *layout* says what
 the folder names tell you (usually platform ids). Always try `--dry-run` first: it prints what
 would happen and changes nothing.
 
@@ -47,12 +47,30 @@ Run `acetate ingest --help` for the complete list, including id maps and name ma
 A file that is already stored isn't stored again: what the import knows that its track
 doesn't (another album, covers, ids) is merged in.
 
+## Videos
+
+```sh
+acetate ingest <dir> --videos [options]
+```
+
+Videos under `<dir>` (`.mkv`, `.webm`, `.mov`, `.avi`, `.m4v`, and `.mp4` files with a picture
+in them) become extras of kind "video", named after their files and linked to nothing yet.
+Link them from their pages, or from [Review](../review.md)'s "Unlinked extras". A video an
+extra has already (the same bytes) is left out, so running again is safe.
+
+`--videos` takes only the videos: no `--layout` or `--origin`, and the audio is left alone.
+Without it, a normal import takes the videos it finds along with the audio. Either way
+`--restrict-to`, `--volume`, `--include`/`--exclude`, `--dry-run` and `--server` apply to
+videos; the layout and the other track options don't.
+
+Telling an `.mp4` video from an `.mp4` of just sound needs `ffprobe` (the Docker image has
+it); without it, every `.mp4` is imported as a track.
+
 ## Other ways in
 
 - **Upload** from the apps (needs the `upload` permission). Uploads are limited per request
   and per day; see [Configuration](../admin/configuration.md).
 - **`acetate import --origin <label> <files…>`** imports individual files.
-- **`acetate videos <dir>`** imports music videos as extras, to link from their pages.
 - **Python library** `acetate_ingest` (`clients/python`) for scripts tailored to your own
   library: describe what you know about each file (artists, album, platform ids, covers,
   lyrics) and send it.

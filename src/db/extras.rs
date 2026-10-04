@@ -442,7 +442,40 @@ pub async fn move_to_grouping(conn: &mut PgConnection, artist: Uuid, grouping: U
     Ok(moved)
 }
 
-/// A file (its bytes stored already, and registered) added to an extra.
+/// An extra holding a file with these bytes already.
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
+pub struct StoredAs {
+    pub extra_id: Uuid,
+    pub name: String,
+    /// The extra or the file is taken off.
+    pub hidden: bool,
+}
+
+impl StoredAs {
+    /// "the extra “Clip”" / "the extra “Clip” (taken off)", for messages.
+    pub fn described(&self) -> String {
+        format!("the extra “{}”{}", self.name, if self.hidden { " (taken off)" } else { "" })
+    }
+}
+
+/// The extra that has a file with these bytes (one the user sees; one not taken off first),
+/// so the same file isn't brought in twice.
+pub async fn stored_as(conn: &mut PgConnection, sha256: &str) -> sqlx::Result<Option<StoredAs>> {
+    sqlx::query_as!(
+        StoredAs,
+        r#"SELECT e.id AS extra_id, e.name, (e.hidden_at IS NOT NULL OR f.hidden_at IS NOT NULL) AS "hidden!"
+           FROM extra_files f JOIN extras e ON e.id = f.extra_id
+           WHERE f.sha256 = $1
+           ORDER BY 3, f.added_at
+           LIMIT 1"#,
+        sha256
+    )
+    .fetch_optional(conn)
+    .await
+}
+
+/// A file (its bytes stored already, and registered) added to an extra. Doesn't check that
+/// the bytes are new (see `stored_as`): a track made an extra again keeps its file.
 pub async fn add_file(conn: &mut PgConnection, extra: Uuid, sha256: &str, name: &str, size_bytes: i64, facts: &FileFacts, reason: &str) -> anyhow::Result<Uuid> {
     sqlx::query_scalar!("SELECT id FROM extras WHERE id = $1", extra).fetch_optional(&mut *conn).await?.ok_or(EditRejected::NotFound("extra"))?;
     if let Some((thumb, volume)) = &facts.thumb {

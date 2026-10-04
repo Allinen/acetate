@@ -194,6 +194,7 @@ pub fn router(state: AppState) -> Router {
             "/api/extras/{id}/files",
             require(&[Upload], post(extras::add_files).layer(DefaultBodyLimit::disable()).layer(middleware::from_fn_with_state(state.clone(), upload_limits::limit))),
         )
+        .route("/api/extra-files/by-sha256/{sha256}", require(&[Browse], get(extras::by_sha256)))
         .route("/api/extra-files/{id}/hidden", require(&[EditMetadata], post(extras::set_file_hidden)))
         .route("/api/extra-files/{id}/stream", require(&[Stream], get(extras::stream)))
         .route("/api/ingest-problems/{id}/extra", require(&[EditMetadata], post(extras::from_problem)))

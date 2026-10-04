@@ -16,7 +16,6 @@ mod navidrome;
 mod storage;
 mod user_commands;
 mod verify_command;
-mod videos_command;
 
 use std::path::PathBuf;
 
@@ -71,6 +70,8 @@ enum Command {
     },
     /// Import a whole folder, reading platform ids from the folder layout to match artists
     /// and albums (see the README, "Automated ingestion"). The metadata comes from the tags.
+    /// Videos in it become extras of kind "video", linked to nothing yet (link them from their
+    /// pages); ones an extra has already are left out. `--videos`: only those.
     Ingest(IngestArgs),
     /// Check, without changing anything, that files are safely stored in Acetate: every
     /// file below <dir> (e.g. an old library, before deleting it by hand), or with
@@ -87,18 +88,6 @@ enum Command {
         /// Write the paths of the files that aren't to this file.
         #[arg(long)]
         list_missing: Option<PathBuf>,
-    },
-    /// Import music videos from a folder here (no upload limit): each one an extra of
-    /// kind "video", named after its file and linked to nothing yet (link them from their
-    /// pages). Files already stored are skipped. Never changes anything in <dir>.
-    Videos {
-        dir: PathBuf,
-        /// The kind they get.
-        #[arg(long, default_value = "video")]
-        kind: String,
-        /// Only say what would be added.
-        #[arg(long)]
-        dry_run: bool,
     },
     /// Merge the "possible duplicate" pairs from review flags that have exactly the same
     /// title and about the same length. The older track is kept (its metadata and covers),
@@ -257,14 +246,21 @@ enum Command {
 /// database here).
 #[derive(clap::Args)]
 struct IngestArgs {
-    /// The folder to import (all audio files below it), or a single file.
+    /// The folder to import (all audio and video files below it), or a single file.
     dir: PathBuf,
     /// How the folder is laid out: `netease`, `qq` or `kuwo` (`Artist - <id>/…/Album - <id>/… - <song id>.flac`),
     /// `soundcloud` (`<user id>/{FLACs|streams}/…/… - <song id> - <song uid>.wav`),
 /// `instrumentals` (`<producer>/<site>@<account>/…`; `--id-map`: the Traktrain lookup),
     /// `ytdlp` (`Title [<id>].ext`, needs `--platform`) or `tags` (nothing from paths).
-    #[arg(long)]
-    layout: LayoutArg,
+    #[arg(long, required_unless_present = "videos")]
+    layout: Option<LayoutArg>,
+    /// Only the videos (as extras linked to nothing yet), leaving the audio out: no layout
+    /// or origin needed, and the options for tracks don't apply.
+    #[arg(long, conflicts_with_all = [
+        "layout", "platform", "origin", "covers", "id_map", "status", "tag_fallback", "lax_artist_name",
+        "no_composers", "no_merge_duplicates", "no_comment_links", "flag",
+    ])]
+    videos: bool,
     /// For `--layout ytdlp`: where the files are from.
     #[arg(long)]
     platform: Option<PlatformArg>,
@@ -468,7 +464,6 @@ async fn main() -> anyhow::Result<()> {
             let options = ingest_options(&args, Groups::Local(&pool, &store)).await?;
             ingest_command::run(ingest_command::Target::Local { pool: &pool, store: &store }, &args.dir, options).await
         }
-        Command::Videos { dir, kind, dry_run } => videos_command::run(&pool, &store, &dir, &kind, dry_run).await,
         Command::Verify { dir, blobs, list_ok, list_missing } => match (dir, blobs) {
             (None, true) => verify_command::verify_blobs(&pool, &store).await,
             (Some(dir), false) => {
@@ -656,7 +651,8 @@ async fn ingest_options(args: &IngestArgs, groups: Groups<'_>) -> anyhow::Result
         Groups::Local(_, store) => cli_volume(store, args.volume.clone())?,
         Groups::Remote(_) => args.volume.clone(),
     };
-    let layout = match (args.layout, args.platform) {
+    // `--videos`: no layout (clap allows none only then); videos don't read one.
+    let layout = match (args.layout.unwrap_or(LayoutArg::Tags), args.platform) {
         (LayoutArg::Netease, None) => Layout::IdFolders(id_folders::Platform::Netease),
         (LayoutArg::Qq, None) => Layout::IdFolders(id_folders::Platform::Qq),
         (LayoutArg::Kuwo, None) => Layout::IdFolders(id_folders::Platform::Kuwo),
@@ -670,7 +666,7 @@ async fn ingest_options(args: &IngestArgs, groups: Groups<'_>) -> anyhow::Result
     };
     let origin = match &args.origin {
         Some(json) => Some(parse_source(json)?),
-        None if layout == Layout::Tags => {
+        None if layout == Layout::Tags && !args.videos => {
             anyhow::bail!("--layout tags needs --origin: where did the files come from?")
         }
         None => None,
@@ -723,6 +719,7 @@ async fn ingest_options(args: &IngestArgs, groups: Groups<'_>) -> anyhow::Result
         comment_links: !args.no_comment_links,
         resume_from: args.resume_from,
         filter: ingest_command::PathFilter::new(&args.include, &args.exclude)?,
+        videos_only: args.videos,
         dry_run: args.dry_run,
     })
 }

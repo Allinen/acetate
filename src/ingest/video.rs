@@ -16,6 +16,16 @@ pub fn is_video_name(name: &str) -> bool {
     Path::new(name).extension().and_then(|e| e.to_str()).is_some_and(|e| EXTENSIONS.contains(&e.to_lowercase().as_str()))
 }
 
+/// Whether a file on disk is a video. An `.mp4` can be just sound: a video only if
+/// `ffprobe` finds a picture in it (without `ffprobe`, it's taken as sound).
+pub async fn is_video_file(path: &Path) -> bool {
+    let extension = path.extension().and_then(|e| e.to_str()).map(str::to_lowercase);
+    match extension.as_deref() {
+        Some("mp4") => probe(path).await.is_some(),
+        _ => is_video_name(&path.to_string_lossy()),
+    }
+}
+
 /// What a video file is.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct VideoFacts {
@@ -47,6 +57,15 @@ struct Stream {
     avg_frame_rate: Option<String>,
     sample_rate: Option<String>,
     channels: Option<i16>,
+    #[serde(default)]
+    disposition: Disposition,
+}
+
+#[derive(Deserialize, Default)]
+struct Disposition {
+    /// A cover picture in an audio file, not a video.
+    #[serde(default)]
+    attached_pic: i32,
 }
 
 #[derive(Deserialize)]
@@ -70,10 +89,10 @@ pub async fn probe(path: &Path) -> Option<VideoFacts> {
     facts_from(&output.stdout)
 }
 
-/// `ffprobe`'s JSON, as facts (None: no video stream in it).
+/// `ffprobe`'s JSON, as facts (None: no video stream in it, a cover picture aside).
 fn facts_from(json: &[u8]) -> Option<VideoFacts> {
     let probed: Probed = serde_json::from_slice(json).ok()?;
-    let video = probed.streams.iter().find(|s| s.codec_type.as_deref() == Some("video"))?;
+    let video = probed.streams.iter().find(|s| s.codec_type.as_deref() == Some("video") && s.disposition.attached_pic == 0)?;
     let audio = probed.streams.iter().find(|s| s.codec_type.as_deref() == Some("audio"));
     Some(VideoFacts {
         container: probed.format.as_ref().and_then(|f| f.format_name.clone()),
@@ -166,6 +185,9 @@ mod tests {
         assert!((f.frame_rate.unwrap() - 29.97).abs() < 0.01);
         assert_eq!((f.sample_rate, f.channels, f.duration_ms), (Some(48000), Some(2), Some(215_250)));
         assert!(facts_from(br#"{"streams": [{"codec_type": "audio", "codec_name": "flac"}]}"#).is_none(), "no video");
+        let with_cover = br#"{"streams": [{"codec_type": "audio", "codec_name": "aac"},
+            {"codec_type": "video", "codec_name": "mjpeg", "width": 600, "height": 600, "disposition": {"attached_pic": 1}}]}"#;
+        assert!(facts_from(with_cover).is_none(), "a cover picture isn't a video");
         assert!(is_video_name("Clip.MKV") && !is_video_name("song.m4a"));
     }
 

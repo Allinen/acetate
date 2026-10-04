@@ -145,9 +145,12 @@ pub async fn link(State(state): State<AppState>, user: CurrentUser, Path(id): Pa
     Ok(Json(serde_json::json!({ "changed": changed })))
 }
 
-/// `POST /api/extras/{id}/files`, multipart: `reason` (optional), then any number of file
-/// fields. Each is stored (once, by its bytes) and added; audio gets its format and length.
-/// Answers `{files: [id…]}`. Needs `upload` (and `edit_metadata`).
+/// `POST /api/extras/{id}/files`, multipart: `reason` and `imported_from` (where the files
+/// were on the sender's disk; both optional, before the files), then any number of file
+/// fields. Each is stored and added, unless an extra has the same bytes already; audio gets
+/// its format and length. Answers `{files: [id…], already: [{file, extra_id, name, hidden}…]}`
+/// (`already`: the files left out, by their names, and the extras that have them). Needs
+/// `upload` (and `edit_metadata`).
 pub async fn add_files(State(state): State<AppState>, user: CurrentUser, Path(id): Path<Uuid>, mut multipart: Multipart) -> Result<Json<serde_json::Value>, AppError> {
     if !user.has(Permission::EditMetadata) {
         return Err(AppError::Forbidden("adding files to an extra needs edit_metadata".into()));
@@ -158,30 +161,46 @@ pub async fn add_files(State(state): State<AppState>, user: CurrentUser, Path(id
         db::extras::get(&mut tx, id).await?.ok_or(AppError::NotFound)?;
     }
     let mut reason = String::new();
+    let mut imported_from = None;
     let mut added = Vec::new();
+    let mut already = Vec::new();
     while let Some(field) = multipart.next_field().await.map_err(|e| AppError::BadRequest(e.to_string()))? {
         let Some(filename) = field.file_name().map(str::to_string) else {
             let name = field.name().unwrap_or_default().to_string();
             let value = field.text().await.map_err(|e| AppError::BadRequest(e.to_string()))?;
             match name.as_str() {
                 "reason" => reason = value,
+                "imported_from" => imported_from = Some(value).filter(|v| !v.trim().is_empty()),
                 other => return Err(AppError::BadRequest(format!("unknown field '{other}'"))),
             }
             continue;
         };
         let pending = super::uploads::receive(&state, &user, field).await?;
         let (sha256, size) = (pending.sha256.clone(), pending.size as i64);
-        let (volume, stored) = state.store.commit(pending, state.store.default_volume()).await?;
-        let facts = crate::ingest::video::examine(&state.store, &stored, &filename).await;
         let mut tx = state.db(&user).await?;
+        if let Some(stored) = db::extras::stored_as(&mut tx, &sha256).await? {
+            already.push(serde_json::json!({ "file": filename, "extra_id": stored.extra_id, "name": stored.name, "hidden": stored.hidden }));
+            continue;
+        }
+        let (volume, stored) = state.store.commit(pending, state.store.default_volume()).await?;
+        let mut facts = crate::ingest::video::examine(&state.store, &stored, &filename).await;
+        facts.imported_from = imported_from.clone();
         db::blobs::register(&mut tx, &sha256, &volume, Some(size)).await?;
         added.push(db::extras::add_file(&mut tx, id, &sha256, &filename, size, &facts, &reason).await?);
         tx.commit().await?;
     }
-    if added.is_empty() {
+    if added.is_empty() && already.is_empty() {
         return Err(AppError::BadRequest("no file field in the form".into()));
     }
-    Ok(Json(serde_json::json!({ "files": added })))
+    Ok(Json(serde_json::json!({ "files": added, "already": already })))
+}
+
+/// `GET /api/extra-files/by-sha256/{sha256}`: the extra that has a file with these bytes
+/// (`{extra_id, name, hidden}`), or 404. For a sender to skip a big file stored already
+/// before uploading it (`acetate ingest --server`).
+pub async fn by_sha256(State(state): State<AppState>, user: CurrentUser, Path(sha256): Path<String>) -> Result<Json<db::extras::StoredAs>, AppError> {
+    let mut tx = state.db(&user).await?;
+    db::extras::stored_as(&mut tx, &sha256.to_lowercase()).await?.map(Json).ok_or(AppError::NotFound)
 }
 
 /// `GET /api/extra-files/{id}/stream`: the file as stored (Range requests work).
@@ -228,10 +247,13 @@ pub struct FromProblem {
 
 /// `POST /api/ingest-problems/{id}/extra`, JSON `{"name", "kind", "links", "reason"}`: a
 /// file that didn't import becomes an extra (seen like the first linked track), and the
-/// entry is resolved. Answers `{id}`.
+/// entry is resolved. Answers `{id}`. 409 if an extra has the same bytes already.
 pub async fn from_problem(State(state): State<AppState>, user: CurrentUser, Path(problem): Path<Uuid>, Json(body): Json<FromProblem>) -> Result<Json<serde_json::Value>, AppError> {
     let mut tx = state.db(&user).await?;
     let open = db::problems::get_open(&mut tx, problem).await?.ok_or(AppError::NotFound)?;
+    if let Some(stored) = db::extras::stored_as(&mut tx, &open.sha256).await? {
+        return Err(AppError::Conflict(format!("{} has this file already", stored.described())));
+    }
     let path = state.store.path_for(&open.sha256).await;
     let facts = crate::ingest::video::examine(&state.store, &path, &open.uploaded_filename).await;
     let (id, _) = db::extras::create(&mut tx, &body.name, &body.kind, &About { description: body.description.clone(), source: body.source.clone() }, &body.links, None, &body.reason).await?;
@@ -291,4 +313,54 @@ pub async fn back_to_track(State(state): State<AppState>, user: CurrentUser, Pat
     let track = db::extras::back_to_track(&mut tx, id, &reason).await?;
     tx.commit().await?;
     Ok(Json(serde_json::json!({ "track_id": track })))
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::body::Body;
+    use axum::http::StatusCode;
+    use sha2::{Digest, Sha256};
+    use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+
+    use crate::api::uploads::tests::{app, send, user};
+
+    /// A form with one file (and an `imported_from`).
+    fn form(name: &str, bytes: &str) -> Body {
+        Body::from(format!(
+            "--b\r\nContent-Disposition: form-data; name=\"imported_from\"\r\n\r\n/music/{name}\r\n\
+             --b\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{name}\"\r\n\r\n{bytes}\r\n--b--\r\n"
+        ))
+    }
+
+    #[sqlx::test]
+    async fn the_same_bytes_are_not_added_to_extras_twice(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
+        let (owner, app, _dir) = app(connect).await?;
+        let alice = user(&owner, "alice").await?;
+        let multipart = Some("multipart/form-data; boundary=b");
+        let sha = hex::encode(Sha256::digest(b"some stems"));
+        let (status, _) = send(&app, "GET", &format!("/api/extra-files/by-sha256/{sha}"), &alice, Body::empty(), None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        let make = |name: &str| serde_json::json!({ "name": name, "kind": "stems" }).to_string();
+        let (_, first) = send(&app, "POST", "/api/extras", &alice, Body::from(make("First")), Some("application/json")).await;
+        let first = first["id"].as_str().unwrap().to_string();
+        let (status, got) = send(&app, "POST", &format!("/api/extras/{first}/files"), &alice, form("a.zip", "some stems"), multipart).await;
+        assert_eq!(status, StatusCode::OK, "{got}");
+        assert_eq!((got["files"].as_array().unwrap().len(), got["already"].as_array().unwrap().len()), (1, 0));
+        let imported_from: Option<String> = sqlx::query_scalar("SELECT imported_from FROM extra_files").fetch_one(&owner).await?;
+        assert_eq!(imported_from.as_deref(), Some("/music/a.zip"));
+
+        // Found by its hash; again (another name, another extra): left out, saying where it is.
+        let (_, found) = send(&app, "GET", &format!("/api/extra-files/by-sha256/{sha}"), &alice, Body::empty(), None).await;
+        assert_eq!((found["extra_id"].as_str(), found["name"].as_str(), found["hidden"].as_bool()), (Some(first.as_str()), Some("First"), Some(false)));
+        let (_, second) = send(&app, "POST", "/api/extras", &alice, Body::from(make("Second")), Some("application/json")).await;
+        let second = second["id"].as_str().unwrap().to_string();
+        let (status, got) = send(&app, "POST", &format!("/api/extras/{second}/files"), &alice, form("b.zip", "some stems"), multipart).await;
+        assert_eq!(status, StatusCode::OK, "{got}");
+        assert_eq!(got["files"].as_array().unwrap().len(), 0, "{got}");
+        assert_eq!((got["already"][0]["file"].as_str(), got["already"][0]["name"].as_str()), (Some("b.zip"), Some("First")));
+        let files: i64 = sqlx::query_scalar("SELECT count(*) FROM extra_files").fetch_one(&owner).await?;
+        assert_eq!(files, 1);
+        Ok(())
+    }
 }

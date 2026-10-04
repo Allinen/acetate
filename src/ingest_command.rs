@@ -1,6 +1,9 @@
 //! `acetate ingest <dir> --layout ...`: imports a whole folder, using what the folder
 //! layout says about each file (platform ids) to match artists and albums. See
-//! `ingest::layouts` and the README, "Automated ingestion".
+//! `ingest::layouts` and the README, "Automated ingestion". Videos in it (music videos)
+//! become extras of kind "video", named after their files and linked to nothing yet (link
+//! them from their pages, or Review's "Unlinked extras"); one an extra has already (the same
+//! bytes) is left out.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -12,16 +15,20 @@ use sqlx::PgPool;
 use crate::db;
 use crate::ingest::describe::{AlbumHint, Hints, MatchedBy, Report, ReportStatus};
 use crate::ingest::layouts::{id_folders, instrumentals, soundcloud, Layout};
-use crate::ingest::{self, comment_links, IngestOptions};
+use crate::ingest::{self, comment_links, video, IngestOptions};
 use crate::ingest_client::Server;
 use crate::model::sources::ValidSource;
-use crate::storage::BlobStore;
+use crate::storage::{BlobStore, PendingBlob};
 
-/// Files with these extensions are imported (anything else, like cover images, is skipped).
+/// Files with these extensions are imported as tracks, and videos (`video::EXTENSIONS`) as
+/// extras (anything else, like cover images, is skipped). An `.mp4` is either.
 const AUDIO_EXTENSIONS: &[&str] = &[
     "flac", "mp3", "m4a", "mp4", "aac", "alac", "opus", "ogg", "oga", "wav", "aif", "aiff", "wv",
     "ape",
 ];
+
+/// The reason logged on the extras videos become.
+pub(crate) const IMPORTED: &str = "imported from disk";
 
 pub struct Options {
     pub layout: Layout,
@@ -62,6 +69,8 @@ pub struct Options {
     pub resume_from: Option<usize>,
     /// `--include` / `--exclude`.
     pub filter: PathFilter,
+    /// `--videos`: only the videos; the audio is left out.
+    pub videos_only: bool,
     pub dry_run: bool,
 }
 
@@ -72,6 +81,13 @@ struct Totals {
     same_song: usize,
     skipped: usize,
     failed: usize,
+    /// Videos made extras, and left out (an extra has them already).
+    videos: usize,
+    videos_stored: usize,
+    /// Of `failed`, videos.
+    videos_failed: usize,
+    /// `--videos`: `.mp4` files that are just sound, left out.
+    not_videos: usize,
     /// How the files got into the store: reflinked (no space used) or copied.
     reflinked: usize,
     copied: usize,
@@ -120,6 +136,10 @@ pub(crate) enum Outcome {
     /// Refused (e.g. missing tags): listed on the Review page (on a real run).
     Skipped(String),
     Failed(String),
+    /// A video made an extra (None: a dry run), and what to say about it.
+    VideoAdded { extra_id: Option<uuid::Uuid>, note: Option<String> },
+    /// A video an extra has already.
+    VideoStored(db::extras::StoredAs),
 }
 
 pub async fn run(target: Target<'_>, dir: &Path, options: Options) -> anyhow::Result<()> {
@@ -131,7 +151,7 @@ pub async fn run(target: Target<'_>, dir: &Path, options: Options) -> anyhow::Re
         (parent, vec![given])
     } else {
         let mut files = Vec::new();
-        find_audio_files(&given, &mut files)?;
+        find_files(&given, options.videos_only, &mut files)?;
         (given, files)
     };
     let found = files.len();
@@ -142,8 +162,9 @@ pub async fn run(target: Target<'_>, dir: &Path, options: Options) -> anyhow::Re
         None => HashMap::new(),
     };
     println!(
-        "{} audio files in {}{}{}",
+        "{} {} in {}{}{}",
         files.len(),
+        if options.videos_only { "video files" } else { "audio and video files" },
         root.display(),
         if files.len() < found { format!(" ({} left out by --include/--exclude)", found - files.len()) } else { String::new() },
         match (&target, options.dry_run) {
@@ -187,6 +208,23 @@ pub async fn run(target: Target<'_>, dir: &Path, options: Options) -> anyhow::Re
         }
         // With the position, so a long run shows how far along it is.
         let shown = format!("[{}/{}] {}", index + 1, files.len(), path.strip_prefix(&root).unwrap_or(path).display());
+        // A video is an extra, whatever the layout says.
+        if video::is_video_file(path).await {
+            let outcome = match &target {
+                Target::Local { pool, store } => add_video(pool, store, path, &options, &mut totals, &shown).await?,
+                Target::Server(server) => server.send_video(path, options.restrict_to.as_deref(), options.dry_run).await?,
+            };
+            if matches!(outcome, Outcome::Failed(_)) {
+                totals.videos_failed += 1;
+            }
+            tally(&mut totals, &shown, outcome, &[]);
+            continue;
+        }
+        if options.videos_only {
+            totals.not_videos += 1;
+            println!("not video  {shown}: just sound, left out (import it without --videos)");
+            continue;
+        }
         let mut info = options.layout.read(&root, path);
         if let (true, None, Some(map)) = (options.tag_fallback, &info.track, &options.id_map) {
             // Unreadable tags: no title or artists to go by (ingest reports the file).
@@ -290,23 +328,7 @@ pub async fn run(target: Target<'_>, dir: &Path, options: Options) -> anyhow::Re
             }
         };
         let volume = options.volume.as_deref().unwrap_or(store.default_volume());
-        // A reflink if possible; otherwise a copy, unless --reflink-only.
-        let received = match store.reflink_in(path, volume).await {
-            Ok(Some(pending)) => {
-                totals.reflinked += 1;
-                Ok(pending)
-            }
-            Ok(None) if options.reflink_only => anyhow::bail!(
-                "can't reflink {shown} into volume {volume} (not the same filesystem and mount as the volume?); \
-                 stopping because of --reflink-only. Files before it are done; running again continues here."
-            ),
-            Ok(None) => {
-                totals.copied += 1;
-                ingest::copy_path(store, path).await
-            }
-            Err(err) => Err(err),
-        };
-        let result = match received {
+        let result = match take_in(store, path, &options, &mut totals, &shown).await? {
             Err(err) => Err(err),
             Ok(pending) => match &mut dry_run_tx {
                 None => ingest::ingest_with_report(pool, store, pending, &ingest_options, false).await,
@@ -337,14 +359,28 @@ pub async fn run(target: Target<'_>, dir: &Path, options: Options) -> anyhow::Re
 
     if let Some(tx) = dry_run_tx {
         tx.rollback().await?;
-    } else if !options.dry_run && totals.skipped + totals.failed > 0 {
-        println!("\nFiles that didn't import are listed on the Review page (with their audio).");
+    } else if !options.dry_run && totals.skipped + totals.failed - totals.videos_failed > 0 {
+        // (Videos that failed aren't: there's nothing to fix in them there.)
+        println!("\nAudio files that didn't import are listed on the Review page (with their audio).");
     }
-    println!(
-        "\n{} created ({} with the same song id as an existing track, flagged), {} duplicates, \
-         {} skipped, {} failed",
-        totals.created, totals.same_song, totals.duplicates, totals.skipped, totals.failed,
-    );
+    println!();
+    if !options.videos_only {
+        println!(
+            "{} created ({} with the same song id as an existing track, flagged), {} duplicates, \
+             {} skipped, {} failed",
+            totals.created, totals.same_song, totals.duplicates, totals.skipped, totals.failed - totals.videos_failed,
+        );
+    }
+    if options.videos_only || totals.videos + totals.videos_stored + totals.videos_failed > 0 {
+        let not_videos = match totals.not_videos {
+            0 => String::new(),
+            n => format!(", {n} just sound (left out)"),
+        };
+        println!(
+            "videos: {} made extras, {} stored already, {} failed{not_videos}",
+            totals.videos, totals.videos_stored, totals.videos_failed
+        );
+    }
     match &target {
         Target::Local { .. } => println!(
             "files taken in: {} reflinked (no extra space), {} copied",
@@ -382,7 +418,78 @@ fn tally(totals: &mut Totals, shown: &str, outcome: Outcome, path_warnings: &[St
             totals.failed += 1;
             eprintln!("error      {shown}: {reason}");
         }
+        Outcome::VideoAdded { extra_id, note } => {
+            totals.videos += 1;
+            let id = extra_id.map(|id| id.to_string()).unwrap_or_default();
+            println!("video      {id}  {shown}");
+            if let Some(note) = note {
+                println!("    {note}");
+            }
+        }
+        Outcome::VideoStored(stored) => {
+            totals.videos_stored += 1;
+            println!("duplicate  {}  {shown}", stored.extra_id);
+            println!("    video: {} has it already", stored.described());
+        }
     }
+}
+
+/// A file taken into the store: a reflink if possible; otherwise a copy, unless
+/// --reflink-only (then the run stops). Err inside: this file couldn't be.
+async fn take_in(store: &BlobStore, path: &Path, options: &Options, totals: &mut Totals, shown: &str) -> anyhow::Result<anyhow::Result<PendingBlob>> {
+    let volume = options.volume.as_deref().unwrap_or(store.default_volume());
+    Ok(match store.reflink_in(path, volume).await {
+        Ok(Some(pending)) => {
+            totals.reflinked += 1;
+            Ok(pending)
+        }
+        Ok(None) if options.reflink_only => anyhow::bail!(
+            "can't reflink {shown} into volume {volume} (not the same filesystem and mount as the volume?); \
+             stopping because of --reflink-only. Files before it are done; running again continues here."
+        ),
+        Ok(None) => {
+            totals.copied += 1;
+            ingest::copy_path(store, path).await
+        }
+        Err(err) => Err(err),
+    })
+}
+
+/// A video, as an extra linked to nothing yet (seen by `--restrict-to`'s groups, if given),
+/// unless an extra has the same bytes already. Committed on its own (a dry run only looks).
+async fn add_video(pool: &PgPool, store: &BlobStore, path: &Path, options: &Options, totals: &mut Totals, shown: &str) -> anyhow::Result<Outcome> {
+    let pending = match take_in(store, path, options, totals, shown).await? {
+        Ok(pending) => pending,
+        Err(err) => return Ok(Outcome::Failed(format!("{err:#}"))),
+    };
+    let result = async {
+        let (sha256, size) = (pending.sha256.clone(), pending.size as i64);
+        let mut tx = db::begin(pool, None).await?;
+        if let Some(stored) = db::extras::stored_as(&mut tx, &sha256).await? {
+            return Ok(Outcome::VideoStored(stored));
+        }
+        if options.dry_run {
+            return Ok(Outcome::VideoAdded { extra_id: None, note: None });
+        }
+        let volume = options.volume.as_deref().unwrap_or(store.default_volume());
+        let (volume, stored_at) = store.commit(pending, volume).await?;
+        db::blobs::register(&mut tx, &sha256, &volume, Some(size)).await?;
+        let name = file_name(path);
+        let mut facts = video::examine(store, &stored_at, &name).await;
+        facts.imported_from = Some(path.to_string_lossy().to_string());
+        let title = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| name.clone());
+        let access = options.restrict_to.clone().map(|groups| db::extras::Access { restricted: true, groups });
+        let (extra, _) = db::extras::create(&mut tx, &title, "video", &Default::default(), &[], access, IMPORTED).await?;
+        db::extras::add_file(&mut tx, extra, &sha256, &name, size, &facts, IMPORTED).await?;
+        tx.commit().await?;
+        let note = match (facts.width, facts.height) {
+            (Some(w), Some(h)) => format!("{w}×{h}"),
+            _ => "! size not read (is ffprobe installed?)".into(),
+        };
+        anyhow::Ok(Outcome::VideoAdded { extra_id: Some(extra), note: Some(note) })
+    }
+    .await;
+    Ok(result.unwrap_or_else(|err| Outcome::Failed(format!("{err:#}"))))
 }
 
 fn print_report(shown: &str, report: &Report, path_warnings: &[String]) {
@@ -432,13 +539,13 @@ fn matched(by: MatchedBy) -> &'static str {
     }
 }
 
-/// All audio files below `dir`, recursively.
-fn find_audio_files(dir: &Path, out: &mut Vec<PathBuf>) -> anyhow::Result<()> {
+/// All audio and video files below `dir` (or only videos, by their names), recursively.
+fn find_files(dir: &Path, videos_only: bool, out: &mut Vec<PathBuf>) -> anyhow::Result<()> {
     for entry in std::fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
         let path = entry?.path();
         if path.is_dir() {
-            find_audio_files(&path, out)?;
-        } else if is_audio(&path) {
+            find_files(&path, videos_only, out)?;
+        } else if video::is_video_name(&path.to_string_lossy()) || (!videos_only && is_audio(&path)) {
             out.push(path);
         }
     }

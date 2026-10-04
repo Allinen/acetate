@@ -11,6 +11,7 @@ use serde::Deserialize;
 
 use crate::ingest::IngestOptions;
 use crate::ingest::describe::{self, Report};
+use crate::ingest_command::IMPORTED;
 
 /// An Acetate server to send files to, logged in with a session token.
 pub struct Server {
@@ -133,20 +134,9 @@ impl Server {
             description["album"]["covers"] = serde_json::json!(names);
         }
         form = form.text("description", description.to_string());
-
-        // The audio is streamed from disk, not read into memory first; a big file goes
-        // ahead in chunks, and the form names it.
-        let file = tokio::fs::File::open(path).await.with_context(|| format!("opening {}", path.display()))?;
-        let length = file.metadata().await?.len();
-        let part = if length > CHUNK_BYTES {
-            let id = match self.upload_in_chunks(file, length).await {
-                Ok(id) => id,
-                Err(err) => return Ok(Outcome::Failed(format!("sending it failed: {err:#}"))),
-            };
-            Part::text(id.to_string()).mime_str("application/vnd.acetate.upload")?
-        } else {
-            let body = reqwest::Body::wrap_stream(tokio_util::io::ReaderStream::new(file));
-            Part::stream_with_length(body, length)
+        let part = match self.file_part(path).await? {
+            Ok(part) => part,
+            Err(failed) => return Ok(Outcome::Failed(failed)),
         };
         form = form.part("file", part.file_name(options.uploaded_filename.clone()));
 
@@ -182,6 +172,97 @@ impl Server {
             }
             _ => Ok(Outcome::Failed(format!("{status}: {message}"))),
         }
+    }
+
+    /// A video, as an extra linked to nothing yet (`POST /api/extras`, then its file), unless
+    /// an extra has the same bytes already: asked first (`/api/extra-files/by-sha256`), so a
+    /// video stored already isn't sent again. Errors as for `send`.
+    pub(crate) async fn send_video(
+        &self,
+        path: &Path,
+        restrict_to: Option<&[uuid::Uuid]>,
+        dry_run: bool,
+    ) -> anyhow::Result<super::ingest_command::Outcome> {
+        use super::ingest_command::Outcome;
+
+        let hashed = path.to_path_buf();
+        let (sha256, _) = tokio::task::spawn_blocking(move || crate::storage::hash_file(&hashed))
+            .await?
+            .with_context(|| format!("reading {}", path.display()))?;
+        let response = self.client.get(format!("{}/api/extra-files/by-sha256/{sha256}", self.url)).bearer_auth(&self.token).send().await?;
+        match response.status() {
+            status if status.is_success() => return Ok(Outcome::VideoStored(response.json().await?)),
+            reqwest::StatusCode::NOT_FOUND => {}
+            reqwest::StatusCode::UNAUTHORIZED => anyhow::bail!("{} stopped accepting ACETATE_TOKEN", self.url),
+            status => return Ok(Outcome::Failed(format!("asking whether it's stored: {status}"))),
+        }
+        if dry_run {
+            return Ok(Outcome::VideoAdded { extra_id: None, note: None });
+        }
+
+        let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        let title = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| name.clone());
+        let mut body = serde_json::json!({ "name": title, "kind": "video", "reason": IMPORTED });
+        if let Some(groups) = restrict_to {
+            body["access"] = serde_json::json!({ "restricted": true, "groups": groups });
+        }
+        let response = self.client.post(format!("{}/api/extras", self.url)).bearer_auth(&self.token).json(&body).send().await?;
+        let made: serde_json::Value = match self.answer(response).await? {
+            Ok(response) => response.json().await?,
+            Err(failed) => return Ok(Outcome::Failed(format!("making its extra: {failed}"))),
+        };
+        let extra_id: uuid::Uuid = serde_json::from_value(made["id"].clone()).context("reading the new extra's id")?;
+
+        let part = match self.file_part(path).await? {
+            Ok(part) => part,
+            Err(failed) => return Ok(Outcome::Failed(format!("{failed} (its extra {extra_id} was made, without the file)"))),
+        };
+        let form = Form::new()
+            .text("reason", IMPORTED)
+            .text("imported_from", path.to_string_lossy().to_string())
+            .part("file", part.file_name(name));
+        let response = self.client.post(format!("{}/api/extras/{extra_id}/files", self.url)).bearer_auth(&self.token).multipart(form).send().await;
+        let response = match response {
+            Ok(response) => response,
+            Err(err) => return Ok(Outcome::Failed(format!("sending it failed: {err} (its extra {extra_id} was made, without the file)"))),
+        };
+        let added: serde_json::Value = match self.answer(response).await? {
+            Ok(response) => response.json().await?,
+            Err(failed) => return Ok(Outcome::Failed(format!("{failed} (its extra {extra_id} was made, without the file)"))),
+        };
+        // Sent by someone else in the meantime.
+        if let Some(already) = added["already"].get(0) {
+            return Ok(Outcome::VideoStored(serde_json::from_value(already.clone())?));
+        }
+        Ok(Outcome::VideoAdded { extra_id: Some(extra_id), note: None })
+    }
+
+    /// A response, if it's a success; else what went wrong (an error if it's the token).
+    async fn answer(&self, response: reqwest::Response) -> anyhow::Result<Result<reqwest::Response, String>> {
+        let status = response.status();
+        if status.is_success() {
+            return Ok(Ok(response));
+        }
+        let message = response.json::<ErrorBody>().await.map(|b| b.message).unwrap_or_default();
+        if status == reqwest::StatusCode::UNAUTHORIZED {
+            anyhow::bail!("{} stopped accepting ACETATE_TOKEN: {message}", self.url);
+        }
+        Ok(Err(format!("{status}: {message}")))
+    }
+
+    /// A file as a form part: streamed from disk, not read into memory first; a big one goes
+    /// ahead in chunks, and the part names it. Err inside: sending it failed.
+    async fn file_part(&self, path: &Path) -> anyhow::Result<Result<Part, String>> {
+        let file = tokio::fs::File::open(path).await.with_context(|| format!("opening {}", path.display()))?;
+        let length = file.metadata().await?.len();
+        if length > CHUNK_BYTES {
+            return Ok(match self.upload_in_chunks(file, length).await {
+                Ok(id) => Ok(Part::text(id.to_string()).mime_str("application/vnd.acetate.upload")?),
+                Err(err) => Err(format!("sending it failed: {err:#}")),
+            });
+        }
+        let body = reqwest::Body::wrap_stream(tokio_util::io::ReaderStream::new(file));
+        Ok(Ok(Part::stream_with_length(body, length)))
     }
 
     /// Sends a file in chunks (`/api/uploads`); returns the upload's id. A chunk that

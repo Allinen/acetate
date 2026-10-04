@@ -442,9 +442,8 @@ impl ExtraPage {
         self.sending = true;
         self.result = None;
         let (api, ctx, answer, progress) = (shell.api.clone(), shell.ctx.clone(), self.answer.clone(), self.progress.clone());
-        let count = files.len();
         shell.runtime.spawn(async move {
-            let result = upload_all(&api, &id.to_string(), &files, &progress, &ctx).await.map(|_| format!("{} added.", files_text(count)));
+            let result = upload_all(&api, &id.to_string(), &files, &progress, &ctx, |added| format!("{} added.", files_text(added))).await;
             *answer.lock().unwrap() = Some(result);
             ctx.request_repaint();
         });

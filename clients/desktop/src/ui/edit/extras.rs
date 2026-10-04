@@ -512,8 +512,7 @@ impl ExtrasView {
                 let result = async {
                     let made: serde_json::Value = api.send_json(reqwest::Method::POST, "/api/extras", Some(body)).await.map_err(|e| e.message)?;
                     let id = made["id"].as_str().unwrap_or_default().to_string();
-                    upload_all(&api, &id, &files, &progress, &ctx).await?;
-                    Ok(format!("Attached “{name}”."))
+                    upload_all(&api, &id, &files, &progress, &ctx, |_| format!("Attached “{name}”.")).await
                 }
                 .await;
                 *answer.lock().unwrap() = Some(result);
@@ -530,7 +529,7 @@ impl ExtrasView {
         self.progress.store(0, Ordering::Relaxed);
         let (api, ctx, answer, progress, text) = (shell.api.clone(), shell.ctx.clone(), self.answer.clone(), self.progress.clone(), text.to_string());
         shell.runtime.spawn(async move {
-            let result = upload_all(&api, &extra.to_string(), &files, &progress, &ctx).await.map(|_| text);
+            let result = upload_all(&api, &extra.to_string(), &files, &progress, &ctx, |_| text).await;
             *answer.lock().unwrap() = Some(result);
             ctx.request_repaint();
         });
@@ -550,15 +549,26 @@ impl ExtrasView {
 }
 
 /// Uploads files to an extra, one after another (a big one in chunks, see `Api::upload`).
-pub async fn upload_all(api: &crate::api::Api, extra: &str, files: &[PathBuf], progress: &AtomicUsize, ctx: &egui::Context) -> Result<(), String> {
+/// Returns `done` (given how many were added) and the files left out: ones an extra has
+/// already (the same bytes).
+pub async fn upload_all(api: &crate::api::Api, extra: &str, files: &[PathBuf], progress: &AtomicUsize, ctx: &egui::Context, done: impl FnOnce(usize) -> String) -> Result<String, String> {
+    let mut left_out = Vec::new();
     for (n, path) in files.iter().enumerate() {
         let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "file".into());
         let bytes = tokio::fs::read(path).await.map_err(|e| format!("Couldn't read “{name}”: {e}"))?;
-        api.upload::<serde_json::Value>(&format!("/api/extras/{extra}/files"), bytes, &name).await.map_err(|e| format!("“{name}”: {}", e.message))?;
+        let answer: serde_json::Value = api.upload(&format!("/api/extras/{extra}/files"), bytes, &name).await.map_err(|e| format!("“{name}”: {}", e.message))?;
+        for already in answer["already"].as_array().into_iter().flatten() {
+            let taken_off = if already["hidden"].as_bool() == Some(true) { " (taken off)" } else { "" };
+            left_out.push(format!("“{name}” (the extra “{}”{taken_off} has it already)", already["name"].as_str().unwrap_or("?")));
+        }
         progress.store(n + 1, Ordering::Relaxed);
         ctx.request_repaint();
     }
-    Ok(())
+    let done = done(files.len() - left_out.len());
+    if left_out.is_empty() {
+        return Ok(done);
+    }
+    Ok(format!("{done} Left out {}.", left_out.join(", ")))
 }
 
 /// How many files, in words.
