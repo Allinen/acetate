@@ -1,0 +1,22 @@
+# Command line
+
+`acetate <command> --help` has the full details. These talk to the database directly, so they
+act as the system with no login. Many one-off tools list what they would do unless you pass
+`--apply` (or `--dry-run`).
+
+| Command | Does |
+|---|---|
+| `serve` | run the HTTP server (migrations run first) |
+| `user create\|set-password\|set-groups\|list` | [manage users](users.md) |
+| `ingest <dir> --layout …` | [import a folder](../library/ingest.md) |
+| `import --origin … <files>` | import individual files |
+| `videos <dir>` | import music videos as extras |
+| `replace-file <track> <path> --origin …` | swap in a better file; the old one stays |
+| `import-navidrome --db …` | [users, plays, stars, ratings from Navidrome](../library/navidrome.md) |
+| `verify [dir] [--blobs]` | check files are safely stored (read-only) |
+| `merge-duplicates` | merge exact duplicate pairs from review flags |
+| `recheck-duplicates` | re-judge open duplicate flags with today's title rule |
+| `duplicate-albums [--merge]` | list albums that look like the same album twice |
+| `review-checks [--on x\|--off x]` | list or toggle the [review checks](../review.md) |
+| `measure-covers [--apply]` | fill in cover and blob sizes |
+| `own-album-covers`, `fix-merged-covers`, `producers-from-composer` | one-off repairs for older data |

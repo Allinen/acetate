@@ -1,0 +1,23 @@
+# Summary
+
+[Introduction](README.md)
+
+- [Getting started](getting-started.md)
+- [Listening](listening.md)
+  - [Searching and filtering](searching.md)
+  - [Keys](keys.md)
+- [Editing](editing/README.md)
+  - [The track editor](editing/editor.md)
+  - [Moving credits out of titles](editing/title-parsing.md)
+  - [Merging](editing/merging.md)
+  - [History and undo](editing/history.md)
+- [Review](review.md)
+- [The library](library/README.md)
+  - [Importing music](library/ingest.md)
+  - [Moving from Navidrome](library/navidrome.md)
+  - [Storage, trash and purging](library/storage.md)
+- [Sharing](sharing.md)
+- [Running a server](admin/README.md)
+  - [Users and permissions](admin/users.md)
+  - [Configuration](admin/configuration.md)
+  - [Command line](admin/cli.md)

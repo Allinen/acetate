@@ -1,0 +1,11 @@
+[book]
+title = "Acetate"
+language = "en"
+src = "."
+
+[build]
+# Outside src: the book is generated, and inside src `mdbook serve` sees its own output
+# change and rebuilds forever.
+build-dir = "../target/book"
+
+[output.html]
