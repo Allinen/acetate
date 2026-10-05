@@ -78,7 +78,7 @@ matched by the character you type, so it works on non-US layouts.
 
 | Keys | Does |
 |---|---|
-| `artist:Ann role:featured  status:demo  …` | what to change, typed (several at once): Enter stages it |
+| `artist:Ann role:featured \| status:demo` | what to change, typed (several at once: \| between them): Enter stages it |
 | `-genre:rap  /  -artist` | take one off  /  clear them all |
 | `Tab` | take the choice listed, and type the next part (role:, as:, #…) |
 | `Backspace (empty line)` | take the last change back to edit |

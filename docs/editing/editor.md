@@ -10,12 +10,16 @@ into staged changes, you look at the preview, and `Ctrl+Enter` applies.
 ```
 artist:Ann role:featured
 album:Some EP #1
-status:demo date:2020
+status:demo | date:2020
 -genre:rap
 ```
 
-- Several changes fit on one line. If any part can't be understood (no artist by that name),
-  *none* of it is staged, and you're told why.
+- Several changes fit on one line, with `|` between them. If any of them can't be
+  understood (no artist by that name), *none* of it is staged, and you're told why.
+- A change is a key, its value, and that key's own extras: `role:` and `as:` after an
+  artist, `kind:` after an album, a grouping or a related track, a source's fields after
+  `source:`. Anything else is part of the value, so `title:Intro: Part 2` needs no quotes.
+  A value with a `|` in it is quoted (`title:"guy | more"`) or escaped (`title:guy \| more`).
 - While you type a part, the choices appear under the line (artists, albums, roles,
   statuses…). `↑`/`↓` choose, `Tab` takes the choice and starts the next part (after an
   artist: `role:`, then `as:`, then its place `#`), `Enter` takes it and stages the line.

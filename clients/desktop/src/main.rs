@@ -24,6 +24,7 @@
 mod account;
 mod api;
 mod catalog;
+mod commandline;
 mod details;
 mod links;
 mod lyrics;

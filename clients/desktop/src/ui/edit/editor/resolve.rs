@@ -214,29 +214,21 @@ pub fn resolve(line: &str, ctx: &Ctx, look: &mut dyn Lookups) -> (Vec<Unit>, boo
     let parsed = parse::parse(line);
     let mut units = Vec::new();
     let mut waiting = false;
-    let mut i = 0;
-    while i < parsed.parts.len() {
-        let main = &parsed.parts[i];
-        let mut j = i + 1;
-        while j < parsed.parts.len() && parsed.parts[j].key.is_modifier() {
-            j += 1;
-        }
-        let mods = &parsed.parts[i + 1..j];
-        let start = line[..main.value_start].rfind(|c: char| c.is_whitespace()).map_or(0, |w| w + 1);
-        let end = parsed.parts[j - 1].end;
+    let mut before = 0;
+    for command in parsed.commands() {
+        let (main, mods) = (&command[0], &command[1..]);
+        let start = line[..main.value_start].rfind(|c: char| c.is_whitespace() || c == '|').map_or(0, |w| w + 1);
+        let end = command[command.len() - 1].end;
         let text = line[start..end].trim().to_string();
         // A line album for `disc:` / `track:` after it.
-        let line_album = parsed.parts[..i].iter().rev().find(|p| p.key == K::Album && !p.minus).and_then(|p| album(&p.value, ctx).ok()).map(|a| a.0);
+        let line_album = parsed.parts[..before].iter().rev().find(|p| p.key == K::Album && !p.minus).and_then(|p| album(&p.value, ctx).ok()).map(|a| a.0);
+        before += command.len();
         // `parse:` reads what's typed after it itself (its own quotes and words).
         let result = match main.key {
-            K::Parse => match mods.iter().find(|p| !matches!(p.key, K::Split | K::Whole | K::Keep | K::Word)) {
-                Some(p) => Err(format!("{}: doesn't go after parse:", p.name())),
-                None => parse_titles(&line[main.value_start..end], ctx, look, &mut waiting),
-            },
+            K::Parse => parse_titles(&line[main.value_start..end], ctx, look, &mut waiting),
             _ => unit(main, mods, ctx, line_album, look, &mut waiting),
         };
         units.push(Unit { text, result });
-        i = j;
     }
     (units, waiting)
 }
@@ -526,7 +518,7 @@ fn unit(
             let v = main.value.trim();
             if main.minus {
                 return match v {
-                    "" => Err("-suffix: from what on to take off: -suffix:| or -suffix:( or -suffix:\"| Some Tape\"".into()),
+                    "" => Err("-suffix: from what on to take off: -suffix:\\| or -suffix:( or -suffix:\"| Some Tape\" (a | alone separates changes: \\| or quotes)".into()),
                     _ => done(format!("title: from the last “{v}” to the end taken off, where it has one (suffix: alone puts it back)"), vec![Op::CutSuffix(v.into())]),
                 };
             }
@@ -1263,10 +1255,10 @@ pub fn actions(words: &str, ctx: &Ctx) -> Vec<(String, String)> {
         ("Title: add a suffix (alone: put back what was taken off)…".into(), "suffix:".into()),
         ("Artists: add…".into(), "artist:".into()),
         ("Artists: add as featured…".into(), "feat:".into()),
-        ("Artists: replace theirs with…".into(), "-artist artist:".into()),
+        ("Artists: replace theirs with…".into(), "-artist | artist:".into()),
         ("Artists: take one off…".into(), "-artist:".into()),
         ("Album: on it as well…".into(), "album:".into()),
-        ("Album: on it only (replacing theirs)…".into(), "-album album:".into()),
+        ("Album: on it only (replacing theirs)…".into(), "-album | album:".into()),
         ("Album: take it off one…".into(), "-album:".into()),
         ("Release date…".into(), "date:".into()),
         ("Release date: none".into(), "date:none".into()),
@@ -1413,10 +1405,11 @@ mod tests {
 
     #[test]
     fn suffixes() {
-        assert_eq!(ops("-suffix:|"), [Op::CutSuffix("|".into())]);
+        assert_eq!(ops("-suffix:\\|"), [Op::CutSuffix("|".into())]);
+        assert_eq!(ops("-suffix:\"|\""), [Op::CutSuffix("|".into())]);
         assert_eq!(ops("-suffix:\"| Some Tape\""), [Op::CutSuffix("| Some Tape".into())]);
         assert_eq!(ops("suffix:"), [Op::AddSuffix(None)]);
-        assert_eq!(ops("suffix:| Some Tape"), [Op::AddSuffix(Some("| Some Tape".into()))]);
+        assert_eq!(ops("suffix:\\| Some Tape"), [Op::AddSuffix(Some("| Some Tape".into()))]);
         assert_eq!(ops("-suffix:("), [Op::CutSuffix("(".into())]);
         assert!(run("-suffix:", &Names::default(), 1)[0].as_ref().unwrap_err().contains("from what on"));
     }
@@ -1472,7 +1465,7 @@ mod tests {
         assert_eq!(p.names[0].text, "Bo");
         for (line, why) in [
             ("parse:nope", "parse: no rule like “nope”"),
-            ("parse:feat role:producer", "role: doesn't go after parse:"),
+            ("parse:feat role:producer", "parse: no rule like “role:producer”"),
             ("parse:prod", "parse: prod finds nothing in the titles"),
         ] {
             let err = parse_line(line, &Names::default(), &["Song (feat. Bo)", "Plain"]).unwrap_err();
@@ -1514,12 +1507,12 @@ mod tests {
     #[test]
     fn fields_are_found_by_their_starts() {
         assert_eq!(
-            ops("status:dem date:2020 genre:rap, trap"),
+            ops("status:dem | date:2020 | genre:rap, trap"),
             [Op::Status("demo".into()), Op::Date(Some("2020".into())), Op::Genre("rap".into()), Op::Genre("trap".into())]
         );
-        assert_eq!(ops("date:none -genre"), [Op::Date(None), Op::NoGenres]);
-        assert_eq!(ops("group:crew -group:the crew single:"), [Op::Group(id("00000000-0000-7000-8000-0000000000c1")), Op::Ungroup(id("00000000-0000-7000-8000-0000000000c1")), Op::Single]);
-        assert_eq!(ops("along:off why:fixing tags"), [Op::Along(false), Op::Why("fixing tags".into())]);
+        assert_eq!(ops("date:none | -genre"), [Op::Date(None), Op::NoGenres]);
+        assert_eq!(ops("group:crew | -group:the crew | single:"), [Op::Group(id("00000000-0000-7000-8000-0000000000c1")), Op::Ungroup(id("00000000-0000-7000-8000-0000000000c1")), Op::Single]);
+        assert_eq!(ops("along:off | why:fixing tags"), [Op::Along(false), Op::Why("fixing tags".into())]);
         assert_eq!(ops("along:on"), [Op::Sync]);
         assert!(run("along:sync", &Names::default(), 1)[0].is_err());
     }
@@ -1528,7 +1521,7 @@ mod tests {
     fn artists_with_role_place_and_replacing() {
         assert_eq!(ops("artist:Bo role:prod #1"), [Op::Credit { artist: id(BO), role: Some("producer".into()), alias: None, at: Some(0) }]);
         assert_eq!(ops("feat:Bo"), [Op::Credit { artist: id(BO), role: Some("featured".into()), alias: None, at: None }]);
-        assert_eq!(ops("-artist artist:Bo"), [Op::NoCredits, Op::Credit { artist: id(BO), role: None, alias: None, at: None }]);
+        assert_eq!(ops("-artist | artist:Bo"), [Op::NoCredits, Op::Credit { artist: id(BO), role: None, alias: None, at: None }]);
         assert_eq!(ops("-artist:Bo role:producer"), [Op::Uncredit { artist: id(BO), role: Some("producer".into()) }]);
         assert_eq!(ops("artist:Bo as:Bo"), [Op::Credit { artist: id(BO), role: None, alias: Some(None), at: None }]);
     }
@@ -1551,7 +1544,7 @@ mod tests {
     fn albums_and_their_numbers() {
         let lp = id(LP);
         assert_eq!(ops("album:long player #2-5"), [Op::Album { album: lp, numbers: Numbers::At { disc: Some(2), number: Some(5) } }]);
-        assert_eq!(ops("-album album:long player track:1+"), [Op::NoAlbums, Op::Album { album: lp, numbers: Numbers::Keep }, Op::Album { album: lp, numbers: Numbers::InOrder(1) }]);
+        assert_eq!(ops("-album | album:long player | track:1+"), [Op::NoAlbums, Op::Album { album: lp, numbers: Numbers::Keep }, Op::Album { album: lp, numbers: Numbers::InOrder(1) }]);
         // Numbers need an album.
         assert!(run("track:3", &Names::default(), 1)[0].is_err());
         // One number for many tracks: refused (#N+ numbers them in order).
@@ -1584,13 +1577,13 @@ mod tests {
         let copy = |n: u128, at| Op::Cover { image: Image::CopyOf(Uuid::from_u128(n)), sha: n.to_string().repeat(64), at };
         assert_eq!(ops("cover:long player"), [copy(1, None)]);
         assert_eq!(ops("cover:from:Long Player #2 #1"), [copy(2, Some(0))]);
-        assert_eq!(ops("cover:#3 #1 -cover:#2 -cover"), [Op::MoveCover { from: 2, to: 0 }, Op::NoCover(1), Op::NoCovers]);
+        assert_eq!(ops("cover:#3 #1 | -cover:#2 | -cover"), [Op::MoveCover { from: 2, to: 0 }, Op::NoCover(1), Op::NoCovers]);
         assert!(run("cover:long player #3", &Names::default(), 1)[0].is_err(), "it has two");
         assert!(run("cover:other song", &Names::default(), 1)[0].is_err(), "no covers of its own");
         // Pasted, and from a file: asked for first.
         let (catalog, vocab, names) = (catalog(), vocab(), Names::default());
         let ctx = Ctx { catalog: &catalog, vocab: &vocab, targets: 2, context_album: None, staged_album: None, names: &names, may_relate: true, may_source: true, titles: None, artist_names: None };
-        let (units, _) = resolve("cover:paste #1 cover:file", &ctx, &mut Known);
+        let (units, _) = resolve("cover:paste #1 | cover:file", &ctx, &mut Known);
         let r = units[0].result.as_ref().unwrap();
         assert_eq!((r.want.clone(), r.ops.is_empty(), r.warning.is_some()), (Some(Want::Paste { at: Some(0) }), true, true));
         assert_eq!(units[1].result.as_ref().unwrap().want, Some(Want::File { at: None }));
@@ -1611,7 +1604,7 @@ mod tests {
         ];
         let (catalog, names) = (catalog(), Names::default());
         let ctx = Ctx { catalog: &catalog, vocab: &vocab, targets: 1, context_album: None, staged_album: None, names: &names, may_relate: true, may_source: true, titles: None, artist_names: None };
-        let (units, _) = resolve("source:https://music.163.com/#/song?id=123 source:custom vk, sent by a friend origin:#2 -source:#1", &ctx, &mut Known);
+        let (units, _) = resolve("source:https://music.163.com/#/song?id=123 | source:custom vk, sent by a friend | origin:#2 | -source:#1", &ctx, &mut Known);
         let ops: Vec<Op> = units.iter().flat_map(|u| u.result.clone().unwrap().ops).collect();
         let [Op::Source { platform, name, data, .. }, Op::Source { data: custom, .. }, Op::Origin(1), Op::NoSource(0)] = ops.as_slice() else { panic!("{ops:?}") };
         assert_eq!((platform.as_str(), name.as_str(), data.clone()), ("netease", "123", serde_json::json!({ "song_id": 123 })));
@@ -1688,10 +1681,9 @@ mod tests {
 
         // The choices, as `artist:` → `role:` → `as:`: Tab adds the next field, needed first.
         let choices = |line: &str| {
-            let parts = parse::parse(line).parts;
-            let (last, group) = parts.split_last().unwrap();
-            let group = if last.key.is_modifier() { &group[group.iter().rposition(|p| !p.key.is_modifier()).unwrap()..] } else { &[] };
-            candidates(last, group, &ctx, &[], &[], &mut Known).into_iter().map(|c| (c.label, c.next)).collect::<Vec<_>>()
+            let parsed = parse::parse(line);
+            let last = parsed.parts.last().unwrap();
+            candidates(last, parsed.last_goes_with(), &ctx, &[], &[], &mut Known).into_iter().map(|c| (c.label, c.next)).collect::<Vec<_>>()
         };
         let next = |s: &str| Some(s.to_string());
         assert_eq!(choices("source:distr"), [("distrokid".to_string(), next("album_uuid:"))]);
@@ -1726,7 +1718,7 @@ mod tests {
         let (catalog, vocab) = (catalog(), vocab());
         let names = Names::default();
         let ctx = Ctx { catalog: &catalog, vocab: &vocab, targets: 1, context_album: None, staged_album: None, names: &names, may_relate: true, may_source: true, titles: None, artist_names: None };
-        let (units, _) = resolve("status:demo artist:Bo role:featured #2", &ctx, &mut Known);
+        let (units, _) = resolve("status:demo | artist:Bo role:featured #2", &ctx, &mut Known);
         let texts: Vec<&str> = units.iter().map(|u| u.text.as_str()).collect();
         assert_eq!(texts, ["status:demo", "artist:Bo role:featured #2"]);
     }

@@ -6,7 +6,9 @@
 //! files: `og:` or `og:yes`; `og:no` the rest; other words look in the original filename),
 //! `bitrate:<192` (kbps: `<`, `<=`, `>`, `>=`, `=`, or a number alone for about that),
 //! `rate:44.1k` (the sample rate, compared the same way), `format:lossy` / `lossless`. A value
-//! runs until the next key, so `artist:lil quill year:2017` needs no quotes. A key can be
+//! runs until the next key, so `artist:lil quill year:2017` needs no quotes; `"…"` quotes
+//! one with a key in it (`title:"one no:two"`). The syntax is the commandline's
+//! (`crate::commandline`), where a search's keys all go together: no `|` needed. A key can be
 //! shortened to any start of it (`art:`, `yr` isn't one: the aliases are listed below),
 //! and a word with a colon that isn't a key is a plain word.
 //!
@@ -97,29 +99,30 @@ pub struct Query {
     pub fields: Vec<(Key, String)>,
 }
 
+/// A search's keys: every one goes with every other (`og:yes title:x`, no `|` needed), and
+/// nothing is taken off.
+impl crate::commandline::Keys for Key {
+    const MINUS: bool = false;
+
+    fn key(name: &str) -> Option<Key> {
+        Key::parse(name)
+    }
+
+    fn name(self) -> &'static str {
+        Key::name(self)
+    }
+
+    fn takes(_: Key, _: Key) -> bool {
+        true
+    }
+}
+
 impl Query {
+    /// The commandline's syntax (`crate::commandline`): a value runs until the next key,
+    /// `"…"` quotes one.
     pub fn parse(text: &str) -> Query {
-        let mut query = Query::default();
-        for token in text.split_whitespace() {
-            let keyed = token.split_once(':').and_then(|(name, rest)| Some((Key::parse(name)?, rest)));
-            match keyed {
-                Some((key, rest)) => query.fields.push((key, rest.to_string())),
-                // After a key: part of its value. Else: a plain word.
-                None => match query.fields.last_mut() {
-                    Some((_, value)) => {
-                        if !value.is_empty() {
-                            value.push(' ');
-                        }
-                        value.push_str(token);
-                    }
-                    None => query.words.push(token.to_lowercase()),
-                },
-            }
-        }
-        for (_, value) in &mut query.fields {
-            *value = value.trim().to_string();
-        }
-        query
+        let line = crate::commandline::parse::<Key>(text);
+        Query { words: line.words.iter().map(|w| w.to_lowercase()).collect(), fields: line.parts.into_iter().map(|p| (p.key, p.value)).collect() }
     }
 
     #[cfg(test)]
@@ -266,6 +269,11 @@ mod tests {
         assert!(q.fields.is_empty());
         assert!(Query::parse("  ").is_empty());
         assert_eq!(Query::parse("status:").get(Key::Status), Some(""));
+        // Quotes, and `-` (nothing is taken off in a search: a word).
+        assert_eq!(Query::parse("title:\"one no:two\" og:").fields, [(Key::Title, "one no:two".into()), (Key::Og, "".into())]);
+        assert_eq!(Query::parse("-genre:rap").words, ["-genre:rap"]);
+        // A bar changes nothing.
+        assert_eq!(Query::parse("og:yes | title:x").fields, Query::parse("og:yes title:x").fields);
     }
 
     #[test]

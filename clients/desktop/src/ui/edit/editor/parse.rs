@@ -1,22 +1,21 @@
-//! The editor's line, as typed: `key:value` parts, the same keys (and abbreviations) as a
-//! filter (`catalog::query`) plus the editor's own (`comment:`, `related:`, `why:`,
-//! `role:`, `as:`, `along:`, `cover:`, `source:`, `origin:`, `single:`, `suffix:`, `parse:` with
-//! `split:`, `whole:`, `keep:`, `word:`; `flag:` is the filter's). Only the syntax: what a
-//! value means is worked out by the editor, which knows the library.
+//! The editor's keys: the same keys (and abbreviations) as a filter (`catalog::query`)
+//! plus the editor's own (`comment:`, `related:`, `why:`, `role:`, `as:`, `along:`,
+//! `cover:`, `source:`, `origin:`, `single:`, `suffix:`, `parse:` with `split:`, `whole:`,
+//! `keep:`, `word:`; `flag:` is the filter's). The syntax is the commandline's
+//! (`crate::commandline`): `|` between changes, quotes, `-key`, `#…`. What a value means is
+//! worked out by the editor, which knows the library.
 //!
-//! * A value runs until the next key: `artist:lil quill year:2017`.
-//! * `"…"` quotes a value that has a key-like word or a colon in it: `title:"No: Way"`
-//!   (`no` is a key: track number).
-//! * `-key:value` takes one off; `-key` alone clears the list (`-artist`, `-genre`…).
+//! * Arguments: `role:` and `as:` go with an artist (`artist:Ann role:featured as:Annie
+//!   #2`), `kind:` with an album, grouping or related track, `split:`, `whole:`, `keep:`,
+//!   `word:` with `parse:`. After `source:`, any other `name:` is one of its fields
+//!   (`source:distrokid album_uuid:… index:1`).
+//! * Anything else in a value is the value: `title:No: Way`, `keep:cdq -cover`.
 //! * `#…` after an artist or album: its place (`#2`) or numbers (`#2-5` disc 2 track 5,
 //!   `#1+` in order from 1). After a cover or source, which one (`-cover:#2`), and where
-//!   it goes (`cover:#3 #1`: the third made the main one); right after the colon too.
-//! * `role:` and `as:` go with the artist before them, `kind:` with the album, grouping or
-//!   related track before it; `split:`, `whole:`, `keep:`, `word:` with `parse:`; after
-//!   `source:`, any other `name:` is one of its fields (`source:distrokid index:1`). In
-//!   `split:` and `keep:`, `-word` is part of the value (`keep:cdq -cover`), not a key.
+//!   it goes (`cover:#3 #1`: the third made the main one).
 
 use crate::catalog::query::Key as QueryKey;
+use crate::commandline::{self, Keys};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum K {
@@ -98,17 +97,6 @@ impl K {
     pub fn is_list(self) -> bool {
         matches!(self, K::Genre | K::Artist | K::Featured | K::Album | K::Related | K::Group | K::Cover | K::Source)
     }
-
-    /// Whether it goes with the part before it (`role:` after `artist:`, `split:` after
-    /// `parse:`, a field after `source:`…).
-    pub fn is_modifier(self) -> bool {
-        matches!(self, K::Role | K::As | K::Kind | K::Split | K::Whole | K::Keep | K::Word | K::Field)
-    }
-
-    /// Whether `#…` after its value is its place or numbers.
-    fn takes_hash(self) -> bool {
-        matches!(self, K::Artist | K::Featured | K::Album | K::Role | K::As | K::Kind | K::Cover | K::Source | K::Origin)
-    }
 }
 
 /// The key a typed name means: the editor's own names exactly, then a filter's key (any
@@ -153,165 +141,42 @@ pub fn key(name: &str) -> Option<K> {
     })
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Part {
-    pub key: K,
-    /// A source's field: its name, as typed.
-    pub field: Option<String>,
-    /// `-key…`: off, or (without a colon) clear.
-    pub minus: bool,
-    /// `key:` (vs `-key` alone).
-    pub colon: bool,
-    /// The value, trimmed, without its quotes.
-    pub value: String,
-    pub quoted: bool,
-    /// What followed the last `#` (artist, album…), if there was one.
-    pub hash: Option<String>,
-    /// Every `#…`, in order (a cover moved: which, and where to).
-    pub hashes: Vec<String>,
-    /// Where the value starts in the line (bytes): a choice from the list replaces the
-    /// value from here to `end`.
-    pub value_start: usize,
-    pub end: usize,
-}
+pub type Part = commandline::Part<K>;
+pub type Line = commandline::Line<K>;
 
-impl Part {
-    /// Its key's name (a source's field: the field's).
-    pub fn name(&self) -> &str {
-        self.field.as_deref().unwrap_or(self.key.name())
+impl Keys for K {
+    fn key(name: &str) -> Option<K> {
+        key(name)
     }
-}
 
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct Line {
-    /// Words before any key (finding what to change by its name).
-    pub words: Vec<String>,
-    pub parts: Vec<Part>,
+    fn name(self) -> &'static str {
+        K::name(self)
+    }
+
+    fn is_list(self) -> bool {
+        K::is_list(self)
+    }
+
+    fn takes_hash(self) -> bool {
+        matches!(self, K::Artist | K::Featured | K::Album | K::Role | K::As | K::Kind | K::Cover | K::Source | K::Origin)
+    }
+
+    fn takes(main: K, arg: K) -> bool {
+        match main {
+            K::Artist | K::Featured => matches!(arg, K::Role | K::As),
+            K::Album | K::Group | K::Related => arg == K::Kind,
+            K::Parse => matches!(arg, K::Split | K::Whole | K::Keep | K::Word),
+            _ => false,
+        }
+    }
+
+    fn field(main: K) -> Option<K> {
+        (main == K::Source).then_some(K::Field)
+    }
 }
 
 pub fn parse(text: &str) -> Line {
-    let mut line = Line::default();
-    // Tokens with where they start.
-    let mut tokens: Vec<(usize, &str)> = Vec::new();
-    let mut start = None;
-    for (i, ch) in text.char_indices() {
-        match (ch.is_whitespace(), start) {
-            (true, Some(s)) => {
-                tokens.push((s, &text[s..i]));
-                start = None;
-            }
-            (false, None) => start = Some(i),
-            _ => {}
-        }
-    }
-    if let Some(s) = start {
-        tokens.push((s, &text[s..]));
-    }
-
-    let mut in_quote = false;
-    for (at, token) in tokens {
-        let end = at + token.len();
-        // `keep:cdq -cover`: a value of `keep:`, not "no covers".
-        let listing = line.parts.last().is_some_and(|p| matches!(p.key, K::Split | K::Keep)) && token.starts_with('-') && !token.contains(':');
-        if !in_quote && !listing && let Some(part) = key_token(at, token).or_else(|| field_token(at, token, &line)) {
-            in_quote = part.quoted && !closes(&text[part.value_start..end]);
-            line.parts.push(part);
-            if let Some(p) = line.parts.last_mut() {
-                p.end = end;
-            }
-            continue;
-        }
-        let Some(part) = line.parts.last_mut() else {
-            line.words.push(token.to_string());
-            continue;
-        };
-        if !in_quote && part.key.takes_hash() && is_hash(token) {
-            part.hash = Some(token[1..].to_string());
-            part.hashes.push(token[1..].to_string());
-        } else if in_quote {
-            in_quote = !token.ends_with('"');
-        }
-        part.end = end;
-    }
-    for part in &mut line.parts {
-        let raw = text[part.value_start..part.end].trim();
-        // The `#…`s aren't part of the value.
-        let raw = if part.hash.is_some() && !part.quoted { without_hashes(raw) } else { raw };
-        part.value = if part.quoted {
-            let inner = raw.strip_prefix('"').unwrap_or(raw);
-            let (inner, after) = inner.split_once('"').unwrap_or((inner, ""));
-            let after = after.trim();
-            if after.is_empty() { inner.to_string() } else { format!("{inner} {after}") }
-        } else {
-            raw.to_string()
-        };
-    }
-    line
-}
-
-/// A token that starts a part: `key:…`, `-key:…`, or `-key` (a list key).
-fn key_token(at: usize, token: &str) -> Option<Part> {
-    let (minus, rest) = match token.strip_prefix('-') {
-        Some(rest) => (true, rest),
-        None => (false, token),
-    };
-    let (name, value, colon) = match rest.split_once(':') {
-        Some((name, value)) => (name, value, true),
-        None => (rest, "", false),
-    };
-    if name.is_empty() || !name.chars().all(|c| c.is_alphabetic()) {
-        return None;
-    }
-    let k = key(name)?;
-    if !colon && !(minus && k.is_list()) {
-        return None;
-    }
-    let value_start = at + token.len() - value.len();
-    // `cover:#3`: a `#` right after the colon.
-    let hashes: Vec<String> = if k.takes_hash() && !value.is_empty() && is_hash(value) { vec![value[1..].to_string()] } else { Vec::new() };
-    let hash = hashes.last().cloned();
-    Some(Part { key: k, field: None, minus, colon, value: String::new(), quoted: value.starts_with('"'), hash, hashes, value_start, end: at + token.len() })
-}
-
-/// After `source:…` (and its fields): `name:…` that isn't an editor key is one of the
-/// source's fields (`album_uuid:…`, `index:1`). Which fields a platform has is the
-/// editor's to know; `https://…` isn't one.
-fn field_token(at: usize, token: &str, line: &Line) -> Option<Part> {
-    let owner = line.parts.iter().rev().find(|p| p.key != K::Field)?;
-    if owner.key != K::Source || owner.minus {
-        return None;
-    }
-    let (name, value) = token.split_once(':')?;
-    let named = name.starts_with(|c: char| c.is_ascii_alphabetic()) && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
-    if !named || value.starts_with("//") || key(name).is_some() {
-        return None;
-    }
-    let value_start = at + name.len() + 1;
-    Some(Part { key: K::Field, field: Some(name.to_string()), minus: false, colon: true, value: String::new(), quoted: value.starts_with('"'), hash: None, hashes: Vec::new(), value_start, end: at + token.len() })
-}
-
-/// A value without the `#…` words at its end.
-fn without_hashes(mut raw: &str) -> &str {
-    loop {
-        let start = raw.rfind(char::is_whitespace).map_or(0, |i| i + 1);
-        if start < raw.len() && is_hash(&raw[start..]) {
-            raw = raw[..start].trim_end();
-        } else {
-            return raw;
-        }
-    }
-}
-
-/// Whether a quoted value (from its opening quote) is closed.
-fn closes(value: &str) -> bool {
-    value.len() > 1 && value[1..].contains('"')
-}
-
-/// `#`, `#2`, `#2-5`, `#1+`.
-fn is_hash(token: &str) -> bool {
-    let Some(rest) = token.strip_prefix('#') else { return false };
-    let rest = rest.strip_suffix('+').unwrap_or(rest);
-    rest.split('-').count() <= 2 && rest.split('-').all(|n| n.chars().all(|c| c.is_ascii_digit()))
+    commandline::parse::<K>(text)
 }
 
 /// `#…` as numbers: (disc, track, in order). `2` → track 2; `2-5` → disc 2, track 5;
@@ -330,11 +195,9 @@ pub fn numbers(hash: &str) -> Option<(Option<i16>, Option<i16>, bool)> {
     }
 }
 
-/// Quotes a value where it needs it, to be typed back: one with a colon, a quote, or a
-/// word that's a key.
+/// Quotes a value where it needs it, to be typed back (see `commandline::quoted`).
 pub fn quoted(value: &str) -> String {
-    let needs = value.contains(':') || value.contains('"') || value.split_whitespace().any(|w| w.starts_with('#') || (w.starts_with('-') && key(&w[1..]).is_some()));
-    if needs { format!("\"{}\"", value.replace('"', "'")) } else { value.to_string() }
+    commandline::quoted::<K>(value)
 }
 
 #[cfg(test)]
@@ -346,50 +209,52 @@ mod tests {
     }
 
     #[test]
-    fn values_run_until_the_next_key() {
+    fn changes_are_apart_by_bars() {
         assert_eq!(
-            parts("artist:lil quill year:2017 status:demo"),
+            parts("artist:lil quill | year:2017 | status:demo"),
             [(K::Artist, false, "lil quill".into(), None), (K::Date, false, "2017".into(), None), (K::Status, false, "demo".into(), None)]
         );
-        // A word with a colon that isn't a key is part of the value.
+        // Without one, another key is part of the value.
+        assert_eq!(parts("status:demo date:2020"), [(K::Status, false, "demo date:2020".into(), None)]);
         assert_eq!(parts("title:Intro: Part 2")[0].2, "Intro: Part 2");
+        assert_eq!(parts("title:No: Way | year:2020")[0].2, "No: Way");
         // Words before any key.
         assert_eq!(parse("no date").words, ["no", "date"]);
         assert_eq!(parse("no date").parts, []);
     }
 
     #[test]
-    fn quotes_keep_key_like_words() {
-        assert_eq!(parts("title:\"No: Way\" year:2020"), [(K::Title, false, "No: Way".into(), None), (K::Date, false, "2020".into(), None)]);
-        assert_eq!(parts("title:\"one no:two\"")[0].2, "one no:two");
-        // Unclosed: the rest of the line.
-        assert_eq!(parts("title:\"No: Way")[0].2, "No: Way");
+    fn quotes_keep_bars() {
+        assert_eq!(parts("title:\"guy | more\" | status:demo")[0].2, "guy | more");
+        assert_eq!(parts("-suffix:\" | Prod\"")[0].2, " | Prod", "spaces in quotes kept");
+        assert_eq!(quoted("guy|more"), "\"guy|more\"");
         assert_eq!(quoted("No: Way"), "\"No: Way\"");
         assert_eq!(quoted("Plain song"), "Plain song");
     }
 
     #[test]
-    fn minus_hash_and_stages() {
-        assert_eq!(parts("-artist artist:A"), [(K::Artist, true, "".into(), None), (K::Artist, false, "A".into(), None)]);
+    fn minus_hash_and_arguments() {
+        assert_eq!(parts("-artist | artist:A"), [(K::Artist, true, "".into(), None), (K::Artist, false, "A".into(), None)]);
         assert!(!parse("-artist").parts[0].colon);
         assert_eq!(parts("-genre:rap"), [(K::Genre, true, "rap".into(), None)]);
         // `-title` alone isn't anything: a plain word.
         assert_eq!(parse("-title").words, ["-title"]);
-        assert_eq!(
-            parts("artist:Ann Lee role:feat as:Annie #2"),
-            [(K::Artist, false, "Ann Lee".into(), None), (K::Role, false, "feat".into(), None), (K::As, false, "Annie".into(), Some("2".into()))]
-        );
+        let line = parse("artist:Ann Lee role:feat as:Annie #2");
+        assert_eq!(line.parts.iter().map(|p| (p.key, p.arg)).collect::<Vec<_>>(), [(K::Artist, false), (K::Role, true), (K::As, true)]);
+        assert_eq!(line.parts[2].hash.as_deref(), Some("2"));
         assert_eq!(parts("album:Some LP #2-5"), [(K::Album, false, "Some LP".into(), Some("2-5".into()))]);
         assert_eq!(parts("title:Track #1")[0].2, "Track #1", "a title keeps its #");
         assert_eq!(numbers("2-5"), Some((Some(2), Some(5), false)));
         assert_eq!(numbers("1+"), Some((None, Some(1), true)));
         assert_eq!(numbers(""), Some((None, None, false)));
         assert_eq!(numbers("x"), None);
+        // `role:` after a bar: a change of its own (which the editor says is wrong).
+        assert!(!parse("status:demo | role:x").parts[1].arg);
     }
 
     #[test]
     fn covers_and_sources_take_hashes() {
-        let line = parse("cover:#3 #1 -cover:#2 cover:Long Player #2 source:https://youtu.be/x origin:#1");
+        let line = parse("cover:#3 #1 | -cover:#2 | cover:Long Player #2 | source:https://youtu.be/x | origin:#1");
         let p = &line.parts;
         assert_eq!((p[0].key, p[0].value.as_str(), p[0].hashes.clone()), (K::Cover, "", vec!["3".to_string(), "1".to_string()]));
         assert_eq!((p[1].minus, p[1].hashes.clone()), (true, vec!["2".to_string()]));
@@ -403,12 +268,14 @@ mod tests {
     fn a_sources_fields() {
         let line = parse("source:distrokid album_uuid:x-1 index:2 url:https://a.b/c status:demo");
         let p: Vec<(K, &str, &str)> = line.parts.iter().map(|p| (p.key, p.name(), p.value.as_str())).collect();
-        assert_eq!(p, [(K::Source, "source", "distrokid"), (K::Field, "album_uuid", "x-1"), (K::Field, "index", "2"), (K::Field, "url", "https://a.b/c"), (K::Status, "status", "demo")]);
+        assert_eq!(p, [(K::Source, "source", "distrokid"), (K::Field, "album_uuid", "x-1"), (K::Field, "index", "2"), (K::Field, "url", "https://a.b/c"), (K::Field, "status", "demo")]);
         // A link's `https:` isn't a field; elsewhere a field is part of the value.
         assert_eq!(parts("source:custom vk, see https://a.b")[0].2, "custom vk, see https://a.b");
         assert_eq!(parts("title:a index:1")[0].2, "a index:1");
         assert_eq!(parts("-source:#1 index:1")[0].0, K::Source);
         assert_eq!(parse("-source:#1 index:1").parts.len(), 1);
+        // A change after the fields: after a bar.
+        assert_eq!(parse("source:distrokid index:1 | status:demo").parts[2].key, K::Status);
     }
 
     #[test]
@@ -434,13 +301,13 @@ mod tests {
                 (K::Word, false, "vs=featured".into(), None),
             ]
         );
-        // Elsewhere `-cover` is still "no covers".
-        assert_eq!(parts("status:demo -cover")[1].0, K::Cover);
+        // After a bar `-cover` is still "no covers".
+        assert_eq!(parts("status:demo | -cover")[1].0, K::Cover);
     }
 
     #[test]
     fn where_a_choice_goes() {
-        let line = "status:demo artist:an";
+        let line = "status:demo | artist:an";
         let p = &parse(line).parts[1];
         assert_eq!(&line[p.value_start..p.end], "an");
     }

@@ -13,6 +13,7 @@ pub mod artist_form;
 pub mod cover_list;
 pub mod editor;
 pub mod credits;
+pub mod commandline;
 pub mod inline_search;
 pub mod og_file;
 pub mod notes;

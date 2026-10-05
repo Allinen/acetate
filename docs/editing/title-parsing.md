@@ -118,11 +118,12 @@ Some titles end with something that isn't the song, like `Song w/ Ann | Some Tap
 `Song w/ Ann (BUY 1 GET 1 FREE)`. Take it off, parse, and (if you want) put it back:
 
 ```
--suffix:| parse:w/ suffix:
+-suffix:\| | parse:w/ | suffix:
 ```
 
 - `-suffix:X` takes off everything from the **last** `X` in the title to the end, whatever
-  it is: `-suffix:|`, `-suffix:(`, `-suffix:"| Some Tape"` (any case). Titles without it
+  it is: `-suffix:\|`, `-suffix:(`, `-suffix:"| Some Tape"` (any case). A `|` alone
+  separates changes, so the one to cut at is escaped (`\|`) or quoted (`"|"`). Titles without it
   are left as they are. Nothing clever: `-suffix:(` on `Song (Remix) [Live]` leaves `Song`, 
   so be careful using it.
 - `suffix:` with nothing after it puts back exactly what `-suffix:` took off, each track

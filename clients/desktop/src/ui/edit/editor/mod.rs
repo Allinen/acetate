@@ -3,8 +3,10 @@
 //! (see `parse` for the line, `resolve` for what it means). The one editor for tracks: the
 //! track page in edit mode, Review, and the tables' Ctrl+E (one track or the marked ones).
 //!
-//! * **The line**: Enter turns it into staged changes (chips), all of it or, if a part
-//!   can't be (no artist like that), none of it, saying why. While a part is typed, its
+//! * **The line** (a `ui::edit::commandline`, its language `crate::commandline`'s: `|`
+//!   between changes, each a key with its own arguments): Enter turns it into staged
+//!   changes (chips), all of it or, if a part can't be (no artist like that), none of it,
+//!   saying why. While a part is typed, its
 //!   choices are listed under the line (artists, albums, tracks, roles, statuses…):
 //!   ↑/↓ choose, **Tab** takes the choice and writes the next part to type (after an
 //!   artist its `role:`, then `as:`, then its place `#`), Enter takes it and stages the
@@ -85,7 +87,8 @@ use crate::account::Vocab;
 use crate::details::AliasInfo;
 use crate::catalog::search::{Part as SearchPart, Search};
 use crate::catalog::Catalog;
-use crate::ui::theme::{font, medium, semibold, PALETTE as P};
+use crate::ui::theme::{font, semibold, PALETTE as P};
+use crate::ui::edit::commandline::{self as cl, CommandLine};
 use crate::ui::{thousands, Action, Shell};
 
 pub use engine::{DraftOf, Imported};
@@ -168,19 +171,14 @@ static NEXT: AtomicU64 = AtomicU64::new(1);
 pub struct TrackEditor {
     /// Its own (its line's id: several editors may exist, one per track being edited).
     id: u64,
-    line: String,
-    /// The chosen entry of the list under the line.
-    highlighted: usize,
+    /// The line: what's typed, its list, the cursor.
+    cl: CommandLine,
     staged: Vec<Staged>,
     names: Names,
     lookup: Lookup,
     /// Tracks to copy a cover from (`lookup` has the albums).
     lookup_tracks: Lookup,
     engine: Engine,
-    /// Put the cursor in the line (until it's there).
-    focus_line: bool,
-    /// Only if no other field has it (it wasn't asked for: a track was shown).
-    focus_gently: bool,
     /// Esc was pressed with changes staged: again discards them.
     confirm_discard: bool,
     notice: Option<String>,
@@ -196,8 +194,6 @@ pub struct TrackEditor {
     saved: Option<Vec<String>>,
     /// Ctrl+Enter with one track before the preview was there: apply once it is.
     apply_when_ready: bool,
-    /// The line was filled in for you: the cursor goes after it.
-    place_cursor: bool,
     /// Images being uploaded for covers, and those done (staged as changes when they are).
     uploading: usize,
     uploaded: Arc<Mutex<Vec<Uploaded>>>,
@@ -257,17 +253,15 @@ struct Owner {
 
 impl Default for TrackEditor {
     fn default() -> Self {
+        let id = NEXT.fetch_add(1, Ordering::Relaxed);
         TrackEditor {
-            id: NEXT.fetch_add(1, Ordering::Relaxed),
-            line: String::new(),
-            highlighted: 0,
+            id,
+            cl: CommandLine::new(egui::Id::new(("track-editor-line", id))),
             staged: Vec::new(),
             names: Names::default(),
             lookup: Lookup::default(),
             lookup_tracks: Lookup::default(),
             engine: Engine::default(),
-            focus_line: false,
-            focus_gently: false,
             confirm_discard: false,
             notice: None,
             resolved: None,
@@ -276,7 +270,6 @@ impl Default for TrackEditor {
             row: None,
             saved: None,
             apply_when_ready: false,
-            place_cursor: false,
             uploading: 0,
             uploaded: Arc::default(),
             chosen: Arc::default(),
@@ -299,21 +292,17 @@ impl Default for TrackEditor {
 }
 
 impl TrackEditor {
-    fn line_id(&self) -> egui::Id {
-        egui::Id::new(("track-editor-line", self.id))
-    }
-
     /// The cursor goes to the line.
     pub fn opened(&mut self) {
-        self.focus_line = true;
-        self.focus_gently = false;
+        self.cl.focus = true;
+        self.cl.gently = false;
         self.row = None;
     }
 
     /// The cursor goes to the line unless it's in another field (a search being typed,
     /// whose results changed the track shown): for a track shown, not a key pressed.
     pub fn gently(&mut self) {
-        self.focus_gently = self.focus_line;
+        self.cl.gently = self.cl.focus;
     }
 
     /// Applying, or applied and its outcome not closed yet.
@@ -353,26 +342,26 @@ impl TrackEditor {
 
     /// Nothing staged and nothing typed.
     pub fn is_blank(&self) -> bool {
-        self.staged.is_empty() && self.line.trim().is_empty()
+        self.staged.is_empty() && self.cl.text.trim().is_empty()
     }
 
     /// Empties the line if it holds exactly `text` (a prefill nobody touched).
     pub fn clear_line_if(&mut self, text: &str) {
-        if self.line == text {
-            self.line.clear();
+        if self.cl.text == text {
+            self.cl.text.clear();
             self.resolved = None;
         }
     }
 
     /// Types `text` in the line (replacing what's there), with the cursor after it.
     pub fn prefill(&mut self, text: &str) {
-        self.line = text.to_string();
-        self.highlighted = 0;
+        self.cl.text = text.to_string();
+        self.cl.highlighted = 0;
         self.row = None;
         self.resolved = None;
-        self.focus_line = true;
-        self.focus_gently = false;
-        self.place_cursor = true;
+        self.cl.focus = true;
+        self.cl.gently = false;
+        self.cl.place_cursor = true;
     }
 
     /// The version edited (one track), if another than the shown one was chosen.
@@ -571,10 +560,10 @@ impl TrackEditor {
         match (entry, key) {
             (Entry::Name(k, i), Key::Enter) => {
                 let Some(name) = name_of(*k, *i).map(|n| n.text.clone()) else { return };
-                self.line = format!("artist:{}", parse::quoted(&name));
+                self.cl.text = format!("artist:{}", parse::quoted(&name));
                 self.prompt = Some(Prompt::Who(name));
-                self.focus_line = true;
-                self.place_cursor = true;
+                self.cl.focus = true;
+                self.cl.place_cursor = true;
             }
             (Entry::Name(k, i), Key::C) => {
                 let Some(name) = name_of(*k, *i).map(|n| n.text.clone()) else { return };
@@ -603,10 +592,10 @@ impl TrackEditor {
             }
             (Entry::Name(k, i), Key::W) => {
                 let Some(n) = name_of(*k, *i) else { return };
-                self.line = n.part.clone();
+                self.cl.text = n.part.clone();
                 self.prompt = Some(Prompt::Whole(*k, n.text.clone()));
-                self.focus_line = true;
-                self.place_cursor = true;
+                self.cl.focus = true;
+                self.cl.place_cursor = true;
             }
             (Entry::Name(k, i), Key::N) => {
                 let Some(name) = name_of(*k, *i).map(|n| n.text.clone()) else { return };
@@ -652,7 +641,7 @@ impl TrackEditor {
                 return;
             }
             Prompt::Whole(k, _) => {
-                let whole = self.line.split_whitespace().collect::<Vec<_>>().join(" ");
+                let whole = self.cl.text.split_whitespace().collect::<Vec<_>>().join(" ");
                 if whole.is_empty() {
                     self.notice = Some("Leave the name to keep whole in the line (Esc: never mind).".into());
                     return;
@@ -660,7 +649,7 @@ impl TrackEditor {
                 self.reparse(k, |p| p.fixes.whole.push(whole));
             }
         }
-        self.line.clear();
+        self.cl.text.clear();
         self.prompt = None;
         self.to_check = true;
     }
@@ -677,7 +666,7 @@ impl TrackEditor {
         self.engine.update(shell, catalog, targets, &change, &self.names, variant);
         self.finished(shell, targets);
         let phase = self.engine.applied.lock().unwrap().phase;
-        let line_id = self.line_id();
+        let line_id = self.cl.id();
         if !self.staged.is_empty() || self.uploading > 0 {
             shell.form_dirty = true;
         }
@@ -695,24 +684,8 @@ impl TrackEditor {
             }
         }
 
-        // The cursor to the line: asked until it holds (a click that opened a popup ends
-        // outside the field, which lets go of it that same frame).
-        if self.place_cursor {
-            self.place_cursor = false;
-            self.cursor_to_end(&ctx);
-        }
-        if self.focus_line {
-            // Asked gently and another field has it (a search being typed): left there.
-            let elsewhere = ctx.memory(|m| m.focused().is_some_and(|f| f != line_id));
-            let holds = ctx.memory(|m| m.has_focus(line_id)) && !ctx.input(|i| i.pointer.any_released());
-            if (self.focus_gently && elsewhere) || holds {
-                self.focus_line = false;
-                self.focus_gently = false;
-            } else {
-                ctx.memory_mut(|m| m.request_focus(line_id));
-            }
-        }
-        let focused = ctx.memory(|m| m.has_focus(line_id));
+        // The cursor to the line: asked until it holds.
+        let focused = self.cl.hold_focus(&ctx);
         if focused {
             self.row = None;
             if self.prompt.is_none() {
@@ -722,7 +695,7 @@ impl TrackEditor {
         let typing = ctx.egui_wants_keyboard_input();
         let free = keys_free(&ctx, ui.layer_id(), shell.palette_open, shell.modal_was_open);
         // Metadata pasted to import (into the empty line, or outside any field).
-        if phase == Phase::Editing && single && !shell.palette_open && !shell.modal_open && ((focused && self.line.trim().is_empty()) || !typing) {
+        if phase == Phase::Editing && single && !shell.palette_open && !shell.modal_open && ((focused && self.cl.text.trim().is_empty()) || !typing) {
             let pasted = ctx.input(|i| i.events.iter().find_map(|e| if let egui::Event::Paste(text) = e { import::recognize(text) } else { None }));
             if let Some(pasted) = pasted {
                 ctx.input_mut(|i| i.events.retain(|e| !matches!(e, egui::Event::Paste(_))));
@@ -740,7 +713,7 @@ impl TrackEditor {
         // `/` outside a field: back to the line.
         if !typing && ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Text(t) if t == "/"))) {
             ctx.input_mut(|i| i.events.retain(|e| !matches!(e, egui::Event::Text(t) if t == "/")));
-            self.focus_line = true;
+            self.cl.focus = true;
             self.row = None;
         }
 
@@ -750,7 +723,7 @@ impl TrackEditor {
         let may_source = shell.account.can("edit_sources");
         // `parse:` typed: each target's title as the staged changes leave it (once they're
         // all loaded), and every artist's names.
-        let typed_parse = parse::parse(&self.line).parts.iter().any(|p| p.key == K::Parse);
+        let typed_parse = parse::parse(&self.cl.text).parts.iter().any(|p| p.key == K::Parse);
         let parsing = typed_parse || !self.staged_parses().is_empty();
         let titles: Option<Vec<(Uuid, String)>> = typed_parse.then(|| targets.iter().map(|t| self.engine.ready(*t).map(|r| (*t, r.meta.title.clone()))).collect()).flatten();
         if parsing && self.artist_names.as_ref().is_none_or(|(of, _)| !std::ptr::eq(*of, Arc::as_ptr(catalog))) {
@@ -771,21 +744,15 @@ impl TrackEditor {
             }
         }
         if !left.is_empty() {
-            self.line = left.join(" ");
-            self.focus_line = true;
-            self.place_cursor = true;
+            self.cl.text = left.join(" | ");
+            self.cl.focus = true;
+            self.cl.place_cursor = true;
         }
-        let parsed = parse::parse(&self.line);
+        let parsed = parse::parse(&self.cl.text);
         let last = parsed.parts.last().cloned();
         // What the last part goes with: the part before its modifiers, and those (none: it
         // isn't a modifier).
-        let group: &[parse::Part] = match &last {
-            Some(l) if l.key.is_modifier() => {
-                let before = &parsed.parts[..parsed.parts.len() - 1];
-                before.iter().rposition(|p| !p.key.is_modifier()).map_or(&[], |at| &before[at..])
-            }
-            _ => &[],
-        };
+        let group: &[parse::Part] = parsed.last_goes_with();
         // Tab or Enter takes what's listed: the matches must be for exactly what's typed
         // (found in the background, they can still be the last keystroke's), so then
         // they're found now.
@@ -817,13 +784,13 @@ impl TrackEditor {
             let key = {
                 use std::hash::{Hash, Hasher};
                 let mut h = std::hash::DefaultHasher::new();
-                (&self.line, self.names.version, staged_album, look.0.generation, targets.len(), &titles).hash(&mut h);
+                (&self.cl.text, self.names.version, staged_album, look.0.generation, targets.len(), &titles).hash(&mut h);
                 h.finish()
             };
             let units = match &self.resolved {
                 Some((k, units)) if *k == key => units.clone(),
                 _ => {
-                    let (units, waiting) = resolve::resolve(&self.line, &rctx, &mut look);
+                    let (units, waiting) = resolve::resolve(&self.cl.text, &rctx, &mut look);
                     self.resolved = if waiting { None } else { Some((key, units.clone())) };
                     units
                 }
@@ -832,7 +799,7 @@ impl TrackEditor {
         };
         let (verbs, actions) = actions;
         let choices = if words { verbs.len() + actions.len() } else { candidates.len() };
-        self.highlighted = self.highlighted.min(choices.saturating_sub(1));
+        self.cl.highlighted = self.cl.highlighted.min(choices.saturating_sub(1));
 
         // One track's rows (and the flags on them).
         let rows: Vec<Row> = match (single, targets.first().and_then(|t| self.engine.ready(*t))) {
@@ -895,23 +862,10 @@ impl TrackEditor {
         let mut take: Option<(usize, bool)> = None;
         let mut stage = false;
         if focused {
-            let (up, down, tab, enter, back, escape) = ctx.input_mut(|i| {
-                (
-                    choices > 0 && i.consume_key(Modifiers::NONE, Key::ArrowUp),
-                    (choices > 0 || (self.line.is_empty() && (!rows.is_empty() || first_check.is_some()))) && i.consume_key(Modifiers::NONE, Key::ArrowDown),
-                    i.consume_key(Modifiers::NONE, Key::Tab),
-                    i.consume_key(Modifiers::NONE, Key::Enter),
-                    self.line.is_empty() && !self.staged.is_empty() && i.consume_key(Modifiers::NONE, Key::Backspace),
-                    !self.line.is_empty() && i.consume_key(Modifiers::NONE, Key::Escape),
-                )
-            });
-            if up {
-                self.highlighted = self.highlighted.saturating_sub(1);
-            }
-            if down {
-                if choices > 0 {
-                    self.highlighted = (self.highlighted + 1).min(choices - 1);
-                } else if !rows.is_empty() {
+            let down_too = !rows.is_empty() || first_check.is_some();
+            let cl::Pressed { down, tab, enter, back, escape, .. } = self.cl.keys(&ctx, choices, down_too, !self.staged.is_empty());
+            if down && choices == 0 {
+                if !rows.is_empty() {
                     // Into the rows.
                     self.row = Some(0);
                     ctx.memory_mut(|m| m.surrender_focus(line_id));
@@ -922,11 +876,11 @@ impl TrackEditor {
                 }
             }
             if tab && choices > 0 {
-                take = Some((self.highlighted, true));
+                take = Some((self.cl.highlighted, true));
             }
             if enter {
                 if choices > 0 {
-                    take = Some((self.highlighted, false));
+                    take = Some((self.cl.highlighted, false));
                 }
                 stage = !words;
             }
@@ -935,15 +889,13 @@ impl TrackEditor {
             {
                 self.apply_when_ready = false;
                 if last.editable {
-                    self.line = last.text;
-                    self.cursor_to_end(&ctx);
+                    self.cl.text = last.text;
+                    self.cl.cursor_to_end(&ctx);
                 }
             }
-            if escape {
-                self.line.clear();
-                if self.prompt.take().is_some() {
-                    self.to_check = true;
-                }
+            // (Esc emptied the line.) A prompt let go: back to the check.
+            if escape && self.prompt.take().is_some() {
+                self.to_check = true;
             }
         }
         // ---- Keys on a row ----
@@ -983,13 +935,13 @@ impl TrackEditor {
             } else if pressed(Key::ArrowUp, Modifiers::NONE) || pressed(Key::K, Modifiers::NONE) {
                 if n == 0 {
                     self.row = None;
-                    self.focus_line = true;
+                    self.cl.focus = true;
                 } else {
                     self.row = Some(n - 1);
                 }
             } else if pressed(Key::Escape, Modifiers::NONE) {
                 self.row = None;
-                self.focus_line = true;
+                self.cl.focus = true;
             } else {
                 let action = if pressed(Key::Enter, Modifiers::NONE) {
                     Some(RowKey::Edit)
@@ -1039,7 +991,7 @@ impl TrackEditor {
                     None => {
                         self.check = None;
                         if rows.is_empty() {
-                            self.focus_line = true;
+                            self.cl.focus = true;
                         } else {
                             self.row = Some(rows.len() - 1);
                         }
@@ -1048,7 +1000,7 @@ impl TrackEditor {
                 self.check_scroll = true;
             } else if pressed(Key::Escape) {
                 self.check = None;
-                self.focus_line = true;
+                self.cl.focus = true;
             } else if let Some(key) = [Key::Enter, Key::C, Key::S, Key::W, Key::N, Key::X, Key::Delete].into_iter().find(|k| pressed(*k)) {
                 // The letter typed is still in this frame's input: not into the line.
                 ctx.input_mut(|i| i.events.retain(|e| !matches!(e, egui::Event::Text(_))));
@@ -1057,7 +1009,7 @@ impl TrackEditor {
         }
         // Ctrl+Enter: what's typed is staged first; then the preview is applied.
         let ctrl_enter = free && ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Enter));
-        if ctrl_enter && !self.line.trim().is_empty() {
+        if ctrl_enter && !self.cl.text.trim().is_empty() {
             stage = true;
         }
         // Esc outside the line, with changes staged: asks, and again discards them. Once
@@ -1092,10 +1044,9 @@ impl TrackEditor {
 
         // ---- The line ----
         let editing = phase == Phase::Editing;
-        let hint = "What to change: artist:…  album:…  status:demo  date:2020  cover:paste  source:<link>  (Tab: the next part · Enter: stage it · paste a SoundCloud/yt-dlp JSON or a YouTube link: its metadata)";
-        let response = ui.add_enabled(editing, egui::TextEdit::singleline(&mut self.line).id(line_id).hint_text(hint).desired_width(f32::INFINITY));
+        let hint = "What to change: artist:…  album:…  status:demo | date:2020  cover:paste  source:<link>  (| between changes · Tab: the next part · Enter: stage it · paste a SoundCloud/yt-dlp JSON or a YouTube link: its metadata)";
+        let response = self.cl.field(ui, editing, hint);
         if response.changed() {
-            self.highlighted = 0;
             self.notice = None;
             self.confirm_discard = false;
         }
@@ -1105,9 +1056,9 @@ impl TrackEditor {
         if words && (!actions.is_empty() || !verbs.is_empty()) {
             // The tools first: a word that names one means it.
             let rows = verbs.iter().map(|v| (v.label().to_string(), "opens it".to_string())).chain(actions.iter().map(|(label, insert)| (label.clone(), insert.clone()))).collect();
-            list(ui, rows, self.highlighted, &mut clicked);
+            cl::list(ui, rows, self.cl.highlighted, &mut clicked, LIST_HELP);
         } else if !candidates.is_empty() {
-            list(ui, candidates.iter().map(|c| (c.label.clone(), c.sub.clone())).collect(), self.highlighted, &mut clicked);
+            cl::list(ui, candidates.iter().map(|c| (c.label.clone(), c.sub.clone())).collect(), self.cl.highlighted, &mut clicked, LIST_HELP);
         }
         if let Some(n) = clicked {
             take = Some((n, true));
@@ -1116,11 +1067,11 @@ impl TrackEditor {
             if words {
                 if let Some(verb) = verbs.get(n) {
                     self.verb = Some(*verb);
-                    self.line.clear();
+                    self.cl.text.clear();
                     stage = false;
                 } else if let Some((_, insert)) = actions.get(n - verbs.len()) {
-                    self.line = insert.clone();
-                    self.cursor_to_end(&ctx);
+                    self.cl.text = insert.clone();
+                    self.cl.cursor_to_end(&ctx);
                     stage = false;
                 }
             } else if let (Some(c), Some(l)) = (candidates.get(n), &last) {
@@ -1129,10 +1080,10 @@ impl TrackEditor {
                     stage = false;
                 }
             }
-            self.highlighted = 0;
+            self.cl.highlighted = 0;
             // (A tool asked for gets the cursor, not the line.)
             if self.verb.is_none() {
-                self.focus_line = true;
+                self.cl.focus = true;
             } else {
                 ctx.memory_mut(|m| m.surrender_focus(line_id));
             }
@@ -1140,14 +1091,14 @@ impl TrackEditor {
         if stage && let Some(prompt) = self.prompt.clone() {
             self.answer_prompt(prompt);
         } else if stage {
-            let line = std::mem::take(&mut self.line);
+            let line = std::mem::take(&mut self.cl.text);
             if !self.stage(&line, shell, &here) {
-                self.line = line;
+                self.cl.text = line;
             }
         }
         // A prompt answered (or let go): back to the check.
         if std::mem::take(&mut self.to_check) {
-            self.focus_line = false;
+            self.cl.focus = false;
             ctx.memory_mut(|m| m.surrender_focus(line_id));
             self.check = self.check.or(first_check);
             self.check_scroll = true;
@@ -1162,25 +1113,9 @@ impl TrackEditor {
             ui.label(RichText::new(text).color(P.accent).small());
         }
         // What Enter would do (or why it can't), when no list is in the way.
-        if self.prompt.is_none() && candidates.is_empty() && actions.is_empty() && verbs.is_empty() && !self.line.trim().is_empty() {
-            egui::Frame::NONE.fill(P.bg).corner_radius(8).inner_margin(egui::Margin::same(6)).show(ui, |ui| {
-                for u in &units {
-                    match &u.result {
-                        Ok(r) => {
-                            ui.label(RichText::new(&r.label).color(P.accent));
-                            if let Some(w) = &r.warning {
-                                ui.label(RichText::new(format!("  ⚠ {w}")).color(P.text).small());
-                            }
-                        }
-                        Err(e) => {
-                            ui.label(RichText::new(e).color(P.danger));
-                        }
-                    }
-                }
-                if units.is_empty() {
-                    ui.label(RichText::new("Nothing to change by that name").color(P.faint).small());
-                }
-            });
+        if self.prompt.is_none() && candidates.is_empty() && actions.is_empty() && verbs.is_empty() && !self.cl.text.trim().is_empty() {
+            let shown: Vec<Result<(String, Option<String>), String>> = units.iter().map(|u| u.result.as_ref().map(|r| (r.label.clone(), r.warning.clone())).map_err(|e| e.clone())).collect();
+            cl::would_do(ui, &shown, "Nothing to change by that name");
         }
         if let Some(notice) = &self.notice {
             ui.label(RichText::new(notice).color(P.muted).small());
@@ -1200,34 +1135,18 @@ impl TrackEditor {
 
         // ---- The staged changes ----
         if self.staged.is_empty() {
-            if self.line.is_empty() {
+            if self.cl.text.is_empty() {
                 let more = if single { " · ↓ goes to the fields below" } else { "" };
                 ui.label(
-                    RichText::new(format!("key:value sets it (several at once too) · -key:value takes one off, -key clears · a word finds what to change · Ctrl+Enter applies{more}"))
+                    RichText::new(format!("key:value sets it (several at once: | between them) · -key:value takes one off, -key clears · a word finds what to change · Ctrl+Enter applies{more}"))
                         .color(P.faint)
                         .small(),
                 );
             }
         } else {
             ui.add_space(4.0);
-            let mut remove = None;
-            ui.horizontal_wrapped(|ui| {
-                for (n, s) in self.staged.iter().enumerate() {
-                    let color = if s.warning.is_some() { P.text } else { P.accent };
-                    egui::Frame::NONE.fill(P.surface_hi).corner_radius(6).inner_margin(egui::Margin::symmetric(8, 3)).show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            let tip = match &s.warning {
-                                Some(w) => format!("{}\n⚠ {w}", s.label),
-                                None => s.label.clone(),
-                            };
-                            ui.label(RichText::new(&s.text).font(font(13.0, medium())).color(color)).on_hover_text(tip);
-                            if editing && ui.small_button("×").on_hover_text("Take it back").clicked() {
-                                remove = Some(n);
-                            }
-                        });
-                    });
-                }
-            });
+            let chips: Vec<cl::Chip> = self.staged.iter().map(|s| cl::Chip { text: &s.text, label: &s.label, warning: s.warning.as_deref() }).collect();
+            let remove = cl::chips(ui, &chips, editing);
             if let Some(n) = remove {
                 self.staged.remove(n);
                 self.apply_when_ready = false;
@@ -1366,15 +1285,6 @@ impl TrackEditor {
     }
 
     /// Puts the cursor at the end of the line (after the line was changed for you).
-    fn cursor_to_end(&mut self, ctx: &egui::Context) {
-        let id = self.line_id();
-        let mut state = egui::text_edit::TextEditState::load(ctx, id).unwrap_or_default();
-        let end = egui::text::CCursor::new(self.line.chars().count());
-        state.cursor.set_char_range(Some(egui::text::CCursorRange::one(end)));
-        state.store(ctx, id);
-        self.focus_line = true;
-    }
-
     /// A choice from the list: its text in the line for the value being typed, and what it
     /// stands for from now on; `next`: the next part to type after it.
     fn take(&mut self, c: &Candidate, part: &parse::Part, next: bool, ctx: &egui::Context) {
@@ -1388,19 +1298,12 @@ impl TrackEditor {
             if let Some(id) = id {
                 self.names.pin(PinKind::Artist, &name, id);
                 self.reparse_all(|_| {});
-                self.line.clear();
+                self.cl.text.clear();
                 self.prompt = None;
                 self.resolved = None;
                 self.to_check = true;
             }
             return;
-        }
-        // (What's typed already stays as typed: not quoted.)
-        if c.text != part.value {
-            let text = parse::quoted(&c.text);
-            let end = part.end.min(self.line.len());
-            let start = part.value_start.min(end);
-            self.line.replace_range(start..end, &text);
         }
         match &c.pick {
             Some(Pick::Pin(kind, id)) => self.names.pin(*kind, &c.text, *id),
@@ -1418,12 +1321,11 @@ impl TrackEditor {
             }
             None => {}
         }
-        if next && let Some(after) = &c.next {
-            self.line.push(' ');
-            self.line.push_str(after);
-        }
+        let next = c.next.as_deref().filter(|_| next);
+        // (What's typed already stays as typed: not quoted.)
+        let text = (c.text != part.value).then(|| parse::quoted(&c.text));
+        self.cl.take(ctx, part.value_start, part.end, text.as_deref(), next);
         self.resolved = None;
-        self.cursor_to_end(ctx);
     }
 
     /// `text` staged: all of it, or (something in it can't be) none of it, saying why.
@@ -1691,7 +1593,7 @@ impl TrackEditor {
                     self.staged.push(Staged { text: format!("source:#{} corrected", n + 1), label, ops: vec![Op::CorrectSource { id, data }], warning: None, editable: false, for_you: false });
                     self.correcting = None;
                     self.apply_when_ready = false;
-                    self.focus_line = true;
+                    self.cl.focus = true;
                 }
                 (Err(err), _) => self.notice = Some(err),
                 (_, None) => self.correcting = None,
@@ -1799,7 +1701,7 @@ impl TrackEditor {
                 let name = artist(&mut self.names, c.artist_id);
                 match key {
                     // Another role: off in this one, on in the one chosen, same place.
-                    RowKey::Edit | RowKey::Role => fill(self, format!("-artist:{name} role:{} artist:{name} #{} role:", c.role, n + 1)),
+                    RowKey::Edit | RowKey::Role => fill(self, format!("-artist:{name} role:{} | artist:{name} #{} role:", c.role, n + 1)),
                     RowKey::Alias => fill(self, format!("artist:{name} role:{} as:", c.role)),
                     RowKey::Remove => {
                         self.stage(&format!("-artist:{name} role:{}", c.role), shell, here);
@@ -1835,7 +1737,7 @@ impl TrackEditor {
                 let Some(rel) = r.facts.relations.get(n).cloned() else { return };
                 let title = track(&mut self.names, rel.track_id);
                 match key {
-                    RowKey::Edit => fill(self, format!("-related:{title} related:{title} kind:")),
+                    RowKey::Edit => fill(self, format!("-related:{title} | related:{title} kind:")),
                     RowKey::Remove => {
                         self.stage(&format!("-related:{title}"), shell, here);
                     }
@@ -1934,7 +1836,7 @@ impl TrackEditor {
         });
         if let Some(n) = clicked {
             self.row = Some(n);
-            ui.ctx().memory_mut(|m| m.surrender_focus(self.line_id()));
+            ui.ctx().memory_mut(|m| m.surrender_focus(self.cl.id()));
         }
         if let Some(cover) = original {
             shell.open_original(ui.ctx(), cover);
@@ -1983,7 +1885,7 @@ impl TrackEditor {
                 // A name more than one artist has: chosen first (or its tracks left out).
                 let mut undecided: Vec<String> = self.staged_parses().iter().flat_map(|p| p.undecided().iter().map(|n| format!("“{}”", n.text)).collect::<Vec<_>>()).collect();
                 undecided.dedup();
-                let can = current && changing > refused && !loading && self.line.trim().is_empty() && self.uploading == 0 && undecided.is_empty();
+                let can = current && changing > refused && !loading && self.cl.text.trim().is_empty() && self.uploading == 0 && undecided.is_empty();
                 let text = if self.engine.is_draft() && single { "Import  (Ctrl+Enter)".to_string() } else if self.engine.is_draft() { format!("Import {} files  (Ctrl+Enter)", thousands(changing - refused.min(changing))) } else if single { "Apply  (Ctrl+Enter)".to_string() } else { format!("Apply to {} tracks  (Ctrl+Enter)", thousands(changing - refused.min(changing))) };
                 let mut apply = false;
                 ui.horizontal(|ui| {
@@ -2009,7 +1911,7 @@ impl TrackEditor {
                         self.notice = Some(format!("Not applied: choose who {} is first.", undecided.join(", ")));
                     } else if self.uploading > 0 {
                         self.notice = Some("An image is still uploading: Ctrl+Enter again once it's a change.".into());
-                    } else if single && (!self.staged.is_empty() || self.engine.is_draft()) && self.line.trim().is_empty() {
+                    } else if single && (!self.staged.is_empty() || self.engine.is_draft()) && self.cl.text.trim().is_empty() {
                         // (What was typed may have been staged just now: its preview comes
                         // next.) Applied once the preview's there, if it can be.
                         self.apply_when_ready = true;
@@ -2233,20 +2135,8 @@ fn keys_free(ctx: &egui::Context, layer: egui::LayerId, palette_open: bool, moda
         }
 }
 
-/// A list under the line: (label, what tells it apart), the chosen one lit. A click sets
-/// `clicked`.
-fn list(ui: &mut egui::Ui, rows: Vec<(String, String)>, highlighted: usize, clicked: &mut Option<usize>) {
-    egui::Frame::NONE.fill(P.surface).corner_radius(8).inner_margin(egui::Margin::same(4)).show(ui, |ui| {
-        ui.spacing_mut().item_spacing.y = 0.0;
-        for (n, (label, sub)) in rows.iter().enumerate() {
-            let text = if sub.is_empty() { label.clone() } else { format!("{label}   {sub}") };
-            if ui.selectable_label(n == highlighted, RichText::new(text).font(font(13.5, medium()))).clicked() {
-                *clicked = Some(n);
-            }
-        }
-        ui.label(RichText::new("↑/↓ choose · Tab: take it and type the next part · Enter: take it and stage the line").color(P.faint).small());
-    });
-}
+/// What the keys do in the list under the line.
+const LIST_HELP: &str = "↑/↓ choose · Tab: take it and type the next part · Enter: take it and stage the line";
 
 /// Each field as the tracks have it, and as they will (with many tracks: how many differ).
 fn state(ui: &mut egui::Ui, engine: &Engine, catalog: &Catalog, names: &Names) {
