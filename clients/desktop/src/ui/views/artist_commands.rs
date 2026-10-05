@@ -9,13 +9,27 @@
 //!   section on its own. `tracks:words` also sets its filter. `sources` and `notes` are
 //!   opened and scrolled to.
 //! * Plain words find these too, and `play`, plus `merge` and `collective` in edit mode.
+//!
+//! Edit mode (and `edit_metadata`) adds changes, staged as chips and saved together with
+//! Ctrl+Enter (through the artist's form: one revision, the form says how it went). Outside
+//! edit mode they're not suggested, and typed they say why not.
+//!
+//! * `alias:New name` (a name it isn't credited as yet) adds it. Under `alias:` the list has
+//!   the names to filter by first, then "New name". `-alias:Name` takes one off: where it's
+//!   still credited is asked first, and if it is anywhere, it isn't staged (the credits are
+//!   listed, as links).
+//! * `name:` renames it, `disambiguation:` (`-disambiguation` clears it) says what tells it
+//!   apart from others with its name, `why:` is kept with the change.
 
 use std::collections::BTreeSet;
 
 use eframe::egui::{self, RichText};
+use uuid::Uuid;
 
 use super::artist::Section;
 use crate::commandline::{self, Keys};
+use crate::details::AliasInfo;
+use crate::ui::edit::artist_form::{self, ArtistForm, Uses, UsesAnswer};
 use crate::ui::edit::commandline::{self as cl, CommandLine};
 use crate::ui::theme::PALETTE as P;
 use crate::ui::{thousands, Shell};
@@ -27,6 +41,9 @@ pub enum K {
     Section(Section),
     Sources,
     Notes,
+    Name,
+    Disambiguation,
+    Why,
 }
 
 /// Every key's names: its own first. Exact names only (no starts of them: `release:`
@@ -41,6 +58,9 @@ const KEYS: &[(K, &[&str])] = &[
     (K::Section(Section::Extras), &["extras"]),
     (K::Sources, &["sources"]),
     (K::Notes, &["notes"]),
+    (K::Name, &["name", "rename"]),
+    (K::Disambiguation, &["disambiguation", "disamb", "dis", "tells"]),
+    (K::Why, &["why", "reason"]),
 ];
 
 impl Keys for K {
@@ -51,6 +71,10 @@ impl Keys for K {
 
     fn name(self) -> &'static str {
         KEYS.iter().find(|(k, _)| *k == self).map(|(_, names)| names[0]).unwrap_or("")
+    }
+
+    fn is_list(self) -> bool {
+        self == K::Disambiguation
     }
 
     fn takes(_: K, _: K) -> bool {
@@ -92,8 +116,13 @@ pub struct Here<'a> {
     pub has_sources: bool,
     pub has_notes: bool,
     pub edit_mode: bool,
+    /// Edit mode, and `edit_metadata`: the artist can be changed here.
+    pub may_edit: bool,
     /// "Turn into a collective…" is there (edit mode, `edit_sources`).
     pub may_collective: bool,
+    /// Its other names (all of them, credited or not), and what tells it apart.
+    pub aliases: &'a [AliasInfo],
+    pub disambiguation: &'a str,
 }
 
 /// What the page does for a command.
@@ -122,6 +151,26 @@ enum Does {
     AllNames,
     Og(bool),
     Act(Act),
+    /// A change, staged.
+    Edit(Edit),
+}
+
+/// A change to the artist, staged until Ctrl+Enter.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Edit {
+    NewAlias(String),
+    /// Taken off (where it's credited is asked first).
+    RemoveAlias(Uuid, String),
+    Rename(String),
+    Disambiguation(String),
+    Why(String),
+}
+
+/// A staged change: what it was typed as, what it does.
+struct Staged {
+    text: String,
+    label: String,
+    edit: Edit,
 }
 
 /// A row of the list under the commandline: what it says, and what taking it does.
@@ -137,16 +186,38 @@ enum Choice {
     /// The commandline becomes this (a key to go on typing after).
     Insert(String),
     Act(Act),
+    /// Staged as it is (a new name that's another one's but for case).
+    Stage(String, String, Edit),
 }
 
 pub struct ArtistCommands {
     cl: CommandLine,
     notice: Option<String>,
+    /// The artist they're for (another one: they start over, and these are kept for when
+    /// it's back).
+    artist: Option<Uuid>,
+    staged: Vec<Staged>,
+    /// Other artists' changes staged, not saved yet.
+    kept: std::collections::HashMap<Uuid, Vec<Staged>>,
+    /// Names to take off, asked where they're credited first: (alias, typed as, name).
+    asking: Vec<(Uuid, String, String)>,
+    uses: UsesAnswer,
+    /// A name that couldn't go, and where it's still credited.
+    blocked: Option<(String, Uses)>,
 }
 
 impl Default for ArtistCommands {
     fn default() -> Self {
-        ArtistCommands { cl: CommandLine::new(egui::Id::new("artist-commandline")), notice: None }
+        ArtistCommands {
+            cl: CommandLine::new(egui::Id::new("artist-commandline")),
+            notice: None,
+            artist: None,
+            staged: Vec::new(),
+            kept: Default::default(),
+            asking: Vec::new(),
+            uses: UsesAnswer::default(),
+            blocked: None,
+        }
     }
 }
 
@@ -170,6 +241,41 @@ fn name_of(here: &Here, typed: &str) -> Option<Option<String>> {
     }
 }
 
+/// Whether the artist can be changed here (else why not).
+fn editing(here: &Here) -> Result<(), String> {
+    if !here.edit_mode {
+        Err("changing the artist is in edit mode: e".into())
+    } else if !here.may_edit {
+        Err("changing the artist needs the edit_metadata permission".into())
+    } else {
+        Ok(())
+    }
+}
+
+/// One of its other names, by name: exactly, else the one that's the same but for case.
+fn alias_named<'a>(here: &'a Here, typed: &str) -> Option<&'a AliasInfo> {
+    if let Some(a) = here.aliases.iter().find(|a| a.name == typed) {
+        return Some(a);
+    }
+    let mut alike = here.aliases.iter().filter(|a| a.name.to_lowercase() == typed.to_lowercase());
+    match (alike.next(), alike.next()) {
+        (Some(a), None) => Some(a),
+        _ => None,
+    }
+}
+
+/// `typed` as a new other name, if it can be one.
+fn new_alias(here: &Here, typed: &str) -> Result<Edit, String> {
+    editing(here)?;
+    if typed == here.own {
+        return Err(format!("“{typed}” is its own name"));
+    }
+    if here.aliases.iter().any(|a| a.name == typed) {
+        return Err(format!("“{typed}” is one of its names already (nothing's credited as it yet)"));
+    }
+    Ok(Edit::NewAlias(typed.to_string()))
+}
+
 /// Each command typed: its text, and what it does (or why it can't).
 fn resolve(text: &str, here: &Here) -> Vec<Result<(String, Does), String>> {
     let line = commandline::parse::<K>(text);
@@ -177,16 +283,26 @@ fn resolve(text: &str, here: &Here) -> Vec<Result<(String, Does), String>> {
     for command in line.commands() {
         let main = &command[0];
         let value = main.value.trim();
-        if main.minus {
+        if main.minus && !matches!(main.key, K::Alias | K::Disambiguation) {
             out.push(Err(format!("-{}: nothing to take off here", main.key.name())));
             continue;
         }
+        let edit = |label: String, edit: Edit| editing(here).map(|_| (label, Does::Edit(edit)));
         out.push(match main.key {
+            K::Alias if main.minus => match editing(here) {
+                Err(err) => Err(err),
+                Ok(()) if value.is_empty() => Err("-alias:Name takes that name off it".into()),
+                Ok(()) => match alias_named(here, value) {
+                    Some(a) => Ok((format!("− other name “{}” (if nothing's credited as it)", a.name), Does::Edit(Edit::RemoveAlias(a.id, a.name.clone())))),
+                    None => Err(format!("it has no other name “{value}”")),
+                },
+            },
             K::Alias if value.is_empty() => Err("alias: a name it's credited under (the list), or all".into()),
             K::Alias if value.eq_ignore_ascii_case("all") => Ok(("all names".into(), Does::AllNames)),
             K::Alias => match name_of(here, value) {
                 Some(name) => Ok((format!("as {}: on or off", shown(here, &name)), Does::Name(name))),
-                None => Err(format!("it isn't credited as “{value}” on any track")),
+                None if !here.edit_mode => Err(format!("it isn't credited as “{value}” on any track (a new name: in edit mode, e)")),
+                None => new_alias(here, value).map(|e| (format!("+ other name “{value}”"), Does::Edit(e))),
             },
             K::Og if here.og_count == 0 => Err("it has no original files".into()),
             K::Og => match value.to_lowercase().as_str() {
@@ -204,6 +320,11 @@ fn resolve(text: &str, here: &Here) -> Vec<Result<(String, Does), String>> {
             K::Sources => Err("it has no sources".into()),
             K::Notes if here.has_notes => Ok(("its notes".into(), Does::Act(Act::Reveal(Reveal::Notes)))),
             K::Notes => Err("it has no notes".into()),
+            K::Name if value.is_empty() => Err("name: its new name".into()),
+            K::Name => edit(format!("name → {value}"), Edit::Rename(value.to_string())),
+            K::Disambiguation if value.is_empty() => edit("tells apart: nothing".into(), Edit::Disambiguation(String::new())),
+            K::Disambiguation => edit(format!("tells apart: “{value}”"), Edit::Disambiguation(value.to_string())),
+            K::Why => edit(format!("why: {value}"), Edit::Why(value.to_string())),
         });
     }
     // Words after a `|` (a section's name, say): only as an action's name, exactly.
@@ -242,6 +363,18 @@ fn actions(typed: &str, here: &Here) -> Vec<Row> {
     if found("Play", &[]) {
         rows.push(Row { label: "Play".into(), sub: "its tracks".into(), choice: Choice::Act(Act::Play) });
     }
+    if editing(here).is_ok() {
+        for (key, label, sub) in [
+            ("alias:", "New name (alias:)", "another name tracks can be credited as"),
+            ("-alias:", "Take a name off (-alias:)", "if nothing's credited as it"),
+            ("name:", "Rename (name:)", "its name"),
+            ("disambiguation:", "Tells apart (disambiguation:)", "for two artists with the same name"),
+        ] {
+            if found(label, &[key.trim_end_matches(':').trim_start_matches('-')]) {
+                rows.push(Row { label: label.into(), sub: sub.into(), choice: Choice::Insert(key.into()) });
+            }
+        }
+    }
     if here.edit_mode {
         if found("Merge into another artist", &[]) {
             rows.push(Row { label: "Merge into another artist…".into(), sub: "Ctrl+M".into(), choice: Choice::Act(Act::Merge) });
@@ -255,10 +388,18 @@ fn actions(typed: &str, here: &Here) -> Vec<Row> {
 
 /// The choices for the value being typed.
 fn choices(part: &commandline::Part<K>, here: &Here, filters: &Filters) -> Vec<Row> {
-    if part.minus {
-        return Vec::new();
-    }
     let typed = part.value.trim().to_lowercase();
+    if part.minus {
+        if part.key != K::Alias || editing(here).is_err() {
+            return Vec::new();
+        }
+        return here
+            .aliases
+            .iter()
+            .filter(|a| a.name.to_lowercase().contains(&typed))
+            .map(|a| Row { label: format!("− {}", a.name), sub: "taken off, if nothing's credited as it".into(), choice: Choice::Value(a.name.clone()) })
+            .collect();
+    }
     match part.key {
         K::Alias => {
             let mut rows: Vec<Row> = here
@@ -273,7 +414,21 @@ fn choices(part: &commandline::Part<K>, here: &Here, filters: &Filters) -> Vec<R
             if "all".starts_with(&typed) && !filters.names.is_empty() {
                 rows.push(Row { label: "All names".into(), sub: "every chip off".into(), choice: Choice::Value("all".into()) });
             }
+            // A new one: what's typed, exactly (a name that's another one's but for case too).
+            let value = part.value.trim();
+            if !value.is_empty()
+                && !value.eq_ignore_ascii_case("all")
+                && let Ok(edit) = new_alias(here, value)
+            {
+                let text = format!("alias:{}", commandline::quoted::<K>(value));
+                rows.push(Row { label: format!("New name “{value}”"), sub: "saved with Ctrl+Enter".into(), choice: Choice::Stage(text, format!("+ other name “{value}”"), edit) });
+            }
             rows
+        }
+        // What it is now, to change.
+        K::Name if typed.is_empty() && editing(here).is_ok() => vec![Row { label: here.own.to_string(), sub: "its name now".into(), choice: Choice::Value(here.own.to_string()) }],
+        K::Disambiguation if typed.is_empty() && !here.disambiguation.is_empty() && editing(here).is_ok() => {
+            vec![Row { label: here.disambiguation.to_string(), sub: "what tells it apart now".into(), choice: Choice::Value(here.disambiguation.to_string()) }]
         }
         K::Og if typed.is_empty() => {
             [("yes", "only original files"), ("no", "all files")].into_iter().map(|(v, sub)| Row { label: v.into(), sub: sub.into(), choice: Choice::Value(v.into()) }).collect()
@@ -293,9 +448,26 @@ impl ArtistCommands {
         filters
     }
 
-    /// The commandline, its list and what it would do. Returns what the page does now.
-    pub fn show(&mut self, ui: &mut egui::Ui, shell: &Shell, here: &Here, filters: &mut Filters) -> Option<Act> {
+    /// Changes are staged (the page has changes not saved).
+    pub fn has_changes(&self) -> bool {
+        !self.staged.is_empty() || !self.asking.is_empty()
+    }
+
+    /// The commandline for the artist `id`, its list and what it would do, and the changes
+    /// staged. Returns what the page does now.
+    pub fn show(&mut self, ui: &mut egui::Ui, shell: &mut Shell, id: Uuid, here: &Here, filters: &mut Filters) -> Option<Act> {
+        if self.artist != Some(id) {
+            let mut kept = std::mem::take(&mut self.kept);
+            if let Some(was) = self.artist
+                && !self.staged.is_empty()
+            {
+                kept.insert(was, std::mem::take(&mut self.staged));
+            }
+            let staged = kept.remove(&id).unwrap_or_default();
+            *self = ArtistCommands { artist: Some(id), staged, kept, ..Default::default() };
+        }
         let ctx = ui.ctx().clone();
+        self.answers();
         // `/` outside a field: the cursor here.
         if !ctx.egui_wants_keyboard_input() && !shell.palette_open && !shell.modal_was_open && ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Text(t) if t == "/"))) {
             ctx.input_mut(|i| {
@@ -313,10 +485,11 @@ impl ArtistCommands {
             None => Vec::new(),
         };
         self.cl.highlighted = self.cl.highlighted.min(rows.len().saturating_sub(1));
+        let can_edit = editing(here).is_ok();
         let mut take: Option<usize> = None;
         let mut enter = false;
         if focused {
-            let pressed = self.cl.keys(&ctx, rows.len(), false, false);
+            let pressed = self.cl.keys(&ctx, rows.len(), false, can_edit && !self.staged.is_empty());
             if (pressed.tab || pressed.enter) && !rows.is_empty() {
                 take = Some(self.cl.highlighted);
             }
@@ -324,11 +497,30 @@ impl ArtistCommands {
             if pressed.escape {
                 self.notice = None;
             }
+            // Backspace on an empty line: the last change back, to edit.
+            if pressed.back
+                && let Some(last) = self.staged.pop()
+            {
+                self.cl.text = last.text;
+                self.cl.cursor_to_end(&ctx);
+            }
+        }
+        // Ctrl+Enter: what's typed first, then the changes saved. (Without changes here,
+        // the form below takes it.)
+        let mut save = false;
+        if can_edit && (self.has_changes() || (focused && !self.cl.text.trim().is_empty())) && !shell.palette_open && !shell.modal_was_open {
+            save = ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Enter));
+            enter |= save && !self.cl.text.trim().is_empty();
         }
 
-        let hint = "/  alias:  og:  releases  tracks  featured  sources  notes  (a word finds the rest · | between commands)";
+        let hint = if can_edit {
+            "/  alias:  -alias:  name:  disambiguation:  og:  releases  tracks  sources  (a word finds the rest · | between commands · Ctrl+Enter saves)"
+        } else {
+            "/  alias:  og:  releases  tracks  featured  sources  notes  (a word finds the rest · | between commands)"
+        };
         if self.cl.field(ui, true, hint).changed() {
             self.notice = None;
+            self.blocked = None;
         }
         let mut clicked = None;
         if !rows.is_empty() {
@@ -360,18 +552,38 @@ impl ArtistCommands {
                     self.cl.text.clear();
                     enter = false;
                 }
+                Choice::Stage(text, label, edit) => {
+                    // Only this command: the rest of the line stays to go on with.
+                    if let Some(part) = line.parts.last() {
+                        let start = self.cl.text[..part.value_start].rfind(|c: char| c.is_whitespace() || c == '|').map_or(0, |w| w + 1);
+                        let start = self.cl.text[..start].trim_end().trim_end_matches('|').trim_end().len();
+                        self.cl.text.truncate(start);
+                    }
+                    self.staged.push(Staged { text: text.clone(), label: label.clone(), edit: edit.clone() });
+                    self.cl.cursor_to_end(&ctx);
+                    enter = false;
+                }
             }
         }
         if enter && !self.cl.text.trim().is_empty() {
             let done = resolve(&self.cl.text, here);
+            let texts = commands_text(&self.cl.text);
             match done.iter().find_map(|d| d.as_ref().err()) {
-                Some(err) => self.notice = Some(format!("Not done: {err}")),
+                Some(err) => {
+                    self.notice = Some(format!("Not done: {err}"));
+                    save = false;
+                }
                 None => {
-                    for (_, does) in done.into_iter().flatten() {
-                        if let Does::Act(a) = does {
-                            act = Some(a);
-                        } else {
-                            apply(filters, does);
+                    for (n, (label, does)) in done.into_iter().flatten().enumerate() {
+                        let text = texts.get(n).cloned().unwrap_or_default();
+                        match does {
+                            Does::Act(a) => act = Some(a),
+                            Does::Edit(Edit::RemoveAlias(alias, name)) => {
+                                artist_form::ask_uses(shell, id, alias, &self.uses);
+                                self.asking.push((alias, text, name));
+                            }
+                            Does::Edit(edit) => self.staged.push(Staged { text, label, edit }),
+                            does => apply(filters, does),
                         }
                     }
                     self.cl.text.clear();
@@ -379,13 +591,36 @@ impl ArtistCommands {
                 }
             }
         }
+        if save {
+            self.save(shell, id);
+        }
+
         // What Enter would do, when no list is in the way.
         if rows.is_empty() && !self.cl.text.trim().is_empty() {
             let shown: Vec<Result<(String, Option<String>), String>> = resolve(&self.cl.text, here).into_iter().map(|r| r.map(|(label, _)| (label, None))).collect();
             cl::would_do(ui, &shown, "Nothing to do by that name");
         }
+        for (_, _, name) in &self.asking {
+            ui.label(RichText::new(format!("Checking where “{name}” is credited…")).color(P.faint).small());
+        }
+        if let Some((name, uses)) = &self.blocked {
+            artist_form::uses_links(ui, shell, name, uses);
+        }
         if let Some(notice) = &self.notice {
             ui.label(RichText::new(notice).color(P.muted).small());
+        }
+        // The changes staged (outside edit mode too: kept, saved in it).
+        if !self.staged.is_empty() {
+            ui.add_space(4.0);
+            let chips: Vec<cl::Chip> = self.staged.iter().map(|s| cl::Chip { text: &s.text, label: &s.label, warning: None }).collect();
+            if let Some(n) = cl::chips(ui, &chips, true) {
+                self.staged.remove(n);
+            }
+            let text = if can_edit { "Ctrl+Enter saves them · Backspace on an empty line takes the last back" } else { "Not saved: they're saved in edit mode (e, then Ctrl+Enter)" };
+            ui.label(RichText::new(text).color(P.faint).small());
+        }
+        if self.has_changes() {
+            shell.form_dirty = true;
         }
         // Something to look at: the keys go there.
         if act.is_some() {
@@ -393,6 +628,61 @@ impl ArtistCommands {
         }
         act
     }
+
+    /// Where the names to take off are credited: nowhere, staged; somewhere, said.
+    fn answers(&mut self) {
+        for (alias, result) in std::mem::take(&mut *self.uses.lock().unwrap()) {
+            let Some(at) = self.asking.iter().position(|(a, _, _)| *a == alias) else { continue };
+            let (_, text, name) = self.asking.remove(at);
+            match result {
+                Ok(uses) if uses.is_empty() => {
+                    let label = format!("− other name “{name}”");
+                    self.staged.push(Staged { text, label, edit: Edit::RemoveAlias(alias, name) });
+                }
+                Ok(uses) => self.blocked = Some((name, uses)),
+                Err(err) => self.notice = Some(format!("Couldn't check where “{name}” is credited: {err}")),
+            }
+        }
+    }
+
+    /// The changes saved: onto the artist's form (its draft, kept in the shell), saved from
+    /// there (one revision; the form says how it went).
+    fn save(&mut self, shell: &mut Shell, id: Uuid) {
+        if self.staged.is_empty() {
+            return;
+        }
+        let Some(d) = shell.artist_details.get(id).value.clone() else {
+            self.notice = Some("The artist is still loading: try again in a moment.".into());
+            return;
+        };
+        let Some(mut form) = shell.artist_forms.remove(&id).or_else(|| ArtistForm::from_detail(&d)) else {
+            self.notice = Some("This artist has no revision to build on, so it can't be changed here.".into());
+            return;
+        };
+        for s in self.staged.drain(..) {
+            match s.edit {
+                Edit::NewAlias(name) => form.data.aliases.push(artist_form::AliasRow { id: None, name }),
+                Edit::RemoveAlias(alias, _) => form.data.aliases.retain(|a| a.id != Some(alias)),
+                Edit::Rename(name) => form.data.name = name,
+                Edit::Disambiguation(text) => form.data.disambiguation = text,
+                Edit::Why(why) => form.set_reason(&why),
+            }
+        }
+        form.save(shell);
+        shell.artist_forms.insert(id, form);
+        self.notice = Some("Saving… (the artist's form below says how it went)".into());
+    }
+}
+
+/// Each command's text, as typed (to put back in the line).
+fn commands_text(text: &str) -> Vec<String> {
+    let line = commandline::parse::<K>(text);
+    line.commands()
+        .map(|c| {
+            let start = text[..c[0].value_start].rfind(|ch: char| ch.is_whitespace() || ch == '|').map_or(0, |w| w + 1);
+            text[start..c[c.len() - 1].end].trim().to_string()
+        })
+        .collect()
 }
 
 fn apply(filters: &mut Filters, does: Does) {
@@ -400,7 +690,7 @@ fn apply(filters: &mut Filters, does: Does) {
         Does::Name(name) => filters.toggle(name),
         Does::AllNames => filters.names.clear(),
         Does::Og(on) => filters.og_only = on,
-        Does::Act(_) => {}
+        Does::Act(_) | Does::Edit(_) => {}
     }
 }
 
@@ -409,7 +699,7 @@ mod tests {
     use super::*;
 
     fn here<'a>(names: &'a [(Option<String>, usize)], sections: &'a [(Section, usize)]) -> Here<'a> {
-        Here { own: "Zed", names, og_count: 2, sections, has_sources: true, has_notes: false, edit_mode: false, may_collective: false }
+        Here { own: "Zed", names, og_count: 2, sections, has_sources: true, has_notes: false, edit_mode: false, may_edit: false, may_collective: false, aliases: &[], disambiguation: "" }
     }
 
     #[test]
@@ -458,5 +748,34 @@ mod tests {
         let labels: Vec<String> = actions("rel", &here).into_iter().map(|r| r.label).collect();
         assert_eq!(labels, ["Releases  4"]);
         assert!(actions("merge", &here).is_empty(), "merging is edit mode's");
+    }
+
+    #[test]
+    fn changes_are_edit_modes() {
+        let names = [(None, 5), (Some("Zee".to_string()), 3)];
+        let aliases = [AliasInfo { id: Uuid::from_u128(1), name: "Zee".into() }, AliasInfo { id: Uuid::from_u128(2), name: "Unused".into() }];
+        let listen = Here { aliases: &aliases, ..here(&names, &[]) };
+        let edit = Here { edit_mode: true, may_edit: true, ..Here { aliases: &aliases, ..here(&names, &[]) } };
+        let does = |text: &str, here: &Here| resolve(text, here).into_iter().map(|r| r.map(|(_, d)| d)).collect::<Vec<_>>();
+        // A name it isn't credited as: new, in edit mode only.
+        assert!(does("alias:Zeta", &listen)[0].as_ref().unwrap_err().contains("edit mode"));
+        assert_eq!(does("alias:Zeta", &edit), [Ok(Does::Edit(Edit::NewAlias("Zeta".into())))]);
+        // One it's credited as filters, in both; one it has but isn't credited as can't be new.
+        assert_eq!(does("alias:zee", &edit), [Ok(Does::Name(Some("Zee".into())))]);
+        assert!(does("alias:Unused", &edit)[0].as_ref().unwrap_err().contains("already"));
+        assert_eq!(does("alias:Zed", &edit), [Ok(Does::Name(None))], "its own name filters");
+        // Taking one off, renaming, what tells it apart: edit mode's.
+        assert_eq!(does("-alias:unused", &edit), [Ok(Does::Edit(Edit::RemoveAlias(Uuid::from_u128(2), "Unused".into())))]);
+        assert!(does("-alias:Nobody", &edit)[0].is_err());
+        assert!(does("-alias:Zee", &listen)[0].is_err());
+        assert_eq!(does("name:Zed Two | disambiguation:US rapper", &edit), [Ok(Does::Edit(Edit::Rename("Zed Two".into()))), Ok(Does::Edit(Edit::Disambiguation("US rapper".into())))]);
+        assert_eq!(does("-disambiguation", &edit), [Ok(Does::Edit(Edit::Disambiguation(String::new())))]);
+        assert!(does("name:x", &listen)[0].is_err());
+        assert!(does("name:x", &Here { may_edit: false, ..Here { edit_mode: true, ..here(&names, &[]) } })[0].as_ref().unwrap_err().contains("edit_metadata"));
+        // In the list: the name to filter by first, then a new one exactly as typed.
+        let part = commandline::parse::<K>("alias:zee").parts.remove(0);
+        let labels: Vec<String> = choices(&part, &edit, &Filters::default()).into_iter().map(|r| r.label).collect();
+        assert_eq!(labels, ["as Zee", "New name “zee”"]);
+        assert_eq!(commands_text("og:yes | alias:a b"), ["og:yes", "alias:a b"]);
     }
 }

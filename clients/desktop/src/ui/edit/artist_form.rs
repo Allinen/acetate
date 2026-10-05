@@ -64,9 +64,48 @@ pub struct AlbumUse {
 }
 
 impl Uses {
-    fn is_empty(&self) -> bool {
+    pub fn is_empty(&self) -> bool {
         self.tracks.is_empty() && self.albums.is_empty() && !self.not_visible
     }
+}
+
+/// Where uses are answered: (the alias, where it's credited or why that's not known).
+pub type UsesAnswer = Arc<Mutex<Vec<(Uuid, Result<Uses, String>)>>>;
+
+/// Asks where an artist's alias is credited (`GET …/aliases/{id}/uses`); the answer goes
+/// into `answer`.
+pub fn ask_uses(shell: &Shell, artist: Uuid, alias: Uuid, answer: &UsesAnswer) {
+    let (api, answer, ctx) = (shell.api.clone(), answer.clone(), shell.ctx.clone());
+    shell.runtime.spawn(async move {
+        let path = format!("/api/artists/{artist}/aliases/{alias}/uses");
+        let result = api.send_json::<Uses>(reqwest::Method::GET, &path, None).await.map_err(|err| err.message);
+        answer.lock().unwrap().push((alias, result));
+        ctx.request_repaint();
+    });
+}
+
+/// An alias still credited: where, as links (change those credits first, or merge).
+pub fn uses_links(ui: &mut egui::Ui, shell: &mut Shell, name: &str, uses: &Uses) {
+    ui.label(RichText::new(format!("“{name}” is still credited, so it stays. Change these first:")).color(P.muted));
+    ui.horizontal_wrapped(|ui| {
+        for t in &uses.tracks {
+            let text = match &t.variant {
+                Some(v) => format!("{} ({v})", t.title),
+                None => t.title.clone(),
+            };
+            if widgets::link(ui, &text, crate::ui::theme::font(13.0, crate::ui::theme::medium()), P.text) {
+                shell.act(Action::Go(Page::Track(t.track_id)));
+            }
+        }
+        for a in &uses.albums {
+            if widgets::link(ui, &format!("{} (album)", a.title), crate::ui::theme::font(13.0, crate::ui::theme::medium()), P.text) {
+                shell.act(Action::Go(Page::Album(a.album_id)));
+            }
+        }
+        if uses.not_visible {
+            ui.label(RichText::new("and on some you can't see").color(P.faint));
+        }
+    });
 }
 
 struct Outcome {
@@ -91,7 +130,7 @@ pub struct ArtistForm {
     answer: Arc<Mutex<Option<Outcome>>>,
     /// Aliases asked about (×): None while asking; Some(uses) once known (kept: used).
     uses: HashMap<Uuid, Option<Result<Uses, String>>>,
-    uses_answer: Arc<Mutex<Vec<(Uuid, Result<Uses, String>)>>>,
+    uses_answer: UsesAnswer,
     /// The library (`Shell::generation`) the uses were asked with: when it changes (a
     /// credit changed somewhere, say one of those listed), they're asked again.
     uses_generation: u64,
@@ -251,13 +290,7 @@ impl ArtistForm {
     fn ask_uses(&mut self, shell: &Shell, alias: Uuid) {
         self.uses_generation = shell.generation;
         self.uses.insert(alias, None);
-        let (api, answer, ctx, artist) = (shell.api.clone(), self.uses_answer.clone(), shell.ctx.clone(), self.artist);
-        shell.runtime.spawn(async move {
-            let path = format!("/api/artists/{artist}/aliases/{alias}/uses");
-            let result = api.send_json::<Uses>(reqwest::Method::GET, &path, None).await.map_err(|err| err.message);
-            answer.lock().unwrap().push((alias, result));
-            ctx.request_repaint();
-        });
+        ask_uses(shell, self.artist, alias, &self.uses_answer);
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui, shell: &mut Shell, d: &ArtistDetail) {
@@ -319,28 +352,7 @@ impl ArtistForm {
                     Err(err) => {
                         ui.label(RichText::new(format!("Couldn't check where it's used: {err}")).color(P.danger));
                     }
-                    Ok(uses) => {
-                        ui.label(RichText::new(format!("“{}” is still credited, so it stays. Change these first:", row.name)).color(P.muted));
-                        ui.horizontal_wrapped(|ui| {
-                            for t in &uses.tracks {
-                                let text = match &t.variant {
-                                    Some(v) => format!("{} ({v})", t.title),
-                                    None => t.title.clone(),
-                                };
-                                if widgets::link(ui, &text, crate::ui::theme::font(13.0, crate::ui::theme::medium()), P.text) {
-                                    shell.act(Action::Go(Page::Track(t.track_id)));
-                                }
-                            }
-                            for a in &uses.albums {
-                                if widgets::link(ui, &format!("{} (album)", a.title), crate::ui::theme::font(13.0, crate::ui::theme::medium()), P.text) {
-                                    shell.act(Action::Go(Page::Album(a.album_id)));
-                                }
-                            }
-                            if uses.not_visible {
-                                ui.label(RichText::new("and on some you can't see").color(P.faint));
-                            }
-                        });
-                    }
+                    Ok(uses) => uses_links(ui, shell, &row.name, uses),
                 }
             }
         }
@@ -402,7 +414,14 @@ impl ArtistForm {
         if let Some(notice) = &self.notice {
             ui.label(RichText::new(notice).color(P.muted));
         }
-        shell.form_dirty = self.dirty();
+        if self.dirty() {
+            shell.form_dirty = true;
+        }
+    }
+
+    /// The reason kept with the change (`why:` on the artist page's commandline).
+    pub fn set_reason(&mut self, reason: &str) {
+        self.reason = reason.to_string();
     }
 }
 

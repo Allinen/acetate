@@ -207,7 +207,9 @@ impl ArtistPage {
         let details = shell.artist_details.get(id).value.clone();
         let (has_sources, has_notes) = details.as_ref().map_or((false, false), |d| (!d.sources.is_empty(), d.notes.iter().any(|n| !n.hidden)));
         let (edit_mode, may_collective) = (shell.edit_mode, shell.edit_mode && shell.account.can("edit_sources"));
-        let here = |sections| Here { own: &artist.name, names: &names, og_count, sections, has_sources, has_notes, edit_mode, may_collective };
+        let may_edit = edit_mode && shell.account.can("edit_metadata");
+        let (aliases, disambiguation) = details.as_ref().map_or((&[][..], ""), |d| (&d.aliases[..], d.disambiguation.as_str()));
+        let here = |sections| Here { own: &artist.name, names: &names, og_count, sections, has_sources, has_notes, edit_mode, may_edit, may_collective, aliases, disambiguation };
         // As the chips are, with what's being typed in the commandline on top.
         let filters = self.commands.preview(&here(&[]), &self.filters);
         let og_only = filters.og_only;
@@ -416,7 +418,7 @@ impl ArtistPage {
 
             // The commandline (`/`): filters, the sections, and the rest by name.
             let to_play = if own.is_empty() { tracks.to_vec() } else { own.clone() };
-            match self.commands.show(ui, shell, &here(&sections), &mut self.filters) {
+            match self.commands.show(ui, shell, id, &here(&sections), &mut self.filters) {
                 Some(Act::Expand(section, filter)) => {
                     self.expanded = Some(section);
                     let table = match section {
