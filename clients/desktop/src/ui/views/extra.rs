@@ -3,6 +3,10 @@
 //! (`manage_access`), files added (chosen, pasted or dropped) or taken off, linked to a
 //! track, album, artist or grouping (or not anymore), the extra taken off or brought back,
 //! and what was done to it (`view_history`). See the server's `db::extras`.
+//!
+//! Keys: what it belongs to and its files are one list. ↑/↓ or j/k move, Enter opens a
+//! link or plays (watches) a file, `d` saves the file, and in edit mode Delete takes the
+//! file off or unlinks it (both kept, undone in the page).
 
 use std::path::PathBuf;
 use std::sync::atomic::AtomicUsize;
@@ -64,6 +68,18 @@ pub struct ExtraPage {
     answer: Slot<String>,
     saved: Slot<String>,
     result: Option<Result<String, String>>,
+    /// The row the keys are on: its links first, then its files.
+    selected: usize,
+}
+
+/// The page of what an extra belongs to.
+fn link_page(l: &crate::details::ExtraLink) -> Page {
+    match l.kind.as_str() {
+        "track" => Page::Track(l.id),
+        "album" => Page::Album(l.id),
+        "grouping" => Page::Grouping(l.id),
+        _ => Page::Artist(l.id),
+    }
 }
 
 impl ExtraPage {
@@ -151,6 +167,50 @@ impl ExtraPage {
             self.upload(shell, id, files);
         }
 
+        // The keys: its links, then its files, as one list.
+        let ctx = ui.ctx().clone();
+        let shown_files: Vec<&crate::details::ExtraFile> = extra.files.iter().filter(|f| !f.hidden).collect();
+        let rows = extra.links.len() + shown_files.len();
+        let moved = widgets::move_selection(&ctx, &mut self.selected, rows, 1, 10);
+        self.selected = self.selected.min(rows.saturating_sub(1));
+        let free = !ctx.egui_wants_keyboard_input() && !shell.palette_open && !shell.modal_was_open;
+        let link_at = |n: usize| extra.links.get(n);
+        let file_at = |n: usize| n.checked_sub(extra.links.len()).and_then(|n| shown_files.get(n).copied());
+        if moved.enter {
+            if let Some(l) = link_at(self.selected) {
+                shell.act(Action::Go(link_page(l)));
+            } else if let Some(f) = file_at(self.selected) {
+                if f.is_video() {
+                    shell.watch(f.id, &extra.name);
+                } else {
+                    crate::ui::edit::extras::play_file(shell, &extra.name, f.id, &f.name, f.duration_ms);
+                }
+            }
+        }
+        if free && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::D))
+            && let Some(f) = file_at(self.selected)
+        {
+            crate::ui::edit::extras::save_file(shell, f.id, &f.name, &self.saved);
+        }
+        if can && free && !self.sending && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Delete)) {
+            if let Some(l) = link_at(self.selected) {
+                let link = serde_json::json!({ "kind": l.kind, "id": l.id });
+                self.send(shell, format!("/api/extras/{id}/links"), serde_json::json!({ "link": link, "undo": true }), "Unlinked.".into());
+            } else if let Some(f) = file_at(self.selected) {
+                self.send(shell, format!("/api/extra-files/{}/hidden", f.id), serde_json::json!({ "hidden": true }), "Taken off (kept).".into());
+            }
+        }
+        // The row the keys are on: outlined, and brought into view when it moves.
+        let selected = self.selected;
+        let mark = |ui: &mut egui::Ui, response: &egui::Response, n: usize| {
+            if n == selected && rows > 0 {
+                ui.painter().rect_stroke(response.rect.expand(3.0), 6, egui::Stroke::new(1.5, P.accent), egui::StrokeKind::Outside);
+                if moved.moved {
+                    response.scroll_to_me(None);
+                }
+            }
+        };
+
         egui::ScrollArea::vertical().id_salt(("extra-page", id)).auto_shrink([false, false]).show(ui, |ui| {
             ui.label(RichText::new(format!("EXTRA  ·  {}", extra.kind.to_uppercase())).font(font(11.0, semibold())).color(P.accent));
             ui.label(RichText::new(&extra.name).font(font(34.0, bold())));
@@ -198,17 +258,13 @@ impl ExtraPage {
             if !extra.links.is_empty() {
                 ui.horizontal_wrapped(|ui| {
                     ui.label(RichText::new("Belongs to").color(P.faint));
-                    for l in &extra.links {
-                        let page = match l.kind.as_str() {
-                            "track" => Page::Track(l.id),
-                            "album" => Page::Album(l.id),
-                            "grouping" => Page::Grouping(l.id),
-                            _ => Page::Artist(l.id),
-                        };
-                        if widgets::link(ui, &format!("{} ({})", l.title, l.kind), font(14.0, medium()), P.text) {
-                            shell.act(Action::Go(page));
+                    for (n, l) in extra.links.iter().enumerate() {
+                        let response = ui.add(egui::Label::new(RichText::new(format!("{} ({})", l.title, l.kind)).font(font(14.0, medium())).color(P.text)).sense(egui::Sense::click()));
+                        mark(ui, &response, n);
+                        if response.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                            shell.act(Action::Go(link_page(l)));
                         }
-                        if can && ui.small_button("×").on_hover_text("Unlink").clicked() {
+                        if can && ui.small_button("×").on_hover_text("Unlink (Delete)").clicked() {
                             let link = serde_json::json!({ "kind": l.kind, "id": l.id });
                             self.send(shell, format!("/api/extras/{id}/links"), serde_json::json!({ "link": link, "undo": true }), "Unlinked.".into());
                         }
@@ -220,13 +276,24 @@ impl ExtraPage {
             // ---- Its files ----
             ui.label(RichText::new("Files").font(font(17.0, bold())));
             let saved = self.saved.clone();
-            for f in extra.files.iter().filter(|f| !f.hidden) {
-                ui.horizontal(|ui| {
-                    file_line(ui, shell, &extra, f, &saved);
-                    if can && ui.small_button("Take off").clicked() {
-                        self.send(shell, format!("/api/extra-files/{}/hidden", f.id), serde_json::json!({ "hidden": true }), "Taken off (kept).".into());
-                    }
-                });
+            let mut take_off = None;
+            for (n, f) in shown_files.iter().enumerate() {
+                let response = ui
+                    .horizontal(|ui| {
+                        file_line(ui, shell, &extra, f, &saved);
+                        if can && ui.small_button("Take off").on_hover_text("Delete").clicked() {
+                            take_off = Some(f.id);
+                        }
+                    })
+                    .response;
+                mark(ui, &response, extra.links.len() + n);
+            }
+            if let Some(file) = take_off {
+                self.send(shell, format!("/api/extra-files/{file}/hidden"), serde_json::json!({ "hidden": true }), "Taken off (kept).".into());
+            }
+            if rows > 0 {
+                let text = if can { "↑/↓ choose · Enter opens or plays · d saves the file · Delete takes it off (or unlinks)" } else { "↑/↓ choose · Enter opens or plays · d saves the file" };
+                ui.label(RichText::new(text).color(P.faint).small());
             }
             if can {
                 ui.horizontal_wrapped(|ui| {
