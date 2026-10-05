@@ -209,6 +209,8 @@ pub enum Act {
     Merge,
     Collective,
     Play,
+    /// Edit mode on or off.
+    ToggleEdit,
     /// The note editor: for this note, or (None) a new one with this title.
     Note(Option<Uuid>, String),
     /// The text files copied in a file manager, listed to be made notes.
@@ -345,8 +347,10 @@ pub struct ArtistCommands {
     sending: usize,
     known: Known,
     groups: Groups,
-    /// Files chosen in the dialog (`file:choose`), to put in the line.
+    /// Files chosen in the dialog (`file:choose`), to put in the commandline.
     chosen: Arc<Mutex<Vec<std::path::PathBuf>>>,
+    /// The frame it was last shown in (not the one before: the page was just opened).
+    last_pass: u64,
 }
 
 impl Default for ArtistCommands {
@@ -365,6 +369,7 @@ impl Default for ArtistCommands {
             known: Known::default(),
             groups: Groups::default(),
             chosen: Arc::default(),
+            last_pass: 0,
         }
     }
 }
@@ -723,6 +728,9 @@ fn actions(typed: &str, here: &Here) -> Vec<Row> {
     if here.og_count > 0 && found("Original files", &["og"]) {
         rows.push(Row { label: "og:".into(), sub: "only original files".into(), choice: Choice::Insert("og:".into()) });
     }
+    if found(if here.edit_mode { "Edit mode off" } else { "Edit mode on" }, &["edit"]) {
+        rows.push(Row { label: if here.edit_mode { "Edit mode off".into() } else { "Edit mode on".into() }, sub: "Alt+E, anywhere".into(), choice: Choice::Act(Act::ToggleEdit) });
+    }
     if found("Play", &[]) {
         rows.push(Row { label: "Play".into(), sub: "its tracks".into(), choice: Choice::Act(Act::Play) });
     }
@@ -732,6 +740,7 @@ fn actions(typed: &str, here: &Here) -> Vec<Row> {
             ("-alias:", "Take a name off (-alias:)", "if nothing's credited as it"),
             ("name:", "Rename (name:)", "its name"),
             ("disambiguation:", "Tells apart (disambiguation:)", "for two artists with the same name"),
+            ("why:", "Why (why:)", "kept with the artist's changes"),
             ("note:", "Note (note:)", "a new one, or one of its notes to edit"),
             ("extra:", "Extra (extra:)", "a new one, one of its own to change, or one in the library"),
             ("source:", "Source (source:)", "a link, a platform and its fields, or custom"),
@@ -945,7 +954,15 @@ impl ArtistCommands {
             self.cl.place_cursor = true;
             self.cl.focus = true;
         }
-        // `/` outside a field: the cursor here.
+        // `/` (the app's key, by the character typed) puts the cursor here; the page just
+        // shown: here too, unless another field has it.
+        shell.slash_target = Some(self.cl.id());
+        let pass = ctx.cumulative_pass_nr();
+        if pass > self.last_pass + 1 {
+            self.cl.focus = true;
+            self.cl.gently = true;
+        }
+        self.last_pass = pass;
         if !ctx.egui_wants_keyboard_input() && !shell.palette_open && !shell.modal_was_open && ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Text(t) if t == "/"))) {
             ctx.input_mut(|i| {
                 i.consume_key(egui::Modifiers::NONE, egui::Key::Slash);
@@ -1121,14 +1138,17 @@ impl ArtistCommands {
             if let Some(n) = cl::chips(ui, &chips, true) {
                 self.staged.remove(n);
             }
-            let text = if can_edit { "Ctrl+Enter saves them · Backspace on an empty line takes the last back" } else { "Not saved: they're saved in edit mode (e, then Ctrl+Enter)" };
+            let text = if can_edit { "Ctrl+Enter saves them · Backspace on an empty commandline takes the last back" } else { "Not saved: they're saved in edit mode (e, then Ctrl+Enter)" };
             ui.label(RichText::new(text).color(P.faint).small());
         }
         if self.has_changes() {
             shell.form_dirty = true;
         }
-        // Something to look at: the keys go there.
-        if act.is_some() {
+        // Something to look at (a section, the note editor): the keys go there, and the
+        // commandline doesn't take the cursor back. Edit mode switched: it stays here.
+        if act.as_ref().is_some_and(|a| *a != Act::ToggleEdit) {
+            self.cl.focus = false;
+            self.cl.place_cursor = false;
             ctx.memory_mut(|m| m.surrender_focus(self.cl.id()));
         }
         act
@@ -1160,7 +1180,7 @@ impl ArtistCommands {
         }
         if choosing {
             crate::ui::files::choose(shell, "Files for the extra", ("Any file", &[]), true, &self.chosen);
-            return Err("Choose the files: their paths go in the line, then Enter.".into());
+            return Err("Choose the files: their paths go in the commandline, then Enter.".into());
         }
         Ok(())
     }

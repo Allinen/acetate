@@ -204,7 +204,7 @@ pub struct View<'a> {
 /// The check: the keys' help, then the rows (`cursor` lit; `scroll`: brought into view).
 /// Returns the row clicked.
 pub fn draw(ui: &mut egui::Ui, view: &View, entries: &[Entry], cursor: Option<usize>, scroll: bool, id: egui::Id) -> Option<usize> {
-    let help = "↓ from the line · on a name: Enter who it is, c the next with that name, s split, w keep whole, n not a name · on a track: x leave out · Delete takes back";
+    let help = "↓ from the commandline · on a name: Enter who it is, c the next with that name, s split, w keep whole, n not a name · on a track: x leave out · Delete takes back";
     ui.label(egui::RichText::new(help).color(P.faint).small());
     let plans: HashMap<Uuid, usize> = view.engine.plans.iter().enumerate().map(|(i, p)| (p.track, i)).collect();
     let offset_id = id.with("offset");

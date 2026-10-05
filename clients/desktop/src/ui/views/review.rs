@@ -870,7 +870,7 @@ impl Review {
             if let Some(notice) = &self.notice {
                 ui.label(RichText::new(notice).color(P.muted));
             }
-            ui.label(RichText::new("Ctrl+Enter apply and next · Ctrl+↓/↑ next/previous · Esc leaves the line; then j/k, Space play, u skip, d done").color(P.faint).small());
+            ui.label(RichText::new("Ctrl+Enter apply and next · Ctrl+↓/↑ next/previous · Esc leaves the commandline; then j/k, Space play, u skip, d done").color(P.faint).small());
             ui.add_space(8.0);
 
             // A line prefilled for a flag that's gone since (fixed by a bulk edit) goes too;
@@ -915,7 +915,7 @@ impl Review {
             if let Some(tags) = tags.as_object().filter(|t| !t.is_empty()) {
                 ui.add_space(12.0);
                 ui.label(RichText::new("Tags in the file").font(font(14.0, bold())));
-                ui.label(RichText::new("Click one to use it: it goes in the editor's line (title:…, artist:…, album:…, date:…).").color(P.faint).small());
+                ui.label(RichText::new("Click one to use it: it goes in the editor's commandline (title:…, artist:…, album:…, date:…).").color(P.faint).small());
                 egui::Grid::new(("review-tags", id)).num_columns(2).spacing([16.0, 4.0]).show(ui, |ui| {
                     for (name, value) in tags {
                         let text = match value {

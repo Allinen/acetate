@@ -167,6 +167,9 @@ pub struct Shell {
     /// The page's own keys are on (the track editor's rows): the app's one-key shortcuts
     /// (e, r, m…) wait.
     pub page_takes_keys: bool,
+    /// Where `/` puts the cursor: the page's commandline (else the list's filter). Set by
+    /// the page each frame.
+    pub slash_target: Option<egui::Id>,
     /// A popup is open (see `modal`): the app's keys wait. Set by the page each frame.
     pub modal_open: bool,
     /// What Ctrl+L links to on a list page (not a track's, album's or artist's): the
@@ -662,6 +665,7 @@ impl App {
             modal_was_open: false,
             page_takes_back: false,
             page_takes_keys: false,
+            slash_target: None,
             list_target: None,
             palette_open: false,
             runtime,
@@ -1047,6 +1051,10 @@ impl App {
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, Key::Comma)) {
             self.shell.act(Action::Go(Page::Settings));
         }
+        // Alt+E: edit mode on or off, from a text field too (a commandline).
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::ALT, Key::E)) {
+            self.shell.act(Action::ToggleEditMode);
+        }
         // Ctrl+L: a link to what's shown (a track, album or artist), to send to someone
         // with an account; Ctrl+Shift+L: a share link, for anyone. (Shift first: a key
         // asked for without it matches with it too.)
@@ -1125,7 +1133,8 @@ impl App {
                 i.consume_key(egui::Modifiers::NONE, Key::Slash);
                 i.events.retain(|e| !matches!(e, egui::Event::Text(t) if t == "/"));
             });
-            ctx.memory_mut(|mem| mem.request_focus(egui::Id::new(views::FILTER_ID)));
+            let target = self.shell.slash_target.unwrap_or(egui::Id::new(views::FILTER_ID));
+            ctx.memory_mut(|mem| mem.request_focus(target));
         }
     }
 }
@@ -1218,6 +1227,7 @@ impl eframe::App for App {
                 self.shell.page_takes_space = false;
                 self.shell.page_takes_back = false;
                 self.shell.page_takes_keys = false;
+                self.shell.slash_target = None;
                 self.shell.modal_was_open = self.shell.modal_open;
                 self.shell.list_target = None;
                 self.shell.modal_open = false;

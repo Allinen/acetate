@@ -22,6 +22,7 @@ matched by the character you type, so it works on non-US layouts.
 | `/` | filter this list |
 | `F5` | check the library for changes |
 | `e` | edit mode on / off |
+| `Alt+E` | edit mode on / off, in a text field too (a commandline) |
 
 ## Searching and filtering (everywhere)
 
@@ -81,15 +82,15 @@ matched by the character you type, so it works on non-US layouts.
 | `artist:Ann role:featured \| status:demo` | what to change, typed (several at once: \| between them): Enter stages it |
 | `-genre:rap  /  -artist` | take one off  /  clear them all |
 | `Tab` | take the choice listed, and type the next part (role:, as:, #…) |
-| `Backspace (empty line)` | take the last change back to edit |
+| `Backspace (empty commandline)` | take the last change back to edit |
 | `a word` | find what to change, or a tool (merge, lyrics, extra, credited as…) |
-| `↓ (empty line, one track)` | into the fields: Enter edits one, Delete takes it off |
+| `↓ (empty commandline, one track)` | into the fields: Enter edits one, Delete takes it off |
 | `r / a / m / o  on a field` | an artist's role / credited as · a cover made main · the file came from a source |
 | `Alt+↑ / Alt+↓  on a field` | move an artist or a cover |
 | `Ctrl+V` | an image (or an image file): a new cover |
 | `Ctrl+Enter` | apply the preview |
-| `Esc` | clear the line; then discard the changes (asks first); once applied: close |
-| `/` | back to the line |
+| `Esc` | clear the commandline; then discard the changes (asks first); once applied: close |
+| `/` | back to the commandline |
 
 ## Your playlists and the queue
 
@@ -103,7 +104,7 @@ matched by the character you type, so it works on non-US layouts.
 
 | Keys | Does |
 |---|---|
-| `Enter  or  Ctrl+E` | a track's page: the cursor to its editor's line |
+| `Enter  or  Ctrl+E` | a track's page: the cursor to its editor's commandline |
 | `Ctrl+Enter` | apply the editor's changes; an album's or artist's form: save it |
 | `Ctrl+Enter in the lyrics` | save the lyrics (their own revision) |
 | `Alt+↑ / Alt+↓  or  Alt+K / Alt+J` | an album's tracks: move the selected one up / down (on its disc; Ctrl+Enter saves the new order) |
@@ -113,7 +114,7 @@ matched by the character you type, so it works on non-US layouts.
 
 | Keys | Does |
 |---|---|
-| `/` | its commandline (\| between commands; a word finds the rest) |
+| `/` | its commandline (it has the cursor when the page opens; \| between commands; a word finds the rest, edit too) |
 | `alias:Name  /  alias:all` | that name's chip on or off (several at once)  /  all names |
 | `og:yes  /  og:no` | only original files, or all |
 | `releases  tracks:…` | that section on its own (also featured, produced, extras; tracks:words filters it) |

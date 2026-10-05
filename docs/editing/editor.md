@@ -5,7 +5,7 @@ One editor for tracks, wherever you meet it: a track's page in edit mode, the
 marked ones). It works the way search does: you **type what to change**, `Enter` turns it
 into staged changes, you look at the preview, and `Ctrl+Enter` applies.
 
-## The line
+## The commandline
 
 ```
 artist:Ann role:featured
@@ -21,19 +21,19 @@ status:demo | date:2020
   artist, `kind:` after an album, a grouping or a related track, a source's fields after
   `source:`. Anything else is part of the value, so `title:Intro: Part 2` needs no quotes.
   A value with a `|` in it is quoted (`title:"guy | more"`) or escaped (`title:guy \| more`).
-- While you type a part, the choices appear under the line (artists, albums, roles,
+- While you type a part, the choices appear under the commandline (artists, albums, roles,
   statuses…). `↑`/`↓` choose, `Tab` takes the choice and starts the next part (after an
-  artist: `role:`, then `as:`, then its place `#`), `Enter` takes it and stages the line.
+  artist: `role:`, then `as:`, then its place `#`), `Enter` takes it and stages it.
 - `-genre:rap` takes one value off; `-artist` clears all of them.
 - Plain words find things to change by name, or tools: `merge`, `lyrics`, `extra`,
   `history`, `credited as`…
-- `Backspace` on an empty line takes the last change back to edit it. `/` returns to the
+- `Backspace` on an empty commandline takes the last change back to edit it. `/` returns to the
   line.
 
 ## The fields
 
-With one track selected, `↓` from the empty line goes into its fields. `Enter` edits one
-(through the line, ready to change), `Delete` takes it off. On an artist: `r` changes the
+With one track selected, `↓` from the empty commandline goes into its fields. `Enter` edits one
+(through the commandline, ready to change), `Delete` takes it off. On an artist: `r` changes the
 role, `a` the name it's credited under, `Alt+↑`/`Alt+↓` its place. On a cover: `m` makes it
 the main one, `Alt+↑`/`Alt+↓` moves it. On a source: `Enter` corrects it, and `o` says the
 file came from it.
@@ -53,7 +53,7 @@ These are changes like the rest, applied together with them:
   and its fields, typed one by one. Use this when a link doesn't say enough. It works for
   every platform, and fields chain like `artist:` → `role:` → `as:`. `Tab` on a platform
   adds its first field (`source:distr` → `source:distrokid album_uuid:`). After a value,
-  `Tab` adds the next field not given yet, needed ones first. The choices under the line
+  `Tab` adds the next field not given yet, needed ones first. The choices under the commandline
   say what each field takes. A value runs until the next field, and a list field is given
   once per item (`song_permalinks:a/b song_permalinks:a/c`).
 - Fields can follow a link or a custom label too: `source:<link> description:sent by a
@@ -70,7 +70,7 @@ with `kind:`); `-group:` takes it out.
 
 ## Importing metadata
 
-Paste (`Ctrl+V`, on an empty line) a SoundCloud track's JSON, a yt-dlp JSON, or a YouTube
+Paste (`Ctrl+V`, on an empty commandline) a SoundCloud track's JSON, a yt-dlp JSON, or a YouTube
 link. The editor stages what it says: title, date, genre, artists, the source, and the
 artwork as a cover.
 
@@ -89,4 +89,4 @@ artwork as a cover.
 Each track's changes are shown in the history's words, plus the albums that change with them
 (`along:off` to leave those alone), and its review flags afterwards: fixed, still there, new.
 The flags come from the server's own checks. `Ctrl+Enter` applies what you see.
-`Esc` clears the line; again, it discards the changes (asking first).
+`Esc` clears the commandline; again, it discards the changes (asking first).

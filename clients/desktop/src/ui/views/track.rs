@@ -709,14 +709,8 @@ pub fn section(ui: &mut egui::Ui, title: &str, open: bool, add: impl FnOnce(&mut
 /// A section; `reveal`: opened (if it was closed) and scrolled to.
 pub(super) fn section_at(ui: &mut egui::Ui, title: &str, open: bool, reveal: bool, add: impl FnOnce(&mut egui::Ui)) {
     let salt = title.split(" (").next().unwrap_or(title);
-    if reveal {
-        // (The id the header keeps its state under.)
-        let id = ui.make_persistent_id(egui::IdSalt::new(salt));
-        let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, open);
-        state.set_open(true);
-        state.store(ui.ctx());
-    }
-    let shown = egui::CollapsingHeader::new(RichText::new(title).font(font(17.0, bold()))).id_salt(salt).default_open(open).show(ui, |ui| {
+    // (Revealed: opened this frame; it stays open, as if clicked.)
+    let shown = egui::CollapsingHeader::new(RichText::new(title).font(font(17.0, bold()))).id_salt(salt).default_open(open).open(reveal.then_some(true)).show(ui, |ui| {
         ui.add_space(4.0);
         add(ui);
         ui.add_space(8.0);

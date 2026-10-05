@@ -461,6 +461,7 @@ impl ArtistPage {
                     shell.act(Action::Pick { kind: crate::ui::edit::PickKind::Artist, except: Some(id) });
                 }
                 Some(Act::Collective) => self.to_collective = Some(super::to_collective::ToCollective::open(shell, id)),
+                Some(Act::ToggleEdit) => shell.act(Action::ToggleEditMode),
                 Some(Act::Play) if !to_play.is_empty() => shell.act(Action::Play { tracks: to_play, start: 0 }),
                 Some(Act::Note(note, title)) => {
                     let found = details.as_ref().and_then(|d| d.notes.iter().find(|n| Some(n.id) == note));

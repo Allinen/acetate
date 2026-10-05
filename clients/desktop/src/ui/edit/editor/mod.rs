@@ -643,7 +643,7 @@ impl TrackEditor {
             Prompt::Whole(k, _) => {
                 let whole = self.cl.text.split_whitespace().collect::<Vec<_>>().join(" ");
                 if whole.is_empty() {
-                    self.notice = Some("Leave the name to keep whole in the line (Esc: never mind).".into());
+                    self.notice = Some("Leave the name to keep whole in the commandline (Esc: never mind).".into());
                     return;
                 }
                 self.reparse(k, |p| p.fixes.whole.push(whole));
@@ -710,7 +710,9 @@ impl TrackEditor {
                 Err(err) => self.notice = Some(format!("Couldn't import it: {err}")),
             }
         }
-        // `/` outside a field: back to the line.
+        // `/` (the app's key) puts the cursor here; outside a field, the rows keep it from
+        // the app, so it's taken here too.
+        shell.slash_target = Some(line_id);
         if !typing && ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Text(t) if t == "/"))) {
             ctx.input_mut(|i| i.events.retain(|e| !matches!(e, egui::Event::Text(t) if t == "/")));
             self.cl.focus = true;
@@ -1108,7 +1110,7 @@ impl TrackEditor {
         if let Some(prompt) = &self.prompt {
             let text = match prompt {
                 Prompt::Who(name) => format!("Who is “{name}”? Choose the artist in the list (or a new one) · Esc: never mind"),
-                Prompt::Whole(_, name) => format!("Keep a name whole: leave exactly the name in the line (it has where “{name}” was found), then Enter · Esc: never mind"),
+                Prompt::Whole(_, name) => format!("Keep a name whole: leave exactly the name in the commandline (it has where “{name}” was found), then Enter · Esc: never mind"),
             };
             ui.label(RichText::new(text).color(P.accent).small());
         }
@@ -1852,7 +1854,7 @@ impl TrackEditor {
         }
         if self.row.is_some() {
             ui.label(
-                RichText::new("Enter edits it · on an artist: r role, a credited as, Alt+↑/↓ (or Alt+k/j) its place, c the next of an ambiguous name's artists · on a cover: m the main one, Alt+↑/↓ its place, Space the original · on a source: Enter corrects it, o the file came from it · Delete takes it off · Esc back to the line")
+                RichText::new("Enter edits it · on an artist: r role, a credited as, Alt+↑/↓ (or Alt+k/j) its place, c the next of an ambiguous name's artists · on a cover: m the main one, Alt+↑/↓ its place, Space the original · on a source: Enter corrects it, o the file came from it · Delete takes it off · Esc back to the commandline")
                     .color(P.faint)
                     .small(),
             );
@@ -1902,7 +1904,7 @@ impl TrackEditor {
                     }
                 });
                 if !undecided.is_empty() {
-                    ui.label(RichText::new(format!("Choose who {} is first, in the check (↓ from the line), or leave those tracks out (x).", undecided.join(", "))).color(P.danger).small());
+                    ui.label(RichText::new(format!("Choose who {} is first, in the check (↓ from the commandline), or leave those tracks out (x).", undecided.join(", "))).color(P.danger).small());
                 }
                 if ctrl_enter {
                     if can {
@@ -2136,7 +2138,7 @@ fn keys_free(ctx: &egui::Context, layer: egui::LayerId, palette_open: bool, moda
 }
 
 /// What the keys do in the list under the line.
-const LIST_HELP: &str = "↑/↓ choose · Tab: take it and type the next part · Enter: take it and stage the line";
+const LIST_HELP: &str = "↑/↓ choose · Tab: take it and type the next part · Enter: take it and stage it";
 
 /// Each field as the tracks have it, and as they will (with many tracks: how many differ).
 fn state(ui: &mut egui::Ui, engine: &Engine, catalog: &Catalog, names: &Names) {

@@ -15,7 +15,7 @@ first is just a title and the second means "produced by bang". Only you know whi
    ```
    parse:feat prod
    ```
-3. Look at the check (↓ from the empty line). Fix what's wrong.
+3. Look at the check (↓ from the empty commandline). Fix what's wrong.
 4. Ctrl+Enter applies.
 
 Then do the next artist with whatever rules fit them.
@@ -97,14 +97,14 @@ it gains. Whatever needs a look comes first: names to choose, names that look wr
 artists, tracks that can't be changed. With several `parse:` chips, each name says which
 one found it ("parse 2"), and a correction goes to that chip.
 
-Get there with ↓ from the empty line (with one track, ↓ past the last field).
+Get there with ↓ from the empty commandline (with one track, ↓ past the last field).
 
 | Key | On | Does |
 |---|---|---|
-| Enter | a name | say who it is: the line searches artists (or makes a new one) |
+| Enter | a name | say who it is: the commandline searches artists (or makes a new one) |
 | `c` | a name | the next artist with that name (when several have it) |
 | `s` | a name | split it, on every separator, even one turned off with `split:`, or a name your library has (says so if there's nothing to split) |
-| `w` | a name | keep a name whole: the line has the text it was found in, so trim it to exactly the name and press Enter |
+| `w` | a name | keep a name whole: the commandline has the text it was found in, so trim it to exactly the name and press Enter |
 | `n` | a name | not a name: that part stays in the title (`Cool song! [bong]` keeps `[bong]`) |
 | `x` | a track | leave it out (again: back in) |
 | Delete | a correction | take it back |

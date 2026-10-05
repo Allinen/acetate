@@ -165,7 +165,7 @@ impl Marking {
         let Some(catalog) = shell.catalog.value.clone() else { return };
         let marked = self.ordered(len, id_at);
         ui.label(RichText::new(format!("Change {} tracks", thousands(marked.len()))).font(font(22.0, bold())));
-        ui.label(RichText::new("Ctrl+E: the line · Ctrl+Enter: apply the preview · Esc (outside the line): discard the changes, then unmark them all (once applied: close, unmarking them)").color(P.faint).small());
+        ui.label(RichText::new("Ctrl+E: the commandline · Ctrl+Enter: apply the preview · Esc (outside the commandline): discard the changes, then unmark them all (once applied: close, unmarking them)").color(P.faint).small());
         ui.add_space(8.0);
         let verbs = self.verbs(shell);
         self.bulk.offer(&verbs);

@@ -2,10 +2,11 @@
 
 An artist's page has a **commandline** under its header. It speaks the same language as the
 [track editor](editor.md) and [search](../searching.md): `key:value`, with `|` between
-commands. Press `/` to get to it. It works in listen mode too, for moving around and
-filtering; in edit mode it changes the artist as well.
+commands. It has the cursor when the page opens, and `/` gets back to it. It works in listen
+mode too, for moving around and filtering; in edit mode it changes the artist as well.
+`Alt+E` (or the word `edit`) turns edit mode on or off without leaving it.
 
-While you type, the choices appear under the line. `↑`/`↓` choose, `Tab` takes the choice,
+While you type, the choices appear under the commandline. `↑`/`↓` choose, `Tab` takes the choice,
 and `Enter` takes it and does the command. Plain words find things by name: `rel` finds
 Releases, `merge` finds *Merge into another artist…*. If you're not sure what's there, type
 a word.
@@ -30,8 +31,8 @@ tracks:year:2019
 
 ## Changing the artist (edit mode)
 
-Changes are staged as chips under the line. `Ctrl+Enter` saves them all, and `Backspace` on
-an empty line takes the last one back to edit. Outside edit mode they aren't suggested, and
+Changes are staged as chips under the commandline. `Ctrl+Enter` saves them all, and `Backspace` on
+an empty commandline takes the last one back to edit. Outside edit mode they aren't suggested, and
 if you type one anyway it tells you why it can't be done.
 
 - `alias:New name` adds another name the artist can be credited as. Under `alias:` the list
@@ -49,7 +50,7 @@ if you type one anyway it tells you why it can't be done.
   Its arguments:
   - `kind:vocals`
   - `file:/path/to/file.wav`: `Tab` completes paths. `file:paste` uses the files you copied
-    in a file manager; `file:choose` opens the file dialog. Both put the paths in the line,
+    in a file manager; `file:choose` opens the file dialog. Both put the paths in the commandline,
     so you see what will be uploaded.
   - `description:…`, `source:…` (where it came from)
   - `visibility:everyone`, `visibility:artist`, or `visibility:Group A, Group B`
