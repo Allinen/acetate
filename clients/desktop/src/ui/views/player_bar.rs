@@ -112,14 +112,33 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell, player: &PlayerView) {
         ui.painter().circle_filled(Pos2::new(filled.right(), track.center().y), 6.0 * hover, P.text);
     }
     ui.painter().text(bar.left_center() - Vec2::new(10.0, 0.0), Align2::RIGHT_CENTER, widgets::clock(position), font(11.0, medium()), P.muted);
-    ui.painter().text(bar.right_center() + Vec2::new(10.0, 0.0), Align2::LEFT_CENTER, total.map(widgets::clock).unwrap_or_default(), font(11.0, medium()), P.muted);
+    // The right-hand time: the length, or (click) what's left, with a "-" prefix.
+    if let Some(total) = total {
+        let remaining = shell.settings.show_remaining;
+        let text = if remaining {
+            if total.saturating_sub(position) >= Duration::from_secs(1){
+                format!("-{}", widgets::clock(total.saturating_sub(position)))
+            } else {
+                widgets::clock(total.saturating_sub(position))
+            }
+        } else { widgets::clock(total) };
+        let size = ui.painter().layout_no_wrap(text.clone(), font(11.0, medium()), P.muted).size();
+        let rect = Rect::from_min_size(Pos2::new(bar.right() + 10.0, bar.center().y - 10.0), Vec2::new(size.x.max(34.0), 20.0));
+        let response = ui.interact(rect, egui::Id::new("total-time"), Sense::click());
+        let color = if response.hovered() { P.text } else { P.muted };
+        ui.painter().text(rect.left_center(), Align2::LEFT_CENTER, text, font(11.0, medium()), color);
+        if response.on_hover_text(if remaining { "Show the length" } else { "Show the time left" }).clicked() {
+            shell.settings.show_remaining = !remaining;
+            shell.settings.save(&shell.data_dir);
+        }
+    }
     if let (Some(total), Some(at)) = (total, pointer_fraction)
         && (response.clicked() || response.drag_stopped())
     {
         shell.controller.seek(total.mul_f32(at));
     }
     if playing {
-        // The bar and clock move smoothly: redraw at the display's rate, but only this.
+        // TODO consider if it makes sense to lower this value to make it smoother or decrease only when focused etc. For it to be worth it, we need a re-design of the bar fill to support anti-aliasing / otherwise be smoother
         ctx.request_repaint_after(Duration::from_millis(250));
     }
 

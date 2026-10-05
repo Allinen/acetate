@@ -1,5 +1,5 @@
 //! What the app remembers about how you like it (`settings.json` in its data folder):
-//! the volume and the sound output. Everything else it keeps (the library, covers, the
+//! the volume, the sound output and a few display choices. Everything else it keeps (the library, covers, the
 //! queue) is a copy of what the server has, not a setting.
 
 use std::path::{Path, PathBuf};
@@ -21,11 +21,14 @@ pub struct Settings {
     /// albums with the same tracklist merges their tracks too (the merge views' "along"
     /// box, `a`).
     pub merge_along: bool,
+    /// The player bar's right-hand time shows what's left (with a "-"), not the length
+    /// (click it).
+    pub show_remaining: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { volume: 0.8, muted: false, output: None, table_columns: Default::default(), merge_along: true }
+        Settings { volume: 0.8, muted: false, output: None, table_columns: Default::default(), merge_along: true, show_remaining: false }
     }
 }
 
