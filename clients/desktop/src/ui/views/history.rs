@@ -78,7 +78,7 @@ impl History {
             }
             self.result = Some(result);
         }
-        let can_restore = shell.account.can("restore_revision");
+        let can_restore = shell.edit_mode && shell.account.can("restore_revision");
         if revisions.is_empty() {
             ui.label(RichText::new("No revisions you can see.").color(P.muted));
         }

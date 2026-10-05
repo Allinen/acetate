@@ -8,6 +8,7 @@
   - [Keys](keys.md)
 - [Editing](editing/README.md)
   - [The track editor](editing/editor.md)
+  - [The track page](editing/track-page.md)
   - [The artist page](editing/artist-page.md)
   - [The album page](editing/album-page.md)
   - [Moving credits out of titles](editing/title-parsing.md)

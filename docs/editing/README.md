@@ -9,7 +9,8 @@ the editor in either mode, for a quick fix.)
 
 - **Tracks:** title, artists and their roles, album and position, date, genres, status
   (`released`, `demo`, `unreleased`, `deleted`…), covers, sources, notes, lyrics, related
-  tracks. See [the track editor](editor.md).
+  tracks. See [the track editor](editor.md); the [track page](track-page.md)'s commandline
+  adds notes, extras, original files, earlier files, versions, undoing merges and restoring.
 - **Albums:** the same kind of form, plus kind (single, EP, mixtape, or your own words) and
   track order (`Alt+↑`/`Alt+↓`, then `Ctrl+Enter`). All of it, plus covers, groupings,
   sources, extras and notes, can be typed on [the album page's commandline](album-page.md).

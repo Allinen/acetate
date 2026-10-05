@@ -83,7 +83,7 @@ matched by the character you type, so it works on non-US layouts.
 | `-genre:rap  /  -artist` | take one off  /  clear them all |
 | `Tab` | take the choice listed, and type the next part (role:, as:, #…) |
 | `Backspace (empty commandline)` | take the last change back to edit |
-| `a word` | find what to change, or a tool (merge, lyrics, extra, credited as…) |
+| `a word` | find what to change, or a tool (merge two, credited as…; a track's page: its actions) |
 | `↓ (empty commandline, one track)` | into the fields: Enter edits one, Delete takes it off |
 | `r / a / m / o  on a field` | an artist's role / credited as · a cover made main · the file came from a source |
 | `Alt+↑ / Alt+↓  on a field` | move an artist or a cover |
@@ -127,6 +127,23 @@ matched by the character you type, so it works on non-US layouts.
 | `note:Title  /  -note:Title` | edit mode: the note editor  /  one taken off (note:paste: copied text files as notes) |
 | `Ctrl+Enter` | save the changes staged (each kind on its own) |
 | `Backspace (empty commandline)` | take the last change back to edit |
+
+## A track's page
+
+| Keys | Does |
+|---|---|
+| `/` | its commandline: the editor's (listen mode: the line alone; a word finds the rest, edit too) |
+| `play:  queue:next` | play it, then its album  /  queue it next (queue: at the end) |
+| `star:  rating:3.5` | star it (-star: unstar)  /  your rating (-rating clears it) |
+| `lyrics  file  history` | opened and scrolled to, or closed if open (also credits, notes, extras, tags, versions) |
+| `lyrics:English` | that entry of its lyrics (or lyrics:#2) |
+| `note:  extra:` | edit mode: as on an artist's page |
+| `og:  /  -og` | edit mode: its file is an original file (og:Name)  /  it isn't |
+| `file:#2` | edit mode: its second earlier file played again |
+| `sync` | edit mode: the lyrics' timing popup |
+| `unmerge:  restore:#3` | edit mode: the newest merge undone  /  its third revision restored |
+| `version:Name` | edit mode: edit that version, or a new one (as:New name renames it; at once) |
+| `Ctrl+Enter` | apply the editor's changes and save the page's (each on its own) |
 
 ## An album's page
 

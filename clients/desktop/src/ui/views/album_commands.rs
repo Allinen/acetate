@@ -413,7 +413,7 @@ fn edit_tracks(part: &commandline::Part<K>, here: &Here) -> Result<(String, Does
 }
 
 /// `#N` as a place from 0 (`what`: what it's the place of, for saying it's wrong).
-fn place(hash: &str, count: usize, what: &str) -> Result<usize, String> {
+pub(super) fn place(hash: &str, count: usize, what: &str) -> Result<usize, String> {
     match hash.parse::<usize>() {
         Ok(n) if n >= 1 && n <= count => Ok(n - 1),
         Ok(n) if n >= 1 => Err(format!("#{n}: it has {count} {what}")),
@@ -638,7 +638,7 @@ fn group(command: &[commandline::Part<K>], here: &Here, known: &Known) -> Result
 }
 
 /// `rating:3.5` (stars, halves too) as 0 to 10.
-fn rating(value: &str) -> Result<i16, String> {
+pub(super) fn rating(value: &str) -> Result<i16, String> {
     let stars: f32 = value.trim().replace(',', ".").parse().map_err(|_| format!("rating: 0 to 5 stars (3.5 too), not “{}”", value.trim()))?;
     let halves = (stars * 2.0).round();
     if !(0.0..=10.0).contains(&halves) || (stars * 2.0 - halves).abs() > 0.01 {
@@ -648,7 +648,7 @@ fn rating(value: &str) -> Result<i16, String> {
 }
 
 /// Stars, as said: "3.5 stars".
-fn stars(rating: i16) -> String {
+pub(super) fn stars(rating: i16) -> String {
     let n = rating as f32 / 2.0;
     match rating {
         0 => "no rating".into(),

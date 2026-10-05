@@ -1,4 +1,5 @@
-//! What the page commandlines share (`artist_commands`, `album_commands`): a page's
+//! What the page commandlines share (`artist_commands`, `album_commands`,
+//! `track_commands`): a page's
 //! sources, extras and notes (`source:`, `extra:`, `note:`, and taking them off), the paths
 //! and files typed for them, the rows of the list and what taking one does, the changes
 //! staged, and sending the ones saved on their own. Each page has its own keys (a
@@ -23,14 +24,16 @@ use crate::ui::Shell;
 pub enum Whose {
     Artist(Uuid),
     Album(Uuid),
+    Track(Uuid),
 }
 
 impl Whose {
-    /// "artist", "album": in what's said, and the kind of its sources.
+    /// "artist", "album", "track": in what's said, and the kind of its sources.
     pub fn word(self) -> &'static str {
         match self {
             Whose::Artist(_) => "artist",
             Whose::Album(_) => "album",
+            Whose::Track(_) => "track",
         }
     }
 
@@ -38,6 +41,7 @@ impl Whose {
         match self {
             Whose::Artist(id) => crate::ui::edit::extras::Owner::Artist(id),
             Whose::Album(id) => crate::ui::edit::extras::Owner::Album(id),
+            Whose::Track(id) => crate::ui::edit::extras::Owner::Track(id),
         }
     }
 
@@ -45,6 +49,7 @@ impl Whose {
         match self {
             Whose::Artist(id) => format!("/api/artists/{id}/sources"),
             Whose::Album(id) => format!("/api/albums/{id}/sources"),
+            Whose::Track(id) => format!("/api/tracks/{id}/sources"),
         }
     }
 
@@ -53,6 +58,7 @@ impl Whose {
         match self {
             Whose::Artist(_) => "seen like the artist",
             Whose::Album(_) => "seen as by default (like its first track)",
+            Whose::Track(_) => "seen like the track",
         }
     }
 }
@@ -639,8 +645,8 @@ fn seen(value: &str, t: &Things, known: &Known, new: bool) -> Result<Seen, Strin
     match value.to_lowercase().as_str() {
         "" => Err(format!("visibility: everyone, {} (the default), or groups (Group A, Group B)", t.whose.word())),
         "everyone" | "all" | "public" => Ok(Seen::Everyone),
-        "artist" | "album" | "like artist" | "like the artist" | "default" if new => Ok(Seen::Default),
-        "artist" | "album" | "like artist" | "like the artist" | "default" => Err("for one there already: everyone, or groups".into()),
+        "artist" | "album" | "track" | "like artist" | "like the artist" | "default" if new => Ok(Seen::Default),
+        "artist" | "album" | "track" | "like artist" | "like the artist" | "default" => Err("for one there already: everyone, or groups".into()),
         _ => {
             let Some(groups) = known.groups.as_ref() else { return Err("loading the groups…".into()) };
             let mut ids = Vec::new();

@@ -25,8 +25,13 @@
 //!   the preview), `group:` puts it in a grouping (or a new one, `kind:` after it), and
 //!   `-group:` takes it out.
 //! * **Verbs**: plain words also find the tools that stay separate, where the page around
-//!   the editor has them (`offer`): `merge`, `extra`, `lyrics`, `history`… Taking one hands
-//!   it to the page (`take_verb`), which opens its tool.
+//!   the editor has them (`offer`): merging the two marked tracks, `credited as`… Taking one
+//!   hands it to the page (`take_verb`), which opens its tool.
+//! * **On a track's page** the line is the page's commandline (`show_on_page`; in listen
+//!   mode the line alone, `show_line`): the page's keys (`K::Page`: `play:`, `note:`,
+//!   `og:`…) and its actions (plain words) are in it too, and mean what
+//!   `views::track_commands` says. Its changes are staged as chips with the editor's, and
+//!   Ctrl+Enter hands them to the page (`take_page_edits`), which sends each on its own.
 //! * **Covers and sources** are changes like the rest, applied with them: `cover:paste`
 //!   (or Ctrl+V with an image, or an image dropped, anywhere in the editor), `cover:file`,
 //!   `cover:<album or track>` (a copy of its cover), `cover:#3 #1`, `-cover:#2`;
@@ -81,7 +86,6 @@ use uuid::Uuid;
 use engine::{Change, Engine, Outcome, Phase, PlanState};
 use model::Op;
 use panel::{Flag, Row, RowKind};
-use parse::K;
 use resolve::{Candidate, Ctx, Names, Pick, PinKind, Unit, Want};
 pub use resolve::find_in;
 use crate::account::Vocab;
@@ -90,12 +94,20 @@ use crate::catalog::search::{Part as SearchPart, Search};
 use crate::catalog::Catalog;
 use crate::ui::theme::{font, semibold, PALETTE as P};
 use crate::ui::edit::commandline::{self as cl, CommandLine};
+use crate::ui::views::page_commands::{self as pc, Chosen, Known, Taken};
+use crate::ui::views::track_commands::{self as tc, PageKey};
 use crate::ui::{thousands, Action, Shell};
 
 pub use engine::{DraftOf, Imported};
 use import::{Metadata, Pasted};
 pub use panel::line_for;
-pub use parse::quoted;
+pub use parse::{quoted, K};
+
+/// A line in the editor's language (its keys, and the track page's).
+#[cfg(test)]
+pub fn parse_line(text: &str) -> parse::Line {
+    parse::parse(text)
+}
 
 /// A staged change: what it was typed as, what it does.
 #[derive(Debug, Clone)]
@@ -109,24 +121,16 @@ struct Staged {
     editable: bool,
     /// Staged by `stage_for_you` (staging for you again replaces it).
     for_you: bool,
+    /// One of the track page's changes (`ops` is empty): sent on its own by the page.
+    page: Option<tc::Edit>,
 }
 
 /// A tool that stays separate, opened from the line (plain words find it) by the page around
 /// the editor, which says which it has (`TrackEditor::offer`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verb {
-    /// Another track picked, then both side by side, to merge (the track page's Ctrl+M).
-    Merge,
     /// The two marked tracks side by side, to merge.
     MergeTwo,
-    /// Turn the track into an extra of another.
-    Extra,
-    /// Its lyrics: the open entry's text (a new entry if it has none).
-    Lyrics,
-    Notes,
-    History,
-    /// The file: whether it's an original file, where it came from, earlier files.
-    File,
     /// An artist's name on the marked tracks and their albums.
     CreditedAs,
     /// The marked tracks' files marked as original files.
@@ -137,13 +141,7 @@ impl Verb {
     /// How the list says it (the words that find it are in it).
     pub fn label(self) -> &'static str {
         match self {
-            Verb::Merge => "Merge with another track…  (Ctrl+M)",
             Verb::MergeTwo => "Merge the two marked tracks…  (Ctrl+M)",
-            Verb::Extra => "Turn into an extra… (vocals, a stem, a clip of another song)",
-            Verb::Lyrics => "Lyrics: edit them, or add some",
-            Verb::Notes => "Notes: write one",
-            Verb::History => "History: its changes (restore one)",
-            Verb::File => "File: original file or not, where it came from, earlier files",
             Verb::CreditedAs => "Credited as… (an artist's name on these tracks and their albums)",
             Verb::MarkOriginal => "Mark as original files… (og files whose tags didn't say so)",
         }
@@ -162,6 +160,8 @@ struct Here<'a> {
     /// For `parse:` (see `Ctx`).
     titles: Option<&'a [(Uuid, String)]>,
     artist_names: Option<&'a crate::title_credits::NameTable>,
+    /// The track page around it: its keys mean something.
+    page: Option<&'a tc::Here<'a>>,
 }
 
 /// An image uploaded for a cover: (its hash, what it is in words, where it goes), or why not.
@@ -203,6 +203,16 @@ pub struct TrackEditor {
     chosen_at: Option<usize>,
     /// A source being corrected (one track): its place, and the form.
     correcting: Option<(usize, crate::ui::edit::sources::Form)>,
+    /// On a track's page: the names chosen for its keys (extras, notes), the groups (who
+    /// sees an extra), files chosen in the dialog (`file:choose` after an extra), what the
+    /// line asked the page to do, and its changes saved (for the page to send).
+    page_known: Known,
+    page_groups: crate::ui::edit::extras::Groups,
+    page_chosen: Chosen,
+    page_act: Option<tc::Act>,
+    page_out: Vec<pc::Staged<tc::Edit>>,
+    /// The frame the line alone was last shown in (`show_line`).
+    last_pass: u64,
     /// The tools the page around it has, and the one asked for (taken by the page).
     verbs: Vec<Verb>,
     verb: Option<Verb>,
@@ -276,6 +286,12 @@ impl Default for TrackEditor {
             chosen: Arc::default(),
             chosen_at: None,
             correcting: None,
+            page_known: Known::default(),
+            page_groups: Default::default(),
+            page_chosen: Chosen::new("file"),
+            page_act: None,
+            page_out: Vec::new(),
+            last_pass: 0,
             verbs: Vec::new(),
             verb: None,
             imported: Vec::new(),
@@ -321,6 +337,11 @@ impl TrackEditor {
         !self.staged.is_empty()
     }
 
+    /// Changes to the track's metadata are staged (not only the page's).
+    pub fn has_metadata_changes(&self) -> bool {
+        self.staged.iter().any(|s| s.page.is_none())
+    }
+
     /// Applied to every track, and what came of it still shown (until Close). (Some
     /// failed: not this; the changes are kept, to try again.)
     pub fn applied(&self) -> bool {
@@ -328,9 +349,10 @@ impl TrackEditor {
         a.phase == Phase::Finished && !a.outcomes.values().any(|o| matches!(o, Outcome::Failed(_)))
     }
 
-    /// Done with what was applied (Close): the changes are cleared.
+    /// Done with what was applied (Close): the changes are cleared (not the page's, staged
+    /// since).
     pub fn close(&mut self) {
-        self.staged.clear();
+        self.staged.retain(|s| s.page.is_some());
         self.correcting = None;
         self.names = Names::default();
         self.engine.forget();
@@ -382,7 +404,7 @@ impl TrackEditor {
     /// Edits `variant` (one track). Only without staged changes: they're for the version
     /// they were typed for.
     pub fn set_variant(&mut self, variant: Uuid) {
-        if self.staged.is_empty() {
+        if !self.has_metadata_changes() {
             self.variant = Some(variant);
         }
     }
@@ -400,6 +422,156 @@ impl TrackEditor {
         self.verb.take()
     }
 
+    /// On a track's page: what the line asked the page to do (once).
+    pub fn take_page_act(&mut self) -> Option<tc::Act> {
+        self.page_act.take()
+    }
+
+    /// On a track's page: its changes Ctrl+Enter saved, for the page to send (once).
+    pub fn take_page_edits(&mut self) -> Vec<pc::Staged<tc::Edit>> {
+        std::mem::take(&mut self.page_out)
+    }
+
+    /// The page's changes that couldn't be saved: staged again, saying why.
+    pub fn restage(&mut self, failed: Vec<pc::Staged<tc::Edit>>) {
+        for s in failed {
+            self.staged.push(Staged { text: s.text, label: s.label, ops: Vec::new(), warning: s.failed, editable: true, for_you: false, page: Some(s.edit) });
+        }
+    }
+
+    /// Something else on the page gets the keys (a section, the note editor): the line
+    /// doesn't take the cursor back.
+    pub fn let_go(&mut self, ctx: &egui::Context) {
+        pc::let_go(&mut self.cl, ctx);
+    }
+
+    /// The editor on a track's page (edit mode): its line is the page's commandline too
+    /// (see the module's notes). Returns true when it's done and asks to close.
+    pub fn show_on_page(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: &Arc<Catalog>, page: &tc::Here) -> bool {
+        self.show_with(ui, shell, catalog, &[page.id], None, Some(page))
+    }
+
+    /// The line alone, on a track's page in listen mode: the page's keys and actions
+    /// (listening, its parts, going elsewhere); the editor's say they're for edit mode. The
+    /// changes staged in edit mode are kept, and shown. What it asks the page to do is
+    /// taken with `take_page_act`.
+    pub fn show_line(&mut self, ui: &mut egui::Ui, shell: &mut Shell, page: &tc::Here) {
+        let ctx = ui.ctx().clone();
+        pc::arrive(&mut self.cl, &ctx, shell, &mut self.last_pass);
+        let focused = self.cl.hold_focus(&ctx);
+        let line = parse::parse(&self.cl.text);
+        let words = line.parts.is_empty() && !line.words.is_empty();
+        let rows: Vec<tc::Row> = match line.parts.last() {
+            _ if words => tc::actions(&line.words.join(" "), page),
+            Some(last) if tc::is_page_part(last, line.last_goes_with()) => tc::choices(last, line.last_goes_with(), page, &self.page_known),
+            _ => Vec::new(),
+        };
+        self.cl.highlighted = self.cl.highlighted.min(rows.len().saturating_sub(1));
+        let mut take: Option<(usize, bool)> = None;
+        let mut enter = false;
+        if focused {
+            let pressed = self.cl.keys(&ctx, rows.len(), false, !self.staged.is_empty());
+            if (pressed.tab || pressed.enter) && !rows.is_empty() {
+                take = Some((self.cl.highlighted, pressed.tab));
+            }
+            enter = pressed.enter;
+            if pressed.escape {
+                self.notice = None;
+            }
+            // Backspace on an empty line: the last change back, to edit.
+            if pressed.back
+                && let Some(last) = self.staged.pop()
+                && last.editable
+            {
+                self.cl.text = last.text;
+                self.cl.cursor_to_end(&ctx);
+            }
+        }
+        let hint = "/  play  queue  star  rating:  lyrics  file  history  (a word finds the rest · | between commands · Alt+E: edit mode)";
+        if self.cl.field(ui, true, hint).changed() {
+            self.notice = None;
+        }
+        let mut clicked = None;
+        if !rows.is_empty() {
+            let list = rows.iter().map(|r| (r.label.clone(), r.sub.clone())).collect();
+            cl::list(ui, list, self.cl.highlighted, &mut clicked, "↑/↓ choose · Tab: take it · Enter: take it and do it");
+        }
+        if let Some(n) = clicked {
+            take = Some((n, true));
+        }
+        if let Some((n, tab)) = take
+            && let Some(row) = rows.get(n)
+            && !self.take_page_row(row, &line, tab, &ctx)
+        {
+            enter = false;
+        }
+        if enter && !self.cl.text.trim().is_empty() {
+            let done = tc::resolve_line(&self.cl.text, page, &self.page_known);
+            match done.iter().find_map(|d| d.as_ref().err()) {
+                Some(err) => self.notice = Some(format!("Not done: {err}")),
+                None => {
+                    for (_, does) in done.into_iter().flatten() {
+                        if let tc::Does::Act(act) = does {
+                            self.page_act = Some(act);
+                        }
+                    }
+                    self.cl.text.clear();
+                    self.notice = None;
+                }
+            }
+        }
+        // What Enter would do, when no list is in the way.
+        if rows.is_empty() && !self.cl.text.trim().is_empty() {
+            let shown: Vec<Result<(String, Option<String>), String>> = tc::resolve_line(&self.cl.text, page, &self.page_known).into_iter().map(|r| r.map(|(label, _)| (label, None))).collect();
+            cl::would_do(ui, &shown, "Nothing to do by that name");
+        }
+        if let Some(notice) = &self.notice {
+            ui.label(RichText::new(notice).color(P.muted).small());
+        }
+        // Changes staged in edit mode: kept, and saved there.
+        if !self.staged.is_empty() {
+            shell.form_dirty = true;
+            ui.add_space(4.0);
+            let chips: Vec<cl::Chip> = self.staged.iter().map(|s| cl::Chip { text: &s.text, label: &s.label, warning: s.warning.as_deref() }).collect();
+            if let Some(n) = cl::chips(ui, &chips, true) {
+                self.staged.remove(n);
+            }
+            ui.label(RichText::new("Not saved: they're saved in edit mode (e, then Ctrl+Enter)").color(P.faint).small());
+        }
+    }
+
+    /// A row of the page's taken (Tab, Enter or a click; `tab`: the next part written after
+    /// it). Returns whether Enter goes on to do the line.
+    fn take_page_row(&mut self, row: &tc::Row, line: &parse::Line, tab: bool, ctx: &egui::Context) -> bool {
+        match pc::take(&mut self.cl, ctx, &mut self.page_known, line, &row.choice, tab) {
+            Taken::Filled => !tab,
+            Taken::Inserted => false,
+            Taken::Act(act) => {
+                self.page_act = Some(act);
+                false
+            }
+            Taken::Stage(s) => {
+                // (Found by words: they're done with.)
+                if line.parts.is_empty() {
+                    self.cl.text.clear();
+                }
+                self.staged.push(Staged { text: s.text, label: s.label, ops: Vec::new(), warning: None, editable: true, for_you: false, page: Some(s.edit) });
+                false
+            }
+        }
+    }
+
+    /// The units of the page's commands in `text` (one per command, as `resolve` made them),
+    /// as the page says (not kept with the rest: the page changes).
+    fn page_units(&self, text: &str, units: &mut [Unit], page: Option<&tc::Here>) {
+        let Some(page) = page else { return };
+        for (unit, command) in units.iter_mut().zip(parse::parse(text).commands()) {
+            if matches!(command[0].key, K::Page(_)) {
+                unit.result = tc::resolve(command, page, &self.page_known).map(|(label, does)| resolve::Resolved { label, page: Some(does), ..Default::default() });
+            }
+        }
+    }
+
     /// Edits a draft (see the module's notes), one of the targets: `track` as the preview
     /// made it. Again with a newer preview of the same file: the changes staged stay.
     pub fn draft(&mut self, of: DraftOf, track: crate::details::TrackDetail) {
@@ -411,7 +583,7 @@ impl TrackEditor {
     pub fn start_single(&mut self) {
         if self.staged.is_empty() {
             let label = "a single of its own, for each (named after it as it'll be; its primary artists, date and covers)".to_string();
-            self.staged.push(Staged { text: "single:".into(), label, ops: vec![Op::Single], warning: None, editable: true, for_you: false });
+            self.staged.push(Staged { text: "single:".into(), label, ops: vec![Op::Single], warning: None, editable: true, for_you: false, page: None });
         }
     }
 
@@ -475,7 +647,7 @@ impl TrackEditor {
         }
         let label = |id: Uuid| catalog.artist_label(id).unwrap_or_else(|| "(an artist)".into());
         let text = format!("artist: {} → {}", label(from), label(to));
-        self.staged.push(Staged { label: text.clone(), text, ops, warning: None, editable: false, for_you: false });
+        self.staged.push(Staged { label: text.clone(), text, ops, warning: None, editable: false, for_you: false, page: None });
     }
 
     fn ops(&self) -> Vec<Op> {
@@ -659,6 +831,11 @@ impl TrackEditor {
     /// With one track it's laid out top to bottom (the page around it scrolls); with many,
     /// in two columns filling the room given. Returns true when it's done and asks to close.
     pub fn show(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: &Arc<Catalog>, targets: &[Uuid], album: Option<Uuid>) -> bool {
+        self.show_with(ui, shell, catalog, targets, album, None)
+    }
+
+    /// `show`, with the track page around it (`page`), if it's there.
+    fn show_with(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: &Arc<Catalog>, targets: &[Uuid], album: Option<Uuid>, page: Option<&tc::Here>) -> bool {
         let ctx = ui.ctx().clone();
         let vocab = shell.account.vocab.clone().unwrap_or_default();
         let single = targets.len() == 1;
@@ -685,6 +862,12 @@ impl TrackEditor {
             }
         }
 
+        // On a track's page: files chosen for an extra put in the line; the groups asked for
+        // once `visibility:` is typed.
+        if let Some(page) = page {
+            self.page_chosen.put_in_line(&mut self.cl);
+            tc::ask_groups(&self.cl.text, page, shell, &mut self.page_known, &self.page_groups);
+        }
         // The cursor to the line: asked until it holds.
         let focused = self.cl.hold_focus(&ctx);
         if focused {
@@ -734,7 +917,7 @@ impl TrackEditor {
             self.artist_names = Some((Arc::as_ptr(catalog), Arc::new(crate::title_credits::NameTable::new(names))));
         }
         let artist_names = self.artist_names.as_ref().filter(|_| parsing).map(|(_, t)| t.clone());
-        let here = Here { catalog, vocab: &vocab, targets: targets.len(), album, staged_album, may_relate, may_source, titles: titles.as_deref(), artist_names: artist_names.as_deref() };
+        let here = Here { catalog, vocab: &vocab, targets: targets.len(), album, staged_album, may_relate, may_source, titles: titles.as_deref(), artist_names: artist_names.as_deref(), page };
         self.settle_parse(shell, &here);
         // Staged for you (`stage_for_you`); what can't be is left in the line.
         let mut left = Vec::new();
@@ -790,7 +973,7 @@ impl TrackEditor {
                 (&self.cl.text, self.names.version, staged_album, look.0.generation, targets.len(), &titles).hash(&mut h);
                 h.finish()
             };
-            let units = match &self.resolved {
+            let mut units = match &self.resolved {
                 Some((k, units)) if *k == key => units.clone(),
                 _ => {
                     let (units, waiting) = resolve::resolve(&self.cl.text, &rctx, &mut look);
@@ -798,10 +981,20 @@ impl TrackEditor {
                     units
                 }
             };
+            self.page_units(&self.cl.text, &mut units, page);
             (candidates, (verbs, actions), units)
         };
         let (verbs, actions) = actions;
-        let choices = if words { verbs.len() + actions.len() } else { candidates.len() };
+        // The page's: its actions (words), or the choices for one of its keys being typed (in
+        // place of the editor's).
+        let page_part = page.is_some() && !words && last.as_ref().is_some_and(|l| tc::is_page_part(l, group));
+        let page_rows: Vec<tc::Row> = match page {
+            Some(p) if words => tc::actions(&parsed.words.join(" "), p),
+            Some(p) if page_part => last.as_ref().map(|l| tc::choices(l, group, p, &self.page_known)).unwrap_or_default(),
+            _ => Vec::new(),
+        };
+        let candidates = if page_part { Vec::new() } else { candidates };
+        let choices = if words { page_rows.len() + verbs.len() + actions.len() } else if page_part { page_rows.len() } else { candidates.len() };
         self.cl.highlighted = self.cl.highlighted.min(choices.saturating_sub(1));
 
         // One track's rows (and the flags on them).
@@ -1047,7 +1240,11 @@ impl TrackEditor {
 
         // ---- The line ----
         let editing = phase == Phase::Editing;
-        let hint = "What to change: artist:…  album:…  status:demo | date:2020  cover:paste  source:<link>  (| between changes · Tab: the next part · Enter: stage it · paste a SoundCloud/yt-dlp JSON or a YouTube link: its metadata)";
+        let hint = if page.is_some() {
+            "/  title:  artist:  album:  cover:paste  note:  play  lyrics  (a word finds the rest · | between commands · Ctrl+Enter applies · paste a SoundCloud/yt-dlp JSON or a YouTube link: its metadata)"
+        } else {
+            "What to change: artist:…  album:…  status:demo | date:2020  cover:paste  source:<link>  (| between changes · Tab: the next part · Enter: stage it · paste a SoundCloud/yt-dlp JSON or a YouTube link: its metadata)"
+        };
         let response = self.cl.field(ui, editing, hint);
         if response.changed() {
             self.notice = None;
@@ -1056,10 +1253,17 @@ impl TrackEditor {
 
         // A choice taken (Tab, Enter or a click).
         let mut clicked = None;
-        if words && (!actions.is_empty() || !verbs.is_empty()) {
-            // The tools first: a word that names one means it.
-            let rows = verbs.iter().map(|v| (v.label().to_string(), "opens it".to_string())).chain(actions.iter().map(|(label, insert)| (label.clone(), insert.clone()))).collect();
+        if words && (!page_rows.is_empty() || !actions.is_empty() || !verbs.is_empty()) {
+            // The page's and the tools first: a word that names one means it.
+            let rows = page_rows
+                .iter()
+                .map(|r| (r.label.clone(), r.sub.clone()))
+                .chain(verbs.iter().map(|v| (v.label().to_string(), "opens it".to_string())))
+                .chain(actions.iter().map(|(label, insert)| (label.clone(), insert.clone())))
+                .collect();
             cl::list(ui, rows, self.cl.highlighted, &mut clicked, LIST_HELP);
+        } else if page_part && !page_rows.is_empty() {
+            cl::list(ui, page_rows.iter().map(|r| (r.label.clone(), r.sub.clone())).collect(), self.cl.highlighted, &mut clicked, LIST_HELP);
         } else if !candidates.is_empty() {
             cl::list(ui, candidates.iter().map(|c| (c.label.clone(), c.sub.clone())).collect(), self.cl.highlighted, &mut clicked, LIST_HELP);
         }
@@ -1068,13 +1272,25 @@ impl TrackEditor {
         }
         if let Some((n, next)) = take {
             if words {
-                if let Some(verb) = verbs.get(n) {
+                // (The page's rows, then the tools, then the editor's.)
+                let tool = n.checked_sub(page_rows.len());
+                let action = tool.and_then(|t| t.checked_sub(verbs.len()));
+                if let Some(row) = page_rows.get(n) {
+                    self.take_page_row(row, &parsed, next, &ctx);
+                    stage = false;
+                } else if let Some(verb) = tool.and_then(|t| verbs.get(t)) {
                     self.verb = Some(*verb);
                     self.cl.text.clear();
                     stage = false;
-                } else if let Some((_, insert)) = actions.get(n - verbs.len()) {
+                } else if let Some((_, insert)) = action.and_then(|a| actions.get(a)) {
                     self.cl.text = insert.clone();
                     self.cl.cursor_to_end(&ctx);
+                    stage = false;
+                }
+            } else if page_part {
+                if let Some(row) = page_rows.get(n)
+                    && !self.take_page_row(row, &parsed, next, &ctx)
+                {
                     stage = false;
                 }
             } else if let (Some(c), Some(l)) = (candidates.get(n), &last) {
@@ -1091,13 +1307,31 @@ impl TrackEditor {
                 ctx.memory_mut(|m| m.surrender_focus(line_id));
             }
         }
+        // On a track's page, `file:paste` and `file:choose` after an extra: the paths in the
+        // line first (what's staged is what the line says).
+        if stage && page.is_some() && self.prompt.is_none() {
+            let dialog = pc::Dialog { title: "Files for the extra", kinds: ("Any file", &[]), many: true };
+            if let Err(err) = pc::expand_files::<K>(&mut self.cl.text, shell, |p| p.key == K::Page(PageKey::File) && p.arg, true, dialog, &self.page_chosen) {
+                self.notice = Some(err);
+                stage = false;
+            }
+        }
+        let mut not_staged = false;
         if stage && let Some(prompt) = self.prompt.clone() {
             self.answer_prompt(prompt);
         } else if stage {
             let line = std::mem::take(&mut self.cl.text);
             if !self.stage(&line, shell, &here) {
                 self.cl.text = line;
+                not_staged = true;
             }
+        }
+        // Ctrl+Enter on a track's page: its changes go to the page, to be sent (what was
+        // typed staged first; if it couldn't be, nothing is).
+        if ctrl_enter && page.is_some() && !not_staged && self.prompt.is_none() {
+            let (out, keep): (Vec<Staged>, Vec<Staged>) = std::mem::take(&mut self.staged).into_iter().partition(|s| s.page.is_some());
+            self.staged = keep;
+            self.page_out.extend(out.into_iter().filter_map(|s| Some(pc::Staged { edit: s.page?, text: s.text, label: s.label, failed: None })));
         }
         // A prompt answered (or let go): back to the check.
         if std::mem::take(&mut self.to_check) {
@@ -1116,7 +1350,7 @@ impl TrackEditor {
             ui.label(RichText::new(text).color(P.accent).small());
         }
         // What Enter would do (or why it can't), when no list is in the way.
-        if self.prompt.is_none() && candidates.is_empty() && actions.is_empty() && verbs.is_empty() && !self.cl.text.trim().is_empty() {
+        if self.prompt.is_none() && candidates.is_empty() && page_rows.is_empty() && actions.is_empty() && verbs.is_empty() && !self.cl.text.trim().is_empty() {
             let shown: Vec<Result<(String, Option<String>), String>> = units.iter().map(|u| u.result.as_ref().map(|r| (r.label.clone(), r.warning.clone())).map_err(|e| e.clone())).collect();
             cl::would_do(ui, &shown, "Nothing to change by that name");
         }
@@ -1279,7 +1513,8 @@ impl TrackEditor {
         if targets.len() == 1 && all_done {
             self.choose_version = model::version(&self.ops());
             self.saved = Some(answers.get(&targets[0]).map(|a| a.flags.clone()).unwrap_or_default());
-            self.staged.clear();
+            // (A track page's changes staged since are its own.)
+            self.staged.retain(|s| s.page.is_some());
             self.correcting = None;
             self.names = Names::default();
             self.engine.forget();
@@ -1336,7 +1571,8 @@ impl TrackEditor {
         if text.trim().is_empty() {
             return true;
         }
-        let (units, _) = resolve::resolve(text, &here.ctx(&self.names), &mut Look(&mut *shell));
+        let (mut units, _) = resolve::resolve(text, &here.ctx(&self.names), &mut Look(&mut *shell));
+        self.page_units(text, &mut units, here.page);
         if units.is_empty() {
             self.notice = Some("Nothing to change there: key:value (artist:…, status:…), or a word to find what to change.".into());
             return false;
@@ -1349,6 +1585,18 @@ impl TrackEditor {
         let mut notice = None;
         for u in units {
             let Ok(mut r) = u.result else { continue };
+            // The page's: done by the page, or staged to be sent by it.
+            match r.page.take() {
+                Some(tc::Does::Act(act)) => {
+                    self.page_act = Some(act);
+                    continue;
+                }
+                Some(tc::Does::Edit(edit)) => {
+                    self.staged.push(Staged { text: u.text, label: r.label, ops: Vec::new(), warning: None, editable: true, for_you: false, page: Some(edit) });
+                    continue;
+                }
+                None => {}
+            }
             if let Some((id, kind)) = &r.new_kind {
                 self.names.set_kind(*id, kind);
             }
@@ -1379,7 +1627,7 @@ impl TrackEditor {
                     crate::ui::files::choose(shell, "A cover", ("Images", crate::ui::files::IMAGES), false, &self.chosen);
                 }
                 Some(Want::Correct(n)) => self.correct(n, here.vocab),
-                None => self.staged.push(Staged { text: u.text, label: r.label, ops: r.ops, warning: r.warning, editable: true, for_you: false }),
+                None => self.staged.push(Staged { text: u.text, label: r.label, ops: r.ops, warning: r.warning, editable: true, for_you: false, page: None }),
             }
         }
         // A Ctrl+Enter waiting was for what was staged before.
@@ -1419,7 +1667,7 @@ impl TrackEditor {
                     };
                     let warning = (targets > 1).then(|| format!("each of the {targets} tracks gets this cover"));
                     let op = Op::Cover { image: model::Image::Staged, sha, at };
-                    self.staged.push(Staged { text: format!("cover: {what}{place}"), label: format!("cover: + {what}{place}"), ops: vec![op], warning, editable: false, for_you: false });
+                    self.staged.push(Staged { text: format!("cover: {what}{place}"), label: format!("cover: + {what}{place}"), ops: vec![op], warning, editable: false, for_you: false, page: None });
                     self.apply_when_ready = false;
                 }
                 Err(err) => self.notice = Some(format!("The image couldn't be uploaded: {err}")),
@@ -1477,7 +1725,7 @@ impl TrackEditor {
         let from = m.from;
         let may_source = shell.account.can("edit_sources");
         let mut chips: Vec<Staged> = Vec::new();
-        let mut chip = |text: String, label: String, ops: Vec<Op>, warning: Option<String>| chips.push(Staged { text, label, ops, warning, editable: false, for_you: false });
+        let mut chip = |text: String, label: String, ops: Vec<Op>, warning: Option<String>| chips.push(Staged { text, label, ops, warning, editable: false, for_you: false, page: None });
         let version = match self.engine.is_draft() {
             true => format!("its version named “{from}”, with only what's imported"),
             false => format!("a new version “{from}” with only what's imported (not the shown one: choose it after)"),
@@ -1593,7 +1841,7 @@ impl TrackEditor {
             match (form.data(shape), form.correcting) {
                 (Ok(data), Some(id)) => {
                     let label = format!("source #{} ({}) corrected", n + 1, form.platform);
-                    self.staged.push(Staged { text: format!("source:#{} corrected", n + 1), label, ops: vec![Op::CorrectSource { id, data }], warning: None, editable: false, for_you: false });
+                    self.staged.push(Staged { text: format!("source:#{} corrected", n + 1), label, ops: vec![Op::CorrectSource { id, data }], warning: None, editable: false, for_you: false, page: None });
                     self.correcting = None;
                     self.apply_when_ready = false;
                     self.cl.focus = true;
@@ -1896,7 +2144,7 @@ impl TrackEditor {
                         apply = ui.add_enabled(can, egui::Button::new(text)).clicked();
                     }
                     if changing == 0 {
-                        if !self.staged.is_empty() {
+                        if self.has_metadata_changes() {
                             ui.label(RichText::new("It changes nothing.").color(P.faint));
                         }
                     } else if loading || running || !current {
@@ -2331,13 +2579,10 @@ mod tests {
     /// Plain words find the tools as the line lists them (by their label).
     #[test]
     fn words_find_the_tools() {
-        let all = [Verb::Merge, Verb::Extra, Verb::Lyrics, Verb::Notes, Verb::History, Verb::File, Verb::CreditedAs, Verb::MarkOriginal];
+        let all = [Verb::MergeTwo, Verb::CreditedAs, Verb::MarkOriginal];
         let found = |typed: &str| all.iter().copied().filter(|v| loosely_in(typed, v.label())).collect::<Vec<_>>();
-        assert_eq!(found("merge"), [Verb::Merge]);
-        assert_eq!(found("lyr"), [Verb::Lyrics]);
+        assert_eq!(found("merge"), [Verb::MergeTwo]);
         assert_eq!(found("credited"), [Verb::CreditedAs]);
-        assert!(found("extra").contains(&Verb::Extra));
-        assert!(found("history").contains(&Verb::History));
         assert!(found("og").contains(&Verb::MarkOriginal));
     }
 }

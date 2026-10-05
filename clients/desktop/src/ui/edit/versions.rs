@@ -6,6 +6,7 @@
 //!
 //! Switching and copying wait for the editor's staged changes to be applied or discarded:
 //! a copy is of what's saved, and the changes are for the version they were typed for.
+//! The track page's commandline does the same (`version:`, see `views::track_commands`).
 
 use std::sync::{Arc, Mutex};
 
@@ -167,6 +168,22 @@ impl VersionsBar {
         }
         ui.add_space(4.0);
         switch
+    }
+
+    /// A new version named `label`, a copy of `from` (the commandline's `version:`): the
+    /// editor edits it once it's there.
+    pub fn make(&mut self, shell: &Shell, track: Uuid, label: &str, from: Uuid) {
+        self.create(shell, track, json!({ "label": label.trim(), "copy_from": from }));
+    }
+
+    /// `variant` renamed `label` (the commandline's `version:… as:…`).
+    pub fn rename(&mut self, shell: &Shell, track: Uuid, variant: Uuid, label: &str) {
+        self.send(shell, reqwest::Method::PATCH, format!("/api/tracks/{track}/variants/{variant}"), json!({ "label": label.trim() }), Done::Renamed);
+    }
+
+    /// `variant` made the shown one (the commandline's "Show this version").
+    pub fn make_shown(&mut self, shell: &Shell, track: Uuid, variant: Uuid) {
+        self.send(shell, reqwest::Method::PUT, format!("/api/tracks/{track}/primary-variant"), json!({ "variant_id": variant }), Done::Shown);
     }
 
     /// Sends a request answered without a body; `done` says what it did.

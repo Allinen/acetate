@@ -93,6 +93,8 @@ pub struct LyricsEditor {
     sync: Option<Sync>,
     /// The cursor to the text, the next time it's shown (the editor's `lyrics`).
     focus_asked: bool,
+    /// The timing popup opens the next time the form is shown.
+    sync_asked: bool,
 }
 
 /// An entry's name: official or not, the language, synced or not.
@@ -116,6 +118,11 @@ impl LyricsEditor {
     /// none).
     pub fn focus(&mut self) {
         self.focus_asked = true;
+    }
+
+    /// The timing popup opens (on the entry shown, or a new one if there's none) the next time the form is shown.
+    pub fn start_sync(&mut self) {
+        self.sync_asked = true;
     }
 
     /// Ctrl+Enter in one of the fields, or while timing (outside any field): a save of
@@ -201,7 +208,7 @@ impl LyricsEditor {
             Some(Open::New) => {}
         }
         let focus = std::mem::take(&mut self.focus_asked);
-        if focus && self.open.is_none() {
+        if (focus || self.sync_asked) && self.open.is_none() {
             self.fill(Open::New, None);
         }
         let dirty = self.dirty();
@@ -265,6 +272,9 @@ impl LyricsEditor {
                 self.sync = Some(Sync::new(&self.fields.body));
             }
         });
+        if std::mem::take(&mut self.sync_asked) && self.sync.is_none() {
+            self.sync = Some(Sync::new(&self.fields.body));
+        }
         if self.sync.is_some() {
             self.sync_popup(shell, catalog, d, player);
         }

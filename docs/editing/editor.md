@@ -16,7 +16,8 @@ status:demo | date:2020
 
 - Several changes fit on one line, with `|` between them. (The [artist page](artist-page.md)
   and the [album page](album-page.md) have commandlines of their own in the same
-  language.) If any of them can't be understood (no artist by that name), *none* of it is
+  language. On a [track's page](track-page.md) this commandline is the page's: it has the
+  page's keys too, and it's there in listen mode.) If any of them can't be understood (no artist by that name), *none* of it is
   staged, and you're told why.
 - A change is a key, its value, and that key's own extras: `role:` and `as:` after an
   artist, `kind:` after an album, a grouping or a related track, a source's fields after
@@ -26,8 +27,9 @@ status:demo | date:2020
   statuses…). `↑`/`↓` choose, `Tab` takes the choice and starts the next part (after an
   artist: `role:`, then `as:`, then its place `#`), `Enter` takes it and stages it.
 - `-genre:rap` takes one value off; `-artist` clears all of them.
-- Plain words find things to change by name, or tools: `merge`, `lyrics`, `extra`,
-  `history`, `credited as`…
+- Plain words find things to change by name, or tools: `credited as`, merging two marked
+  tracks… On a track's page they find the page's actions too: `merge`, `extra`, `lyrics`,
+  `history`…
 - `Backspace` on an empty commandline takes the last change back to edit it. `/` returns to the
   line.
 

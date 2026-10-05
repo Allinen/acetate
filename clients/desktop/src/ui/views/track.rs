@@ -4,6 +4,9 @@
 //! where it came from, and earlier files), versions, sources, merges, covers and the
 //! file's own tags. What's here comes from the catalog at once, and from the track's
 //! details (kept on disk, refreshed in the background) as they arrive.
+//!
+//! Its commandline (`/`) is the track editor's line, with the page's keys in it (see
+//! `track_commands`): under the header in listen mode, the editor's own in edit mode.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -12,6 +15,8 @@ use eframe::egui::{self, Align2, Pos2, Rect, RichText, Sense, Vec2};
 use uuid::Uuid;
 
 use super::album::{marks, play_button};
+use super::page_commands as pc;
+use super::track_commands::{self as tc, Act, Reveal};
 use crate::catalog::marks::Kind;
 use crate::catalog::Catalog;
 use crate::details::{Source, TrackDetail};
@@ -63,10 +68,17 @@ pub struct TrackPage {
     lyrics: usize,
     /// The synced line last scrolled to (so it scrolls when the line changes, not always).
     followed_line: Option<usize>,
-    /// A section the editor's line asked for (a verb: `lyrics`, `history`…): opened and
-    /// scrolled to next frame (`revealing` then).
-    reveal: Option<&'static str>,
-    revealing: Option<&'static str>,
+    /// A section the commandline asked for: opened and scrolled to (true), or closed, next
+    /// frame (`revealing` then).
+    reveal: Option<(Reveal, bool)>,
+    revealing: Option<(Reveal, bool)>,
+    /// The sections drawn last time, and whether each was open.
+    folds: Vec<(Reveal, bool)>,
+    /// The commandline's changes being sent (each with its track), and the tracks they're for.
+    sending: pc::Sending<(Uuid, tc::Edit)>,
+    sent_to: Vec<Uuid>,
+    /// A copy made from the commandline ("Duplicate this track"): its page opens.
+    copied: Arc<std::sync::Mutex<Option<Uuid>>>,
 }
 
 impl TrackPage {
@@ -82,6 +94,7 @@ impl TrackPage {
                 shell.act(Action::Pick { kind: crate::ui::edit::PickKind::Track, except: Some(id) });
             }
         }
+        self.answers(shell);
         let cached = shell.track_details.get(id);
         let (detail, refreshing, error, became_extra) = (cached.value.clone(), cached.refreshing, cached.error.clone(), cached.became_extra);
         // A merged track answers with the one it went into: go there instead.
@@ -103,6 +116,45 @@ impl TrackPage {
             return;
         }
         let is_playing = playing_track(player) == Some(id);
+
+        // What the commandline knows.
+        let vocab = shell.account.vocab.clone().unwrap_or_default();
+        let sections = detail.as_ref().map(|d| sections(shell, d)).unwrap_or_default();
+        let folds_shown = self.folds.clone();
+        // Its music video (an extra with one, linked to it): watched from here.
+        let mut videos: Vec<(Uuid, String)> = catalog.extras.iter().filter(|e| e.links.iter().any(|l| l.1 == id)).filter_map(|e| Some((e.video?, e.name.clone()))).collect();
+        videos.sort_by_key(|v| v.1.to_lowercase());
+        let mark = shell.mark(id);
+        let editor = shell.track_editors.get(&id);
+        let version = detail.as_ref().and_then(|d| {
+            let chosen = editor.and_then(|e| e.variant()).filter(|v| d.variants.iter().any(|x| x.id == *v));
+            chosen.or(d.primary_variant_id).or_else(|| d.variants.first().map(|v| v.id))
+        });
+        let can = |permission: &str| shell.account.can(permission);
+        let here = tc::Here {
+            id,
+            catalog,
+            vocab: &vocab,
+            detail: detail.as_deref(),
+            edit_mode: shell.edit_mode,
+            may: tc::May {
+                metadata: can("edit_metadata"),
+                files: can("edit_files"),
+                replace: can("replace_file"),
+                restore: can("restore_revision"),
+                upload: can("upload") && can("edit_metadata"),
+                access: can("manage_access"),
+                sources: can("edit_sources"),
+            },
+            starred: mark.starred,
+            rating: mark.rating,
+            sections: &sections,
+            folds: &folds_shown,
+            videos: &videos,
+            version,
+            staged: editor.is_some_and(|e| e.has_metadata_changes()),
+        };
+        let mut folds = Vec::new();
 
         egui::ScrollArea::vertical().id_salt("track-page").auto_shrink([false, false]).show(ui, |ui| {
             // ---- Header ----
@@ -163,31 +215,13 @@ impl TrackPage {
 
             let play_rect = Rect::from_min_size(Pos2::new(left, cover_rect.bottom() - 44.0), Vec2::new(116.0, 42.0));
             if play_button(ui, "track-play", play_rect) {
-                // Play it, then the rest of its album (or just it).
-                if let Some(index) = catalog.track_index(id) {
-                    match track.and_then(|t| t.albums.first()) {
-                        Some(album) => {
-                            let tracks = catalog.album_tracks(album.0).to_vec();
-                            let start = tracks.iter().position(|&t| t == index).unwrap_or(0);
-                            shell.act(Action::Play { tracks, start });
-                        }
-                        None => shell.act(Action::Play { tracks: vec![index], start: 0 }),
-                    }
-                }
+                play(shell, catalog, id);
             }
             let marks_rect = Rect::from_min_size(Pos2::new(play_rect.right() + 18.0, play_rect.top()), Vec2::new(380.0, play_rect.height()));
             let mut marks_ui = ui.new_child(egui::UiBuilder::new().max_rect(marks_rect).layout(layout));
             marks(&mut marks_ui, shell, Kind::Track, id);
             marks_ui.add_space(8.0);
             widgets::share_chip(&mut marks_ui, shell, crate::links::Target::Track(id));
-            // Its music video (an extra with one, linked to it): watched from here.
-            let mut videos: Vec<(uuid::Uuid, String)> = catalog
-                .extras
-                .iter()
-                .filter(|e| e.links.iter().any(|l| l.1 == id))
-                .filter_map(|e| Some((e.video?, e.name.clone())))
-                .collect();
-            videos.sort_by_key(|v| v.1.to_lowercase());
             if let Some((video, name)) = videos.first() {
                 marks_ui.add_space(4.0);
                 let text = if videos.len() > 1 { format!("▶ Watch the video ({})", videos.len()) } else { "▶ Watch the video".to_string() };
@@ -196,13 +230,21 @@ impl TrackPage {
                 }
             }
             ui.add_space(10.0);
+            // Listen mode: the commandline (`/`) under the header, the line alone. (Edit
+            // mode: the editor's, below.)
+            if !shell.edit_mode {
+                let mut editor = shell.track_editors.remove(&id).unwrap_or_default();
+                editor.show_line(ui, shell, &here);
+                shell.track_editors.insert(id, editor);
+                ui.add_space(10.0);
+            }
             if let Some(t) = track {
                 let groupings = t.groupings.clone();
                 self.part_of.show(ui, shell, catalog, crate::ui::edit::part_of::Member::Track(id), &groupings);
             }
             ui.add_space(10.0);
 
-            let Some(d) = detail else {
+            let Some(d) = detail.clone() else {
                 let text = error.map(|e| format!("Couldn't load the details: {e}")).unwrap_or_else(|| "Loading the details…".into());
                 ui.label(RichText::new(text).color(P.faint));
                 return;
@@ -241,88 +283,245 @@ impl TrackPage {
                     ui.horizontal_top(|ui| {
                         ui.allocate_ui_with_layout(Vec2::new(left_width, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
                             ui.set_width(left_width);
-                            let mut verb = None;
-                            section(ui, "Edit", true, |ui| verb = edit(ui, shell, catalog, &d, &mut self.versions));
-                            self.verb(shell, &d, verb);
-                            self.edit_lyrics(ui, shell, catalog, &d, player);
+                            section(ui, "Edit", true, |ui| self.edit(ui, shell, catalog, &d, &here));
+                            self.edit_lyrics(ui, shell, catalog, &d, player, &mut folds);
                         });
                         ui.add_space(gap);
                         ui.allocate_ui_with_layout(Vec2::new(right_width, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
                             ui.set_width(right_width);
-                            self.view_sections(ui, shell, catalog, &d, is_playing, player);
+                            self.view_sections(ui, shell, catalog, &d, is_playing, player, &mut folds);
                         });
                     });
                 } else {
-                    let mut verb = None;
-                    section(ui, "Edit", true, |ui| verb = edit(ui, shell, catalog, &d, &mut self.versions));
-                    self.verb(shell, &d, verb);
-                    self.edit_lyrics(ui, shell, catalog, &d, player);
-                    self.view_sections(ui, shell, catalog, &d, is_playing, player);
+                    section(ui, "Edit", true, |ui| self.edit(ui, shell, catalog, &d, &here));
+                    self.edit_lyrics(ui, shell, catalog, &d, player, &mut folds);
+                    self.view_sections(ui, shell, catalog, &d, is_playing, player, &mut folds);
                 }
             } else {
-                self.view_sections(ui, shell, catalog, &d, is_playing, player);
+                self.view_sections(ui, shell, catalog, &d, is_playing, player, &mut folds);
             }
             ui.add_space(24.0);
         });
+        self.folds = folds;
+        // What the commandline asked for.
+        let act = shell.track_editors.get_mut(&id).and_then(|e| e.take_page_act());
+        if let Some(act) = act {
+            // Something to look at (a section, the note editor, another page): the keys go
+            // there. Something yours (a star, a link copied) or edit mode: they stay.
+            let elsewhere = !matches!(act, Act::Star(_) | Act::Rate(_) | Act::CopyLink | Act::ShareLink | Act::ToggleEdit | Act::Queue(_) | Act::EditVersion(_) | Act::NewVersion(_) | Act::RenameVersion(..) | Act::ShowVersion(_));
+            if elsewhere && let Some(editor) = shell.track_editors.get_mut(&id) {
+                editor.let_go(ui.ctx());
+            }
+            self.act(ui.ctx(), shell, catalog, id, detail.as_deref(), version, act);
+        }
     }
 
-    /// A tool the editor's line asked for (a verb): opened here.
-    fn verb(&mut self, shell: &mut Shell, d: &TrackDetail, verb: Option<crate::ui::edit::editor::Verb>) {
-        use crate::ui::edit::editor::Verb;
-        match verb {
-            Some(Verb::Merge) => {
+    /// What the commandline asked for.
+    #[allow(clippy::too_many_arguments)]
+    fn act(&mut self, ctx: &egui::Context, shell: &mut Shell, catalog: &Catalog, id: Uuid, d: Option<&TrackDetail>, version: Option<Uuid>, act: Act) {
+        use crate::links::Target;
+        match act {
+            Act::Play => play(shell, catalog, id),
+            Act::Queue(next) => {
+                if let Some(index) = catalog.track_index(id) {
+                    shell.act(Action::Enqueue { tracks: vec![index], next });
+                }
+            }
+            Act::Star(on) => {
+                if shell.mark(id).starred != on {
+                    shell.act(Action::ToggleStar(Kind::Track, id));
+                }
+            }
+            Act::Rate(rating) => shell.act(Action::Rate(Kind::Track, id, rating)),
+            Act::CopyLink => shell.act(Action::CopyLink(Target::Track(id))),
+            Act::ShareLink => shell.act(Action::CopyShareLink(Target::Track(id))),
+            Act::Go(page) => shell.act(Action::Go(page)),
+            // One that's open is closed; anything else opened and scrolled to. (The lyrics'
+            // form opens, the cursor in it.)
+            Act::Reveal(section) => {
+                let open = section == Reveal::EditLyrics || !self.folds.contains(&(section, true));
+                self.reveal = Some((section, open));
+                if section == Reveal::EditLyrics && open {
+                    self.lyrics_editor.focus();
+                }
+            }
+            Act::Lyrics(n) => {
+                self.lyrics = n;
+                self.followed_line = None;
+                self.reveal = Some((Reveal::Lyrics, true));
+            }
+            Act::Watch(video, name) => shell.watch(video, &name),
+            Act::Cover => {
+                let track = catalog.track_index(id).map(|i| &catalog.tracks[i as usize]);
+                if let Some(cover) = track.and_then(|t| t.cover()).or_else(|| d.and_then(|d| d.covers.first()?.cover())) {
+                    shell.open_original(ctx, cover);
+                }
+            }
+            Act::Sync => {
+                self.reveal = Some((Reveal::EditLyrics, true));
+                self.lyrics_editor.start_sync();
+            }
+            Act::Merge => {
                 self.picking_merge = true;
-                shell.act(Action::Pick { kind: crate::ui::edit::PickKind::Track, except: Some(d.id) });
+                shell.act(Action::Pick { kind: crate::ui::edit::PickKind::Track, except: Some(id) });
             }
-            Some(Verb::Extra) => self.to_extra = Some(super::to_extra::ToExtra::open(d.id, &d.title)),
-            Some(Verb::Lyrics) => {
-                self.reveal = Some("Edit lyrics");
-                self.lyrics_editor.focus();
+            Act::ToExtra => {
+                if let Some(d) = d {
+                    self.to_extra = Some(super::to_extra::ToExtra::open(d.id, &d.title));
+                }
             }
-            Some(Verb::Notes) => self.reveal = Some("Notes"),
-            Some(Verb::History) => self.reveal = Some("History"),
-            Some(Verb::File) => self.reveal = Some("File"),
-            Some(Verb::MergeTwo | Verb::CreditedAs | Verb::MarkOriginal) | None => {}
+            Act::ToggleEdit => shell.act(Action::ToggleEditMode),
+            Act::Note(note, title) => {
+                let found = d.and_then(|d| d.notes.iter().find(|n| Some(n.id) == note));
+                self.notes.open(crate::ui::edit::notes::Owner::Track(id), found, &title);
+                self.reveal = Some((Reveal::Notes, true));
+            }
+            Act::PasteNotes => {
+                let made = self.notes.add_files(crate::ui::edit::notes::Owner::Track(id), crate::ui::files::clipboard_files());
+                if made == 0 {
+                    shell.playlists.notice = Some(("No text files in the clipboard (copy .txt, .md or .nfo files in a file manager first).".into(), std::time::Instant::now()));
+                } else {
+                    self.reveal = Some((Reveal::Notes, true));
+                }
+            }
+            Act::EditVersion(variant) => {
+                if let Some(editor) = shell.track_editors.get_mut(&id) {
+                    editor.set_variant(variant);
+                }
+            }
+            Act::NewVersion(label) => {
+                if let Some(from) = version {
+                    self.versions.make(shell, id, &label, from);
+                }
+            }
+            Act::RenameVersion(variant, label) => self.versions.rename(shell, id, variant, &label),
+            Act::ShowVersion(variant) => self.versions.make_shown(shell, id, variant),
         }
+    }
+
+    /// The commandline's changes saved (Ctrl+Enter): sent one after another; and what the
+    /// server said about those sent (one that failed is staged again, saying why).
+    fn answers(&mut self, shell: &mut Shell) {
+        let mut failed = Vec::new();
+        if let Some(said) = self.sending.answers(&mut failed) {
+            for track in std::mem::take(&mut self.sent_to) {
+                shell.track_details.refresh(track);
+                if self.sending.count > 0 {
+                    self.sent_to.push(track);
+                }
+            }
+            shell.flags.refresh(&shell.api, shell.runtime.handle(), &shell.ctx);
+            shell.act(Action::RefreshLibrary);
+            if !said.is_empty() {
+                shell.playlists.notice = Some((said.join(" "), std::time::Instant::now()));
+            }
+        }
+        for s in failed {
+            let (track, edit) = s.edit;
+            let again = pc::Staged { text: s.text, label: s.label, edit, failed: s.failed };
+            shell.track_editors.entry(track).or_default().restage(vec![again]);
+        }
+        if let Some(copy) = self.copied.lock().unwrap().take() {
+            shell.act(Action::Go(Page::Track(copy)));
+        }
+    }
+
+    /// Sends the changes Ctrl+Enter saved in the commandline (`track`'s).
+    fn send(&mut self, shell: &Shell, track: Uuid, out: Vec<pc::Staged<tc::Edit>>) {
+        if out.is_empty() {
+            return;
+        }
+        if !self.sent_to.contains(&track) {
+            self.sent_to.push(track);
+        }
+        let copied = self.copied.clone();
+        let changes = out.into_iter().map(|s| pc::Staged { text: s.text, label: s.label, edit: (track, s.edit), failed: None }).collect();
+        self.sending.spawn_in_order(shell, changes, move |api, ctx, (track, edit)| {
+            let copied = copied.clone();
+            async move { tc::send(&api, &ctx, track, edit, &copied).await }
+        });
+    }
+
+    /// The track's editor (edit mode), under the bar choosing which version it edits; its
+    /// line is the page's commandline. Kept in the shell per track, so changes not applied
+    /// yet are still there after looking elsewhere. The page's changes saved in it are sent.
+    fn edit(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: &Arc<Catalog>, d: &TrackDetail, here: &tc::Here) {
+        // Taken out of the shell while it's shown (showing it needs the shell too: Rust
+        // allows only one mutable borrow of it at a time), then put back.
+        let mut editor = shell.track_editors.remove(&d.id).unwrap_or_default();
+        // Enter (outside a field) or Ctrl+E: the cursor to its line.
+        let ctx = ui.ctx().clone();
+        let free = !shell.palette_open && !shell.modal_was_open && !editor.takes_keys();
+        let enter = free && !ctx.egui_wants_keyboard_input() && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
+        if enter || (free && ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::E))) {
+            editor.opened();
+        }
+        // A version just saved as new is chosen for editing, so it isn't lost from view.
+        editor.choose_new_version(&d.variants);
+        let editing = editor.variant().filter(|v| d.variants.iter().any(|x| x.id == *v)).or(d.primary_variant_id).or_else(|| d.variants.first().map(|v| v.id));
+        if let Some(editing) = editing
+            && let Some(other) = self.versions.show(ui, shell, d, editing, editor.has_metadata_changes())
+        {
+            editor.set_variant(other);
+        }
+        editor.show_on_page(ui, shell, catalog, here);
+        let out = editor.take_page_edits();
+        shell.track_editors.insert(d.id, editor);
+        self.send(shell, d.id, out);
     }
 
     /// Edit mode: its lyrics entries, one open in a form.
-    fn edit_lyrics(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: &Catalog, d: &TrackDetail, player: &PlayerView) {
+    fn edit_lyrics(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: &Catalog, d: &TrackDetail, player: &PlayerView, folds: &mut Vec<(Reveal, bool)>) {
         let open = self.lyrics_editor.dirty() || d.lyrics.is_empty();
-        let reveal = self.revealing == Some("Edit lyrics");
-        section_at(ui, &format!("Edit lyrics ({})", d.lyrics.len()), open, reveal, |ui| self.lyrics_editor.show(ui, shell, catalog, d, player));
+        let set = self.set(Reveal::EditLyrics);
+        let shown = section_set(ui, &format!("Edit lyrics ({})", d.lyrics.len()), open, set, |ui| self.lyrics_editor.show(ui, shell, catalog, d, player));
+        folds.push((Reveal::EditLyrics, shown));
+    }
+
+    /// Whether the commandline opens (true) or closes this section this frame.
+    fn set(&self, section: Reveal) -> Option<bool> {
+        self.revealing.filter(|r| r.0 == section).map(|r| r.1)
     }
 
     /// The sections that are for looking at: lyrics, credits, relations, the file,
-    /// versions, sources, merges, covers, the file's tags, history.
-    fn view_sections(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: &Arc<Catalog>, d: &Arc<TrackDetail>, is_playing: bool, player: &PlayerView) {
+    /// versions, sources, merges, covers, the file's tags, history. Each said in `folds`,
+    /// open or not.
+    #[allow(clippy::too_many_arguments)]
+    fn view_sections(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: &Arc<Catalog>, d: &Arc<TrackDetail>, is_playing: bool, player: &PlayerView, folds: &mut Vec<(Reveal, bool)>) {
         let d: &TrackDetail = d;
         if !d.lyrics.is_empty() {
-            section(ui, "Lyrics", true, |ui| self.lyrics(ui, shell, d, is_playing, player));
+            let set = self.set(Reveal::Lyrics);
+            folds.push((Reveal::Lyrics, section_set(ui, "Lyrics", true, set, |ui| self.lyrics(ui, shell, d, is_playing, player))));
         }
         if crate::ui::edit::notes::NotesView::worth_showing(shell, &d.notes) {
             let count = d.notes.iter().filter(|n| !n.hidden).count();
-            section_at(ui, &format!("Notes ({count})"), true, self.revealing == Some("Notes"), |ui| self.notes.show(ui, shell, crate::ui::edit::notes::Owner::Track(d.id), &d.notes, false, true));
+            let set = self.set(Reveal::Notes);
+            let shown = section_set(ui, &format!("Notes ({count})"), true, set, |ui| self.notes.show(ui, shell, crate::ui::edit::notes::Owner::Track(d.id), &d.notes, false, true));
+            folds.push((Reveal::Notes, shown));
         }
         if crate::ui::edit::extras::ExtrasView::worth_showing(shell, &d.extras) {
             let count = d.extras.iter().filter(|e| !e.hidden).count();
             let restricted = catalog.track_index(d.id).is_some_and(|i| catalog.tracks[i as usize].is_restricted);
-            section(ui, &format!("Extras ({count})"), true, |ui| {
+            let set = self.set(Reveal::Extras);
+            let shown = section_set(ui, &format!("Extras ({count})"), true, set, |ui| {
                 self.extras.show(ui, shell, crate::ui::edit::extras::Owner::Track(d.id), &d.extras, restricted, true)
             });
+            folds.push((Reveal::Extras, shown));
         }
-        section(ui, "Credits", true, |ui| credits(ui, shell, d));
+        folds.push((Reveal::Credits, section_set(ui, "Credits", true, self.set(Reveal::Credits), |ui| credits(ui, shell, d))));
         if !d.relations.is_empty() {
-            section(ui, "Related tracks", true, |ui| relations(ui, shell, d));
+            folds.push((Reveal::Related, section_set(ui, "Related tracks", true, self.set(Reveal::Related), |ui| relations(ui, shell, d))));
         }
-        section_at(ui, "File", true, self.revealing == Some("File"), |ui| {
+        let set = self.set(Reveal::File);
+        let shown = section_set(ui, "File", true, set, |ui| {
             file(ui, shell, d);
             if shell.edit_mode {
                 self.origin.show(ui, shell, d);
             }
         });
+        folds.push((Reveal::File, shown));
         if d.variants.len() > 1 {
-            section(ui, &format!("Versions ({})", d.variants.len()), false, |ui| {
+            let shown = section_set(ui, &format!("Versions ({})", d.variants.len()), false, self.set(Reveal::Versions), |ui| {
                 for v in &d.variants {
                     let primary = if Some(v.id) == d.primary_variant_id { "  · shown" } else { "" };
                     let title = v.data.get("title").and_then(|t| t.as_str()).unwrap_or("");
@@ -333,16 +532,18 @@ impl TrackPage {
                     ui.add_space(4.0);
                 }
             });
+            folds.push((Reveal::Versions, shown));
         }
         if !d.sources.is_empty() {
-            section(ui, &format!("Sources ({})", d.sources.len()), false, |ui| sources(ui, &d.sources));
+            folds.push((Reveal::Sources, section_set(ui, &format!("Sources ({})", d.sources.len()), false, self.set(Reveal::Sources), |ui| sources(ui, &d.sources))));
         }
         // Undoing one edits both tracks: edit mode only.
         if shell.edit_mode && !d.merges.is_empty() {
-            section(ui, "Merged into this track", true, |ui| self.merges(ui, shell, d));
+            let set = self.set(Reveal::Merges);
+            folds.push((Reveal::Merges, section_set(ui, "Merged into this track", true, set, |ui| self.merges(ui, shell, d))));
         }
         if d.covers.len() > 1 {
-            section(ui, &format!("Covers ({})", d.covers.len()), false, |ui| {
+            let shown = section_set(ui, &format!("Covers ({})", d.covers.len()), false, self.set(Reveal::Covers), |ui| {
                 ui.horizontal_wrapped(|ui| {
                     for c in &d.covers {
                         let (rect, response) = ui.allocate_exact_size(Vec2::splat(140.0), Sense::click());
@@ -360,13 +561,16 @@ impl TrackPage {
                     }
                 });
             });
+            folds.push((Reveal::Covers, shown));
         }
         if d.file.embedded_tags.as_object().is_some_and(|t| !t.is_empty()) {
-            section(ui, "Tags in the file", false, |ui| json_grid(ui, "embedded-tags", &d.file.embedded_tags));
+            folds.push((Reveal::Tags, section_set(ui, "Tags in the file", false, self.set(Reveal::Tags), |ui| json_grid(ui, "embedded-tags", &d.file.embedded_tags))));
         }
         if let Some(revisions) = d.revisions.as_ref().filter(|r| !r.is_empty()) {
             let open = shell.edit_mode;
-            section_at(ui, &format!("History ({})", revisions.len()), open, self.revealing == Some("History"), |ui| self.history.show(ui, shell, catalog, d));
+            let set = self.set(Reveal::History);
+            let shown = section_set(ui, &format!("History ({})", revisions.len()), open, set, |ui| self.history.show(ui, shell, catalog, d));
+            folds.push((Reveal::History, shown));
         }
     }
 
@@ -727,42 +931,41 @@ pub(super) fn section_set(ui: &mut egui::Ui, title: &str, open: bool, set: Optio
     shown.openness > 0.5
 }
 
-/// The track's editor (edit mode), under the bar choosing which version it edits. Kept in
-/// the shell per track, so changes not applied yet are still there after looking elsewhere.
-/// Returns the tool its line asked for (a verb), to open here.
-fn edit(ui: &mut egui::Ui, shell: &mut Shell, catalog: &Arc<Catalog>, d: &TrackDetail, versions: &mut crate::ui::edit::versions::VersionsBar) -> Option<crate::ui::edit::editor::Verb> {
-    use crate::ui::edit::editor::Verb;
-    // Taken out of the shell while it's shown (showing it needs the shell too: Rust
-    // allows only one mutable borrow of it at a time), then put back.
-    let mut editor = shell.track_editors.remove(&d.id).unwrap_or_default();
-    // Enter (outside a field) or Ctrl+E: the cursor to its line.
-    let ctx = ui.ctx().clone();
-    let free = !shell.palette_open && !shell.modal_was_open && !editor.takes_keys();
-    let enter = free && !ctx.egui_wants_keyboard_input() && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
-    if enter || (free && ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::E))) {
-        editor.opened();
+/// The parts of the page there are now (for the commandline), as `view_sections` and
+/// edit mode draw them.
+fn sections(shell: &Shell, d: &TrackDetail) -> Vec<Reveal> {
+    let edit = shell.edit_mode;
+    [
+        (Reveal::EditLyrics, edit),
+        (Reveal::Lyrics, !d.lyrics.is_empty()),
+        (Reveal::Notes, crate::ui::edit::notes::NotesView::worth_showing(shell, &d.notes)),
+        (Reveal::Extras, crate::ui::edit::extras::ExtrasView::worth_showing(shell, &d.extras)),
+        (Reveal::Credits, true),
+        (Reveal::Related, !d.relations.is_empty()),
+        (Reveal::File, true),
+        (Reveal::Versions, d.variants.len() > 1),
+        (Reveal::Sources, !d.sources.is_empty()),
+        (Reveal::Merges, edit && !d.merges.is_empty()),
+        (Reveal::Covers, d.covers.len() > 1),
+        (Reveal::Tags, d.file.embedded_tags.as_object().is_some_and(|t| !t.is_empty())),
+        (Reveal::History, d.revisions.as_ref().is_some_and(|r| !r.is_empty())),
+    ]
+    .into_iter()
+    .filter_map(|(r, there)| there.then_some(r))
+    .collect()
+}
+
+/// Plays it, then the rest of its album (or just it).
+fn play(shell: &mut Shell, catalog: &Catalog, id: Uuid) {
+    let Some(index) = catalog.track_index(id) else { return };
+    match catalog.tracks[index as usize].albums.first() {
+        Some(album) => {
+            let tracks = catalog.album_tracks(album.0).to_vec();
+            let start = tracks.iter().position(|&t| t == index).unwrap_or(0);
+            shell.act(Action::Play { tracks, start });
+        }
+        None => shell.act(Action::Play { tracks: vec![index], start: 0 }),
     }
-    // A version just saved as new is chosen for editing, so it isn't lost from view.
-    editor.choose_new_version(&d.variants);
-    let editing = editor.variant().filter(|v| d.variants.iter().any(|x| x.id == *v)).or(d.primary_variant_id).or_else(|| d.variants.first().map(|v| v.id));
-    if let Some(editing) = editing
-        && let Some(other) = versions.show(ui, shell, d, editing, editor.has_changes())
-    {
-        editor.set_variant(other);
-    }
-    // The tools this page has (the sections shown in edit mode).
-    let mut verbs = vec![Verb::Merge, Verb::Extra, Verb::Lyrics, Verb::File];
-    if crate::ui::edit::notes::NotesView::worth_showing(shell, &d.notes) {
-        verbs.push(Verb::Notes);
-    }
-    if d.revisions.as_ref().is_some_and(|r| !r.is_empty()) {
-        verbs.push(Verb::History);
-    }
-    editor.offer(&verbs);
-    editor.show(ui, shell, catalog, &[d.id], None);
-    let verb = editor.take_verb();
-    shell.track_editors.insert(d.id, editor);
-    verb
 }
 
 /// Every credit, by role: the artist (a link) and the name it's credited under.

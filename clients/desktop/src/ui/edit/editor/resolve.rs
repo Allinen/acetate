@@ -206,6 +206,8 @@ pub struct Resolved {
     pub new_kind: Option<(Uuid, String)>,
     /// What it asks for first (it's staged once that's there).
     pub want: Option<Want>,
+    /// One of the track page's commands: what it does (the page says, `page_units`).
+    pub page: Option<crate::ui::views::track_commands::Does>,
 }
 
 /// The line's parts as units (a part with the `role:`, `as:`, `kind:` after it), each
@@ -678,6 +680,7 @@ fn unit(
         K::Field => Err(format!("{}: goes after source: and its platform (source:distrokid album_uuid:…)", main.name())),
         K::Split | K::Whole | K::Keep | K::Word => Err(format!("{}: goes after parse: (parse:feat prod {}:…)", main.key.name(), main.key.name())),
         K::Other(k) => Err(format!("{}: not something to change here", k.name())),
+        K::Page(k) => Err(format!("{}: on a track's page", k.name())),
     }
 }
 

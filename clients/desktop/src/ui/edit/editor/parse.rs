@@ -1,7 +1,9 @@
 //! The editor's keys: the same keys (and abbreviations) as a filter (`catalog::query`)
 //! plus the editor's own (`comment:`, `related:`, `why:`, `role:`, `as:`, `along:`,
 //! `cover:`, `source:`, `origin:`, `single:`, `suffix:`, `parse:` with `split:`, `whole:`,
-//! `keep:`, `word:`; `flag:` is the filter's). The syntax is the commandline's
+//! `keep:`, `word:`; `flag:` is the filter's), and on a track's page the page's own
+//! (`K::Page`: `play:`, `note:`, `og:`…, see `views::track_commands`). The syntax is the
+//! commandline's
 //! (`crate::commandline`): `|` between changes, quotes, `-key`, `#…`. What a value means is
 //! worked out by the editor, which knows the library.
 //!
@@ -16,6 +18,7 @@
 
 use crate::catalog::query::Key as QueryKey;
 use crate::commandline::{self, Keys};
+use crate::ui::views::track_commands::PageKey;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum K {
@@ -52,8 +55,11 @@ pub enum K {
     /// One of a source's fields, after `source:<platform>` (`album_uuid:`, `index:`): its
     /// name is the part's `field`.
     Field,
-    /// A filter's key that isn't something to change (`format:`, `og:`…).
+    /// A filter's key that isn't something to change (`format:`, `codec:`…).
     Other(QueryKey),
+    /// One of the track page's keys (`play:`, `note:`, `og:`…): the page says what it
+    /// means; elsewhere it's nothing.
+    Page(PageKey),
 }
 
 impl K {
@@ -90,17 +96,22 @@ impl K {
             K::Word => "word",
             K::Field => "field",
             K::Other(k) => k.name(),
+            K::Page(k) => k.name(),
         }
     }
 
     /// Whether `-key` alone means "clear it".
     pub fn is_list(self) -> bool {
-        matches!(self, K::Genre | K::Artist | K::Featured | K::Album | K::Related | K::Group | K::Cover | K::Source)
+        match self {
+            K::Page(k) => k.is_list(),
+            _ => matches!(self, K::Genre | K::Artist | K::Featured | K::Album | K::Related | K::Group | K::Cover | K::Source),
+        }
     }
 }
 
-/// The key a typed name means: the editor's own names exactly, then a filter's key (any
-/// start of its names, see `catalog::query::Key::parse`).
+/// The key a typed name means: the editor's own names exactly, then the track page's
+/// (exactly), then a filter's key (any start of its names, see
+/// `catalog::query::Key::parse`).
 pub fn key(name: &str) -> Option<K> {
     let own = match name.to_lowercase().as_str() {
         "comment" => Some(K::Comment),
@@ -123,6 +134,9 @@ pub fn key(name: &str) -> Option<K> {
     };
     if own.is_some() {
         return own;
+    }
+    if let Some(page) = PageKey::of(name) {
+        return Some(K::Page(page));
     }
     Some(match QueryKey::parse(name)? {
         QueryKey::Artist => K::Artist,
@@ -158,11 +172,15 @@ impl Keys for K {
     }
 
     fn takes_hash(self) -> bool {
-        matches!(self, K::Artist | K::Featured | K::Album | K::Role | K::As | K::Kind | K::Cover | K::Source | K::Origin)
+        match self {
+            K::Page(k) => k.takes_hash(),
+            _ => matches!(self, K::Artist | K::Featured | K::Album | K::Role | K::As | K::Kind | K::Cover | K::Source | K::Origin),
+        }
     }
 
     fn takes(main: K, arg: K) -> bool {
         match main {
+            K::Page(k) => k.takes(arg),
             K::Artist | K::Featured => matches!(arg, K::Role | K::As),
             K::Album | K::Group | K::Related => arg == K::Kind,
             K::Parse => matches!(arg, K::Split | K::Whole | K::Keep | K::Word),
