@@ -307,7 +307,8 @@ impl ArtistForm {
         self.follow(d);
         let ctx = ui.ctx().clone();
         // (A popup over the page, a track list's, takes Ctrl+Enter and Esc itself.)
-        if !shell.modal_was_open && ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Enter)) {
+        // (Only with changes: else Ctrl+Enter is another form's, a note's say.)
+        if self.dirty() && !shell.modal_was_open && ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Enter)) {
             self.save(shell);
         }
         if !shell.palette_open && !shell.modal_was_open && !ctx.egui_wants_keyboard_input() && ctx.input(|i| i.key_pressed(Key::Escape)) && self.dirty() {

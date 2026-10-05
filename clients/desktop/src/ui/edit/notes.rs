@@ -4,6 +4,10 @@
 //! (named after the file): chosen in the file dialog, pasted after copying them in a file
 //! manager (Ctrl+V), or dropped on the window where that works; listed first, then made.
 //! See the server's `db::notes`.
+//!
+//! The editor works from the keyboard: opened (by a page's commandline, `note:`) with the
+//! cursor in the text, Ctrl+Enter saves, Esc leaves the text and Esc again (asked first)
+//! throws it away. The text files listed: Ctrl+Enter makes them, Esc lets them go.
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -109,12 +113,49 @@ pub struct NotesView {
     files: Vec<TextFile>,
     made: Arc<AtomicUsize>,
     making: usize,
+    /// The cursor goes to the note's text (just opened).
+    focus_body: bool,
+    /// Esc was pressed with a note open: again throws it away.
+    confirm_discard: bool,
 }
 
 impl NotesView {
     /// Whether there's anything to show for these notes (outside edit mode: shown ones).
     pub fn worth_showing(shell: &Shell, notes: &[Note]) -> bool {
         (shell.edit_mode && shell.account.can("edit_metadata")) || notes.iter().any(|n| !n.hidden)
+    }
+
+    /// The editor opened on `owner`: for one of its notes, or (None) a new one with `title`.
+    /// The cursor goes to its text.
+    pub fn open(&mut self, owner: Owner, note: Option<&Note>, title: &str) {
+        if self.owner != Some(owner) {
+            *self = NotesView { owner: Some(owner), ..Default::default() };
+        }
+        self.editing = Some(match note {
+            Some(n) => Editing { note: Some(n.id), base: Some(n.revision_id), title: n.title.clone(), body: n.body.clone(), reason: String::new() },
+            None => Editing { note: None, base: None, title: title.to_string(), body: String::new(), reason: String::new() },
+        });
+        self.focus_body = true;
+        self.confirm_discard = false;
+        self.result = None;
+    }
+
+    /// Text files to make notes of (listed first, then made): those of `paths` that are
+    /// text. Returns how many.
+    pub fn add_files(&mut self, owner: Owner, paths: Vec<PathBuf>) -> usize {
+        if self.owner != Some(owner) {
+            *self = NotesView { owner: Some(owner), ..Default::default() };
+        }
+        let before = self.files.len();
+        for path in paths.into_iter().filter(|p| TEXT.contains(&crate::ui::files::extension(p).as_str())) {
+            self.files.push(read_text(&path));
+        }
+        self.files.len() - before
+    }
+
+    /// A note is open in the editor, or text files are waiting to be made notes.
+    pub fn busy(&self) -> bool {
+        self.editing.is_some() || !self.files.is_empty()
     }
 
     /// The notes on `owner`. `compact`: each folded under its title (album and artist
@@ -135,6 +176,25 @@ impl NotesView {
             self.result = Some(result);
         }
         let can = shell.edit_mode && shell.account.can("edit_metadata");
+        // A note open, or files listed: Esc is theirs (not back), and leaving asks.
+        if can && self.busy() {
+            shell.page_takes_back = true;
+            shell.form_dirty = true;
+            let ctx = ui.ctx().clone();
+            // Esc outside a field: the note (asked first) or the files let go.
+            if !shell.palette_open && !shell.modal_was_open && !ctx.egui_wants_keyboard_input() && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+                if self.editing.is_some() {
+                    if self.confirm_discard {
+                        self.editing = None;
+                        self.confirm_discard = false;
+                    } else {
+                        self.confirm_discard = true;
+                    }
+                } else {
+                    self.files.clear();
+                }
+            }
+        }
 
         // Text files given: read, and listed to be made notes.
         if can {
@@ -272,15 +332,31 @@ impl NotesView {
         let Some(e) = self.editing.as_mut() else { return };
         let mut save = false;
         let mut cancel = false;
+        let ids = ["note-title", "note-body", "note-why"].map(|n| egui::Id::new((n, owner.field().1)));
+        let ctx = ui.ctx().clone();
+        let in_it = ctx.memory(|m| ids.iter().any(|id| m.has_focus(*id)));
+        let ready = !self.sending && !(e.title.trim().is_empty() && e.body.trim().is_empty());
+        // Ctrl+Enter in its fields: saved.
+        if in_it && ready && ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Enter)) {
+            save = true;
+        }
+        if in_it {
+            self.confirm_discard = false;
+        }
         egui::Frame::NONE.fill(P.surface).corner_radius(8).inner_margin(egui::Margin::same(10)).show(ui, |ui| {
-            ui.add(egui::TextEdit::singleline(&mut e.title).hint_text("Title (optional)").font(font(15.0, semibold())).desired_width(f32::INFINITY));
-            ui.add(egui::TextEdit::multiline(&mut e.body).hint_text("The note").desired_rows(10).desired_width(f32::INFINITY));
+            ui.add(egui::TextEdit::singleline(&mut e.title).id(ids[0]).hint_text("Title (optional)").font(font(15.0, semibold())).desired_width(f32::INFINITY));
+            let body = ui.add(egui::TextEdit::multiline(&mut e.body).id(ids[1]).hint_text("The note").desired_rows(10).desired_width(f32::INFINITY));
+            if std::mem::take(&mut self.focus_body) {
+                body.request_focus();
+                body.scroll_to_me(Some(egui::Align::Center));
+            }
             ui.horizontal(|ui| {
-                ui.add(egui::TextEdit::singleline(&mut e.reason).hint_text("Why (optional: kept with it)").desired_width(320.0));
-                let ready = !self.sending && !(e.title.trim().is_empty() && e.body.trim().is_empty());
-                save = ui.add_enabled(ready, egui::Button::new(if e.note.is_some() { "Save" } else { "Add the note" })).clicked();
+                ui.add(egui::TextEdit::singleline(&mut e.reason).id(ids[2]).hint_text("Why (optional: kept with it)").desired_width(320.0));
+                save |= ui.add_enabled(ready, egui::Button::new(if e.note.is_some() { "Save  (Ctrl+Enter)" } else { "Add the note  (Ctrl+Enter)" })).clicked();
                 cancel = ui.button("Cancel").clicked();
             });
+            let text = if self.confirm_discard { "Throw this note away? Esc again to throw it away." } else { "Ctrl+Enter saves · Esc leaves the text, then (asked first) throws it away" };
+            ui.label(RichText::new(text).color(if self.confirm_discard { P.danger } else { P.faint }).small());
         });
         ui.add_space(8.0);
         if cancel {
@@ -312,7 +388,9 @@ impl NotesView {
             return;
         }
         let good = self.files.iter().filter(|f| f.error.is_none()).count();
-        let mut make = false;
+        // Ctrl+Enter (outside a field, or in a title here): made.
+        let ctx = ui.ctx().clone();
+        let mut make = !self.sending && good > 0 && self.editing.is_none() && !shell.modal_was_open && ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Enter));
         let mut cancel = false;
         egui::Frame::NONE.fill(P.surface).corner_radius(8).inner_margin(egui::Margin::same(10)).show(ui, |ui| {
             ui.label(RichText::new(format!("{good} notes from text files, named after them")).font(font(14.0, semibold())));
@@ -332,7 +410,7 @@ impl NotesView {
                 });
             }
             ui.horizontal(|ui| {
-                make = ui.add_enabled(!self.sending && good > 0, egui::Button::new(format!("Make {good} notes"))).clicked();
+                make |= ui.add_enabled(!self.sending && good > 0, egui::Button::new(format!("Make {good} notes  (Ctrl+Enter)"))).clicked();
                 cancel = ui.add_enabled(!self.sending, egui::Button::new("Cancel")).clicked();
                 if self.sending && self.making > 0 {
                     ui.label(RichText::new(format!("{} of {}…", self.made.load(Ordering::Relaxed), self.making)).color(P.muted));

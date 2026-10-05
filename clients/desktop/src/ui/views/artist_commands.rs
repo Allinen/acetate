@@ -31,6 +31,9 @@
 //!   artist has an extra by changes that one; one in the library links it here; else it's
 //!   a new extra (chosen in the list: that one). `-extra:Name`: not on this artist anymore
 //!   (it stays, and wherever else it's linked).
+//! * `note:Title` opens the note editor: one of its notes by that title, else a new one with
+//!   it. `note:paste` lists the text files copied (a note each, made with Ctrl+Enter).
+//!   `-note:Title` takes one off (kept, "Taken off" brings it back).
 
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
@@ -66,6 +69,7 @@ pub enum K {
     File,
     Description,
     Visibility,
+    Note,
 }
 
 /// Every key's names: its own first. Exact names only (no starts of them: `release:`
@@ -89,6 +93,7 @@ const KEYS: &[(K, &[&str])] = &[
     (K::File, &["file", "files"]),
     (K::Description, &["description", "desc"]),
     (K::Visibility, &["visibility", "vis", "seen"]),
+    (K::Note, &["note"]),
 ];
 
 impl Keys for K {
@@ -169,14 +174,29 @@ pub struct Here<'a> {
     pub extras: &'a [crate::details::Extra],
     pub library_extras: &'a [crate::catalog::model::Extra],
     pub may_access: bool,
+    /// Its notes (taken off ones too).
+    pub notes: &'a [crate::details::Note],
 }
 
-/// What the commandline knows besides the page: extras chosen in its list (by name,
-/// lowercase), and the groups (to say who sees an extra; None: not asked for yet).
+/// What the commandline knows besides the page: extras and notes chosen in its list (by
+/// name, lowercase), and the groups (to say who sees an extra; None: not asked for yet).
 #[derive(Default)]
 pub struct Known {
-    pub pins: std::collections::HashMap<String, Uuid>,
+    pub pins: std::collections::HashMap<(Pinned, String), Uuid>,
     pub groups: Option<Vec<GroupChoice>>,
+}
+
+/// What a name chosen in the list is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Pinned {
+    Extra,
+    Note,
+}
+
+impl Known {
+    fn pinned(&self, kind: Pinned, name: &str) -> Option<Uuid> {
+        self.pins.get(&(kind, name.to_lowercase())).copied()
+    }
 }
 
 /// What the page does for a command.
@@ -189,6 +209,10 @@ pub enum Act {
     Merge,
     Collective,
     Play,
+    /// The note editor: for this note, or (None) a new one with this title.
+    Note(Option<Uuid>, String),
+    /// The text files copied in a file manager, listed to be made notes.
+    PasteNotes,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -225,6 +249,8 @@ pub enum Edit {
     Extra(ExtraChange),
     /// An extra not on this artist anymore.
     UnlinkExtra(Uuid),
+    /// A note taken off (kept).
+    HideNote(Uuid),
 }
 
 /// An extra: a new one, or one there already (linked here or not yet), and what changes.
@@ -255,7 +281,7 @@ pub enum Seen {
 impl Edit {
     /// Saved through the artist's form (one revision), not on its own.
     fn in_form(&self) -> bool {
-        !matches!(self, Edit::AddSource(..) | Edit::TrashSource(_) | Edit::Extra(_) | Edit::UnlinkExtra(_))
+        !matches!(self, Edit::AddSource(..) | Edit::TrashSource(_) | Edit::Extra(_) | Edit::UnlinkExtra(_) | Edit::HideNote(_))
     }
 }
 
@@ -296,8 +322,8 @@ enum Choice {
     /// The value being typed becomes this, as it is (not quoted: `#2`); on Tab, the next
     /// part to type after it.
     Raw(String, Option<String>),
-    /// An extra chosen: its name in the line, and that one from now on.
-    Pin(String, Uuid),
+    /// An extra or a note chosen: its name in the line, and that one from now on.
+    Pin(Pinned, String, Uuid),
 }
 
 pub struct ArtistCommands {
@@ -425,8 +451,8 @@ fn source(main: &commandline::Part<K>, fields: &[commandline::Part<K>], here: &H
 /// of each name; several: chosen in the list). None: there's none (a new one).
 fn extra_named(here: &Here, known: &Known, name: &str) -> Result<Option<(Uuid, bool)>, String> {
     let linked = |id: Uuid| here.extras.iter().any(|e| e.id == id && !e.hidden);
-    if let Some(id) = known.pins.get(&name.to_lowercase()) {
-        return Ok(Some((*id, linked(*id))));
+    if let Some(id) = known.pinned(Pinned::Extra, name) {
+        return Ok(Some((id, linked(id))));
     }
     let own: Vec<Uuid> = here.extras.iter().filter(|e| !e.hidden && e.name.eq_ignore_ascii_case(name)).map(|e| e.id).collect();
     match own.as_slice() {
@@ -477,7 +503,7 @@ fn extra(main: &commandline::Part<K>, args: &[commandline::Part<K>], here: &Here
     editing(here)?;
     let name = main.value.trim();
     if main.minus {
-        let found = here.extras.iter().find(|e| !e.hidden && (known.pins.get(&name.to_lowercase()) == Some(&e.id) || e.name.eq_ignore_ascii_case(name)));
+        let found = here.extras.iter().find(|e| !e.hidden && (known.pinned(Pinned::Extra, name) == Some(e.id) || e.name.eq_ignore_ascii_case(name)));
         let e = found.ok_or_else(|| if name.is_empty() { "-extra:Name: not on this artist anymore".to_string() } else { format!("it has no extra “{name}”") })?;
         return Ok((format!("“{}” not on this artist (it stays, wherever else it's linked)", e.name), Does::Edit(Edit::UnlinkExtra(e.id))));
     }
@@ -566,6 +592,28 @@ fn extra(main: &commandline::Part<K>, args: &[commandline::Part<K>], here: &Here
     Ok((change.0, Does::Edit(Edit::Extra(change.1))))
 }
 
+/// A note's title as listed (no title: its first line).
+fn note_title(n: &crate::details::Note) -> String {
+    if n.title.trim().is_empty() { n.body.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim().to_string() } else { n.title.clone() }
+}
+
+/// `note:Title` (that note, else a new one), `note:paste`, or `-note:Title`.
+fn note(main: &commandline::Part<K>, here: &Here, known: &Known) -> Result<(String, Does), String> {
+    editing(here)?;
+    let title = main.value.trim();
+    let found = here.notes.iter().filter(|n| !n.hidden).find(|n| known.pinned(Pinned::Note, title) == Some(n.id) || note_title(n).eq_ignore_ascii_case(title));
+    if main.minus {
+        let n = found.ok_or_else(|| if title.is_empty() { "-note:Title takes that note off (kept)".to_string() } else { format!("it has no note “{title}”") })?;
+        return Ok((format!("note “{}” taken off (kept: “Taken off” brings it back)", note_title(n)), Does::Edit(Edit::HideNote(n.id))));
+    }
+    match (title, found) {
+        ("", _) => Err("note: a title (a new note), one of its notes (the list), or paste (copied text files)".into()),
+        (t, None) if t.eq_ignore_ascii_case("paste") => Ok(("the text files copied: a note each (listed first)".into(), Does::Act(Act::PasteNotes))),
+        (_, Some(n)) => Ok((format!("the note “{}”, to edit", note_title(n)), Does::Act(Act::Note(Some(n.id), note_title(n))))),
+        (t, None) => Ok((format!("a new note “{t}”"), Does::Act(Act::Note(None, t.to_string())))),
+    }
+}
+
 /// Paths starting with what's typed (a folder's entries; folders end in `/`).
 fn paths_like(typed: &str) -> Vec<String> {
     let Some(cut) = typed.rfind('/') else { return Vec::new() };
@@ -593,7 +641,7 @@ fn resolve(text: &str, here: &Here, known: &Known) -> Vec<Result<(String, Does),
     for command in line.commands() {
         let main = &command[0];
         let value = main.value.trim();
-        if main.minus && !matches!(main.key, K::Alias | K::Disambiguation | K::Source | K::Extra) {
+        if main.minus && !matches!(main.key, K::Alias | K::Disambiguation | K::Source | K::Extra | K::Note) {
             out.push(Err(format!("-{}: nothing to take off here", main.key.name())));
             continue;
         }
@@ -638,6 +686,7 @@ fn resolve(text: &str, here: &Here, known: &Known) -> Vec<Result<(String, Does),
             K::Source => source(main, &command[1..], here),
             K::Field => Err(format!("{}: goes after source: and its platform (source:soundcloud artist_permalinks:…)", main.name())),
             K::Extra => extra(main, &command[1..], here, known),
+            K::Note => note(main, here, known),
             K::Kind | K::File | K::Description | K::Visibility => Err(format!("{}: goes after extra:Name", main.key.name())),
         });
     }
@@ -683,6 +732,9 @@ fn actions(typed: &str, here: &Here) -> Vec<Row> {
             ("-alias:", "Take a name off (-alias:)", "if nothing's credited as it"),
             ("name:", "Rename (name:)", "its name"),
             ("disambiguation:", "Tells apart (disambiguation:)", "for two artists with the same name"),
+            ("note:", "Note (note:)", "a new one, or one of its notes to edit"),
+            ("extra:", "Extra (extra:)", "a new one, one of its own to change, or one in the library"),
+            ("source:", "Source (source:)", "a link, a platform and its fields, or custom"),
         ] {
             if found(label, &[key.trim_end_matches(':').trim_start_matches('-')]) {
                 rows.push(Row { label: label.into(), sub: sub.into(), choice: Choice::Insert(key.into()) });
@@ -714,12 +766,30 @@ fn choices(part: &commandline::Part<K>, group: &[commandline::Part<K>], here: &H
             .map(|(n, s)| Row { label: format!("#{} {}", n + 1, source_label(s)), sub: "to the trash".into(), choice: Choice::Raw(format!("#{}", n + 1), None) })
             .collect();
     }
+    if part.key == K::Note && editing(here).is_ok() {
+        let mut rows: Vec<Row> = here
+            .notes
+            .iter()
+            .filter(|n| !n.hidden && note_title(n).to_lowercase().contains(&typed))
+            .map(|n| Row { label: format!("{}{}", if part.minus { "− " } else { "" }, note_title(n)), sub: if part.minus { "taken off (kept)".into() } else { "edit it".into() }, choice: Choice::Pin(Pinned::Note, note_title(n), n.id) })
+            .collect();
+        if !part.minus {
+            if "paste".starts_with(&typed) {
+                rows.push(Row { label: "paste".into(), sub: "the text files copied in a file manager: a note each".into(), choice: Choice::Raw("paste".into(), None) });
+            }
+            let value = part.value.trim();
+            if !value.is_empty() && !value.eq_ignore_ascii_case("paste") && !here.notes.iter().any(|n| !n.hidden && note_title(n).eq_ignore_ascii_case(value)) {
+                rows.push(Row { label: format!("New note “{value}”"), sub: "its text next".into(), choice: Choice::Raw(value.to_string(), None) });
+            }
+        }
+        return rows;
+    }
     if part.minus && part.key == K::Extra && editing(here).is_ok() {
         return here
             .extras
             .iter()
             .filter(|e| !e.hidden && e.name.to_lowercase().contains(&typed))
-            .map(|e| Row { label: format!("− {}", e.name), sub: format!("{} · not on this artist anymore", e.kind), choice: Choice::Pin(e.name.clone(), e.id) })
+            .map(|e| Row { label: format!("− {}", e.name), sub: format!("{} · not on this artist anymore", e.kind), choice: Choice::Pin(Pinned::Extra, e.name.clone(), e.id) })
             .collect();
     }
     if part.minus {
@@ -766,7 +836,7 @@ fn choices(part: &commandline::Part<K>, group: &[commandline::Part<K>], here: &H
                 .extras
                 .iter()
                 .filter(|e| !e.hidden && e.name.to_lowercase().contains(&typed))
-                .map(|e| Row { label: e.name.clone(), sub: format!("{} · on this artist: change it", e.kind), choice: Choice::Pin(e.name.clone(), e.id) })
+                .map(|e| Row { label: e.name.clone(), sub: format!("{} · on this artist: change it", e.kind), choice: Choice::Pin(Pinned::Extra, e.name.clone(), e.id) })
                 .collect();
             let linked = |id: Uuid| here.extras.iter().any(|e| e.id == id);
             rows.extend(
@@ -774,7 +844,7 @@ fn choices(part: &commandline::Part<K>, group: &[commandline::Part<K>], here: &H
                     .iter()
                     .filter(|e| !e.hidden && !linked(e.id) && !typed.is_empty() && e.name.to_lowercase().contains(&typed))
                     .take(12)
-                    .map(|e| Row { label: e.name.clone(), sub: format!("{} · in the library: linked here", e.kind), choice: Choice::Pin(e.name.clone(), e.id) }),
+                    .map(|e| Row { label: e.name.clone(), sub: format!("{} · in the library: linked here", e.kind), choice: Choice::Pin(Pinned::Extra, e.name.clone(), e.id) }),
             );
             let value = part.value.trim();
             if !value.is_empty() {
@@ -916,7 +986,8 @@ impl ArtistCommands {
         // Ctrl+Enter: what's typed first, then the changes saved. (Without changes here,
         // the form below takes it.)
         let mut save = false;
-        if can_edit && (self.has_changes() || (focused && !self.cl.text.trim().is_empty())) && !shell.palette_open && !shell.modal_was_open {
+        let elsewhere = !focused && ctx.egui_wants_keyboard_input();
+        if can_edit && !elsewhere && (self.has_changes() || (focused && !self.cl.text.trim().is_empty())) && !shell.palette_open && !shell.modal_was_open {
             save = ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Enter));
             enter |= save && !self.cl.text.trim().is_empty();
         }
@@ -944,8 +1015,8 @@ impl ArtistCommands {
             && let Some(row) = rows.get(n)
         {
             match &row.choice {
-                Choice::Pin(name, extra) => {
-                    self.known.pins.insert(name.to_lowercase(), *extra);
+                Choice::Pin(kind, name, id) => {
+                    self.known.pins.insert((*kind, name.to_lowercase()), *id);
                     if let Some(part) = line.parts.last() {
                         let text = (*name != part.value).then(|| commandline::quoted::<K>(name));
                         self.cl.take(&ctx, part.value_start, part.end, text.as_deref(), None);
@@ -1157,7 +1228,7 @@ impl ArtistCommands {
                             Edit::Rename(name) => form.data.name = name,
                             Edit::Disambiguation(text) => form.data.disambiguation = text,
                             Edit::Why(why) => form.set_reason(&why),
-                            Edit::AddSource(..) | Edit::TrashSource(_) | Edit::Extra(_) | Edit::UnlinkExtra(_) => {}
+                            Edit::AddSource(..) | Edit::TrashSource(_) | Edit::Extra(_) | Edit::UnlinkExtra(_) | Edit::HideNote(_) => {}
                         }
                     }
                     form.save(shell);
@@ -1189,6 +1260,7 @@ async fn send(api: &crate::api::Api, ctx: &egui::Context, artist: Uuid, edit: &E
         Edit::AddSource(platform, data) => call(Method::POST, format!("/api/artists/{artist}/sources"), Some(json!({ "platform": platform, "data": data }))).await.map(|_| None),
         Edit::TrashSource(source) => call(Method::DELETE, format!("/api/sources/{source}"), None).await.map(|_| None),
         Edit::UnlinkExtra(extra) => call(Method::POST, format!("/api/extras/{extra}/links"), Some(json!({ "link": link, "undo": true }))).await.map(|_| None),
+        Edit::HideNote(note) => call(Method::POST, format!("/api/notes/{note}/hidden"), Some(json!({ "hidden": true }))).await.map(|_| None),
         Edit::Extra(c) => {
             let access = |seen: &Seen| match seen {
                 Seen::Everyone => Some(json!({ "restricted": false })),
@@ -1254,7 +1326,7 @@ mod tests {
     use super::*;
 
     fn here<'a>(names: &'a [(Option<String>, usize)], sections: &'a [(Section, usize)]) -> Here<'a> {
-        Here { own: "Zed", names, og_count: 2, sections, has_sources: true, has_notes: false, edit_mode: false, may_edit: false, may_collective: false, aliases: &[], disambiguation: "", sources: &[], may_source: false, shapes: &[], extras: &[], library_extras: &[], may_access: false }
+        Here { own: "Zed", names, og_count: 2, sections, has_sources: true, has_notes: false, edit_mode: false, may_edit: false, may_collective: false, aliases: &[], disambiguation: "", sources: &[], may_source: false, shapes: &[], extras: &[], library_extras: &[], may_access: false, notes: &[] }
     }
 
     #[test]
@@ -1400,5 +1472,23 @@ mod tests {
         assert_eq!(line.parts.iter().map(|p| (p.key, p.arg)).collect::<Vec<_>>(), [(K::Extra, false), (K::Source, true), (K::Source, false)]);
         assert!(does("kind:vocals", &edit)[0].as_ref().unwrap_err().contains("goes after extra:"));
         assert!(does("extra:x", &here(&[], &[]))[0].as_ref().unwrap_err().contains("edit mode"));
+    }
+
+    #[test]
+    fn notes_opened_made_and_taken_off() {
+        let notes: Vec<crate::details::Note> = serde_json::from_value(serde_json::json!([
+            { "id": Uuid::from_u128(3), "revision_id": Uuid::from_u128(4), "title": "", "body": "\nTour dates\nmore", "updated_at": "2026-01-01" },
+        ]))
+        .unwrap();
+        let edit = Here { edit_mode: true, may_edit: true, notes: &notes, ..here(&[], &[]) };
+        let known = Known::default();
+        let does = |text: &str, here: &Here| resolve(text, here, &known).into_iter().map(|r| r.map(|(_, d)| d)).collect::<Vec<_>>();
+        // No title: its first line is its name.
+        assert_eq!(does("note:tour dates", &edit), [Ok(Does::Act(Act::Note(Some(Uuid::from_u128(3)), "Tour dates".into())))]);
+        assert_eq!(does("note:Interview", &edit), [Ok(Does::Act(Act::Note(None, "Interview".into())))]);
+        assert_eq!(does("note:paste", &edit), [Ok(Does::Act(Act::PasteNotes))]);
+        assert_eq!(does("-note:Tour dates", &edit), [Ok(Does::Edit(Edit::HideNote(Uuid::from_u128(3))))]);
+        assert!(does("-note:Nope", &edit)[0].is_err());
+        assert!(does("note:Interview", &here(&[], &[]))[0].as_ref().unwrap_err().contains("edit mode"));
     }
 }

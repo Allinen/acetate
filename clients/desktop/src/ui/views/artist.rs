@@ -230,6 +230,7 @@ impl ArtistPage {
             extras: &extras,
             library_extras: &catalog.extras,
             may_access,
+            notes: details.as_ref().map_or(&[][..], |d| &d.notes[..]),
         };
         // As the chips are, with what's being typed in the commandline on top.
         let filters = self.commands.preview(&here(&[]), &self.filters);
@@ -461,6 +462,16 @@ impl ArtistPage {
                 }
                 Some(Act::Collective) => self.to_collective = Some(super::to_collective::ToCollective::open(shell, id)),
                 Some(Act::Play) if !to_play.is_empty() => shell.act(Action::Play { tracks: to_play, start: 0 }),
+                Some(Act::Note(note, title)) => {
+                    let found = details.as_ref().and_then(|d| d.notes.iter().find(|n| Some(n.id) == note));
+                    self.notes.open(crate::ui::edit::notes::Owner::Artist(id), found, &title);
+                }
+                Some(Act::PasteNotes) => {
+                    let made = self.notes.add_files(crate::ui::edit::notes::Owner::Artist(id), crate::ui::files::clipboard_files());
+                    if made == 0 {
+                        shell.playlists.notice = Some(("No text files in the clipboard (copy .txt, .md or .nfo files in a file manager first).".into(), std::time::Instant::now()));
+                    }
+                }
                 _ => {}
             }
             ui.add_space(18.0);
