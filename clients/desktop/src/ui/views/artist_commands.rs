@@ -242,8 +242,8 @@ impl Reveal {
 /// scrolled to.
 fn reveal_label(here: &Here, r: Reveal) -> String {
     match here.folds.iter().find(|(f, _)| *f == r) {
-        Some((_, true)) => format!("{}: closed", r.title()),
-        Some((_, false)) => format!("{}: opened", r.title()),
+        Some((_, true)) => format!("{}: close (currently opened)", r.title()),
+        Some((_, false)) => format!("{}: open (currently folded)", r.title()),
         None => format!("{}: scrolled to", r.title()),
     }
 }
@@ -917,7 +917,7 @@ mod tests {
         assert!(does("featured:")[0].is_err(), "none here");
         assert!(does("releases:x")[0].is_err());
         assert_eq!(does("sources:"), [Ok(Does::Act(Act::Reveal(Reveal::Sources)))]);
-        assert_eq!(resolve("sources: | history:", &here, &Known::default()).into_iter().map(|r| r.unwrap().0).collect::<Vec<_>>(), ["Sources: closed", "History: scrolled to"]);
+        assert_eq!(resolve("sources: | history:", &here, &Known::default()).into_iter().map(|r| r.unwrap().0).collect::<Vec<_>>(), ["Sources: close (currently opened)", "History: scrolled to"]);
         assert!(does("og:maybe")[0].is_err());
         assert_eq!(does("og:yes | tracks"), [Ok(Does::Og(true)), Ok(Does::Act(Act::Expand(Section::Tracks, String::new())))]);
         assert!(does("og:yes | nonsense")[1].is_err());

@@ -382,8 +382,8 @@ fn thing(done: Result<(String, Change), String>) -> Result<(String, Does), Strin
 /// scrolled to.
 fn reveal_label(here: &Here, r: Reveal) -> String {
     match here.folds.iter().find(|(f, _)| *f == r) {
-        Some((_, true)) => format!("{}: closed", r.title()),
-        Some((_, false)) => format!("{}: opened", r.title()),
+        Some((_, true)) => format!("{}: close (currently opened)", r.title()),
+        Some((_, false)) => format!("{}: open (currently folded)", r.title()),
         None => format!("{}: scrolled to", r.title()),
     }
 }
@@ -1479,7 +1479,7 @@ mod tests {
         assert_eq!(does("credits: | notes"), [Ok(Does::Act(Act::Reveal(Reveal::Credits))), Ok(Does::Act(Act::Reveal(Reveal::Notes)))]);
         assert!(does("covers:")[0].as_ref().unwrap_err().contains("no covers"));
         // A folded part that's open: closed.
-        assert_eq!(resolve("credits:", &here, &known)[0].as_ref().unwrap().0, "Credits: closed");
+        assert_eq!(resolve("credits:", &here, &known)[0].as_ref().unwrap().0, "Credits: close (currently opened)");
         assert_eq!(resolve("notes:", &here, &known)[0].as_ref().unwrap().0, "Notes: scrolled to");
         // The track editor: one in listen mode, several in edit mode.
         assert_eq!(does("edit:#2"), [Ok(Does::Act(Act::EditTracks(vec![1])))]);
