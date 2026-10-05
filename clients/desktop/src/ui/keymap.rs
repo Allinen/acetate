@@ -115,6 +115,34 @@ pub const GROUPS: &[(&str, &[Binding])] = &[
         ],
     ),
     (
+        "An artist's page",
+        &[
+            ("/", "its commandline (| between commands; a word finds the rest)"),
+            ("alias:Name  /  alias:all", "that name's chip on or off (several at once)  /  all names"),
+            ("og:yes  /  og:no", "only original files, or all"),
+            ("releases  tracks:…", "that section on its own (also featured, produced, extras; tracks:words filters it)"),
+            ("sources  /  notes", "opened and scrolled to"),
+            ("alias:New  /  -alias:Name", "edit mode: another name  /  one taken off (if nothing's credited as it)"),
+            ("name:  disambiguation:  why:", "edit mode: rename, what tells it apart, why (-disambiguation clears)"),
+            ("source:<link>  /  -source:#2", "edit mode: a source added  /  the second to the trash"),
+            ("extra:Name kind:… file:…", "edit mode: an extra made, changed or linked here (also description:, source:, visibility:; file:paste, file:choose, Tab completes paths)"),
+            ("-extra:Name", "edit mode: not on this artist anymore"),
+            ("note:Title  /  -note:Title", "edit mode: the note editor  /  one taken off (note:paste: copied text files as notes)"),
+            ("Ctrl+Enter", "save the changes staged (each kind on its own)"),
+            ("Backspace (empty commandline)", "take the last change back to edit"),
+        ],
+    ),
+    (
+        "Notes and extras",
+        &[
+            ("Ctrl+Enter in a note", "save it"),
+            ("Esc  /  Esc again", "leave the note's text  /  throw it away (asked first)"),
+            ("↑ ↓  or  j k  (an extra)", "what it belongs to, then its files"),
+            ("Enter  /  d", "open the link or play the file  /  save the file"),
+            ("Delete (edit mode)", "take the file off, or unlink (both kept)"),
+        ],
+    ),
+    (
         "Review (6)",
         &[
             ("Ctrl+Enter", "apply; nothing left to fix: mark it done, go to the next"),

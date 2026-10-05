@@ -13,7 +13,8 @@ the editor in either mode, for a quick fix.)
 - **Albums:** the same kind of form, plus kind (single, EP, mixtape, or your own words) and
   track order (`Alt+↑`/`Alt+↓`, then `Ctrl+Enter`).
 - **Artists:** name, disambiguation, **aliases** (one artist, several names, tracks still
-  sourced in place). Artists have IDs, so two artists may share a name.
+  sourced in place). Artists have IDs, so two artists may share a name. All of it, plus
+  sources, extras and notes, can be typed on [the artist page's commandline](artist-page.md).
 - **Groupings:** a collective, label, era or project. Members are added by hand; being
   credited on a song isn't enough. Browse them from Artists.
 - **Extras:** vocals, stems, samples, music videos: files linked to a track, album, artist
