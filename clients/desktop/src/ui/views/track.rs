@@ -708,17 +708,23 @@ pub fn section(ui: &mut egui::Ui, title: &str, open: bool, add: impl FnOnce(&mut
 
 /// A section; `reveal`: opened (if it was closed) and scrolled to.
 pub(super) fn section_at(ui: &mut egui::Ui, title: &str, open: bool, reveal: bool, add: impl FnOnce(&mut egui::Ui)) {
+    section_set(ui, title, open, reveal.then_some(true), add);
+}
+
+/// A section; `set`: opened (and scrolled to) or closed this frame, as if clicked. Returns
+/// whether it's open (for a commandline that opens and closes it).
+pub(super) fn section_set(ui: &mut egui::Ui, title: &str, open: bool, set: Option<bool>, add: impl FnOnce(&mut egui::Ui)) -> bool {
     let salt = title.split(" (").next().unwrap_or(title);
-    // (Revealed: opened this frame; it stays open, as if clicked.)
-    let shown = egui::CollapsingHeader::new(RichText::new(title).font(font(17.0, bold()))).id_salt(salt).default_open(open).open(reveal.then_some(true)).show(ui, |ui| {
+    let shown = egui::CollapsingHeader::new(RichText::new(title).font(font(17.0, bold()))).id_salt(salt).default_open(open).open(set).show(ui, |ui| {
         ui.add_space(4.0);
         add(ui);
         ui.add_space(8.0);
     });
-    if reveal {
+    if set == Some(true) {
         shown.header_response.scroll_to_me(Some(egui::Align::Min));
     }
     ui.add_space(6.0);
+    shown.openness > 0.5
 }
 
 /// The track's editor (edit mode), under the bar choosing which version it edits. Kept in

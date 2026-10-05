@@ -60,8 +60,13 @@ pub struct AlbumPage {
     filtered: Option<Uuid>,
     /// The commandline under the header.
     commands: AlbumCommands,
-    /// A part of the page the commandline asked for: opened and scrolled to.
-    reveal: Option<Reveal>,
+    /// A part of the page the commandline asked for: opened and scrolled to (true), or a
+    /// folded one closed (false).
+    reveal: Option<(Reveal, bool)>,
+    /// The folded parts drawn last time, and whether each was open.
+    folds: Vec<(Reveal, bool)>,
+    /// Its history (restoring asks first).
+    history: super::history::History,
 }
 
 impl AlbumPage {
@@ -114,6 +119,7 @@ impl AlbumPage {
                 (Reveal::Notes, crate::ui::edit::notes::NotesView::worth_showing(shell, &d.notes) && !tracks.is_empty()),
                 (Reveal::Extras, crate::ui::edit::extras::ExtrasView::worth_showing(shell, &d.extras) && !tracks.is_empty()),
                 (Reveal::Merges, edit && !d.merges.is_empty()),
+                (Reveal::History, d.revisions.is_some()),
             ] {
                 if there {
                     sections.push(section);
@@ -121,6 +127,7 @@ impl AlbumPage {
             }
         }
         let mark = shell.mark(id);
+        let folds_shown = self.folds.clone();
         let may_edit = shell.edit_mode && shell.account.can("edit_metadata");
         let here = Here {
             id,
@@ -129,10 +136,12 @@ impl AlbumPage {
             tracks,
             og_count,
             sections: &sections,
+            folds: &folds_shown,
             starred: mark.starred,
             rating: mark.rating,
             edit_mode: shell.edit_mode,
             may_edit,
+            may_metadata: shell.account.can("edit_metadata"),
             title: &album.title,
             kind: &album.kind,
             release_date: album.release_date.as_deref().unwrap_or(""),
@@ -254,20 +263,21 @@ impl AlbumPage {
             }
             // Listen mode: the rest of what's known about it, folded (opt-in, as on a
             // track's page). Edit mode has all of it in its panels below.
+            let mut folds = Vec::new();
             if !shell.edit_mode
                 && let Some(d) = shell.album_details.get(id).value.clone()
             {
                 // An id of their own (not this album's): what's opened stays open on
                 // the next album.
-                let reveal = self.reveal.take_if(|r| matches!(r, Reveal::Credits | Reveal::Covers | Reveal::Sources));
-                ui.scope_builder(egui::UiBuilder::new().id(egui::Id::new("album-sections")), |ui| view_sections(ui, shell, &d, reveal));
+                let reveal = self.reveal.take_if(|r| matches!(r.0, Reveal::Credits | Reveal::Covers | Reveal::Sources));
+                folds = ui.scope_builder(egui::UiBuilder::new().id(egui::Id::new("album-sections")), |ui| view_sections(ui, shell, &d, reveal)).inner;
             }
 
             // Edit mode: the album's own data (title, kind, date, artists).
             if shell.edit_mode {
                 // A track or album picked to copy a cover from (before the form takes it).
                 self.covers.take_pick(shell);
-                let reveal = self.reveal;
+                let reveal = self.reveal.map(|r| r.0);
                 let heading = |ui: &mut egui::Ui, title: &str, section: Reveal| {
                     let label = ui.label(RichText::new(title).font(font(14.0, semibold())));
                     if reveal == Some(section) {
@@ -300,8 +310,24 @@ impl AlbumPage {
 
             // (Edit mode's panels are drawn: what they were scrolled to is done.)
             if shell.edit_mode {
-                self.reveal.take_if(|r| !matches!(r, Reveal::Notes | Reveal::Extras));
+                self.reveal.take_if(|r| !matches!(r.0, Reveal::Notes | Reveal::Extras | Reveal::History));
             }
+            // Its history, folded (both modes): every revision, what it changed, and why.
+            if let Some(d) = shell.album_details.get(id).value.clone()
+                && let Some(revisions) = &d.revisions
+            {
+                let set = self.reveal.take_if(|r| r.0 == Reveal::History).map(|r| r.1);
+                let names: std::collections::HashMap<Uuid, String> = d.credits.iter().filter_map(|c| Some((c.alias_id?, c.alias.clone()?))).collect();
+                let open = ui
+                    .scope_builder(egui::UiBuilder::new().id(egui::Id::new("album-history")), |ui| {
+                        super::track::section_set(ui, &format!("History ({})", revisions.len()), false, set, |ui| {
+                            self.history.show_revisions(ui, shell, catalog, super::history::Of::Album(id), revisions, &names, |_| String::new());
+                        })
+                    })
+                    .inner;
+                folds.push((Reveal::History, open));
+            }
+            self.folds = folds;
             if tracks.is_empty() {
                 ui.label(RichText::new("No tracks you can see").color(P.muted));
                 return;
@@ -312,7 +338,7 @@ impl AlbumPage {
                 && crate::ui::edit::notes::NotesView::worth_showing(shell, &d.notes)
             {
                 let heading = ui.label(RichText::new("Notes").font(font(16.0, semibold())));
-                if self.reveal.take_if(|r| *r == Reveal::Notes).is_some() {
+                if self.reveal.take_if(|r| r.0 == Reveal::Notes).is_some() {
                     heading.scroll_to_me(Some(egui::Align::Min));
                 }
                 self.notes.show(ui, shell, crate::ui::edit::notes::Owner::Album(id), &d.notes, true, true);
@@ -322,7 +348,7 @@ impl AlbumPage {
                 && crate::ui::edit::extras::ExtrasView::worth_showing(shell, &d.extras)
             {
                 let heading = ui.label(RichText::new("Extras").font(font(16.0, semibold())));
-                if self.reveal.take_if(|r| *r == Reveal::Extras).is_some() {
+                if self.reveal.take_if(|r| r.0 == Reveal::Extras).is_some() {
                     heading.scroll_to_me(Some(egui::Align::Min));
                 }
                 self.extras.show(ui, shell, crate::ui::edit::extras::Owner::Album(id), &d.extras, false, true);
@@ -383,7 +409,12 @@ impl AlbumPage {
             Act::CopyLink => shell.act(Action::CopyLink(Target::Album(id))),
             Act::ShareLink => shell.act(Action::CopyShareLink(Target::Album(id))),
             Act::Go(page) => shell.act(Action::Go(page)),
-            Act::Reveal(section) => self.reveal = Some(section),
+            // A folded part that's open is closed; anything else opened and scrolled to.
+            Act::Reveal(section) => self.reveal = Some((section, !self.folds.contains(&(section, true)))),
+            Act::EditTracks(places) => {
+                let ids: Vec<Uuid> = places.iter().filter_map(|&n| tracks.get(n)).map(|&t| catalog.tracks[t as usize].id).collect();
+                self.list.edit_tracks(ids);
+            }
             Act::Move(from, to) => {
                 // One place at a time, as Alt+↑/↓ (each move is on the tracklist's draft).
                 let mut row = from;
@@ -397,7 +428,11 @@ impl AlbumPage {
                         _ => break,
                     }
                 }
-                self.list.select(row);
+                // Selected where it's shown (once the list has the new order).
+                let order = self.order.tracks(shell, catalog, id, catalog.album_tracks(id)).unwrap_or_else(|| catalog.album_tracks(id).to_vec());
+                if let Some(&t) = order.get(row) {
+                    self.list.select_track(catalog.tracks[t as usize].id);
+                }
             }
             Act::Merge => {
                 self.picking_merge = true;
@@ -429,10 +464,13 @@ fn version(generation: u64, tracks: &[u32]) -> u64 {
 }
 
 /// Listen mode: its credits, covers (more than the one shown) and sources, each folded
-/// until opened (`reveal`: that one opened and scrolled to).
-fn view_sections(ui: &mut egui::Ui, shell: &mut Shell, d: &crate::details::AlbumDetail, reveal: Option<Reveal>) {
+/// until opened (`set`: that one opened and scrolled to, or closed). Returns those shown,
+/// and whether each is open.
+fn view_sections(ui: &mut egui::Ui, shell: &mut Shell, d: &crate::details::AlbumDetail, set: Option<(Reveal, bool)>) -> Vec<(Reveal, bool)> {
+    let folds = std::cell::RefCell::new(Vec::new());
     let section = |ui: &mut egui::Ui, title: &str, which: Reveal, add: &mut dyn FnMut(&mut egui::Ui)| {
-        super::track::section_at(ui, title, false, reveal == Some(which), |ui| add(ui));
+        let open = super::track::section_set(ui, title, false, set.filter(|s| s.0 == which).map(|s| s.1), |ui| add(ui));
+        folds.borrow_mut().push((which, open));
     };
     if !d.credits.is_empty() {
         section(ui, "Credits", Reveal::Credits, &mut |ui| {
@@ -470,6 +508,7 @@ fn view_sections(ui: &mut egui::Ui, shell: &mut Shell, d: &crate::details::Album
     if !d.sources.is_empty() {
         section(ui, &format!("Sources ({})", d.sources.len()), Reveal::Sources, &mut |ui| super::track::sources(ui, &d.sources));
     }
+    folds.into_inner()
 }
 
 /// The album's form (edit mode). Kept in the shell per album, so changes not saved yet

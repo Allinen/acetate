@@ -8,15 +8,18 @@
 //! * `tracks:words` filters its tracks (as the library's filter does: `tracks:year:2019`),
 //!   `tracks:` shows them all; `og:` / `og:yes` / `og:no` sets the Original files chip. Live
 //!   while they're typed, kept with Enter; Esc puts back what they were.
-//! * `credits`, `covers`, `sources`, `notes`, `extras` (and `merges` in edit mode) open that
-//!   part of the page and scroll to it.
+//! * `credits`, `covers`, `sources`, `notes`, `extras`, `history` (and `merges` in edit
+//!   mode) open that part of the page and scroll to it; a folded one that's open is closed.
+//! * `edit:#3` opens the track editor for its third track (a quick fix, listen mode too, as
+//!   Ctrl+E); `edit:all` or `edit:#2 #5` for several, marked (edit mode).
 //! * Plain words find these too, its artists and groupings (to go to), and copying its link
 //!   or a share link; merging it in edit mode.
 //!
 //! Edit mode (and `edit_metadata`) adds changes, staged as chips and saved together with
 //! Ctrl+Enter. Outside edit mode they're not suggested, and typed they say why not.
 //!
-//! * `title:`, `kind:`, `date:` (`-date` clears it), `why:`, and its artists:
+//! * `title:`, `kind:`, `date:` (`-date` clears it), `why:` (kept with those and the
+//!   artists: alone it has nothing to go with, and saving says so), and its artists:
 //!   `artist:Name role:… as:… #2` credits one (or, credited already, changes its role, the
 //!   name it's credited under, its place), `feat:Name` as featured, `-artist:Name` takes one
 //!   off, `-artist` all of them. Saved through the album's form: one revision, the form
@@ -83,6 +86,8 @@ pub enum K {
     Note,
     Group,
     Move,
+    /// Its tracks in the track editor.
+    Edit,
 }
 
 /// The parts of the page the commandline opens and scrolls to.
@@ -94,6 +99,7 @@ pub enum Reveal {
     Notes,
     Extras,
     Merges,
+    History,
 }
 
 impl Reveal {
@@ -105,6 +111,7 @@ impl Reveal {
             Reveal::Notes => "Notes",
             Reveal::Extras => "Extras",
             Reveal::Merges => "Merged into this album",
+            Reveal::History => "History",
         }
     }
 }
@@ -123,6 +130,7 @@ const KEYS: &[(K, &[&str])] = &[
     (K::Reveal(Reveal::Notes), &["notes"]),
     (K::Reveal(Reveal::Extras), &["extras"]),
     (K::Reveal(Reveal::Merges), &["merges", "merged"]),
+    (K::Reveal(Reveal::History), &["history", "revisions"]),
     (K::Title, &["title", "name", "rename"]),
     (K::Kind, &["kind", "type"]),
     (K::Date, &["date", "released", "year"]),
@@ -140,6 +148,7 @@ const KEYS: &[(K, &[&str])] = &[
     (K::Note, &["note"]),
     (K::Group, &["group", "grouping"]),
     (K::Move, &["move"]),
+    (K::Edit, &["edit"]),
 ];
 
 impl Keys for K {
@@ -157,7 +166,7 @@ impl Keys for K {
     }
 
     fn takes_hash(self) -> bool {
-        matches!(self, K::Cover | K::Source | K::Play | K::Move | K::Artist | K::Featured | K::Role | K::As)
+        matches!(self, K::Cover | K::Source | K::Play | K::Move | K::Artist | K::Featured | K::Role | K::As | K::Edit)
     }
 
     fn takes(main: K, arg: K) -> bool {
@@ -198,14 +207,17 @@ pub struct Here<'a> {
     /// Its tracks (positions in the catalog), in its order as shown.
     pub tracks: &'a [u32],
     pub og_count: usize,
-    /// The parts of the page that are there now.
+    /// The parts of the page that are there now, and the folded ones' state (open or not).
     pub sections: &'a [Reveal],
+    pub folds: &'a [(Reveal, bool)],
     pub starred: bool,
     /// Yours, 0 to 10 (half stars).
     pub rating: i16,
     pub edit_mode: bool,
     /// Edit mode, and `edit_metadata`: the album can be changed here.
     pub may_edit: bool,
+    /// `edit_metadata` (in either mode: a track's quick fix).
+    pub may_metadata: bool,
     pub title: &'a str,
     pub kind: &'a str,
     pub release_date: &'a str,
@@ -257,6 +269,8 @@ pub enum Act {
     Reveal(Reveal),
     /// The track at this place to that one (the tracklist's draft).
     Move(usize, usize),
+    /// These tracks (places) in the track editor.
+    EditTracks(Vec<usize>),
     Merge,
     /// Edit mode on or off.
     ToggleEdit,
@@ -362,6 +376,40 @@ fn arg_of(key: K) -> Option<Arg> {
 /// A source, an extra or a note, as the album's command.
 fn thing(done: Result<(String, Change), String>) -> Result<(String, Does), String> {
     done.map(|(label, change)| (label, Does::Edit(Edit::Thing(change))))
+}
+
+/// What showing a part of the page does: a folded one opens or closes, the rest are
+/// scrolled to.
+fn reveal_label(here: &Here, r: Reveal) -> String {
+    match here.folds.iter().find(|(f, _)| *f == r) {
+        Some((_, true)) => format!("{}: closed", r.title()),
+        Some((_, false)) => format!("{}: opened", r.title()),
+        None => format!("{}: scrolled to", r.title()),
+    }
+}
+
+/// `edit:#3` (one: listen mode too), `edit:#2 #5`, `edit:all`, or a title.
+fn edit_tracks(part: &commandline::Part<K>, here: &Here) -> Result<(String, Does), String> {
+    if !here.may_metadata {
+        return Err("changing tracks needs the edit_metadata permission".into());
+    }
+    let value = part.value.trim();
+    let places: Vec<usize> = if value.eq_ignore_ascii_case("all") && part.hashes.is_empty() {
+        (0..here.tracks.len()).collect()
+    } else if !part.hashes.is_empty() && value.is_empty() {
+        part.hashes.iter().map(|h| place(h, here.tracks.len(), "tracks")).collect::<Result<_, _>>()?
+    } else if value.is_empty() {
+        return Err("edit: #N (a track), several (#2 #5), all, or a title".into());
+    } else {
+        vec![track_at(here, part)?]
+    };
+    let title = |n: usize| here.catalog.tracks[here.tracks[n] as usize].title.as_str();
+    match places.as_slice() {
+        [] => Err("it has no tracks you can see".into()),
+        [n] => Ok((format!("the track editor: #{} “{}”", n + 1, title(*n)), Does::Act(Act::EditTracks(places)))),
+        _ if !here.edit_mode => Err("several tracks at once is in edit mode: e (one alone works here: edit:#3)".into()),
+        _ => Ok((format!("the track editor: {} tracks, marked", places.len()), Does::Act(Act::EditTracks(places)))),
+    }
 }
 
 /// `#N` as a place from 0 (`what`: what it's the place of, for saying it's wrong).
@@ -652,7 +700,7 @@ fn resolve(text: &str, here: &Here, known: &Known) -> Vec<Result<(String, Does),
             K::Rating if value.is_empty() => Err("rating: 0 to 5 stars (3.5 too)".into()),
             K::Rating => rating(value).map(|r| (format!("your rating → {}", stars(r)), Does::Act(Act::Rate(r)))),
             K::Reveal(r) if !here.sections.contains(&r) => Err(format!("no {} here", r.title().to_lowercase())),
-            K::Reveal(r) => nothing_after(r.title(), Does::Act(Act::Reveal(r))),
+            K::Reveal(r) => nothing_after(&reveal_label(here, r), Does::Act(Act::Reveal(r))),
             K::Title if value.is_empty() => Err("title: its new title".into()),
             K::Title => edit(format!("title → {value}"), Edit::Title(value.to_string())),
             K::Kind if value.is_empty() => Err(format!("kind: {}", here.vocab.album_kinds.join(", "))),
@@ -662,7 +710,9 @@ fn resolve(text: &str, here: &Here, known: &Known) -> Vec<Result<(String, Does),
             },
             K::Date if main.minus || value.is_empty() => edit("released → none".into(), Edit::Date(String::new())),
             K::Date => edit(format!("released → {value}"), Edit::Date(value.to_string())),
-            K::Why => edit(format!("why: {value}"), Edit::Why(value.to_string())),
+            K::Why => edit(format!("why: {value} (kept with a change to its title, kind, date or artists)"), Edit::Why(value.to_string())),
+            K::Edit if here.tracks.is_empty() => Err("it has no tracks you can see".into()),
+            K::Edit => edit_tracks(main, here),
             K::Artist | K::Featured => credit(command, here, known).map(|(label, edit)| (label, Does::Edit(edit))),
             K::Role | K::As => Err(format!("{}: goes after artist:Name", main.key.name())),
             K::Cover => cover(main, here, known),
@@ -745,8 +795,13 @@ fn actions(typed: &str, here: &Here) -> Vec<Row> {
     }
     for &section in here.sections {
         if found(section.title(), &[section.title().split(' ').next().unwrap_or("")]) {
-            rows.push(act(section.title(), "opened", Act::Reveal(section)));
+            let label = reveal_label(here, section);
+            let sub = label.rsplit(": ").next().unwrap_or("");
+            rows.push(act(section.title(), sub, Act::Reveal(section)));
         }
+    }
+    if here.may_metadata && !here.tracks.is_empty() && found("Edit its tracks", &["edit"]) {
+        rows.push(insert("Edit its tracks (edit:)", "#3: one (Ctrl+E) · all, or #2 #5: marked, in edit mode", "edit:"));
     }
     if !here.tracks.is_empty() && found("Tracks", &["filter"]) {
         rows.push(insert("Filter its tracks (tracks:)", "words, or year:… status:… (as the library's filter)", "tracks:"));
@@ -852,6 +907,14 @@ fn choices(part: &commandline::Part<K>, group: &[commandline::Part<K>], here: &H
         }
         K::Og if typed.is_empty() => [("yes", "only original files"), ("no", "all files")].into_iter().map(|(v, sub)| Row { label: v.into(), sub: sub.into(), choice: Choice::Value(v.into()) }).collect(),
         K::Play if part.hashes.is_empty() => track_rows(here, value, "play from here", None),
+        K::Edit if here.may_metadata && part.hashes.is_empty() => {
+            let mut rows = Vec::new();
+            if here.edit_mode && "all".starts_with(&typed) {
+                rows.push(Row { label: "all".into(), sub: "every track, marked".into(), choice: Choice::Raw("all".into(), None) });
+            }
+            rows.extend(track_rows(here, value, "in the track editor", None));
+            rows
+        }
         K::Move if can && part.hashes.is_empty() => track_rows(here, value, "to move (Tab: then its new place, #N)", Some("#")),
         K::Queue => [("end", "at the end of the queue"), ("next", "before what's queued")].into_iter().filter(|(w, _)| w.starts_with(&typed)).map(|(w, sub)| Row { label: w.into(), sub: sub.into(), choice: Choice::Raw(w.into(), None) }).collect(),
         K::Star if typed.is_empty() && !part.minus => [("yes", "starred"), ("no", "not starred")].into_iter().map(|(v, sub)| Row { label: v.into(), sub: sub.into(), choice: Choice::Raw(v.into(), None) }).collect(),
@@ -1155,7 +1218,7 @@ impl AlbumCommands {
         // Something to look at (a section, the note editor, a track moved): the keys go
         // there, and the commandline doesn't take the cursor back. Edit mode switched, or
         // something yours (a star, a rating, a link copied): it stays here.
-        if act.as_ref().is_some_and(|a| matches!(a, Act::Reveal(_) | Act::Note(..) | Act::PasteNotes | Act::Move(..) | Act::Merge | Act::Go(_) | Act::Play(_))) {
+        if act.as_ref().is_some_and(|a| matches!(a, Act::Reveal(_) | Act::Note(..) | Act::PasteNotes | Act::Move(..) | Act::Merge | Act::Go(_) | Act::Play(_) | Act::EditTracks(_))) {
             pc::let_go(&mut self.cl, &ctx);
         }
         act
@@ -1212,9 +1275,13 @@ impl AlbumCommands {
                             Edit::Thing(_) | Edit::Cover(_) | Edit::Group(_) => {}
                         }
                     }
-                    form.save(shell);
+                    if form.dirty() {
+                        form.save(shell);
+                        notices.push("Saving… (the album's form below says how it went)");
+                    } else {
+                        notices.push("The album's title, kind, date and artists are as they were: nothing to save there (why: is kept with a change to those).");
+                    }
                     shell.album_forms.insert(id, form);
-                    notices.push("Saving… (the album's form below says how it went)");
                 }
             }
         }
@@ -1368,10 +1435,12 @@ mod tests {
             tracks: &TRACKS,
             og_count: 1,
             sections: &SECTIONS,
+            folds: &[(Reveal::Credits, true)],
             starred: false,
             rating: 0,
             edit_mode: edit,
             may_edit: edit,
+            may_metadata: true,
             title: "Long Player",
             kind: "album",
             release_date: "2019",
@@ -1409,6 +1478,12 @@ mod tests {
         assert_eq!(does("-rating"), [Ok(Does::Act(Act::Rate(0)))]);
         assert_eq!(does("credits: | notes"), [Ok(Does::Act(Act::Reveal(Reveal::Credits))), Ok(Does::Act(Act::Reveal(Reveal::Notes)))]);
         assert!(does("covers:")[0].as_ref().unwrap_err().contains("no covers"));
+        // A folded part that's open: closed.
+        assert_eq!(resolve("credits:", &here, &known)[0].as_ref().unwrap().0, "Credits: closed");
+        assert_eq!(resolve("notes:", &here, &known)[0].as_ref().unwrap().0, "Notes: scrolled to");
+        // The track editor: one in listen mode, several in edit mode.
+        assert_eq!(does("edit:#2"), [Ok(Does::Act(Act::EditTracks(vec![1])))]);
+        assert!(does("edit:all")[0].as_ref().unwrap_err().contains("edit mode"));
         // Filters: live, as the commandline would leave them.
         let mut commands = AlbumCommands::default();
         commands.cl.text = "tracks:year:2019 glass | og:".into();
@@ -1507,11 +1582,26 @@ mod tests {
         assert_eq!(line.parts.iter().map(|p| (p.key, p.arg)).collect::<Vec<_>>(), [(K::Group, false), (K::Kind, true), (K::Kind, false)]);
         // Moving a track: at once (the tracklist's draft).
         assert_eq!(does("move:#3 #1", &known), [Ok(Does::Act(Act::Move(2, 0)))]);
+        assert_eq!(does("edit:all | edit:#1 #3", &known), [Ok(Does::Act(Act::EditTracks(vec![0, 1, 2]))), Ok(Does::Act(Act::EditTracks(vec![0, 2])))]);
         assert!(does("move:#3", &known)[0].is_err());
         assert!(does("move:#3 #1", &Known::default()).len() == 1);
         assert!(resolve("move:#3 #1", &here(&w, false), &known)[0].as_ref().unwrap_err().contains("edit mode"));
         // The main cover on its tracks: found by words, staged as it is.
         known.pins.clear();
         assert!(actions("cover", &edit).iter().any(|r| matches!(&r.choice, Choice::Stage(_, _, Edit::Cover(CoverChange::OnTracks(c))) if *c == Uuid::from_u128(1))));
+    }
+
+    /// The server's album (and artist) revisions have no kind or version: they read as
+    /// revisions all the same.
+    #[test]
+    fn an_albums_history_reads() {
+        let d: crate::details::AlbumDetail = serde_json::from_value(serde_json::json!({
+            "id": LP, "title": "Long Player", "kind": "album", "release_date": null, "revision_id": Uuid::from_u128(2),
+            "revisions": [{ "id": Uuid::from_u128(2), "created_at": "2026-10-05T12:34:56.789Z", "author": "someone", "source": "edit",
+                            "reason": "the label's spelling", "data": { "title": "Long Player", "kind": "album" } }],
+        }))
+        .unwrap();
+        let r = &d.revisions.unwrap()[0];
+        assert_eq!((r.kind.as_str(), r.variant_id, r.reason.as_str()), ("", None, "the label's spelling"));
     }
 }

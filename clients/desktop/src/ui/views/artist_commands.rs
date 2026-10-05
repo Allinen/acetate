@@ -6,8 +6,8 @@
 //!   chip. The chips are the state; the commandline only changes them, and Esc puts back
 //!   what they were.
 //! * `releases`, `tracks`, `featured`, `produced`, `extras` (a word, or `key:`) show that
-//!   section on its own. `tracks:words` also sets its filter. `sources` and `notes` are
-//!   opened and scrolled to.
+//!   section on its own. `tracks:words` also sets its filter. `sources`, `notes` and
+//!   `history` are opened and scrolled to (a folded one that's open is closed).
 //! * Plain words find these too, and `play`, plus `merge` and `collective` in edit mode.
 //!
 //! Edit mode (and `edit_metadata`) adds changes, staged as chips and saved together with
@@ -19,7 +19,8 @@
 //!   still credited is asked first, and if it is anywhere, it isn't staged (the credits are
 //!   listed, as links).
 //! * `name:` renames it, `disambiguation:` (`-disambiguation` clears it) says what tells it
-//!   apart from others with its name, `why:` is kept with the change.
+//!   apart from others with its name, `why:` is kept with the change (alone it has nothing
+//!   to go with, and saving says so).
 //! * `source:<link>`, `source:custom label, description`, `source:<platform> field:…` adds a
 //!   source (as the track editor's `source:`, with an artist's platforms; `edit_sources`),
 //!   `-source:#2` puts its second one in the trash. Each is sent on its own: one failing
@@ -58,6 +59,7 @@ pub enum K {
     Section(Section),
     Sources,
     Notes,
+    History,
     Name,
     Disambiguation,
     Why,
@@ -84,6 +86,7 @@ const KEYS: &[(K, &[&str])] = &[
     (K::Section(Section::Extras), &["extras"]),
     (K::Sources, &["sources"]),
     (K::Notes, &["notes"]),
+    (K::History, &["history", "revisions"]),
     (K::Name, &["name", "rename"]),
     (K::Disambiguation, &["disambiguation", "disamb", "dis", "tells"]),
     (K::Why, &["why", "reason"]),
@@ -157,6 +160,10 @@ pub struct Here<'a> {
     pub sections: &'a [(Section, usize)],
     pub has_sources: bool,
     pub has_notes: bool,
+    /// Its history is there (for those who may see it).
+    pub has_history: bool,
+    /// The folded parts' state (open or not).
+    pub folds: &'a [(Reveal, bool)],
     pub edit_mode: bool,
     /// Edit mode, and `edit_metadata`: the artist can be changed here.
     pub may_edit: bool,
@@ -218,6 +225,27 @@ pub enum Act {
 pub enum Reveal {
     Sources,
     Notes,
+    History,
+}
+
+impl Reveal {
+    fn title(self) -> &'static str {
+        match self {
+            Reveal::Sources => "Sources",
+            Reveal::Notes => "Notes",
+            Reveal::History => "History",
+        }
+    }
+}
+
+/// What showing a part of the page does: a folded one opens or closes, the rest are
+/// scrolled to.
+fn reveal_label(here: &Here, r: Reveal) -> String {
+    match here.folds.iter().find(|(f, _)| *f == r) {
+        Some((_, true)) => format!("{}: closed", r.title()),
+        Some((_, false)) => format!("{}: opened", r.title()),
+        None => format!("{}: scrolled to", r.title()),
+    }
 }
 
 /// What a command does.
@@ -412,15 +440,17 @@ fn resolve(text: &str, here: &Here, known: &Known) -> Vec<Result<(String, Does),
                 Some(_) if value.is_empty() => Ok((format!("{}, on its own", s.title()), Does::Act(Act::Expand(s, String::new())))),
                 Some(_) => Ok((format!("{}, on its own, filtered: {value}", s.title()), Does::Act(Act::Expand(s, value.to_string())))),
             },
-            K::Sources if here.has_sources => Ok(("its sources".into(), Does::Act(Act::Reveal(Reveal::Sources)))),
+            K::Sources if here.has_sources => Ok((reveal_label(here, Reveal::Sources), Does::Act(Act::Reveal(Reveal::Sources)))),
             K::Sources => Err("it has no sources".into()),
-            K::Notes if here.has_notes => Ok(("its notes".into(), Does::Act(Act::Reveal(Reveal::Notes)))),
+            K::Notes if here.has_notes => Ok((reveal_label(here, Reveal::Notes), Does::Act(Act::Reveal(Reveal::Notes)))),
             K::Notes => Err("it has no notes".into()),
+            K::History if here.has_history => Ok((reveal_label(here, Reveal::History), Does::Act(Act::Reveal(Reveal::History)))),
+            K::History => Err("its history isn't shown to you (view_history)".into()),
             K::Name if value.is_empty() => Err("name: its new name".into()),
             K::Name => edit(format!("name → {value}"), Edit::Rename(value.to_string())),
             K::Disambiguation if value.is_empty() => edit("tells apart: nothing".into(), Edit::Disambiguation(String::new())),
             K::Disambiguation => edit(format!("tells apart: “{value}”"), Edit::Disambiguation(value.to_string())),
-            K::Why => edit(format!("why: {value}"), Edit::Why(value.to_string())),
+            K::Why => edit(format!("why: {value} (kept with a change to its names or what tells it apart)"), Edit::Why(value.to_string())),
             K::Source => {
                 let fields: Vec<(&str, &str)> = command[1..].iter().map(|p| (p.name(), p.value.trim())).collect();
                 thing(pc::source(main.minus, &main.value, &main.hashes, &fields, &here.things()))
@@ -462,11 +492,12 @@ fn actions(typed: &str, here: &Here) -> Vec<Row> {
             rows.push(Row { label: format!("{}  {}", section.title(), thousands(count)), sub: "on its own".into(), choice: Choice::Act(Act::Expand(section, String::new())) });
         }
     }
-    if here.has_sources && found("Sources", &[]) {
-        rows.push(Row { label: "Sources".into(), sub: "opened".into(), choice: Choice::Act(Act::Reveal(Reveal::Sources)) });
-    }
-    if here.has_notes && found("Notes", &[]) {
-        rows.push(Row { label: "Notes".into(), sub: "opened".into(), choice: Choice::Act(Act::Reveal(Reveal::Notes)) });
+    for (reveal, there) in [(Reveal::Sources, here.has_sources), (Reveal::Notes, here.has_notes), (Reveal::History, here.has_history)] {
+        if there && found(reveal.title(), &[]) {
+            let label = reveal_label(here, reveal);
+            let sub = label.rsplit(": ").next().unwrap_or("").to_string();
+            rows.push(Row { label: reveal.title().into(), sub, choice: Choice::Act(Act::Reveal(reveal)) });
+        }
     }
     if here.names.len() >= 2 && found("Names", &["alias", "as"]) {
         rows.push(Row { label: "alias:".into(), sub: "only what's credited under a name (or several)".into(), choice: Choice::Insert("alias:".into()) });
@@ -808,9 +839,13 @@ impl ArtistCommands {
                             Edit::Thing(_) => {}
                         }
                     }
-                    form.save(shell);
+                    if form.dirty() {
+                        form.save(shell);
+                        notices.push("Saving… (the artist's form below says how it went)");
+                    } else {
+                        notices.push("Its names and what tells it apart are as they were: nothing to save there (why: is kept with a change to those).");
+                    }
                     shell.artist_forms.insert(id, form);
-                    notices.push("Saving… (the artist's form below says how it went)");
                 }
             }
         }
@@ -840,7 +875,7 @@ mod tests {
     use super::*;
 
     fn here<'a>(names: &'a [(Option<String>, usize)], sections: &'a [(Section, usize)]) -> Here<'a> {
-        Here { id: Uuid::nil(), own: "Zed", names, og_count: 2, sections, has_sources: true, has_notes: false, edit_mode: false, may_edit: false, may_collective: false, aliases: &[], disambiguation: "", sources: &[], may_source: false, shapes: &[], extras: &[], library_extras: &[], may_access: false, notes: &[] }
+        Here { id: Uuid::nil(), own: "Zed", names, og_count: 2, sections, has_sources: true, has_notes: false, has_history: true, folds: &[(Reveal::Sources, true)], edit_mode: false, may_edit: false, may_collective: false, aliases: &[], disambiguation: "", sources: &[], may_source: false, shapes: &[], extras: &[], library_extras: &[], may_access: false, notes: &[] }
     }
 
     #[test]
@@ -882,6 +917,7 @@ mod tests {
         assert!(does("featured:")[0].is_err(), "none here");
         assert!(does("releases:x")[0].is_err());
         assert_eq!(does("sources:"), [Ok(Does::Act(Act::Reveal(Reveal::Sources)))]);
+        assert_eq!(resolve("sources: | history:", &here, &Known::default()).into_iter().map(|r| r.unwrap().0).collect::<Vec<_>>(), ["Sources: closed", "History: scrolled to"]);
         assert!(does("og:maybe")[0].is_err());
         assert_eq!(does("og:yes | tracks"), [Ok(Does::Og(true)), Ok(Does::Act(Act::Expand(Section::Tracks, String::new())))]);
         assert!(does("og:yes | nonsense")[1].is_err());

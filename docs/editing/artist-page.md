@@ -25,7 +25,8 @@ tracks:year:2019
 - `og:yes` / `og:no` turns the *Original files* chip on or off.
 - `releases`, `tracks`, `featured`, `produced`, `extras` show that section on its own.
   `tracks:words` also fills in its filter. `Esc` goes back to the whole page.
-- `sources` and `notes` open that part of the page and scroll to it.
+- `sources`, `notes` and `history` open that part of the page and scroll to it. A folded
+  part that's already open is closed instead, and the list says which it will do.
 - Releases on their own are a grid: arrows or `hjkl` move, `Enter` opens one, `Shift+Enter`
   plays it.
 
@@ -42,7 +43,9 @@ if you type one anyway it tells you why it can't be done.
   it's credited anywhere, it isn't staged; the credits are listed as links, so you can
   change them first.
 - `name:` renames it. `disambiguation:US rapper` says what tells it apart from other
-  artists with the same name (`-disambiguation` clears it). `why:` is kept with the change.
+  artists with the same name (`-disambiguation` clears it). `why:` is kept in the artist's
+  [history](history.md) with a change to its names or what tells it apart; on its own
+  there's nothing to save, and saving says so.
 - `source:<link>`, `source:custom vk, their page`, or `source:soundcloud
   artist_permalinks:…` adds a source, the same way as in the track editor. `-source:#2`
   puts the second one in the trash (the edit panel numbers them).

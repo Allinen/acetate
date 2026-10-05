@@ -49,8 +49,13 @@ pub struct ArtistPage {
     commands: ArtistCommands,
     /// The release chosen in the Releases section on its own (the keys move it).
     release: usize,
-    /// A section the commandline asked for: opened and scrolled to.
-    reveal: Option<Reveal>,
+    /// A part the commandline asked for: opened and scrolled to (true), or a folded one
+    /// closed (false).
+    reveal: Option<(Reveal, bool)>,
+    /// The folded parts drawn last time, and whether each was open.
+    folds: Vec<(Reveal, bool)>,
+    /// Its history (restoring asks first).
+    history: super::history::History,
 }
 
 /// The parts of an artist's page, each shown as a preview, or alone and whole.
@@ -206,6 +211,8 @@ impl ArtistPage {
         }
         let details = shell.artist_details.get(id).value.clone();
         let (has_sources, has_notes) = details.as_ref().map_or((false, false), |d| (!d.sources.is_empty(), d.notes.iter().any(|n| !n.hidden)));
+        let has_history = details.as_ref().is_some_and(|d| d.revisions.is_some());
+        let folds_shown = self.folds.clone();
         let (edit_mode, may_collective) = (shell.edit_mode, shell.edit_mode && shell.account.can("edit_sources"));
         let may_edit = edit_mode && shell.account.can("edit_metadata");
         let (aliases, disambiguation, sources) = details.as_ref().map_or((&[][..], "", &[][..]), |d| (&d.aliases[..], d.disambiguation.as_str(), &d.sources[..]));
@@ -220,6 +227,8 @@ impl ArtistPage {
             sections,
             has_sources,
             has_notes,
+            has_history,
+            folds: &folds_shown,
             edit_mode,
             may_edit,
             may_collective,
@@ -456,7 +465,8 @@ impl ArtistPage {
                         table.set_filter(&filter);
                     }
                 }
-                Some(Act::Reveal(reveal)) => self.reveal = Some(reveal),
+                // A folded part that's open is closed; anything else opened and scrolled to.
+                Some(Act::Reveal(reveal)) => self.reveal = Some((reveal, !self.folds.contains(&(reveal, true)))),
                 Some(Act::Merge) => {
                     self.picking_merge = true;
                     shell.act(Action::Pick { kind: crate::ui::edit::PickKind::Artist, except: Some(id) });
@@ -511,14 +521,18 @@ impl ArtistPage {
             // Listen mode: its sources, folded (as on an album's page). Edit mode has them
             // in its panel below. An id of their own (not this artist's): what's opened
             // stays open on the next artist.
+            let mut folds = Vec::new();
             if !shell.edit_mode
                 && let Some(d) = shell.artist_details.get(id).value.clone()
                 && !d.sources.is_empty()
             {
-                let reveal = self.reveal.take_if(|r| *r == Reveal::Sources).is_some();
-                ui.scope_builder(egui::UiBuilder::new().id(egui::Id::new("artist-sections")), |ui| {
-                    super::track::section_at(ui, &format!("Sources ({})", d.sources.len()), false, reveal, |ui| super::track::sources(ui, &d.sources));
-                });
+                let set = self.reveal.take_if(|r| r.0 == Reveal::Sources).map(|r| r.1);
+                let open = ui
+                    .scope_builder(egui::UiBuilder::new().id(egui::Id::new("artist-sections")), |ui| {
+                        super::track::section_set(ui, &format!("Sources ({})", d.sources.len()), false, set, |ui| super::track::sources(ui, &d.sources))
+                    })
+                    .inner;
+                folds.push((Reveal::Sources, open));
             }
 
             // Edit mode: the artist's name, disambiguation and other names.
@@ -526,7 +540,7 @@ impl ArtistPage {
                 edit_panel(ui, shell, id);
                 ui.add_space(12.0);
                 if let Some(d) = shell.artist_details.get(id).value.clone() {
-                    let reveal = self.reveal.take_if(|r| *r == Reveal::Sources).is_some();
+                    let reveal = self.reveal.take_if(|r| r.0 == Reveal::Sources).is_some();
                     super::album::panel(ui, "artist-sources", |ui| {
                         let heading = ui.label(RichText::new("Sources").font(font(14.0, semibold())));
                         if reveal {
@@ -538,12 +552,29 @@ impl ArtistPage {
                 }
             }
 
+            // Its history, folded (both modes): every revision, what it changed, and why.
+            if let Some(d) = shell.artist_details.get(id).value.clone()
+                && let Some(revisions) = &d.revisions
+            {
+                let set = self.reveal.take_if(|r| r.0 == Reveal::History).map(|r| r.1);
+                let names = std::collections::HashMap::new();
+                let open = ui
+                    .scope_builder(egui::UiBuilder::new().id(egui::Id::new("artist-history")), |ui| {
+                        super::track::section_set(ui, &format!("History ({})", revisions.len()), false, set, |ui| {
+                            self.history.show_revisions(ui, shell, catalog, super::history::Of::Artist(id), revisions, &names, |_| String::new());
+                        })
+                    })
+                    .inner;
+                folds.push((Reveal::History, open));
+            }
+            self.folds = folds;
+
             // Its notes, folded under their titles.
             if let Some(d) = shell.artist_details.get(id).value.clone()
                 && crate::ui::edit::notes::NotesView::worth_showing(shell, &d.notes)
             {
                 let heading = ui.label(RichText::new("Notes").font(font(16.0, semibold())));
-                if self.reveal.take_if(|r| *r == Reveal::Notes).is_some() {
+                if self.reveal.take_if(|r| r.0 == Reveal::Notes).is_some() {
                     heading.scroll_to_me(Some(egui::Align::Min));
                 }
                 self.notes.show(ui, shell, crate::ui::edit::notes::Owner::Artist(id), &d.notes, true, true);

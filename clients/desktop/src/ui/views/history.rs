@@ -1,4 +1,5 @@
-//! A track's history (its page, for users who may see it): every revision, newest first,
+//! A track's, album's or artist's history (its page, for users who may see it): every
+//! revision, newest first,
 //! with who, when, how (an edit, an import, a merge…) and why, and what it changed from
 //! the one before it of the same kind (a version's metadata, or the track's facts), in
 //! words: "title: “A” → “B”", names instead of ids. Restore (with `restore_revision`)
@@ -17,6 +18,32 @@ use crate::details::{Revision, TrackDetail};
 use crate::ui::theme::{font, semibold, PALETTE as P};
 use crate::ui::{Action, Shell};
 
+/// Whose history: where a revision of it is restored, and what's asked for again after.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Of {
+    Track(Uuid),
+    Album(Uuid),
+    Artist(Uuid),
+}
+
+impl Of {
+    fn restore_path(self, revision: Uuid) -> String {
+        match self {
+            Of::Track(_) => format!("/api/revisions/{revision}/restore"),
+            Of::Album(_) => format!("/api/album-revisions/{revision}/restore"),
+            Of::Artist(_) => format!("/api/artist-revisions/{revision}/restore"),
+        }
+    }
+
+    fn refresh(self, shell: &mut Shell) {
+        match self {
+            Of::Track(id) => shell.track_details.refresh(id),
+            Of::Album(id) => shell.album_details.refresh(id),
+            Of::Artist(id) => shell.artist_details.refresh(id),
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct History {
     /// "Restore…" was clicked on this revision: asking to be sure.
@@ -27,32 +54,43 @@ pub struct History {
 }
 
 impl History {
+    /// A track's: its metadata (per version) and its facts.
     pub fn show(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: &Catalog, d: &TrackDetail) {
+        let Some(revisions) = &d.revisions else { return };
+        let variant_label = |id: Option<Uuid>| d.variants.iter().find(|v| Some(v.id) == id).map(|v| v.label.clone());
+        let what = |r: &Revision| match (r.kind.as_str(), variant_label(r.variant_id)) {
+            ("external", _) => "status and albums · ".to_string(),
+            (_, Some(label)) if d.variants.len() > 1 => format!("metadata ({label}) · "),
+            _ => "metadata · ".to_string(),
+        };
+        self.show_revisions(ui, shell, catalog, Of::Track(d.id), revisions, &d.alias_names, what);
+    }
+
+    /// Any revisions, newest first (`names`: aliases credited, by id; `what`: what a
+    /// revision is of, said before how it was made).
+    #[allow(clippy::too_many_arguments)]
+    pub fn show_revisions(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: &Catalog, of: Of, revisions: &[Revision], names: &HashMap<Uuid, String>, what: impl Fn(&Revision) -> String) {
         if let Some(result) = self.answer.lock().unwrap().take() {
             self.restoring = None;
             if result.is_ok() {
-                shell.track_details.refresh(d.id);
+                of.refresh(shell);
                 shell.act(Action::RefreshLibrary);
             }
             self.result = Some(result);
         }
-        let Some(revisions) = &d.revisions else { return };
         let can_restore = shell.account.can("restore_revision");
-        let variant_label = |id: Option<Uuid>| d.variants.iter().find(|v| Some(v.id) == id).map(|v| v.label.clone());
+        if revisions.is_empty() {
+            ui.label(RichText::new("No revisions you can see.").color(P.muted));
+        }
         for (n, r) in revisions.iter().enumerate() {
             // The one before it: the next older of the same kind (and version).
             let before = revisions[n + 1..].iter().find(|o| o.kind == r.kind && o.variant_id == r.variant_id);
             // The newest of its kind is what's there now: nothing to restore.
             let newest = !revisions[..n].iter().any(|o| o.kind == r.kind && o.variant_id == r.variant_id);
-            let what = match (r.kind.as_str(), variant_label(r.variant_id)) {
-                ("external", _) => "status and albums".to_string(),
-                (_, Some(label)) if d.variants.len() > 1 => format!("metadata ({label})"),
-                _ => "metadata".to_string(),
-            };
             let who = r.author.clone().unwrap_or_else(|| "the system".into());
             ui.horizontal_wrapped(|ui| {
                 ui.label(RichText::new(r.created_at.get(..16).unwrap_or(&r.created_at).replace('T', " ")).font(font(12.5, semibold())));
-                ui.label(RichText::new(format!("{what} · {} by {who}", r.source)).color(P.muted));
+                ui.label(RichText::new(format!("{}{} by {who}", what(r), r.source)).color(P.muted));
                 if newest {
                     ui.label(RichText::new("· now").color(P.accent));
                 } else if can_restore && self.asked != Some(r.id) && self.restoring != Some(r.id) && ui.small_button("Restore…").clicked() {
@@ -63,7 +101,7 @@ impl History {
             if !r.reason.is_empty() {
                 ui.label(RichText::new(format!("“{}”", r.reason)).color(P.muted).italics());
             }
-            for line in changes_named(before.map(|b| &b.data), &r.data, catalog, &d.alias_names) {
+            for line in changes_named(before.map(|b| &b.data), &r.data, catalog, names) {
                 ui.label(RichText::new(format!("  {line}")).color(P.text));
             }
             if self.asked == Some(r.id) {
@@ -71,7 +109,7 @@ impl History {
                 ui.horizontal(|ui| {
                     if ui.button("Restore it").clicked() {
                         self.asked = None;
-                        self.restore(shell, r);
+                        self.restore(shell, of, r);
                     }
                     if ui.button("Cancel").clicked() {
                         self.asked = None;
@@ -94,12 +132,12 @@ impl History {
         }
     }
 
-    fn restore(&mut self, shell: &Shell, r: &Revision) {
+    fn restore(&mut self, shell: &Shell, of: Of, r: &Revision) {
         self.restoring = Some(r.id);
-        let (api, answer, ctx, id) = (shell.api.clone(), self.answer.clone(), shell.ctx.clone(), r.id);
+        let (api, answer, ctx, path) = (shell.api.clone(), self.answer.clone(), shell.ctx.clone(), of.restore_path(r.id));
         shell.runtime.spawn(async move {
             let result = api
-                .send_json::<Value>(reqwest::Method::POST, &format!("/api/revisions/{id}/restore"), Some(serde_json::json!({ "reason": "" })))
+                .send_json::<Value>(reqwest::Method::POST, &path, Some(serde_json::json!({ "reason": "" })))
                 .await
                 .map(|_| ())
                 .map_err(|err| err.message);
@@ -119,8 +157,12 @@ pub fn changes(before: Option<&Value>, after: &Value, catalog: &Catalog) -> Vec<
 /// artists and albums it would make, or the aliases a track's history credits.
 pub fn changes_named(before: Option<&Value>, after: &Value, catalog: &Catalog, names: &HashMap<Uuid, String>) -> Vec<String> {
     let Some(before) = before else { return vec!["the first one".into()] };
-    let fields: [(&str, &str); 8] = [
+    let fields: [(&str, &str); 12] = [
         ("title", "title"),
+        ("name", "name"),
+        ("kind", "kind"),
+        ("disambiguation", "tells apart"),
+        ("aliases", "other names"),
         ("release_date", "released"),
         ("genres", "genres"),
         ("comment", "comment"),
@@ -189,6 +231,7 @@ fn describe(key: &str, value: Option<&Value>, catalog: &Catalog, names: &HashMap
                 format!("{kind} “{title}”")
             })
             .collect(),
+        ("aliases", Some(items)) => items.iter().map(|a| a.get("name").and_then(|n| n.as_str()).map(|n| format!("“{n}”")).unwrap_or_else(|| a.to_string())).collect(),
         (_, Some(items)) => items.iter().map(|v| v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string())).collect(),
         _ => return value.as_str().map(|s| format!("“{s}”")).unwrap_or_else(|| value.to_string()),
     };
@@ -234,6 +277,12 @@ mod tests {
         let moved = serde_json::json!({ "status": "released", "albums": [] });
         assert_eq!(changes(Some(&facts), &moved, &c), ["albums: “LP” #3 → none"]);
         assert_eq!(changes(None, &after, &c), ["the first one"]);
+        // An album's and an artist's fields too.
+        let album = serde_json::json!({ "title": "LP", "kind": "album" });
+        assert_eq!(changes(Some(&album), &serde_json::json!({ "title": "LP", "kind": "ep", "release_date": "2019" }), &c), ["kind: “album” → “ep”", "released: none → “2019”"]);
+        let artist = serde_json::json!({ "name": "Ann" });
+        let named = serde_json::json!({ "name": "Ann", "disambiguation": "UK", "aliases": [{ "id": "00000000-0000-7000-8000-0000000000c1", "name": "Annie" }] });
+        assert_eq!(changes(Some(&artist), &named, &c), ["tells apart: none → “UK”", "other names: none → “Annie”"]);
         assert_eq!(changes(Some(&after), &after, &c), ["nothing different"]);
     }
 }

@@ -147,6 +147,20 @@ impl Marking {
         self.open_bulk();
     }
 
+    /// The change popup for these tracks: one alone is a quick fix (the marks stay as they
+    /// are); several are marked (only these) and changed together.
+    pub fn edit(&mut self, ids: Vec<Uuid>) {
+        match ids.as_slice() {
+            [] => {}
+            [one] => self.open_quick(*one),
+            _ => {
+                self.marked = ids.into_iter().collect();
+                self.anchor = None;
+                self.open_bulk();
+            }
+        }
+    }
+
     /// The change for the marked tracks is shown in the page (`change`) rather than in a
     /// popup.
     pub fn change_in_place(&mut self) {

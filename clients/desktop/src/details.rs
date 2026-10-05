@@ -77,7 +77,11 @@ pub struct TrackDetail {
 #[derive(Debug, Clone, Deserialize)]
 pub struct Revision {
     pub id: Uuid,
+    /// A track's: "internal" (its metadata, per version) or "external" (its facts). An
+    /// album's or artist's: none.
+    #[serde(default)]
     pub kind: String,
+    #[serde(default)]
     pub variant_id: Option<Uuid>,
     pub created_at: String,
     pub author: Option<String>,
@@ -398,6 +402,9 @@ pub struct AlbumDetail {
     pub sources: Vec<Source>,
     #[serde(default)]
     pub merges: Vec<AlbumMerge>,
+    /// Its revisions, newest first (only for those who may see history).
+    #[serde(default)]
+    pub revisions: Option<Vec<Revision>>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -431,6 +438,9 @@ pub struct ArtistDetail {
     pub aliases: Vec<AliasInfo>,
     #[serde(default)]
     pub sources: Vec<Source>,
+    /// Its revisions, newest first (only for those who may see history).
+    #[serde(default)]
+    pub revisions: Option<Vec<Revision>>,
 }
 
 /// A grouping (a collective, an era, a project…), as its page shows it

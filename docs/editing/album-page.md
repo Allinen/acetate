@@ -38,8 +38,12 @@ tracks:year:2019 | og:yes
   and the rest work in it). `tracks:` alone shows them all again. The list follows while you
   type, and `Enter` keeps it; `Esc` puts back what was there.
 - `og:yes` / `og:no` turns the *Original files* chip on or off.
-- `credits`, `covers`, `sources`, `notes` and `extras` open that part of the page and scroll
-  to it. In edit mode, `merges` goes to the merges that can be undone.
+- `credits`, `covers`, `sources`, `notes`, `extras` and `history` open that part of the page
+  and scroll to it. A folded part that's already open is closed instead, and the list says
+  which it will do. In edit mode, `merges` goes to the merges that can be undone.
+- `edit:#3` opens the [track editor](editor.md) for its third track (as `Ctrl+E` does, in
+  listen mode too). In edit mode, `edit:all` or `edit:#2 #5` marks those tracks and opens
+  the editor for all of them.
 
 ## Changing the album (edit mode)
 
@@ -48,7 +52,8 @@ on an empty commandline takes the last one back to edit. Outside edit mode they 
 suggested, and if you type one anyway it tells you why it can't be done.
 
 - `title:`, `kind:ep`, `date:2019-05-12` (written as the source wrote it; `-date` clears
-  it), and `why:` (kept with the change).
+  it), and `why:`. The reason is kept in the album's [history](history.md) with a change to
+  its title, kind, date or artists. On its own there's nothing to save, and saving says so.
 - `artist:Name` credits an artist: as primary if the album has none, otherwise as featured.
   Its arguments are `role:producer`, `as:` (one of the artist's other names) and `#2` (its
   place among the album's artists). `feat:Name` credits one as featured. For an artist the

@@ -196,6 +196,8 @@ pub struct TrackTable {
     made_for: Option<u64>,
     selected: usize,
     scroll_to: Option<usize>,
+    /// A track to select once the rows are made again (it moved).
+    select_id: Option<Uuid>,
     /// Marked tracks and the tools for them (edit mode; Ctrl+E on the selected track
     /// with nothing marked, in listen mode too).
     marking: super::marking::Marking,
@@ -219,6 +221,7 @@ impl TrackTable {
             made_for: None,
             selected: 0,
             scroll_to: None,
+            select_id: None,
             marking: Default::default(),
         }
     }
@@ -261,6 +264,18 @@ impl TrackTable {
         self.scroll_to = Some(n);
     }
 
+    /// Selects this track wherever it's shown, once the rows are made again (if it's shown:
+    /// a filter can leave it out).
+    pub fn select_track(&mut self, id: Uuid) {
+        self.select_id = Some(id);
+    }
+
+    /// The change popup for these tracks: one alone (a quick fix, listen mode too), or
+    /// several marked (edit mode).
+    pub fn edit_tracks(&mut self, ids: Vec<Uuid>) {
+        self.marking.edit(ids);
+    }
+
     /// The columns shown: the user's choice for this kind of list, else the list's own.
     fn columns(shell: &Shell, options: &Options) -> Vec<Column> {
         match shell.settings.table_columns.get(options.key) {
@@ -293,6 +308,12 @@ impl TrackTable {
         }
         if remake {
             self.remake(catalog, rows, version, options);
+        }
+        if let Some(id) = self.select_id.take()
+            && let Some(n) = self.order.iter().position(|&r| catalog.tracks[rows.track(r) as usize].id == id)
+        {
+            self.selected = n;
+            self.scroll_to = Some(n);
         }
 
         // ---- Marking (edit mode only) ----
