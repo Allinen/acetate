@@ -210,7 +210,7 @@ fn heading(ui: &mut egui::Ui, title: &str, count: usize) {
 }
 
 /// The filter field. Enter, Esc or ↓ leave it (so the arrows move through the list
-/// again). Returns whether the text changed.
+/// again). Arriving on a page puts the cursor here. Returns whether the text changed.
 fn filter(ui: &mut egui::Ui, text: &mut String, hint: &str) -> bool {
     let response = ui.add(
         egui::TextEdit::singleline(text)
@@ -219,6 +219,15 @@ fn filter(ui: &mut egui::Ui, text: &mut String, hint: &str) -> bool {
             .desired_width(360.0)
             .margin(egui::Margin::symmetric(12, 8)),
     );
+    // Not drawn last pass means the page was just opened. (Keyed by the hint: every page
+    // shares the field's id, so going from one page to another has no gap in it.)
+    let pass = ui.ctx().cumulative_pass_nr();
+    let seen = egui::Id::new(("filter_seen_pass", hint));
+    let last: Option<u64> = ui.ctx().data_mut(|d| d.get_temp(seen));
+    ui.ctx().data_mut(|d| d.insert_temp(seen, pass));
+    if last.is_none_or(|l| l + 1 < pass) {
+        response.request_focus();
+    }
     if response.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Escape) || i.key_pressed(egui::Key::Enter) || i.key_pressed(egui::Key::ArrowDown)) {
         response.surrender_focus();
     }
