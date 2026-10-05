@@ -1053,6 +1053,8 @@ impl App {
         }
         // Alt+E: edit mode on or off, from a text field too (a commandline).
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::ALT, Key::E)) {
+            // The "e" it typed (some keyboards do) doesn't go into the field either.
+            ctx.input_mut(|i| i.events.retain(|e| !matches!(e, egui::Event::Text(t) if t.eq_ignore_ascii_case("e"))));
             self.shell.act(Action::ToggleEditMode);
         }
         // Ctrl+L: a link to what's shown (a track, album or artist), to send to someone
