@@ -40,6 +40,8 @@ pub struct GroupingPage {
     all_releases: bool,
     /// All its extras shown, alone.
     all_extras: bool,
+    /// The release the keys are on, with all of them shown.
+    release: usize,
     extras: ExtrasView,
     sources: crate::ui::edit::sources::SourcesEditor,
     /// Edit mode: what's typed, and what it was filled from.
@@ -79,9 +81,7 @@ impl GroupingPage {
                 self.all_releases = false;
                 return;
             }
-            egui::ScrollArea::vertical().id_salt(("grouping-releases", id)).auto_shrink([false, false]).show(ui, |ui| {
-                super::artist::release_cards(ui, shell, catalog, &releases);
-            });
+            super::artist::release_grid(ui, shell, catalog, &releases, &mut self.release, ("grouping-releases", id));
             return;
         }
 
@@ -141,7 +141,7 @@ impl GroupingPage {
                     self.all_releases = true;
                 }
                 ui.add_space(8.0);
-                super::artist::release_cards(ui, shell, catalog, &releases[..releases.len().min(fit)]);
+                super::artist::release_cards(ui, shell, catalog, &releases[..releases.len().min(fit)], None);
                 ui.add_space(18.0);
             }
 

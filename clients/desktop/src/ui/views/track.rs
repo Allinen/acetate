@@ -707,7 +707,7 @@ pub fn section(ui: &mut egui::Ui, title: &str, open: bool, add: impl FnOnce(&mut
 }
 
 /// A section; `reveal`: opened (if it was closed) and scrolled to.
-fn section_at(ui: &mut egui::Ui, title: &str, open: bool, reveal: bool, add: impl FnOnce(&mut egui::Ui)) {
+pub(super) fn section_at(ui: &mut egui::Ui, title: &str, open: bool, reveal: bool, add: impl FnOnce(&mut egui::Ui)) {
     let salt = title.split(" (").next().unwrap_or(title);
     if reveal {
         // (The id the header keeps its state under.)

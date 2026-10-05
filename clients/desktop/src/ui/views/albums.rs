@@ -85,28 +85,7 @@ impl Albums {
             }
         }
         if let Some(&index) = self.list.get(self.selected) {
-            let id = catalog.albums[index as usize].id;
-            if moved.star {
-                shell.act(Action::ToggleStar(Kind::Album, id));
-            }
-            if moved.rate_by != 0 {
-                shell.act(Action::RateBy(Kind::Album, id, moved.rate_by));
-            }
-            if let Some(next) = moved.queue {
-                shell.act(Action::Enqueue { tracks: catalog.album_tracks(id).to_vec(), next });
-            }
-            if moved.add {
-                let tracks = catalog.album_tracks(id).iter().map(|&t| catalog.tracks[t as usize].id).collect();
-                shell.act(Action::AddToPlaylist(tracks));
-            }
-        }
-        if moved.enter {
-            let album = &catalog.albums[self.list[self.selected] as usize];
-            if moved.shift {
-                play_album(shell, catalog, album.id);
-            } else {
-                shell.act(Action::Go(Page::Album(album.id)));
-            }
+            album_keys(shell, catalog, &moved, catalog.albums[index as usize].id);
         }
 
         let mut scroll = egui::ScrollArea::vertical().auto_shrink([false, false]).id_salt("albums");
@@ -168,6 +147,31 @@ impl Albums {
             }
         });
         self.offset = output.state.offset.y;
+    }
+}
+
+/// What the keys asked for the album selected in a grid (`widgets::move_selection`):
+/// star, rate, queue, add to a playlist, Enter opens it (Shift+Enter plays it).
+pub fn album_keys(shell: &mut Shell, catalog: &Catalog, moved: &widgets::Moved, id: uuid::Uuid) {
+    if moved.star {
+        shell.act(Action::ToggleStar(Kind::Album, id));
+    }
+    if moved.rate_by != 0 {
+        shell.act(Action::RateBy(Kind::Album, id, moved.rate_by));
+    }
+    if let Some(next) = moved.queue {
+        shell.act(Action::Enqueue { tracks: catalog.album_tracks(id).to_vec(), next });
+    }
+    if moved.add {
+        let tracks = catalog.album_tracks(id).iter().map(|&t| catalog.tracks[t as usize].id).collect();
+        shell.act(Action::AddToPlaylist(tracks));
+    }
+    if moved.enter {
+        if moved.shift {
+            play_album(shell, catalog, id);
+        } else {
+            shell.act(Action::Go(Page::Album(id)));
+        }
     }
 }
 

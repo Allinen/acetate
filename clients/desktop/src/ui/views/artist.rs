@@ -8,6 +8,7 @@ use eframe::egui::{self, Pos2, Rect, RichText, Sense, Vec2};
 use uuid::Uuid;
 
 use super::album::play_button;
+use super::artist_commands::{Act, ArtistCommands, Filters, Here, Reveal};
 use super::track_table::{Options, TrackTable};
 use crate::catalog::index::TrackRows;
 use crate::catalog::marks::Kind;
@@ -41,16 +42,20 @@ pub struct ArtistPage {
     picking_merge: bool,
     /// Its sources (edit mode).
     sources: crate::ui::edit::sources::SourcesEditor,
-    /// Only what's credited under this name: None, everything; Some(None), its own
-    /// name; Some(Some(alias)), that alias.
-    credited_as: Option<Option<String>>,
-    /// Only original files (og files), and releases with one.
-    og_only: bool,
+    /// Only what's credited under the names chosen (none: all), only original files (og
+    /// files, and releases with one): the chips.
+    filters: Filters,
+    /// The commandline under the header.
+    commands: ArtistCommands,
+    /// The release chosen in the Releases section on its own (the keys move it).
+    release: usize,
+    /// A section the commandline asked for: opened and scrolled to.
+    reveal: Option<Reveal>,
 }
 
 /// The parts of an artist's page, each shown as a preview, or alone and whole.
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum Section {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Section {
     Releases,
     Tracks,
     Featured,
@@ -59,7 +64,7 @@ enum Section {
 }
 
 impl Section {
-    fn title(self) -> &'static str {
+    pub fn title(self) -> &'static str {
         match self {
             Section::Releases => "Releases",
             Section::Tracks => "Tracks",
@@ -88,16 +93,26 @@ pub(super) fn section_heading(ui: &mut egui::Ui, title: &str, count: usize, more
 }
 
 /// Release cards, in rows as wide as the room (all of `releases`: the caller picks).
-pub(super) fn release_cards(ui: &mut egui::Ui, shell: &mut Shell, catalog: &Catalog, releases: &[u32]) {
+/// `selected`: the one the keys are on, and whether it just moved (it's scrolled to).
+pub(super) fn release_cards(ui: &mut egui::Ui, shell: &mut Shell, catalog: &Catalog, releases: &[u32], selected: Option<(usize, bool)>) {
     let ctx = ui.ctx().clone();
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = Vec2::new(CARD_GAP, CARD_GAP);
-        for &index in releases {
+        for (n, &index) in releases.iter().enumerate() {
             let album = &catalog.albums[index as usize];
             let (rect, response) = ui.allocate_exact_size(Vec2::new(CARD, CARD + 48.0), Sense::click());
             let hover = ctx.animate_bool_with_time(response.id, response.hovered(), 0.16);
             let cover = Rect::from_min_size(rect.min + Vec2::new(0.0, 6.0 - hover * 4.0), Vec2::splat(CARD));
             shell.cover(ui, album.cover(), album.id, cover, 8, hover);
+            if let Some((at, moved)) = selected
+                && at == n
+            {
+                ui.painter().rect_stroke(cover.expand(3.0), 10, egui::Stroke::new(2.0, P.accent), egui::StrokeKind::Outside);
+                shell.list_target = Some(crate::links::Target::Album(album.id));
+                if moved {
+                    response.scroll_to_me(None);
+                }
+            }
             let top = cover.bottom() + 8.0 + hover * 4.0;
             widgets::text_in(ui.painter(), Rect::from_min_size(Pos2::new(rect.left(), top), Vec2::new(CARD, 17.0)), &album.title, font(13.0, semibold()), P.text);
             let sub = match album.year {
@@ -110,6 +125,21 @@ pub(super) fn release_cards(ui: &mut egui::Ui, shell: &mut Shell, catalog: &Cata
                 shell.act(Action::Go(Page::Album(album.id)));
             }
         }
+    });
+}
+
+/// All of `releases` on their own, as a grid the keys move through (arrows or hjkl;
+/// Enter opens one, Shift+Enter plays it; s, +/-, q, p as in the Albums view).
+pub(super) fn release_grid(ui: &mut egui::Ui, shell: &mut Shell, catalog: &Catalog, releases: &[u32], selected: &mut usize, salt: impl std::hash::Hash + std::fmt::Debug) {
+    let fit = (((ui.available_width() + CARD_GAP) / (CARD + CARD_GAP)) as usize).max(1);
+    let page = ((ui.available_height() / (CARD + 48.0 + CARD_GAP)) as usize).max(1);
+    let moved = widgets::move_selection(ui.ctx(), selected, releases.len(), fit, page);
+    *selected = (*selected).min(releases.len().saturating_sub(1));
+    if let Some(&a) = releases.get(*selected) {
+        super::albums::album_keys(shell, catalog, &moved, catalog.albums[a as usize].id);
+    }
+    egui::ScrollArea::vertical().id_salt(salt).auto_shrink([false, false]).show(ui, |ui| {
+        release_cards(ui, shell, catalog, releases, Some((*selected, moved.moved)));
     });
 }
 
@@ -163,48 +193,53 @@ impl ArtistPage {
         let all_albums = catalog.artist_albums(id);
         // Its extras (from its details), for the section at the bottom.
         let extras: Vec<crate::details::Extra> = shell.artist_details.get(id).value.as_ref().map(|d| d.extras.clone()).unwrap_or_default();
-        // Only what's credited under the name chosen (if one is).
+        // Only what's credited under the names chosen (if any are).
         let names = credited_names(catalog, all_tracks, id);
         if names.len() < 2 {
-            self.credited_as = None;
+            self.filters.names.clear();
         }
-        let chosen = self.credited_as.clone();
         // Its original files (og files): a chip to see only those (and releases with one).
         let is_og = |t: u32| catalog.tracks[t as usize].original_filename.is_some();
         let og_count = all_tracks.iter().filter(|&&t| is_og(t)).count();
         if og_count == 0 {
-            self.og_only = false;
+            self.filters.og_only = false;
         }
-        let og_only = self.og_only;
-        // Every track it's credited on (under the name chosen, if one is), in any role.
-        let tracks: Vec<u32> = match &chosen {
-            None => all_tracks.to_vec(),
-            Some(name) => all_tracks.iter().copied().filter(|&t| names_in(&catalog.tracks[t as usize].credits, id).any(|n| n == name.as_deref())).collect(),
-        };
-        let tracks: Vec<u32> = tracks.into_iter().filter(|&t| !og_only || is_og(t)).collect();
+        let details = shell.artist_details.get(id).value.clone();
+        let (has_sources, has_notes) = details.as_ref().map_or((false, false), |d| (!d.sources.is_empty(), d.notes.iter().any(|n| !n.hidden)));
+        let (edit_mode, may_collective) = (shell.edit_mode, shell.edit_mode && shell.account.can("edit_sources"));
+        let here = |sections| Here { own: &artist.name, names: &names, og_count, sections, has_sources, has_notes, edit_mode, may_collective };
+        // As the chips are, with what's being typed in the commandline on top.
+        let filters = self.commands.preview(&here(&[]), &self.filters);
+        let og_only = filters.og_only;
+        // Every track it's credited on (under the names chosen, if any are), in any role.
+        let tracks: Vec<u32> = all_tracks.iter().copied().filter(|&t| names_in(&catalog.tracks[t as usize].credits, id).any(|n| filters.shows(n)) && (!og_only || is_og(t))).collect();
         let tracks = &tracks[..];
-        // What it's credited for, as what (and under the name chosen, if one is).
+        // What it's credited for, as what (and under the names chosen, if any are).
         use crate::catalog::model::Role;
-        let credited = |credits: &[crate::catalog::model::Credit], role: Role| {
-            credits.iter().any(|c| c.0 == id && c.1 == role && chosen.as_ref().is_none_or(|name| c.2.as_deref() == name.as_deref()))
-        };
+        let credited = |credits: &[crate::catalog::model::Credit], role: Role| credits.iter().any(|c| c.0 == id && c.1 == role && filters.shows(c.2.as_deref()));
         let has_og = |a: u32| catalog.album_tracks(catalog.albums[a as usize].id).iter().any(|&t| is_og(t));
         let releases: Vec<u32> = all_albums.iter().copied().filter(|&a| credited(&catalog.albums[a as usize].credits, Role::Primary) && (!og_only || has_og(a))).collect();
         let by_role = |role: Role| -> Vec<u32> { all_tracks.iter().copied().filter(|&t| credited(&catalog.tracks[t as usize].credits, role) && (!og_only || is_og(t))).collect() };
         let (own, featured, produced) = (by_role(Role::Primary), by_role(Role::Featured), by_role(Role::Producer));
+        let extras_shown = extras.iter().filter(|e| !e.hidden).count();
+        let mut sections = vec![(Section::Releases, releases.len()), (Section::Tracks, own.len()), (Section::Featured, featured.len()), (Section::Produced, produced.len())];
+        sections.retain(|(_, n)| *n > 0);
+        if crate::ui::edit::extras::ExtrasView::worth_showing(shell, &extras) {
+            sections.push((Section::Extras, extras_shown));
+        }
 
-        // Credited under several names: one chip each, to see only that name's.
-        // And "Original files": only those (with or without a name chosen).
-        let name_chips = |ui: &mut egui::Ui, credited_as: &mut Option<Option<String>>, og_only: &mut bool| {
+        // Credited under several names: one chip each, on and off, to see only those
+        // names'. And "Original files": only those (with or without names chosen).
+        let name_chips = |ui: &mut egui::Ui, chosen: &mut Filters| {
             ui.horizontal_wrapped(|ui| {
                 if names.len() >= 2 {
-                    if widgets::chip(ui, &format!("All  {}", thousands(all_tracks.len())), chosen.is_none()) {
-                        *credited_as = None;
+                    if widgets::chip(ui, &format!("All  {}", thousands(all_tracks.len())), filters.names.is_empty()) {
+                        chosen.names.clear();
                     }
                     for (name, count) in &names {
                         let shown = name.as_deref().unwrap_or(&artist.name);
-                        if widgets::chip(ui, &format!("as {shown}  {}", thousands(*count)), chosen.as_ref() == Some(name)) {
-                            *credited_as = Some(name.clone());
+                        if widgets::chip(ui, &format!("as {shown}  {}", thousands(*count)), filters.names.contains(name)) {
+                            chosen.toggle(name.clone());
                         }
                     }
                 }
@@ -212,19 +247,18 @@ impl ArtistPage {
                     if names.len() >= 2 {
                         ui.add_space(8.0);
                     }
-                    let chip = widgets::chip(ui, &format!("Original files  {}", thousands(og_count)), *og_only);
-                    if chip {
-                        *og_only = !*og_only;
+                    if widgets::chip(ui, &format!("Original files  {}", thousands(og_count)), og_only) {
+                        chosen.og_only = !chosen.og_only;
                     }
                 }
             });
         };
         let chips_shown = names.len() >= 2 || og_count > 0;
-        // A new name chosen is new rows (the version tells the tables to remake them).
+        // Other names chosen are other rows (the version tells the tables to remake them).
         let version = {
             use std::hash::{Hash, Hasher};
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
-            (shell.generation, &chosen, og_only).hash(&mut hasher);
+            (shell.generation, &filters).hash(&mut hasher);
             hasher.finish()
         };
 
@@ -240,7 +274,7 @@ impl ArtistPage {
                 Section::Produced => &produced,
                 Section::Extras => &[],
             };
-            let count = if section == Section::Extras { extras.iter().filter(|e| !e.hidden).count() } else { rows.len() };
+            let count = if section == Section::Extras { extras_shown } else { rows.len() };
             let mut back = back_key;
             ui.horizontal(|ui| {
                 if ui.button(format!("‹ {}", artist.name)).on_hover_text("Back to the whole page (Esc)").clicked() {
@@ -251,7 +285,7 @@ impl ArtistPage {
             // (The chips choose tracks: nothing to do with extras.)
             if chips_shown && section != Section::Extras {
                 ui.add_space(4.0);
-                name_chips(ui, &mut self.credited_as, &mut self.og_only);
+                name_chips(ui, &mut self.filters);
             }
             ui.add_space(10.0);
             if back {
@@ -259,11 +293,7 @@ impl ArtistPage {
                 return;
             }
             match section {
-                Section::Releases => {
-                    egui::ScrollArea::vertical().id_salt(("artist-releases-all", id)).auto_shrink([false, false]).show(ui, |ui| {
-                        release_cards(ui, shell, catalog, rows);
-                    });
-                }
+                Section::Releases => release_grid(ui, shell, catalog, rows, &mut self.release, ("artist-releases-all", id)),
                 Section::Extras => {
                     egui::ScrollArea::vertical().id_salt(("artist-extras-all", id)).auto_shrink([false, false]).show(ui, |ui| {
                         self.extras.show(ui, shell, crate::ui::edit::extras::Owner::Artist(id), &extras, false, true);
@@ -303,7 +333,7 @@ impl ArtistPage {
             }
             if chips_shown {
                 ui.add_space(4.0);
-                name_chips(ui, &mut self.credited_as, &mut self.og_only);
+                name_chips(ui, &mut self.filters);
                 ui.add_space(4.0);
             }
             // The groupings its tracks are in (collectives it posts under, eras…), most first.
@@ -382,7 +412,35 @@ impl ArtistPage {
                     }
                 }
             });
-            ui.add_space(22.0);
+            ui.add_space(10.0);
+
+            // The commandline (`/`): filters, the sections, and the rest by name.
+            let to_play = if own.is_empty() { tracks.to_vec() } else { own.clone() };
+            match self.commands.show(ui, shell, &here(&sections), &mut self.filters) {
+                Some(Act::Expand(section, filter)) => {
+                    self.expanded = Some(section);
+                    let table = match section {
+                        Section::Tracks => Some(&mut self.list),
+                        Section::Featured => Some(&mut self.featured),
+                        Section::Produced => Some(&mut self.produced),
+                        _ => None,
+                    };
+                    if let Some(table) = table
+                        && !filter.is_empty()
+                    {
+                        table.set_filter(&filter);
+                    }
+                }
+                Some(Act::Reveal(reveal)) => self.reveal = Some(reveal),
+                Some(Act::Merge) => {
+                    self.picking_merge = true;
+                    shell.act(Action::Pick { kind: crate::ui::edit::PickKind::Artist, except: Some(id) });
+                }
+                Some(Act::Collective) => self.to_collective = Some(super::to_collective::ToCollective::open(shell, id)),
+                Some(Act::Play) if !to_play.is_empty() => shell.act(Action::Play { tracks: to_play, start: 0 }),
+                _ => {}
+            }
+            ui.add_space(18.0);
 
             // The other artist, picked in the palette (not a new one, not this one).
             if self.picking_merge
@@ -421,8 +479,9 @@ impl ArtistPage {
                 && let Some(d) = shell.artist_details.get(id).value.clone()
                 && !d.sources.is_empty()
             {
+                let reveal = self.reveal.take_if(|r| *r == Reveal::Sources).is_some();
                 ui.scope_builder(egui::UiBuilder::new().id(egui::Id::new("artist-sections")), |ui| {
-                    super::track::section(ui, &format!("Sources ({})", d.sources.len()), false, |ui| super::track::sources(ui, &d.sources));
+                    super::track::section_at(ui, &format!("Sources ({})", d.sources.len()), false, reveal, |ui| super::track::sources(ui, &d.sources));
                 });
             }
 
@@ -431,8 +490,12 @@ impl ArtistPage {
                 edit_panel(ui, shell, id);
                 ui.add_space(12.0);
                 if let Some(d) = shell.artist_details.get(id).value.clone() {
+                    let reveal = self.reveal.take_if(|r| *r == Reveal::Sources).is_some();
                     super::album::panel(ui, "artist-sources", |ui| {
-                        ui.label(RichText::new("Sources").font(font(14.0, semibold())));
+                        let heading = ui.label(RichText::new("Sources").font(font(14.0, semibold())));
+                        if reveal {
+                            heading.scroll_to_me(Some(egui::Align::Min));
+                        }
                         self.sources.show(ui, shell, crate::ui::edit::sources::Owner::Artist(id), &d.sources);
                     });
                     ui.add_space(12.0);
@@ -443,13 +506,16 @@ impl ArtistPage {
             if let Some(d) = shell.artist_details.get(id).value.clone()
                 && crate::ui::edit::notes::NotesView::worth_showing(shell, &d.notes)
             {
-                ui.label(RichText::new("Notes").font(font(16.0, semibold())));
+                let heading = ui.label(RichText::new("Notes").font(font(16.0, semibold())));
+                if self.reveal.take_if(|r| *r == Reveal::Notes).is_some() {
+                    heading.scroll_to_me(Some(egui::Align::Min));
+                }
                 self.notes.show(ui, shell, crate::ui::edit::notes::Owner::Artist(id), &d.notes, true, true);
                 ui.add_space(12.0);
             }
 
             if releases.is_empty() && own.is_empty() && featured.is_empty() && produced.is_empty() {
-                let text = if chosen.is_some() { "Nothing credited under this name." } else { "This artist has no tracks yet: go add some (Review, or a track's page in edit mode)." };
+                let text = if !filters.names.is_empty() { "Nothing credited under these names." } else { "This artist has no tracks yet: go add some (Review, or a track's page in edit mode)." };
                 ui.label(RichText::new(text).color(P.muted));
                 return;
             }
@@ -465,7 +531,7 @@ impl ArtistPage {
                 if section_heading(ui, "Releases", releases.len(), releases.len() > fit) {
                     self.expanded = Some(Section::Releases);
                 }
-                release_cards(ui, shell, catalog, &releases[..releases.len().min(fit)]);
+                release_cards(ui, shell, catalog, &releases[..releases.len().min(fit)], None);
                 ui.add_space(18.0);
             }
 

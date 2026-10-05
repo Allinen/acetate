@@ -241,6 +241,12 @@ impl TrackTable {
         self.made_for = None;
     }
 
+    /// The filter set to `text` (the rows follow at once).
+    pub fn set_filter(&mut self, text: &str) {
+        self.filter = text.to_string();
+        self.made_for = None;
+    }
+
     /// Tracks are marked (Esc clears them).
     pub fn has_marks(&self) -> bool {
         !self.marking.is_empty()
