@@ -17,11 +17,19 @@ pub fn given(ctx: &egui::Context) -> Vec<PathBuf> {
     let pasted = ctx.input(|i| {
         i.events.iter().any(|e| matches!(e, egui::Event::Paste(_)) || matches!(e, egui::Event::Key { key: Key::V, pressed: true, modifiers, .. } if modifiers.command))
     });
-    if pasted && let Ok(list) = arboard::Clipboard::new().and_then(|mut c| c.get().file_list()) {
-        files.extend(list.into_iter().map(without_line_end));
+    if pasted {
+        files.extend(clipboard_files());
     }
     files.dedup();
     files
+}
+
+/// The files copied in a file manager (none: nothing copied, or not files).
+pub fn clipboard_files() -> Vec<PathBuf> {
+    match arboard::Clipboard::new().and_then(|mut c| c.get().file_list()) {
+        Ok(list) => list.into_iter().map(without_line_end).collect(),
+        Err(_) => Vec::new(),
+    }
 }
 
 /// A copied path as the clipboard gives it: `text/uri-list` lines end in CRLF, and the `\r`

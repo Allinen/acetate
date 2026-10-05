@@ -211,7 +211,26 @@ impl ArtistPage {
         let (aliases, disambiguation, sources) = details.as_ref().map_or((&[][..], "", &[][..]), |d| (&d.aliases[..], d.disambiguation.as_str(), &d.sources[..]));
         let may_source = edit_mode && shell.account.can("edit_sources");
         let shapes: Vec<crate::account::SourceShape> = shell.account.vocab.as_ref().map(|v| v.source_shapes.clone()).unwrap_or_default();
-        let here = |sections| Here { own: &artist.name, names: &names, og_count, sections, has_sources, has_notes, edit_mode, may_edit, may_collective, aliases, disambiguation, sources, may_source, shapes: &shapes };
+        let may_access = edit_mode && shell.account.can("manage_access");
+        let here = |sections| Here {
+            own: &artist.name,
+            names: &names,
+            og_count,
+            sections,
+            has_sources,
+            has_notes,
+            edit_mode,
+            may_edit,
+            may_collective,
+            aliases,
+            disambiguation,
+            sources,
+            may_source,
+            shapes: &shapes,
+            extras: &extras,
+            library_extras: &catalog.extras,
+            may_access,
+        };
         // As the chips are, with what's being typed in the commandline on top.
         let filters = self.commands.preview(&here(&[]), &self.filters);
         let og_only = filters.og_only;

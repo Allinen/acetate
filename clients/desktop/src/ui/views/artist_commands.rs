@@ -24,6 +24,13 @@
 //!   source (as the track editor's `source:`, with an artist's platforms; `edit_sources`),
 //!   `-source:#2` puts its second one in the trash. Each is sent on its own: one failing
 //!   leaves the rest (it stays staged, saying why).
+//! * `extra:Name` with its arguments: `kind:`, `file:` (a path, Tab completes it;
+//!   `file:paste` the files copied in a file manager, `file:choose` the file dialog: both
+//!   put the paths in the line), `description:`, `source:` (where it came from),
+//!   `visibility:everyone` / `artist` / `Group A, Group B` (`manage_access`). A name the
+//!   artist has an extra by changes that one; one in the library links it here; else it's
+//!   a new extra (chosen in the list: that one). `-extra:Name`: not on this artist anymore
+//!   (it stays, and wherever else it's linked).
 
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
@@ -35,6 +42,7 @@ use super::artist::Section;
 use crate::commandline::{self, Keys};
 use crate::account::SourceShape;
 use crate::details::{AliasInfo, Source};
+use crate::ui::edit::extras::{GroupChoice, Groups};
 use crate::ui::edit::artist_form::{self, ArtistForm, Uses, UsesAnswer};
 use crate::ui::edit::commandline::{self as cl, CommandLine};
 use crate::ui::theme::PALETTE as P;
@@ -53,6 +61,11 @@ pub enum K {
     Source,
     /// One of a source's fields (after `source:<platform>`): its name is the part's.
     Field,
+    Extra,
+    Kind,
+    File,
+    Description,
+    Visibility,
 }
 
 /// Every key's names: its own first. Exact names only (no starts of them: `release:`
@@ -71,6 +84,11 @@ const KEYS: &[(K, &[&str])] = &[
     (K::Disambiguation, &["disambiguation", "disamb", "dis", "tells"]),
     (K::Why, &["why", "reason"]),
     (K::Source, &["source"]),
+    (K::Extra, &["extra"]),
+    (K::Kind, &["kind", "type"]),
+    (K::File, &["file", "files"]),
+    (K::Description, &["description", "desc"]),
+    (K::Visibility, &["visibility", "vis", "seen"]),
 ];
 
 impl Keys for K {
@@ -91,8 +109,8 @@ impl Keys for K {
         self == K::Source
     }
 
-    fn takes(_: K, _: K) -> bool {
-        false
+    fn takes(main: K, arg: K) -> bool {
+        main == K::Extra && matches!(arg, K::Kind | K::File | K::Description | K::Source | K::Visibility)
     }
 
     fn field(main: K) -> Option<K> {
@@ -146,6 +164,19 @@ pub struct Here<'a> {
     pub may_source: bool,
     /// Every platform's sources' fields (an artist's are those of kind "artist").
     pub shapes: &'a [SourceShape],
+    /// Its extras (taken off ones too), every extra in the library, and whether who sees
+    /// one can be said here (`manage_access`).
+    pub extras: &'a [crate::details::Extra],
+    pub library_extras: &'a [crate::catalog::model::Extra],
+    pub may_access: bool,
+}
+
+/// What the commandline knows besides the page: extras chosen in its list (by name,
+/// lowercase), and the groups (to say who sees an extra; None: not asked for yet).
+#[derive(Default)]
+pub struct Known {
+    pub pins: std::collections::HashMap<String, Uuid>,
+    pub groups: Option<Vec<GroupChoice>>,
 }
 
 /// What the page does for a command.
@@ -191,12 +222,40 @@ pub enum Edit {
     AddSource(String, serde_json::Value),
     /// A source to the trash.
     TrashSource(Uuid),
+    Extra(ExtraChange),
+    /// An extra not on this artist anymore.
+    UnlinkExtra(Uuid),
+}
+
+/// An extra: a new one, or one there already (linked here or not yet), and what changes.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ExtraChange {
+    /// None: a new one.
+    pub id: Option<Uuid>,
+    pub name: String,
+    /// Linked to this artist already.
+    pub linked: bool,
+    pub files: Vec<std::path::PathBuf>,
+    /// One there already: its name, kind, description and source as they'll be (its own,
+    /// with what was typed on top), when any of them changes. A new one: all of them.
+    pub about: Option<(String, String, String)>,
+    pub seen: Option<Seen>,
+}
+
+/// Who sees an extra.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Seen {
+    Everyone,
+    /// Like the artist (a new one: the server's default).
+    LikeArtist,
+    /// Admins and these groups.
+    Groups(Vec<Uuid>),
 }
 
 impl Edit {
     /// Saved through the artist's form (one revision), not on its own.
     fn in_form(&self) -> bool {
-        !matches!(self, Edit::AddSource(..) | Edit::TrashSource(_))
+        !matches!(self, Edit::AddSource(..) | Edit::TrashSource(_) | Edit::Extra(_) | Edit::UnlinkExtra(_))
     }
 }
 
@@ -237,6 +296,8 @@ enum Choice {
     /// The value being typed becomes this, as it is (not quoted: `#2`); on Tab, the next
     /// part to type after it.
     Raw(String, Option<String>),
+    /// An extra chosen: its name in the line, and that one from now on.
+    Pin(String, Uuid),
 }
 
 pub struct ArtistCommands {
@@ -254,8 +315,12 @@ pub struct ArtistCommands {
     /// A name that couldn't go, and where it's still credited.
     blocked: Option<(String, Uses)>,
     /// Sources being saved, each on its own: (the change, what the server said).
-    sent: Arc<Mutex<Vec<(Staged, Result<(), String>)>>>,
+    sent: Arc<Mutex<Vec<(Staged, Result<Option<String>, String>)>>>,
     sending: usize,
+    known: Known,
+    groups: Groups,
+    /// Files chosen in the dialog (`file:choose`), to put in the line.
+    chosen: Arc<Mutex<Vec<std::path::PathBuf>>>,
 }
 
 impl Default for ArtistCommands {
@@ -271,6 +336,9 @@ impl Default for ArtistCommands {
             blocked: None,
             sent: Arc::default(),
             sending: 0,
+            known: Known::default(),
+            groups: Groups::default(),
+            chosen: Arc::default(),
         }
     }
 }
@@ -353,14 +421,179 @@ fn source(main: &commandline::Part<K>, fields: &[commandline::Part<K>], here: &H
     Ok((format!("source: + {}", typed.shown), Does::Edit(Edit::AddSource(typed.platform, typed.data))))
 }
 
+/// An extra by name: one chosen in the list, else this artist's, else the library's (one
+/// of each name; several: chosen in the list). None: there's none (a new one).
+fn extra_named(here: &Here, known: &Known, name: &str) -> Result<Option<(Uuid, bool)>, String> {
+    let linked = |id: Uuid| here.extras.iter().any(|e| e.id == id && !e.hidden);
+    if let Some(id) = known.pins.get(&name.to_lowercase()) {
+        return Ok(Some((*id, linked(*id))));
+    }
+    let own: Vec<Uuid> = here.extras.iter().filter(|e| !e.hidden && e.name.eq_ignore_ascii_case(name)).map(|e| e.id).collect();
+    match own.as_slice() {
+        [id] => return Ok(Some((*id, true))),
+        [_, _, ..] => return Err(format!("several of its extras are called “{name}”: choose one in the list")),
+        [] => {}
+    }
+    let library: Vec<Uuid> = here.library_extras.iter().filter(|e| !e.hidden && e.name.eq_ignore_ascii_case(name)).map(|e| e.id).collect();
+    match library.as_slice() {
+        [id] => Ok(Some((*id, linked(*id)))),
+        [_, _, ..] => Err(format!("several extras in the library are called “{name}”: choose one in the list")),
+        [] => Ok(None),
+    }
+}
+
+/// A path typed: `~/` is the home folder.
+fn path_of(typed: &str) -> std::path::PathBuf {
+    match typed.strip_prefix("~/") {
+        Some(rest) => std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(rest),
+        None => std::path::PathBuf::from(typed),
+    }
+}
+
+/// Who sees an extra, as typed: everyone, like the artist (`new` only), or groups by name.
+fn seen(value: &str, here: &Here, known: &Known, new: bool) -> Result<Seen, String> {
+    if !here.may_access {
+        return Err("who sees an extra: that needs the manage_access permission".into());
+    }
+    match value.to_lowercase().as_str() {
+        "" => Err("visibility: everyone, artist (like the artist), or groups (Group A, Group B)".into()),
+        "everyone" | "all" | "public" => Ok(Seen::Everyone),
+        "artist" | "like artist" | "like the artist" | "default" if new => Ok(Seen::LikeArtist),
+        "artist" | "like artist" | "like the artist" | "default" => Err("for one there already: everyone, or groups".into()),
+        _ => {
+            let Some(groups) = known.groups.as_ref() else { return Err("loading the groups…".into()) };
+            let mut ids = Vec::new();
+            for name in value.split(',').map(str::trim).filter(|n| !n.is_empty()) {
+                let g = groups.iter().find(|g| g.name.eq_ignore_ascii_case(name)).ok_or_else(|| format!("no group “{name}”"))?;
+                ids.push(g.id);
+            }
+            Ok(Seen::Groups(ids))
+        }
+    }
+}
+
+/// `extra:Name` and its arguments, or `-extra:Name`.
+fn extra(main: &commandline::Part<K>, args: &[commandline::Part<K>], here: &Here, known: &Known) -> Result<(String, Does), String> {
+    editing(here)?;
+    let name = main.value.trim();
+    if main.minus {
+        let found = here.extras.iter().find(|e| !e.hidden && (known.pins.get(&name.to_lowercase()) == Some(&e.id) || e.name.eq_ignore_ascii_case(name)));
+        let e = found.ok_or_else(|| if name.is_empty() { "-extra:Name: not on this artist anymore".to_string() } else { format!("it has no extra “{name}”") })?;
+        return Ok((format!("“{}” not on this artist (it stays, wherever else it's linked)", e.name), Does::Edit(Edit::UnlinkExtra(e.id))));
+    }
+    if name.is_empty() {
+        return Err("extra: its name (the list has this artist's, and the library's)".into());
+    }
+    let found = extra_named(here, known, name)?;
+    let (mut kind, mut description, mut source, mut visibility, mut files) = (None, None, None, None, Vec::new());
+    let mut said = Vec::new();
+    for a in args {
+        let v = a.value.trim();
+        match a.key {
+            K::Kind if v.is_empty() => return Err("kind: vocals, stems, sample… (any word)".into()),
+            K::Kind => kind = Some(v.to_string()),
+            K::File => match v {
+                "" => return Err("file: a path (Tab completes it), paste or choose".into()),
+                "paste" => said.push("the files copied (read on Enter)".to_string()),
+                "choose" => said.push("files chosen in the dialog (on Enter)".to_string()),
+                _ => {
+                    let path = path_of(v);
+                    if path.is_dir() {
+                        return Err(format!("{v}: a folder (its files one by one: Tab lists them)"));
+                    }
+                    if !path.is_file() {
+                        return Err(format!("no file at {v}"));
+                    }
+                    files.push(path);
+                }
+            },
+            K::Description => description = Some(v.to_string()),
+            K::Source => source = Some(v.to_string()),
+            K::Visibility => visibility = Some(seen(v, here, known, found.is_none())?),
+            _ => {}
+        }
+    }
+    if !files.is_empty() {
+        said.push(crate::ui::edit::extras::files_text(files.len()));
+    }
+    let seen_text = |s: &Seen| match s {
+        Seen::Everyone => "seen by everyone".to_string(),
+        Seen::LikeArtist => "seen like the artist".to_string(),
+        Seen::Groups(g) => format!("seen by admins and {} group(s)", g.len()),
+    };
+    let change = match found {
+        None => {
+            let kind = kind.unwrap_or_else(|| "other".to_string());
+            let mut label = format!("+ new extra “{name}” ({kind})");
+            for text in said.iter().cloned().chain(visibility.as_ref().map(seen_text)) {
+                label.push_str(&format!(" · {text}"));
+            }
+            let about = Some((kind, description.unwrap_or_default(), source.unwrap_or_default()));
+            (label, ExtraChange { id: None, name: name.to_string(), linked: false, files, about, seen: visibility })
+        }
+        Some((id, linked)) => {
+            let changes_about = kind.is_some() || description.is_some() || source.is_some();
+            let own = here.extras.iter().find(|e| e.id == id);
+            if !linked && (changes_about || visibility.is_some()) {
+                return Err(format!("“{name}” isn't on this artist: link it first (extra:{name}), then change it; or on its own page"));
+            }
+            let about = match own {
+                Some(e) if changes_about => Some((kind.clone().unwrap_or_else(|| e.kind.clone()), description.clone().unwrap_or_else(|| e.description.clone()), source.clone().unwrap_or_else(|| e.source.clone()))),
+                _ => None,
+            };
+            let shown = own.map(|e| e.name.clone()).or_else(|| here.library_extras.iter().find(|e| e.id == id).map(|e| e.name.clone())).unwrap_or_else(|| name.to_string());
+            let mut what: Vec<String> = Vec::new();
+            if !linked {
+                what.push("linked here".into());
+            }
+            if let Some(k) = &kind {
+                what.push(format!("kind {k}"));
+            }
+            if description.is_some() {
+                what.push("its description".into());
+            }
+            if source.is_some() {
+                what.push("where it came from".into());
+            }
+            what.extend(said.iter().map(|t| format!("+ {t}")));
+            what.extend(visibility.as_ref().map(seen_text));
+            if what.is_empty() {
+                return Err(format!("“{shown}” is on this artist already: say what changes (kind:, file:, description:, source:, visibility:)"));
+            }
+            (format!("extra “{shown}”: {}", what.join(" · ")), ExtraChange { id: Some(id), name: shown, linked, files, about, seen: visibility })
+        }
+    };
+    Ok((change.0, Does::Edit(Edit::Extra(change.1))))
+}
+
+/// Paths starting with what's typed (a folder's entries; folders end in `/`).
+fn paths_like(typed: &str) -> Vec<String> {
+    let Some(cut) = typed.rfind('/') else { return Vec::new() };
+    let (folder, start) = (&typed[..=cut], typed[cut + 1..].to_lowercase());
+    let Ok(entries) = std::fs::read_dir(path_of(folder)) else { return Vec::new() };
+    let mut out: Vec<String> = entries
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().to_string();
+            if name.starts_with('.') && !start.starts_with('.') {
+                return None;
+            }
+            name.to_lowercase().starts_with(&start).then(|| format!("{folder}{name}{}", if e.path().is_dir() { "/" } else { "" }))
+        })
+        .collect();
+    out.sort();
+    out.truncate(20);
+    out
+}
+
 /// Each command typed: its text, and what it does (or why it can't).
-fn resolve(text: &str, here: &Here) -> Vec<Result<(String, Does), String>> {
+fn resolve(text: &str, here: &Here, known: &Known) -> Vec<Result<(String, Does), String>> {
     let line = commandline::parse::<K>(text);
     let mut out = Vec::new();
     for command in line.commands() {
         let main = &command[0];
         let value = main.value.trim();
-        if main.minus && !matches!(main.key, K::Alias | K::Disambiguation | K::Source) {
+        if main.minus && !matches!(main.key, K::Alias | K::Disambiguation | K::Source | K::Extra) {
             out.push(Err(format!("-{}: nothing to take off here", main.key.name())));
             continue;
         }
@@ -404,6 +637,8 @@ fn resolve(text: &str, here: &Here) -> Vec<Result<(String, Does), String>> {
             K::Why => edit(format!("why: {value}"), Edit::Why(value.to_string())),
             K::Source => source(main, &command[1..], here),
             K::Field => Err(format!("{}: goes after source: and its platform (source:soundcloud artist_permalinks:…)", main.name())),
+            K::Extra => extra(main, &command[1..], here, known),
+            K::Kind | K::File | K::Description | K::Visibility => Err(format!("{}: goes after extra:Name", main.key.name())),
         });
     }
     // Words after a `|` (a section's name, say): only as an action's name, exactly.
@@ -468,7 +703,7 @@ fn actions(typed: &str, here: &Here) -> Vec<Row> {
 /// The choices for the value being typed.
 /// The choices for the value being typed (`group`: what it goes with, if it's an argument
 /// or a field).
-fn choices(part: &commandline::Part<K>, group: &[commandline::Part<K>], here: &Here, filters: &Filters) -> Vec<Row> {
+fn choices(part: &commandline::Part<K>, group: &[commandline::Part<K>], here: &Here, known: &Known, filters: &Filters) -> Vec<Row> {
     let typed = part.value.trim().to_lowercase();
     let sources_here = editing(here).is_ok() && here.may_source;
     if part.minus && part.key == K::Source && sources_here {
@@ -477,6 +712,14 @@ fn choices(part: &commandline::Part<K>, group: &[commandline::Part<K>], here: &H
             .iter()
             .enumerate()
             .map(|(n, s)| Row { label: format!("#{} {}", n + 1, source_label(s)), sub: "to the trash".into(), choice: Choice::Raw(format!("#{}", n + 1), None) })
+            .collect();
+    }
+    if part.minus && part.key == K::Extra && editing(here).is_ok() {
+        return here
+            .extras
+            .iter()
+            .filter(|e| !e.hidden && e.name.to_lowercase().contains(&typed))
+            .map(|e| Row { label: format!("− {}", e.name), sub: format!("{} · not on this artist anymore", e.kind), choice: Choice::Pin(e.name.clone(), e.id) })
             .collect();
     }
     if part.minus {
@@ -518,6 +761,51 @@ fn choices(part: &commandline::Part<K>, group: &[commandline::Part<K>], here: &H
         K::Source if sources_here && part.hash.is_none() => {
             crate::ui::edit::sources::platform_choices(part.value.trim(), "", "artist", here.shapes).into_iter().map(|c| Row { label: c.label, sub: c.sub, choice: Choice::Raw(c.text, c.next) }).collect()
         }
+        K::Extra if editing(here).is_ok() => {
+            let mut rows: Vec<Row> = here
+                .extras
+                .iter()
+                .filter(|e| !e.hidden && e.name.to_lowercase().contains(&typed))
+                .map(|e| Row { label: e.name.clone(), sub: format!("{} · on this artist: change it", e.kind), choice: Choice::Pin(e.name.clone(), e.id) })
+                .collect();
+            let linked = |id: Uuid| here.extras.iter().any(|e| e.id == id);
+            rows.extend(
+                here.library_extras
+                    .iter()
+                    .filter(|e| !e.hidden && !linked(e.id) && !typed.is_empty() && e.name.to_lowercase().contains(&typed))
+                    .take(12)
+                    .map(|e| Row { label: e.name.clone(), sub: format!("{} · in the library: linked here", e.kind), choice: Choice::Pin(e.name.clone(), e.id) }),
+            );
+            let value = part.value.trim();
+            if !value.is_empty() {
+                rows.push(Row { label: format!("New extra “{value}”"), sub: "made when it's saved · Tab: its kind".into(), choice: Choice::Raw(value.to_string(), Some("kind:".into())) });
+            }
+            rows
+        }
+        K::Kind if group.first().is_some_and(|g| g.key == K::Extra) => {
+            crate::ui::edit::extras::KINDS.iter().filter(|k| k.starts_with(&typed)).map(|k| Row { label: k.to_string(), sub: "a kind (any word works)".into(), choice: Choice::Raw(k.to_string(), None) }).collect()
+        }
+        K::File if group.first().is_some_and(|g| g.key == K::Extra) => {
+            let mut rows: Vec<Row> = [("paste", "the files copied in a file manager"), ("choose", "the file dialog")]
+                .into_iter()
+                .filter(|(w, _)| w.starts_with(&typed))
+                .map(|(w, sub)| Row { label: w.into(), sub: sub.into(), choice: Choice::Raw(w.into(), None) })
+                .collect();
+            let value = part.value.trim();
+            if value.starts_with('/') || value.starts_with('~') {
+                rows.extend(paths_like(value).into_iter().map(|p| Row { sub: if p.ends_with('/') { "a folder".into() } else { "a file".into() }, label: p.clone(), choice: Choice::Raw(p, None) }));
+            }
+            rows
+        }
+        K::Visibility if group.first().is_some_and(|g| g.key == K::Extra) && here.may_access => {
+            let mut rows: Vec<Row> = [("everyone", "seen by everyone"), ("artist", "like the artist (a new one)")]
+                .into_iter()
+                .filter(|(w, _)| w.starts_with(&typed))
+                .map(|(w, sub)| Row { label: w.into(), sub: sub.into(), choice: Choice::Raw(w.into(), None) })
+                .collect();
+            rows.extend(known.groups.iter().flatten().filter(|g| g.name != "admin" && g.name.to_lowercase().starts_with(&typed)).map(|g| Row { label: g.name.clone(), sub: "admins and this group (more: Group A, Group B)".into(), choice: Choice::Raw(g.name.clone(), None) }));
+            rows
+        }
         K::Field if sources_here => {
             let Some(owner) = group.first().filter(|o| o.key == K::Source) else { return Vec::new() };
             let given: Vec<&str> = group.iter().skip(1).chain([part]).map(|p| p.name()).collect();
@@ -543,7 +831,7 @@ impl ArtistCommands {
     /// (understood) on top. The page shows these while it's typed.
     pub fn preview(&self, here: &Here, committed: &Filters) -> Filters {
         let mut filters = committed.clone();
-        for does in resolve(&self.cl.text, here).into_iter().flatten() {
+        for does in resolve(&self.cl.text, here, &self.known).into_iter().flatten() {
             apply(&mut filters, does.1);
         }
         filters
@@ -569,6 +857,24 @@ impl ArtistCommands {
         }
         let ctx = ui.ctx().clone();
         self.answers(shell);
+        // Who can see an extra: the groups, asked for once it's typed.
+        if here.may_access && self.known.groups.is_none() && commandline::parse::<K>(&self.cl.text).parts.iter().any(|p| p.key == K::Visibility) {
+            crate::ui::edit::extras::ask_groups(shell, &self.groups);
+            if let Some(Ok(groups)) = &*self.groups.lock().unwrap()
+                && !groups.is_empty()
+            {
+                self.known.groups = Some(groups.clone());
+            }
+        }
+        // Files chosen in the dialog (`file:choose`): their paths in the line.
+        let chosen = std::mem::take(&mut *self.chosen.lock().unwrap());
+        if !chosen.is_empty() {
+            for path in chosen {
+                self.cl.text = format!("{} file:{}", self.cl.text.trim_end(), path.display());
+            }
+            self.cl.place_cursor = true;
+            self.cl.focus = true;
+        }
         // `/` outside a field: the cursor here.
         if !ctx.egui_wants_keyboard_input() && !shell.palette_open && !shell.modal_was_open && ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Text(t) if t == "/"))) {
             ctx.input_mut(|i| {
@@ -582,7 +888,7 @@ impl ArtistCommands {
         let words = line.parts.is_empty() && !line.words.is_empty();
         let rows: Vec<Row> = match line.parts.last() {
             _ if words => actions(&line.words.join(" "), here),
-            Some(last) => choices(last, line.last_goes_with(), here, filters),
+            Some(last) => choices(last, line.last_goes_with(), here, &self.known, filters),
             None => Vec::new(),
         };
         self.cl.highlighted = self.cl.highlighted.min(rows.len().saturating_sub(1));
@@ -638,6 +944,13 @@ impl ArtistCommands {
             && let Some(row) = rows.get(n)
         {
             match &row.choice {
+                Choice::Pin(name, extra) => {
+                    self.known.pins.insert(name.to_lowercase(), *extra);
+                    if let Some(part) = line.parts.last() {
+                        let text = (*name != part.value).then(|| commandline::quoted::<K>(name));
+                        self.cl.take(&ctx, part.value_start, part.end, text.as_deref(), None);
+                    }
+                }
                 Choice::Raw(text, next) => {
                     if let Some(part) = line.parts.last() {
                         let text = (*text != part.value).then_some(text.as_str());
@@ -673,8 +986,15 @@ impl ArtistCommands {
                 }
             }
         }
+        // `file:paste` and `file:choose`: the paths in the line first (what's staged is what
+        // the line says).
+        if enter && let Err(err) = self.expand_files(shell) {
+            self.notice = Some(err);
+            enter = false;
+            save = false;
+        }
         if enter && !self.cl.text.trim().is_empty() {
-            let done = resolve(&self.cl.text, here);
+            let done = resolve(&self.cl.text, here, &self.known);
             let texts = commands_text(&self.cl.text);
             match done.iter().find_map(|d| d.as_ref().err()) {
                 Some(err) => {
@@ -705,7 +1025,7 @@ impl ArtistCommands {
 
         // What Enter would do, when no list is in the way.
         if rows.is_empty() && !self.cl.text.trim().is_empty() {
-            let shown: Vec<Result<(String, Option<String>), String>> = resolve(&self.cl.text, here).into_iter().map(|r| r.map(|(label, _)| (label, None))).collect();
+            let shown: Vec<Result<(String, Option<String>), String>> = resolve(&self.cl.text, here, &self.known).into_iter().map(|r| r.map(|(label, _)| (label, None))).collect();
             cl::would_do(ui, &shown, "Nothing to do by that name");
         }
         for (_, _, name) in &self.asking {
@@ -743,6 +1063,37 @@ impl ArtistCommands {
         act
     }
 
+    /// `file:paste` becomes the copied files' paths (`file:/…` each); `file:choose` opens the
+    /// dialog and comes out of the line (its paths are put in when chosen: Enter again).
+    /// Err: why not now (no files copied; the dialog is open).
+    fn expand_files(&mut self, shell: &Shell) -> Result<(), String> {
+        let line = commandline::parse::<K>(&self.cl.text);
+        let mut choosing = false;
+        for part in line.parts.iter().rev().filter(|p| p.key == K::File && p.arg) {
+            let value = part.value.trim();
+            if value != "paste" && value != "choose" {
+                continue;
+            }
+            let start = self.cl.text[..part.value_start].rfind(char::is_whitespace).map_or(0, |w| w + 1);
+            let with = if value == "paste" {
+                let files = crate::ui::files::clipboard_files();
+                if files.is_empty() {
+                    return Err("There are no files in the clipboard (copy them in a file manager first).".into());
+                }
+                files.iter().map(|f| format!("file:{}", f.display())).collect::<Vec<_>>().join(" ")
+            } else {
+                choosing = true;
+                String::new()
+            };
+            self.cl.text.replace_range(start..part.end, &with);
+        }
+        if choosing {
+            crate::ui::files::choose(shell, "Files for the extra", ("Any file", &[]), true, &self.chosen);
+            return Err("Choose the files: their paths go in the line, then Enter.".into());
+        }
+        Ok(())
+    }
+
     /// What the server said about the sources sent (one failing: staged again, saying why),
     /// and where the names to take off are credited: nowhere, staged; somewhere, said.
     fn answers(&mut self, shell: &mut Shell) {
@@ -752,11 +1103,20 @@ impl ArtistCommands {
             if let Some(id) = self.artist {
                 shell.artist_details.refresh(id);
             }
+            shell.act(crate::ui::Action::RefreshLibrary);
+            let mut said = Vec::new();
             for (mut change, result) in sent {
-                if let Err(err) = result {
-                    change.failed = Some(err);
-                    self.staged.push(change);
+                match result {
+                    Ok(Some(text)) => said.push(text),
+                    Ok(None) => {}
+                    Err(err) => {
+                        change.failed = Some(err);
+                        self.staged.push(change);
+                    }
                 }
+            }
+            if !said.is_empty() {
+                self.notice = Some(said.join(" "));
             }
         }
         for (alias, result) in std::mem::take(&mut *self.uses.lock().unwrap()) {
@@ -797,7 +1157,7 @@ impl ArtistCommands {
                             Edit::Rename(name) => form.data.name = name,
                             Edit::Disambiguation(text) => form.data.disambiguation = text,
                             Edit::Why(why) => form.set_reason(&why),
-                            Edit::AddSource(..) | Edit::TrashSource(_) => {}
+                            Edit::AddSource(..) | Edit::TrashSource(_) | Edit::Extra(_) | Edit::UnlinkExtra(_) => {}
                         }
                     }
                     form.save(shell);
@@ -807,20 +1167,65 @@ impl ArtistCommands {
             }
         }
         for change in others {
-            let (method, path, body) = match &change.edit {
-                Edit::AddSource(platform, data) => (reqwest::Method::POST, format!("/api/artists/{id}/sources"), Some(serde_json::json!({ "platform": platform, "data": data }))),
-                Edit::TrashSource(source) => (reqwest::Method::DELETE, format!("/api/sources/{source}"), None),
-                _ => continue,
-            };
             self.sending += 1;
             let (api, ctx, sent) = (shell.api.clone(), shell.ctx.clone(), self.sent.clone());
             shell.runtime.spawn(async move {
-                let result = api.send_json::<serde_json::Value>(method, &path, body).await.map(|_| ()).map_err(|e| e.message);
+                let result = send(&api, &ctx, id, &change.edit).await;
                 sent.lock().unwrap().push((change, result));
                 ctx.request_repaint();
             });
         }
         self.notice = (!notices.is_empty()).then(|| notices.join(" "));
+    }
+}
+
+/// A change sent on its own (a source, an extra). Ok: what's worth saying, if anything.
+async fn send(api: &crate::api::Api, ctx: &egui::Context, artist: Uuid, edit: &Edit) -> Result<Option<String>, String> {
+    use reqwest::Method;
+    use serde_json::{json, Value};
+    let call = |method: Method, path: String, body: Option<Value>| async move { api.send_json::<Value>(method, &path, body).await.map_err(|e| e.message) };
+    let link = crate::ui::edit::extras::Owner::Artist(artist).link();
+    match edit {
+        Edit::AddSource(platform, data) => call(Method::POST, format!("/api/artists/{artist}/sources"), Some(json!({ "platform": platform, "data": data }))).await.map(|_| None),
+        Edit::TrashSource(source) => call(Method::DELETE, format!("/api/sources/{source}"), None).await.map(|_| None),
+        Edit::UnlinkExtra(extra) => call(Method::POST, format!("/api/extras/{extra}/links"), Some(json!({ "link": link, "undo": true }))).await.map(|_| None),
+        Edit::Extra(c) => {
+            let access = |seen: &Seen| match seen {
+                Seen::Everyone => Some(json!({ "restricted": false })),
+                Seen::Groups(groups) => Some(json!({ "restricted": true, "groups": groups })),
+                Seen::LikeArtist => None,
+            };
+            let id = match c.id {
+                Some(id) => {
+                    if !c.linked {
+                        call(Method::POST, format!("/api/extras/{id}/links"), Some(json!({ "link": link }))).await?;
+                    }
+                    if let Some((kind, description, source)) = &c.about {
+                        call(Method::PUT, format!("/api/extras/{id}"), Some(json!({ "name": c.name, "kind": kind, "description": description, "source": source }))).await?;
+                    }
+                    if let Some(body) = c.seen.as_ref().and_then(access) {
+                        call(Method::PUT, format!("/api/extras/{id}/access"), Some(body)).await?;
+                    }
+                    id.to_string()
+                }
+                None => {
+                    let (kind, description, source) = c.about.clone().unwrap_or_default();
+                    let mut body = json!({ "name": c.name, "kind": kind, "links": [link], "description": description, "source": source });
+                    if let Some(a) = c.seen.as_ref().and_then(access) {
+                        body["access"] = a;
+                    }
+                    let made = call(Method::POST, "/api/extras".into(), Some(body)).await?;
+                    made["id"].as_str().unwrap_or_default().to_string()
+                }
+            };
+            if c.files.is_empty() {
+                return Ok(None);
+            }
+            let progress = std::sync::atomic::AtomicUsize::new(0);
+            let name = c.name.clone();
+            crate::ui::edit::extras::upload_all(api, &id, &c.files, &progress, ctx, |n| format!("“{name}”: {} added.", crate::ui::edit::extras::files_text(n))).await.map(Some)
+        }
+        _ => Ok(None),
     }
 }
 
@@ -849,7 +1254,7 @@ mod tests {
     use super::*;
 
     fn here<'a>(names: &'a [(Option<String>, usize)], sections: &'a [(Section, usize)]) -> Here<'a> {
-        Here { own: "Zed", names, og_count: 2, sections, has_sources: true, has_notes: false, edit_mode: false, may_edit: false, may_collective: false, aliases: &[], disambiguation: "", sources: &[], may_source: false, shapes: &[] }
+        Here { own: "Zed", names, og_count: 2, sections, has_sources: true, has_notes: false, edit_mode: false, may_edit: false, may_collective: false, aliases: &[], disambiguation: "", sources: &[], may_source: false, shapes: &[], extras: &[], library_extras: &[], may_access: false }
     }
 
     #[test]
@@ -884,7 +1289,7 @@ mod tests {
     fn sections_and_their_keys() {
         let sections = [(Section::Releases, 4), (Section::Tracks, 30)];
         let here = here(&[], &sections);
-        let does = |text: &str| resolve(text, &here).into_iter().map(|r| r.map(|(_, d)| d)).collect::<Vec<_>>();
+        let does = |text: &str| resolve(text, &here, &Known::default()).into_iter().map(|r| r.map(|(_, d)| d)).collect::<Vec<_>>();
         assert_eq!(does("releases:"), [Ok(Does::Act(Act::Expand(Section::Releases, String::new())))]);
         assert_eq!(does("release:"), [Ok(Does::Act(Act::Expand(Section::Releases, String::new())))], "not year:");
         assert_eq!(does("tracks:dark year:2019"), [Ok(Does::Act(Act::Expand(Section::Tracks, "dark year:2019".into())))]);
@@ -906,7 +1311,7 @@ mod tests {
         let aliases = [AliasInfo { id: Uuid::from_u128(1), name: "Zee".into() }, AliasInfo { id: Uuid::from_u128(2), name: "Unused".into() }];
         let listen = Here { aliases: &aliases, ..here(&names, &[]) };
         let edit = Here { edit_mode: true, may_edit: true, ..Here { aliases: &aliases, ..here(&names, &[]) } };
-        let does = |text: &str, here: &Here| resolve(text, here).into_iter().map(|r| r.map(|(_, d)| d)).collect::<Vec<_>>();
+        let does = |text: &str, here: &Here| resolve(text, here, &Known::default()).into_iter().map(|r| r.map(|(_, d)| d)).collect::<Vec<_>>();
         // A name it isn't credited as: new, in edit mode only.
         assert!(does("alias:Zeta", &listen)[0].as_ref().unwrap_err().contains("edit mode"));
         assert_eq!(does("alias:Zeta", &edit), [Ok(Does::Edit(Edit::NewAlias("Zeta".into())))]);
@@ -924,7 +1329,7 @@ mod tests {
         assert!(does("name:x", &Here { may_edit: false, ..Here { edit_mode: true, ..here(&names, &[]) } })[0].as_ref().unwrap_err().contains("edit_metadata"));
         // In the list: the name to filter by first, then a new one exactly as typed.
         let part = commandline::parse::<K>("alias:zee").parts.remove(0);
-        let labels: Vec<String> = choices(&part, &[], &edit, &Filters::default()).into_iter().map(|r| r.label).collect();
+        let labels: Vec<String> = choices(&part, &[], &edit, &Known::default(), &Filters::default()).into_iter().map(|r| r.label).collect();
         assert_eq!(labels, ["as Zee", "New name “zee”"]);
         assert_eq!(commands_text("og:yes | alias:a b"), ["og:yes", "alias:a b"]);
     }
@@ -941,7 +1346,7 @@ mod tests {
         let sources: Vec<Source> = serde_json::from_value(serde_json::json!([{ "id": Uuid::from_u128(7), "platform": "custom", "external_id": null, "snapshots": [{ "captured_at": "2026-01-01", "data": { "label": "vk" } }] }])).unwrap();
         let base = here(&[], &[]);
         let edit = Here { edit_mode: true, may_edit: true, may_source: true, shapes: &shapes, sources: &sources, ..base };
-        let does = |text: &str, here: &Here| resolve(text, here).into_iter().map(|r| r.map(|(_, d)| d)).collect::<Vec<_>>();
+        let does = |text: &str, here: &Here| resolve(text, here, &Known::default()).into_iter().map(|r| r.map(|(_, d)| d)).collect::<Vec<_>>();
         assert_eq!(
             does("source:https://soundcloud.com/someone | -source:#1", &edit),
             [Ok(Does::Edit(Edit::AddSource("soundcloud".into(), serde_json::json!({ "artist_permalinks": ["someone"] })))), Ok(Does::Edit(Edit::TrashSource(Uuid::from_u128(7))))]
@@ -953,7 +1358,47 @@ mod tests {
         assert!(does("source:https://x.y", &Here { may_source: false, ..Here { edit_mode: true, may_edit: true, shapes: &shapes, ..here(&[], &[]) } })[0].as_ref().unwrap_err().contains("edit_sources"));
         // The list: the artist's platforms; Tab on one adds its first field.
         let line = commandline::parse::<K>("source:so");
-        let rows = choices(&line.parts[0], &[], &edit, &Filters::default());
+        let rows = choices(&line.parts[0], &[], &edit, &Known::default(), &Filters::default());
         assert!(matches!(rows.as_slice(), [Row { choice: Choice::Raw(text, Some(next)), .. }] if text == "soundcloud" && next == "artist_permalinks:"));
+    }
+
+    #[test]
+    fn extras_made_changed_linked_and_unlinked() {
+        let own: Vec<crate::details::Extra> = serde_json::from_value(serde_json::json!([
+            { "id": Uuid::from_u128(1), "name": "Glass Harbor (vocals)", "kind": "vocals", "description": "dry", "source": "the session", "is_restricted": false }
+        ]))
+        .unwrap();
+        let library = vec![crate::catalog::model::Extra { id: Uuid::from_u128(2), name: "Stems".into(), kind: "stems".into(), is_restricted: false, hidden: false, links: vec![], files: 0, first_file: None, duration_ms: None, video: None, thumb_key: None }];
+        let edit = Here { edit_mode: true, may_edit: true, extras: &own, library_extras: &library, ..here(&[], &[]) };
+        let known = Known::default();
+        let does = |text: &str, here: &Here| resolve(text, here, &known).into_iter().map(|r| r.map(|(_, d)| d)).collect::<Vec<_>>();
+        let change = |text: &str| match does(text, &edit).remove(0) {
+            Ok(Does::Edit(Edit::Extra(c))) => c,
+            other => panic!("{text}: {other:?}"),
+        };
+        // A new one: its kind (other if not said), description, source.
+        let c = change("extra:Demo take kind:clip description:the first one source:my phone");
+        assert_eq!((c.id, c.name.as_str(), c.about), (None, "Demo take", Some(("clip".into(), "the first one".into(), "my phone".into()))));
+        assert_eq!(change("extra:Demo take").about, Some(("other".into(), String::new(), String::new())));
+        // Its own: what's typed on top of what it has.
+        let c = change("extra:glass harbor (vocals) kind:stems");
+        assert_eq!((c.id, c.linked, c.about), (Some(Uuid::from_u128(1)), true, Some(("stems".into(), "dry".into(), "the session".into()))));
+        assert!(does("extra:Glass Harbor (vocals)", &edit)[0].as_ref().unwrap_err().contains("say what changes"));
+        // The library's: linked here; changing it waits until it is.
+        let c = change("extra:stems");
+        assert_eq!((c.id, c.linked), (Some(Uuid::from_u128(2)), false));
+        assert!(does("extra:stems kind:sample", &edit)[0].as_ref().unwrap_err().contains("link it first"));
+        // Not on this artist anymore; files must be there; who sees it needs manage_access.
+        assert_eq!(does("-extra:Glass Harbor (vocals)", &edit), [Ok(Does::Edit(Edit::UnlinkExtra(Uuid::from_u128(1))))]);
+        assert!(does("extra:x file:/no/such/file.wav", &edit)[0].as_ref().unwrap_err().contains("no file"));
+        assert!(does("extra:x visibility:everyone", &edit)[0].as_ref().unwrap_err().contains("manage_access"));
+        let access = Here { may_access: true, ..edit };
+        assert_eq!(match does("extra:x visibility:everyone", &access).remove(0) { Ok(Does::Edit(Edit::Extra(c))) => c.seen, _ => None }, Some(Seen::Everyone));
+        assert!(does("extra:stems visibility:artist", &access)[0].is_err(), "like the artist: a new one's");
+        // Its arguments go with it; `source:` there is its own (not the artist's).
+        let line = commandline::parse::<K>("extra:x source:a link | source:https://y.z");
+        assert_eq!(line.parts.iter().map(|p| (p.key, p.arg)).collect::<Vec<_>>(), [(K::Extra, false), (K::Source, true), (K::Source, false)]);
+        assert!(does("kind:vocals", &edit)[0].as_ref().unwrap_err().contains("goes after extra:"));
+        assert!(does("extra:x", &here(&[], &[]))[0].as_ref().unwrap_err().contains("edit mode"));
     }
 }
