@@ -208,8 +208,10 @@ impl ArtistPage {
         let (has_sources, has_notes) = details.as_ref().map_or((false, false), |d| (!d.sources.is_empty(), d.notes.iter().any(|n| !n.hidden)));
         let (edit_mode, may_collective) = (shell.edit_mode, shell.edit_mode && shell.account.can("edit_sources"));
         let may_edit = edit_mode && shell.account.can("edit_metadata");
-        let (aliases, disambiguation) = details.as_ref().map_or((&[][..], ""), |d| (&d.aliases[..], d.disambiguation.as_str()));
-        let here = |sections| Here { own: &artist.name, names: &names, og_count, sections, has_sources, has_notes, edit_mode, may_edit, may_collective, aliases, disambiguation };
+        let (aliases, disambiguation, sources) = details.as_ref().map_or((&[][..], "", &[][..]), |d| (&d.aliases[..], d.disambiguation.as_str(), &d.sources[..]));
+        let may_source = edit_mode && shell.account.can("edit_sources");
+        let shapes: Vec<crate::account::SourceShape> = shell.account.vocab.as_ref().map(|v| v.source_shapes.clone()).unwrap_or_default();
+        let here = |sections| Here { own: &artist.name, names: &names, og_count, sections, has_sources, has_notes, edit_mode, may_edit, may_collective, aliases, disambiguation, sources, may_source, shapes: &shapes };
         // As the chips are, with what's being typed in the commandline on top.
         let filters = self.commands.preview(&here(&[]), &self.filters);
         let og_only = filters.og_only;

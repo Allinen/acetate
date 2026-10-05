@@ -17,7 +17,7 @@ use uuid::Uuid;
 use super::model::{Image, Numbers, Op};
 use super::parse::{self, Part, K};
 use super::title_parse::{Credited, TitlesParsed};
-use crate::account::{ShapeField, SourceShape, Vocab};
+use crate::account::Vocab;
 use crate::catalog::query::loosely_in;
 use crate::catalog::search::{Part as SearchPart, Search};
 use crate::catalog::Catalog;
@@ -640,43 +640,14 @@ fn unit(
                     _ => Err("source: a link, or custom and where it's from (custom vk, sent by a friend)".into()),
                 };
             }
-            let (first, rest) = value.split_once(char::is_whitespace).map(|(f, r)| (f, r.trim())).unwrap_or((value, ""));
-            let typed_shape = ctx.vocab.source_shapes.iter().find(|s| s.kind == "track" && s.platform.eq_ignore_ascii_case(first));
-            // What the value says (a link, `custom vk, …`); the fields after it add to it.
-            let (platform, said, by_fields) = match typed_shape {
-                // `source:custom vk, sent by a friend`: the label, then a comma and more.
-                Some(shape) if shape.platform == "custom" && !rest.is_empty() => {
-                    let (label, description) = rest.split_once(',').map(|(l, d)| (l.trim(), d.trim())).unwrap_or((rest, ""));
-                    ("custom".to_string(), vec![("label".to_string(), label.to_string()), ("description".to_string(), description.to_string())], !mods.is_empty())
-                }
-                Some(shape) if shape.platform == "custom" && mods.is_empty() => {
-                    return Err("source:custom and where it's from (a label: custom vk), then a comma and more if there's more".into());
-                }
-                // `source:distrokid album_uuid:… index:1`: field by field.
-                Some(shape) if rest.is_empty() => (shape.platform.clone(), Vec::new(), true),
-                Some(shape) => return Err(format!("“{rest}”: after source:{}, its fields: {}", shape.platform, field_list(shape))),
-                None => {
-                    let (platform, values) = crate::ui::edit::sources::from_link(value, "track")
-                        .ok_or_else(|| "source: a link (https://…), a platform and its fields (distrokid album_uuid:… index:1), or custom and where it's from".to_string())?;
-                    (platform, values, !mods.is_empty())
-                }
-            };
-            let shape = ctx.vocab.source_shapes.iter().find(|s| s.platform == platform && s.kind == "track").ok_or_else(|| format!("no {platform} sources for tracks"))?;
-            let values = typed_fields(shape, said, mods)?;
-            let data = crate::ui::edit::sources::data_from(shape, &values).map_err(|err| if by_fields { format!("{err} source:{platform} {}", field_list(shape)) } else { err })?;
-            let id_value = shape.id_field.as_ref().and_then(|field| data.get(field)).map(|v| v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string()));
-            let name = super::model::source_name(id_value.as_deref(), &data);
+            let fields: Vec<(&str, &str)> = mods.iter().map(|p| (p.name(), p.value.trim())).collect();
+            let typed = crate::ui::edit::sources::typed(value, &fields, "track", &ctx.vocab.source_shapes)?;
+            let (platform, name, data, shown) = (typed.platform, typed.name, typed.data, typed.shown);
             let id = {
                 use std::hash::{Hash, Hasher};
                 let mut h = std::hash::DefaultHasher::new();
                 (&platform, data.to_string()).hash(&mut h);
                 Uuid::from_u128(0xACE7_5000_0000_4000_8000_0000_0000_0000 | h.finish() as u128)
-            };
-            // Typed field by field: every field shown, as typed back (a typo shows).
-            let shown = if by_fields {
-                format!("{platform} {}", fields_typed(&data))
-            } else {
-                super::model::Src { id, new: true, platform: platform.clone(), name: name.clone(), data: data.clone(), corrected: false }.label()
             };
             let source = Op::Source { id, platform, name, data };
             if replace {
@@ -708,70 +679,6 @@ fn unit(
         K::Split | K::Whole | K::Keep | K::Word => Err(format!("{}: goes after parse: (parse:feat prod {}:…)", main.key.name(), main.key.name())),
         K::Other(k) => Err(format!("{}: not something to change here", k.name())),
     }
-}
-
-/// One of the platform's fields, by name as typed (any case).
-fn field_named<'a>(shape: &'a SourceShape, name: &str) -> Option<&'a ShapeField> {
-    shape.fields.iter().find(|f| f.name.eq_ignore_ascii_case(name))
-}
-
-/// Each of the platform's fields and its text, as the form takes them: what the value said
-/// (`said`: a link's, `custom vk`'s), and the fields typed after it (`fields`, which win).
-/// A list's field is given again for each item.
-fn typed_fields(shape: &SourceShape, said: Vec<(String, String)>, fields: &[Part]) -> Result<Vec<(String, String)>, String> {
-    let mut given: Vec<(&ShapeField, &str)> = Vec::new();
-    for part in fields {
-        let field = field_named(shape, part.name()).ok_or_else(|| format!("{}: {} sources have no such field; theirs: {}", part.name(), shape.platform, field_list(shape)))?;
-        given.push((field, part.value.trim()));
-    }
-    let mut values = Vec::new();
-    for field in &shape.fields {
-        let texts: Vec<&str> = given.iter().filter(|(f, _)| f.name == field.name).map(|(_, t)| *t).collect();
-        if texts.len() > 1 && field.kind != "strs" {
-            return Err(format!("{}: twice (it's one value)", field.name));
-        }
-        let text = if texts.is_empty() { said.iter().find(|(n, _)| *n == field.name).map(|(_, v)| v.clone()).unwrap_or_default() } else { texts.join("\n") };
-        values.push((field.name.clone(), text));
-    }
-    Ok(values)
-}
-
-/// The next of the platform's fields to type, after `given` (names as typed): the first
-/// it needs, else the first it may have. None: every one is there.
-fn next_field<'a>(shape: &'a SourceShape, given: &[&str]) -> Option<&'a ShapeField> {
-    let missing = || shape.fields.iter().filter(|f| !given.iter().any(|g| f.name.eq_ignore_ascii_case(g)));
-    missing().find(|f| f.required).or_else(|| missing().next())
-}
-
-/// The platform `source:`'s value names (typed, or a link's), for its fields.
-fn source_shape<'a>(value: &str, ctx: &Ctx<'a>) -> Option<&'a SourceShape> {
-    let value = value.trim().trim_start_matches('=').trim();
-    let first = value.split_whitespace().next()?;
-    let platform = match ctx.vocab.source_shapes.iter().find(|s| s.kind == "track" && s.platform.eq_ignore_ascii_case(first)) {
-        Some(shape) => return Some(shape),
-        None => crate::ui::edit::sources::from_link(value, "track")?.0,
-    };
-    ctx.vocab.source_shapes.iter().find(|s| s.kind == "track" && s.platform == platform)
-}
-
-/// The platform's fields, as typed: `album_uuid:… (needed) index:…`.
-fn field_list(shape: &SourceShape) -> String {
-    shape.fields.iter().map(|f| format!("{}:…{}", f.name, if f.required { " (needed)" } else { "" })).collect::<Vec<_>>().join(" ")
-}
-
-/// A source's data as `source:` takes it back: `album_uuid:… index:1` (a list: its field
-/// once per item).
-fn fields_typed(data: &serde_json::Value) -> String {
-    let Some(fields) = data.as_object() else { return String::new() };
-    let mut typed = Vec::new();
-    for (name, value) in fields {
-        match value {
-            serde_json::Value::String(s) => typed.push(format!("{name}:{s}")),
-            serde_json::Value::Array(items) => typed.extend(items.iter().map(|i| format!("{name}:{}", i.as_str().map(str::to_string).unwrap_or_else(|| i.to_string())))),
-            other => typed.push(format!("{name}:{other}")),
-        }
-    }
-    typed.join(" ")
 }
 
 /// `parse:` and what goes with it (`raw`, as typed): every target's title parsed with the
@@ -1188,46 +1095,16 @@ pub fn candidates(part: &Part, group: &[Part], ctx: &Ctx, hits: &[u32], track_hi
                 Some(rest) => ("=", rest.trim()),
                 None => ("", value),
             };
-            // The platforms, each with its fields to type after it. Tab adds the first field
-            // (`distrokid album_uuid:`), as `artist:` adds `role:`; custom takes its label as
-            // it is (`custom vk`).
-            for shape in ctx.vocab.source_shapes.iter().filter(|s| s.kind == "track" && s.platform.starts_with(&rest.to_lowercase())) {
-                let (sub, next) = match shape.platform.as_str() {
-                    "custom" => ("where it's from, then a comma and more: custom vk, sent by a friend".to_string(), None),
-                    _ => (field_list(shape), next_field(shape, &[]).map(|f| format!("{}:", f.name))),
-                };
-                out.push(Candidate { label: format!("{equals}{}", shape.platform), sub, text: format!("{equals}{}", shape.platform), pick: None, next });
+            for c in crate::ui::edit::sources::platform_choices(rest, equals, "track", &ctx.vocab.source_shapes) {
+                out.push(Candidate { label: c.label, sub: c.sub, text: c.text, pick: None, next: c.next });
             }
         }
         // A source's field: what it takes, and on Tab the next field (needed ones first).
         K::Field => {
-            let Some(shape) = owner.filter(|o| o.key == K::Source).and_then(|o| source_shape(&o.value, ctx)) else { return out };
+            let Some(owner) = owner.filter(|o| o.key == K::Source) else { return out };
             let given: Vec<&str> = group.iter().skip(1).chain([part]).map(|p| p.name()).collect();
-            let needed = |f: &ShapeField| if f.required { " (needed)" } else { "" };
-            match field_named(shape, part.name()) {
-                Some(field) => {
-                    let what = match field.kind.as_str() {
-                        "int" => "a number",
-                        "strs" => "text; the field again for another",
-                        _ => "text",
-                    };
-                    // (Nothing typed yet: Tab doesn't skip it.)
-                    let then = next_field(shape, &given).filter(|_| !value.is_empty());
-                    let sub = match (then, value.is_empty()) {
-                        (_, true) => format!("{what}{}", needed(field)),
-                        (Some(f), false) => format!("{what} · Tab: {}:…{}", f.name, needed(f)),
-                        (None, false) => format!("{what} · every field is there"),
-                    };
-                    let label = if value.is_empty() { format!("{}:…", field.name) } else { format!("{}:{value}", field.name) };
-                    out.push(Candidate { label, sub, text: value.to_string(), pick: None, next: then.map(|f| format!("{}:", f.name)) });
-                }
-                // Not one of its fields: the ones it has.
-                None => {
-                    for f in shape.fields.iter().filter(|f| !given.iter().any(|g| f.name.eq_ignore_ascii_case(g))) {
-                        let sub = format!("{} sources have no {}:", shape.platform, part.name());
-                        out.push(Candidate { label: format!("{}:…{}", f.name, needed(f)), sub, text: value.to_string(), pick: None, next: None });
-                    }
-                }
+            for c in crate::ui::edit::sources::field_choices(&owner.value, part.name(), value, &given, "track", &ctx.vocab.source_shapes) {
+                out.push(Candidate { label: c.label, sub: c.sub, text: c.text, pick: None, next: c.next });
             }
         }
         K::Along => {
