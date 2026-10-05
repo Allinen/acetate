@@ -148,7 +148,8 @@ impl GroupingPage {
             // ---- Its extras (a collective's stems, an era's clips…): the first few ----
             if detail.is_some() && ExtrasView::worth_showing(shell, &extras) {
                 let shown = extras.iter().filter(|e| !e.hidden).count();
-                if section_heading(ui, "Extras", shown, shown > PREVIEW_EXTRAS) {
+                // (Always `›`: the section is there even with none, for attaching one.)
+                if section_heading(ui, "Extras", shown, true) {
                     self.all_extras = true;
                 }
                 // The first few shown (and those taken off, for edit mode's "Taken off").

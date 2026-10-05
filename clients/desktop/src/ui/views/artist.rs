@@ -35,8 +35,6 @@ pub struct ArtistPage {
     expanded: Option<Section>,
     /// "Turn into a collective…" open (edit mode).
     to_collective: Option<super::to_collective::ToCollective>,
-    /// The details panel is open.
-    details: bool,
     /// This artist and another side by side, to merge (edit mode), in place of the rest.
     merge: Option<super::artist_merge::ArtistMergeView>,
     /// "Merge into another artist…" asked the palette for the other one.
@@ -370,9 +368,6 @@ impl ArtistPage {
                 ui.add_space(6.0);
                 super::album::marks(ui, shell, Kind::Artist, id);
                 ui.add_space(8.0);
-                if widgets::chip(ui, "Details", self.details) {
-                    self.details = !self.details;
-                }
                 widgets::share_chip(ui, shell, crate::links::Target::Artist(id));
                 if shell.edit_mode && self.merge.is_none() {
                     ui.add_space(8.0);
@@ -419,21 +414,16 @@ impl ArtistPage {
                 }
                 return;
             }
-            if self.details {
-                super::album::panel(ui, "artist-details", |ui| {
-                    let cached = shell.artist_details.get(id);
-                    let Some(d) = cached.value.clone() else {
-                        ui.label(RichText::new(if cached.refreshing { "Loading…" } else { "Couldn't load the details" }).color(P.muted));
-                        return;
-                    };
-                    if d.sources.is_empty() {
-                        ui.label(RichText::new("No sources").color(P.muted));
-                    } else {
-                        ui.label(RichText::new(format!("Sources ({})", d.sources.len())).font(font(14.0, semibold())));
-                        super::track::sources(ui, &d.sources);
-                    }
+            // Listen mode: its sources, folded (as on an album's page). Edit mode has them
+            // in its panel below. An id of their own (not this artist's): what's opened
+            // stays open on the next artist.
+            if !shell.edit_mode
+                && let Some(d) = shell.artist_details.get(id).value.clone()
+                && !d.sources.is_empty()
+            {
+                ui.scope_builder(egui::UiBuilder::new().id(egui::Id::new("artist-sections")), |ui| {
+                    super::track::section(ui, &format!("Sources ({})", d.sources.len()), false, |ui| super::track::sources(ui, &d.sources));
                 });
-                ui.add_space(12.0);
             }
 
             // Edit mode: the artist's name, disambiguation and other names.
@@ -506,7 +496,8 @@ impl ArtistPage {
             // ---- Its extras (vocals, stems…): the first few, at the bottom ----
             if crate::ui::edit::extras::ExtrasView::worth_showing(shell, &extras) {
                 let shown = extras.iter().filter(|e| !e.hidden).count();
-                if section_heading(ui, "Extras", shown, shown > PREVIEW_EXTRAS) {
+                // (Always `›`: the section is there even with none, for attaching one.)
+                if section_heading(ui, "Extras", shown, true) {
                     self.expanded = Some(Section::Extras);
                 }
                 // The first few shown (and those taken off, for edit mode's "Taken off").
