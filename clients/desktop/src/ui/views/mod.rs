@@ -3,6 +3,7 @@
 //! finds it as it was left.
 
 pub mod album;
+pub mod album_commands;
 pub mod album_merge;
 pub mod albums;
 pub mod artist;
@@ -14,6 +15,7 @@ pub mod groupings;
 pub mod history;
 pub mod login;
 pub mod now_playing;
+pub mod page_commands;
 pub mod palette;
 pub mod player_bar;
 pub mod playlist;

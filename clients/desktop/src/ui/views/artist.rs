@@ -213,6 +213,7 @@ impl ArtistPage {
         let shapes: Vec<crate::account::SourceShape> = shell.account.vocab.as_ref().map(|v| v.source_shapes.clone()).unwrap_or_default();
         let may_access = edit_mode && shell.account.can("manage_access");
         let here = |sections| Here {
+            id,
             own: &artist.name,
             names: &names,
             og_count,

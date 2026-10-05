@@ -223,24 +223,6 @@ impl TrackTable {
         }
     }
 
-    /// Whether the filter has `og:` in it (only original files).
-    pub fn og_only(&self) -> bool {
-        crate::catalog::query::Query::parse(&self.filter).fields.iter().any(|(k, _)| *k == crate::catalog::query::Key::Og)
-    }
-
-    /// Only original files, or not: `og:` added to the filter (shown there, to edit) or
-    /// taken out of it.
-    pub fn toggle_og(&mut self) {
-        if self.og_only() {
-            let kept: Vec<&str> = self.filter.split_whitespace().filter(|w| !w.split_once(':').is_some_and(|(k, _)| crate::catalog::query::Key::parse(k) == Some(crate::catalog::query::Key::Og))).collect();
-            self.filter = kept.join(" ");
-        } else {
-            self.filter = format!("{} og:", self.filter.trim()).trim().to_string();
-        }
-        // The rows follow at once.
-        self.made_for = None;
-    }
-
     /// The filter set to `text` (the rows follow at once).
     pub fn set_filter(&mut self, text: &str) {
         self.filter = text.to_string();

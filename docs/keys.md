@@ -105,7 +105,7 @@ matched by the character you type, so it works on non-US layouts.
 | Keys | Does |
 |---|---|
 | `Enter  or  Ctrl+E` | a track's page: the cursor to its editor's commandline |
-| `Ctrl+Enter` | apply the editor's changes; an album's or artist's form: save it |
+| `Ctrl+Enter` | apply the editor's changes; an album's or artist's changes or form: save them |
 | `Ctrl+Enter in the lyrics` | save the lyrics (their own revision) |
 | `Alt+↑ / Alt+↓  or  Alt+K / Alt+J` | an album's tracks: move the selected one up / down (on its disc; Ctrl+Enter saves the new order) |
 | `Esc` | discard the changes (asks first: Esc again) |
@@ -127,6 +127,25 @@ matched by the character you type, so it works on non-US layouts.
 | `note:Title  /  -note:Title` | edit mode: the note editor  /  one taken off (note:paste: copied text files as notes) |
 | `Ctrl+Enter` | save the changes staged (each kind on its own) |
 | `Backspace (empty commandline)` | take the last change back to edit |
+
+## An album's page
+
+| Keys | Does |
+|---|---|
+| `/` | its commandline (it has the cursor when the page opens; \| between commands; a word finds the rest, edit too) |
+| `play:  play:#3` | play it  /  from its third track (or a title) |
+| `queue:  queue:next` | queue it at the end  /  next |
+| `star:  rating:3.5` | star it (-star: unstar)  /  your rating (-rating clears it) |
+| `tracks:…  /  og:yes` | filter its tracks (tracks: alone: all)  /  only original files |
+| `credits  covers  sources` | opened and scrolled to (also notes, extras; merges in edit mode) |
+| `title:  kind:  date:  why:` | edit mode: its title, kind, release date (-date clears it), why |
+| `artist:Name role:… as:…` | edit mode: credit an artist, or change one's role, name, #place (feat:Name; -artist:Name takes one off) |
+| `cover:paste  /  -cover:#2` | edit mode: a cover added (also choose, a path, an album or track)  /  the second to the trash |
+| `cover:#3` | edit mode: the third cover made the main one (cover:#3 #2 moves it) |
+| `group:Name  /  -group:Name` | edit mode: into a grouping (a new one: kind:era)  /  out of it |
+| `move:#5 #2` | edit mode: the fifth track to the second place (the tracklist's draft) |
+| `source:  extra:  note:` | edit mode: as on an artist's page |
+| `Ctrl+Enter` | save the changes staged (the album's own as one revision) |
 
 ## Notes and extras
 

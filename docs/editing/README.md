@@ -11,7 +11,8 @@ the editor in either mode, for a quick fix.)
   (`released`, `demo`, `unreleased`, `deleted`…), covers, sources, notes, lyrics, related
   tracks. See [the track editor](editor.md).
 - **Albums:** the same kind of form, plus kind (single, EP, mixtape, or your own words) and
-  track order (`Alt+↑`/`Alt+↓`, then `Ctrl+Enter`).
+  track order (`Alt+↑`/`Alt+↓`, then `Ctrl+Enter`). All of it, plus covers, groupings,
+  sources, extras and notes, can be typed on [the album page's commandline](album-page.md).
 - **Artists:** name, disambiguation, **aliases** (one artist, several names, tracks still
   sourced in place). Artists have IDs, so two artists may share a name. All of it, plus
   sources, extras and notes, can be typed on [the artist page's commandline](artist-page.md).
@@ -43,6 +44,8 @@ theirs instead of overwriting them. Everything you save is in the [history](hist
 ## Parts
 
 - [The track editor](editor.md)
+- [The artist page](artist-page.md)
+- [The album page](album-page.md)
 - [Moving credits out of titles](title-parsing.md)
 - [Merging](merging.md)
 - [History and undo](history.md)

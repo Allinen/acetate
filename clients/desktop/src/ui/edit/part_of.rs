@@ -126,38 +126,43 @@ impl PartOf {
     }
 
     fn send(&mut self, shell: &Shell, member: Member, change: Change) {
-        #[derive(serde::Deserialize)]
-        struct Made {
-            id: Uuid,
-        }
         self.busy = true;
         let (api, answer, ctx) = (shell.api.clone(), self.answer.clone(), shell.ctx.clone());
         shell.runtime.spawn(async move {
-            let post = |path: String, body: Value| {
-                let api = api.clone();
-                async move { api.send_json::<Value>(reqwest::Method::POST, &path, Some(body)).await.map_err(|e| e.message) }
-            };
-            let result = match change {
-                Change::Add(id) => post(format!("/api/groupings/{id}/add"), member.body()).await.map(|_| id),
-                Change::Remove(id) => post(format!("/api/groupings/{id}/remove"), member.body()).await.map(|_| id),
-                Change::New { kind, name } => {
-                    let body = json!({ "kind": kind.trim(), "name": name.trim() });
-                    match api.send_json::<Made>(reqwest::Method::POST, "/api/groupings", Some(body)).await {
-                        Ok(made) => post(format!("/api/groupings/{}/add", made.id), member.body()).await.map(|_| made.id),
-                        Err(err) => Err(err.message),
-                    }
-                }
-            };
+            let result = send(&api, member, &change).await;
             *answer.lock().unwrap() = Some(result);
             ctx.request_repaint();
         });
     }
 }
 
-enum Change {
+/// A change to the groupings something is in.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Change {
     Add(Uuid),
     Remove(Uuid),
     New { kind: String, name: String },
+}
+
+/// Sends a change (the album's page sends them from its commandline too). Ok: the
+/// grouping it changed.
+pub async fn send(api: &crate::api::Api, member: Member, change: &Change) -> Result<Uuid, String> {
+    #[derive(serde::Deserialize)]
+    struct Made {
+        id: Uuid,
+    }
+    let post = |path: String, body: Value| async move { api.send_json::<Value>(reqwest::Method::POST, &path, Some(body)).await.map_err(|e| e.message) };
+    match change {
+        Change::Add(id) => post(format!("/api/groupings/{id}/add"), member.body()).await.map(|_| *id),
+        Change::Remove(id) => post(format!("/api/groupings/{id}/remove"), member.body()).await.map(|_| *id),
+        Change::New { kind, name } => {
+            let body = json!({ "kind": kind.trim(), "name": name.trim() });
+            match api.send_json::<Made>(reqwest::Method::POST, "/api/groupings", Some(body)).await {
+                Ok(made) => post(format!("/api/groupings/{}/add", made.id), member.body()).await.map(|_| made.id),
+                Err(err) => Err(err.message),
+            }
+        }
+    }
 }
 
 #[cfg(test)]

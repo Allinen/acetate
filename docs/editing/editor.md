@@ -15,8 +15,9 @@ status:demo | date:2020
 ```
 
 - Several changes fit on one line, with `|` between them. (The [artist page](artist-page.md)
-  has a commandline of its own in the same language.) If any of them can't be
-  understood (no artist by that name), *none* of it is staged, and you're told why.
+  and the [album page](album-page.md) have commandlines of their own in the same
+  language.) If any of them can't be understood (no artist by that name), *none* of it is
+  staged, and you're told why.
 - A change is a key, its value, and that key's own extras: `role:` and `as:` after an
   artist, `kind:` after an album, a grouping or a related track, a source's fields after
   `source:`. Anything else is part of the value, so `title:Intro: Part 2` needs no quotes.

@@ -27,7 +27,8 @@ pub enum Owner {
 }
 
 impl Owner {
-    fn path(self) -> String {
+    /// Its covers' address (`/order`, `/copy` after it; an image posted to it is a new one).
+    pub fn path(self) -> String {
         match self {
             Owner::Album(id) => format!("/api/albums/{id}/covers"),
         }
@@ -302,7 +303,7 @@ pub fn clipboard_image() -> Option<Result<(Vec<u8>, String), String>> {
 }
 
 /// An image file's bytes and name. Err: it couldn't be read, or isn't an image this can use.
-fn read_image(path: &std::path::Path) -> Result<(Vec<u8>, String), String> {
+pub fn read_image(path: &std::path::Path) -> Result<(Vec<u8>, String), String> {
     let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
     match std::fs::read(path) {
         Ok(bytes) if image::guess_format(&bytes).is_ok() => Ok((bytes, name)),

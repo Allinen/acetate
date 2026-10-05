@@ -1,7 +1,7 @@
-//! An album's page: its cover and facts, a Play button, and its tracks. Also the track
-//! list used here and on artist pages. Keys: arrows or jk move, Enter plays from there;
-//! in edit mode, Alt+↑/↓ or Alt+K/J moves the selected track in the tracklist, saved
-//! together with Ctrl+Enter (see `edit::track_order`).
+//! An album's page: its cover and facts, a Play button, its commandline (`/`, see
+//! `album_commands`), and its tracks. Keys: arrows or jk move, Enter plays from there; in
+//! edit mode, Alt+↑/↓ or Alt+K/J moves the selected track in the tracklist, saved together
+//! with Ctrl+Enter (see `edit::track_order`).
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -10,6 +10,7 @@ use eframe::egui::{self, Align2, Pos2, Rect, RichText, Sense, Vec2};
 use uuid::Uuid;
 
 use crate::catalog::marks::Kind;
+use super::album_commands::{Act, AlbumCommands, Filters, Here, Reveal};
 use super::track_table::{Column, Options, TrackTable};
 use crate::catalog::index::TrackRows;
 use crate::catalog::Catalog;
@@ -51,6 +52,16 @@ pub struct AlbumPage {
     part_of: crate::ui::edit::part_of::PartOf,
     /// Tracks moved in its tracklist (edit mode): drafts, saved together.
     order: crate::ui::edit::track_order::TrackOrder,
+    /// Its tracks filtered by words, only original files (the chip): what's chosen.
+    filters: Filters,
+    /// The filter last given to the track list.
+    applied: Option<String>,
+    /// The album the filters are for (another one: its words start empty).
+    filtered: Option<Uuid>,
+    /// The commandline under the header.
+    commands: AlbumCommands,
+    /// A part of the page the commandline asked for: opened and scrolled to.
+    reveal: Option<Reveal>,
 }
 
 impl AlbumPage {
@@ -77,6 +88,71 @@ impl AlbumPage {
         self.order.update(shell, catalog, id);
         let moved = self.order.tracks(shell, catalog, id, catalog.album_tracks(id));
         let tracks: &[u32] = moved.as_deref().unwrap_or(catalog.album_tracks(id));
+        if self.filtered != Some(id) {
+            self.filtered = Some(id);
+            self.filters.words.clear();
+        }
+        let og_count = tracks.iter().filter(|&&t| catalog.tracks[t as usize].original_filename.is_some()).count();
+        if og_count == 0 {
+            self.filters.og_only = false;
+        }
+
+        // What the commandline knows.
+        let details = shell.album_details.get(id).value.clone();
+        let vocab = shell.account.vocab.clone().unwrap_or_default();
+        let credits = details.as_ref().map_or(&[][..], |d| &d.credits[..]);
+        // The other names of artists typed with `as:` (looked up as they're typed).
+        let aliases: Vec<(Uuid, Vec<crate::details::AliasInfo>)> =
+            self.commands.artists_named(catalog, credits).into_iter().filter_map(|a| shell.artist_details.get(a).value.as_ref().map(|d| (a, d.aliases.clone()))).collect();
+        let mut sections = Vec::new();
+        if let Some(d) = &details {
+            let edit = shell.edit_mode;
+            for (section, there) in [
+                (Reveal::Credits, edit || !d.credits.is_empty()),
+                (Reveal::Covers, if edit { true } else { d.covers.len() > 1 }),
+                (Reveal::Sources, edit || !d.sources.is_empty()),
+                (Reveal::Notes, crate::ui::edit::notes::NotesView::worth_showing(shell, &d.notes) && !tracks.is_empty()),
+                (Reveal::Extras, crate::ui::edit::extras::ExtrasView::worth_showing(shell, &d.extras) && !tracks.is_empty()),
+                (Reveal::Merges, edit && !d.merges.is_empty()),
+            ] {
+                if there {
+                    sections.push(section);
+                }
+            }
+        }
+        let mark = shell.mark(id);
+        let may_edit = shell.edit_mode && shell.account.can("edit_metadata");
+        let here = Here {
+            id,
+            catalog,
+            vocab: &vocab,
+            tracks,
+            og_count,
+            sections: &sections,
+            starred: mark.starred,
+            rating: mark.rating,
+            edit_mode: shell.edit_mode,
+            may_edit,
+            title: &album.title,
+            kind: &album.kind,
+            release_date: album.release_date.as_deref().unwrap_or(""),
+            credits,
+            aliases: &aliases,
+            groupings: &album.groupings,
+            covers: details.as_ref().map_or(&[][..], |d| &d.covers[..]),
+            sources: details.as_ref().map_or(&[][..], |d| &d.sources[..]),
+            may_source: shell.edit_mode && shell.account.can("edit_sources"),
+            extras: details.as_ref().map_or(&[][..], |d| &d.extras[..]),
+            may_access: shell.edit_mode && shell.account.can("manage_access"),
+            notes: details.as_ref().map_or(&[][..], |d| &d.notes[..]),
+        };
+        // As the chips are, with what's being typed in the commandline on top.
+        let filters = self.commands.preview(&here, &self.filters);
+        let filter = filters.text();
+        if self.applied.as_ref() != Some(&filter) {
+            self.list.set_filter(&filter);
+            self.applied = Some(filter);
+        }
         // One scroll for the whole page (header, edit panels, notes, the tracks as tall
         // as they are): nothing in it scrolls on its own.
         egui::ScrollArea::vertical().id_salt(("album-page", id)).auto_shrink([false, false]).show(ui, |ui| {
@@ -85,7 +161,6 @@ impl AlbumPage {
             let cover_rect = Rect::from_min_size(header.min, Vec2::splat(220.0));
             shell.cover_with_original(ui, album.cover(), album.id, cover_rect, 12, 0.6);
             // Every track an original file (an og file): it says so, with an amber edge.
-            let og_count = tracks.iter().filter(|&&t| catalog.tracks[t as usize].original_filename.is_some()).count();
             let all_og = og_count > 0 && og_count == tracks.len();
             if all_og {
                 widgets::og_edge(ui.painter(), cover_rect, 12, 2.0);
@@ -126,8 +201,8 @@ impl AlbumPage {
             // Its original files (og files): a chip that shows only those (`og:` in the filter).
             if og_count > 0 {
                 marks_ui.add_space(4.0);
-                if widgets::chip(&mut marks_ui, &format!("Original files  {og_count}"), self.list.og_only()) {
-                    self.list.toggle_og();
+                if widgets::chip(&mut marks_ui, &format!("Original files  {og_count}"), filters.og_only) {
+                    self.filters.og_only = !self.filters.og_only;
                 }
             }
             if shell.edit_mode && self.merge.is_none() {
@@ -137,6 +212,11 @@ impl AlbumPage {
                     self.picking_merge = true;
                     shell.act(Action::Pick { kind: crate::ui::edit::PickKind::Album, except: Some(id) });
                 }
+            }
+            ui.add_space(10.0);
+            // The commandline (`/`): playing, filters, the parts of the page, and the rest by name.
+            if let Some(act) = self.commands.show(ui, shell, id, &here, &mut self.filters) {
+                self.act(shell, catalog, id, tracks, act);
             }
             ui.add_space(10.0);
             let groupings = album.groupings.clone();
@@ -179,29 +259,37 @@ impl AlbumPage {
             {
                 // An id of their own (not this album's): what's opened stays open on
                 // the next album.
-                ui.scope_builder(egui::UiBuilder::new().id(egui::Id::new("album-sections")), |ui| view_sections(ui, shell, &d));
+                let reveal = self.reveal.take_if(|r| matches!(r, Reveal::Credits | Reveal::Covers | Reveal::Sources));
+                ui.scope_builder(egui::UiBuilder::new().id(egui::Id::new("album-sections")), |ui| view_sections(ui, shell, &d, reveal));
             }
 
             // Edit mode: the album's own data (title, kind, date, artists).
             if shell.edit_mode {
                 // A track or album picked to copy a cover from (before the form takes it).
                 self.covers.take_pick(shell);
-                edit_panel(ui, shell, catalog, id);
+                let reveal = self.reveal;
+                let heading = |ui: &mut egui::Ui, title: &str, section: Reveal| {
+                    let label = ui.label(RichText::new(title).font(font(14.0, semibold())));
+                    if reveal == Some(section) {
+                        label.scroll_to_me(Some(egui::Align::Min));
+                    }
+                };
+                edit_panel(ui, shell, catalog, id, reveal == Some(Reveal::Credits));
                 ui.add_space(12.0);
                 if let Some(d) = shell.album_details.get(id).value.clone() {
                     panel(ui, "album-covers", |ui| {
-                        ui.label(RichText::new("Covers").font(font(14.0, semibold())));
+                        heading(ui, "Covers", Reveal::Covers);
                         self.covers.show(ui, shell, crate::ui::edit::cover_list::Owner::Album(id), &d.covers, true);
                     });
                     ui.add_space(12.0);
                     panel(ui, "album-sources", |ui| {
-                        ui.label(RichText::new("Sources").font(font(14.0, semibold())));
+                        heading(ui, "Sources", Reveal::Sources);
                         self.sources.show(ui, shell, crate::ui::edit::sources::Owner::Album(id), &d.sources);
                     });
                     ui.add_space(12.0);
                     if !d.merges.is_empty() {
                         panel(ui, "album-merges", |ui| {
-                            ui.label(RichText::new("Merged into this album").font(font(14.0, semibold())));
+                            heading(ui, "Merged into this album", Reveal::Merges);
                             let can = shell.account.can("edit_metadata");
                             self.undo.show(ui, shell, id, &d.merges, can);
                         });
@@ -210,6 +298,10 @@ impl AlbumPage {
                 }
             }
 
+            // (Edit mode's panels are drawn: what they were scrolled to is done.)
+            if shell.edit_mode {
+                self.reveal.take_if(|r| !matches!(r, Reveal::Notes | Reveal::Extras));
+            }
             if tracks.is_empty() {
                 ui.label(RichText::new("No tracks you can see").color(P.muted));
                 return;
@@ -219,14 +311,20 @@ impl AlbumPage {
             if let Some(d) = shell.album_details.get(id).value.clone()
                 && crate::ui::edit::notes::NotesView::worth_showing(shell, &d.notes)
             {
-                ui.label(RichText::new("Notes").font(font(16.0, semibold())));
+                let heading = ui.label(RichText::new("Notes").font(font(16.0, semibold())));
+                if self.reveal.take_if(|r| *r == Reveal::Notes).is_some() {
+                    heading.scroll_to_me(Some(egui::Align::Min));
+                }
                 self.notes.show(ui, shell, crate::ui::edit::notes::Owner::Album(id), &d.notes, true, true);
                 ui.add_space(10.0);
             }
             if let Some(d) = shell.album_details.get(id).value.clone()
                 && crate::ui::edit::extras::ExtrasView::worth_showing(shell, &d.extras)
             {
-                ui.label(RichText::new("Extras").font(font(16.0, semibold())));
+                let heading = ui.label(RichText::new("Extras").font(font(16.0, semibold())));
+                if self.reveal.take_if(|r| *r == Reveal::Extras).is_some() {
+                    heading.scroll_to_me(Some(egui::Align::Min));
+                }
                 self.extras.show(ui, shell, crate::ui::edit::extras::Owner::Album(id), &d.extras, false, true);
                 ui.add_space(10.0);
             }
@@ -269,6 +367,58 @@ impl AlbumPage {
     }
 }
 
+impl AlbumPage {
+    /// What the commandline asked for.
+    fn act(&mut self, shell: &mut Shell, catalog: &Arc<Catalog>, id: Uuid, tracks: &[u32], act: Act) {
+        use crate::links::Target;
+        match act {
+            Act::Play(start) => shell.act(Action::Play { tracks: tracks.to_vec(), start }),
+            Act::Queue(next) => shell.act(Action::Enqueue { tracks: tracks.to_vec(), next }),
+            Act::Star(on) => {
+                if shell.mark(id).starred != on {
+                    shell.act(Action::ToggleStar(Kind::Album, id));
+                }
+            }
+            Act::Rate(rating) => shell.act(Action::Rate(Kind::Album, id, rating)),
+            Act::CopyLink => shell.act(Action::CopyLink(Target::Album(id))),
+            Act::ShareLink => shell.act(Action::CopyShareLink(Target::Album(id))),
+            Act::Go(page) => shell.act(Action::Go(page)),
+            Act::Reveal(section) => self.reveal = Some(section),
+            Act::Move(from, to) => {
+                // One place at a time, as Alt+↑/↓ (each move is on the tracklist's draft).
+                let mut row = from;
+                for _ in 0..tracks.len() {
+                    if row == to {
+                        break;
+                    }
+                    let order = self.order.tracks(shell, catalog, id, catalog.album_tracks(id)).unwrap_or_else(|| catalog.album_tracks(id).to_vec());
+                    match self.order.move_track(shell, catalog, id, &order, row, if to < row { -1 } else { 1 }) {
+                        Some(at) if at != row => row = at,
+                        _ => break,
+                    }
+                }
+                self.list.select(row);
+            }
+            Act::Merge => {
+                self.picking_merge = true;
+                shell.act(Action::Pick { kind: crate::ui::edit::PickKind::Album, except: Some(id) });
+            }
+            Act::ToggleEdit => shell.act(Action::ToggleEditMode),
+            Act::Note(note, title) => {
+                let d = shell.album_details.get(id).value.clone();
+                let found = d.as_ref().and_then(|d| d.notes.iter().find(|n| Some(n.id) == note));
+                self.notes.open(crate::ui::edit::notes::Owner::Album(id), found, &title);
+            }
+            Act::PasteNotes => {
+                let made = self.notes.add_files(crate::ui::edit::notes::Owner::Album(id), crate::ui::files::clipboard_files());
+                if made == 0 {
+                    shell.playlists.notice = Some(("No text files in the clipboard (copy .txt, .md or .nfo files in a file manager first).".into(), std::time::Instant::now()));
+                }
+            }
+        }
+    }
+}
+
 /// The list's version: the library's, and the order shown (moved tracks change it).
 fn version(generation: u64, tracks: &[u32]) -> u64 {
     use std::hash::{Hash, Hasher};
@@ -279,11 +429,13 @@ fn version(generation: u64, tracks: &[u32]) -> u64 {
 }
 
 /// Listen mode: its credits, covers (more than the one shown) and sources, each folded
-/// until opened.
-fn view_sections(ui: &mut egui::Ui, shell: &mut Shell, d: &crate::details::AlbumDetail) {
-    use super::track::section;
+/// until opened (`reveal`: that one opened and scrolled to).
+fn view_sections(ui: &mut egui::Ui, shell: &mut Shell, d: &crate::details::AlbumDetail, reveal: Option<Reveal>) {
+    let section = |ui: &mut egui::Ui, title: &str, which: Reveal, add: &mut dyn FnMut(&mut egui::Ui)| {
+        super::track::section_at(ui, title, false, reveal == Some(which), |ui| add(ui));
+    };
     if !d.credits.is_empty() {
-        section(ui, "Credits", false, |ui| {
+        section(ui, "Credits", Reveal::Credits, &mut |ui| {
             for c in &d.credits {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new(&c.role).color(P.faint));
@@ -296,7 +448,7 @@ fn view_sections(ui: &mut egui::Ui, shell: &mut Shell, d: &crate::details::Album
         });
     }
     if d.covers.len() > 1 {
-        section(ui, &format!("Covers ({})", d.covers.len()), false, |ui| {
+        section(ui, &format!("Covers ({})", d.covers.len()), Reveal::Covers, &mut |ui| {
             ui.horizontal_wrapped(|ui| {
                 for c in &d.covers {
                     let (rect, response) = ui.allocate_exact_size(Vec2::splat(140.0), Sense::click());
@@ -316,13 +468,13 @@ fn view_sections(ui: &mut egui::Ui, shell: &mut Shell, d: &crate::details::Album
         });
     }
     if !d.sources.is_empty() {
-        section(ui, &format!("Sources ({})", d.sources.len()), false, |ui| super::track::sources(ui, &d.sources));
+        section(ui, &format!("Sources ({})", d.sources.len()), Reveal::Sources, &mut |ui| super::track::sources(ui, &d.sources));
     }
 }
 
 /// The album's form (edit mode). Kept in the shell per album, so changes not saved yet
 /// are still there after looking elsewhere.
-fn edit_panel(ui: &mut egui::Ui, shell: &mut Shell, catalog: &Arc<Catalog>, id: Uuid) {
+fn edit_panel(ui: &mut egui::Ui, shell: &mut Shell, catalog: &Arc<Catalog>, id: Uuid, reveal: bool) {
     use crate::ui::edit::album_form::AlbumForm;
     let cached = shell.album_details.get(id);
     let Some(d) = cached.value.clone() else {
@@ -330,6 +482,9 @@ fn edit_panel(ui: &mut egui::Ui, shell: &mut Shell, catalog: &Arc<Catalog>, id: 
         return;
     };
     panel(ui, "album-edit", |ui| {
+        if reveal {
+            ui.scroll_to_cursor(Some(egui::Align::Min));
+        }
         // Taken out of the shell while it's shown (showing it needs the shell too).
         let Some(mut form) = shell.album_forms.remove(&id).or_else(|| AlbumForm::from_detail(&d)) else {
             ui.label(RichText::new("This album has no revision to build on, so it can't be edited here.").color(P.muted));

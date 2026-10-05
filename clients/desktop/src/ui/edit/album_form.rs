@@ -217,8 +217,9 @@ impl AlbumForm {
             }
         }
         let ctx = ui.ctx().clone();
-        // (A popup over the page, a track list's, takes Ctrl+Enter and Esc itself.)
-        if !shell.modal_was_open && ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Enter)) {
+        // (A popup over the page, a track list's, takes Ctrl+Enter and Esc itself. Without
+        // changes it's left for what's below: a note being written.)
+        if self.dirty() && !shell.modal_was_open && ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Enter)) {
             self.save(shell);
         }
         if !shell.palette_open && !shell.modal_was_open && !ctx.egui_wants_keyboard_input() && ctx.input(|i| i.key_pressed(Key::Escape)) && self.dirty() {
@@ -300,7 +301,14 @@ impl AlbumForm {
         if let Some(notice) = &self.notice {
             ui.label(RichText::new(notice).color(P.muted));
         }
-        shell.form_dirty = self.dirty();
+        if self.dirty() {
+            shell.form_dirty = true;
+        }
+    }
+
+    /// Why (kept with the change), as the commandline's `why:` says it.
+    pub fn set_reason(&mut self, reason: &str) {
+        self.reason = reason.to_string();
     }
 }
 

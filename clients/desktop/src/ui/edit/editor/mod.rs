@@ -83,6 +83,7 @@ use model::Op;
 use panel::{Flag, Row, RowKind};
 use parse::K;
 use resolve::{Candidate, Ctx, Names, Pick, PinKind, Unit, Want};
+pub use resolve::find_in;
 use crate::account::Vocab;
 use crate::details::AliasInfo;
 use crate::catalog::search::{Part as SearchPart, Search};

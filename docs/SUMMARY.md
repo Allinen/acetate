@@ -9,6 +9,7 @@
 - [Editing](editing/README.md)
   - [The track editor](editing/editor.md)
   - [The artist page](editing/artist-page.md)
+  - [The album page](editing/album-page.md)
   - [Moving credits out of titles](editing/title-parsing.md)
   - [Merging](editing/merging.md)
   - [History and undo](editing/history.md)
