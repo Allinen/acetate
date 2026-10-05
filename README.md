@@ -17,12 +17,12 @@
 **That's not where it stops, it has LOTS of features literally nothing else has:**
 - The full library metadata is synced locally - **searches are instant and work fully offline**. Full syncs take seconds.
 - Indicators for **original files**, their filenames, etc.
-- Built in **music videos**
+- Built in support for **music videos**
 - Tracks **link** together (A is a remix of B and so on)
 - **Fully native cross-platform desktop app (egui)** - it's clean and fast. Simple web UI is included, but it's not the preferred way to use Acetate.
 - Python library for custom ingestion scripts, tailor it to your specific library setup
 
-**There's an [edit mode](#edit-mode) too**
+**There's an entire [feature rich edit mode](#edit-mode) too**
 
 
 ## How does it do all this?? Why doesn't my (old) favorite server/client do this??
@@ -34,7 +34,7 @@ Existing self-hosted music servers (Navidrome, Jellyfin, etc.) treat audio files
 - There is **nowhere to store information that tags can't hold**: where a file came from, release status, metadata history...
 - Artists are just strings, **ambiguity is obvious** and aliases are awkward.
 - Generic schemas built to serve many use cases produce queries that are **slow at scale and hard to fix**.
-- Bulk fixes, like changing an artist name, are not straight forward.
+- **Bulk fixes**, like changing an artist name, are not straightforward.
 
 Acetate fixes all of that: **files are immutable blobs; all metadata lives in the database.** Edits are instant across all tracks and visible to users immediately. Tags are read once at import and never written back. You don't need your files to have tags to import them, but it's useful for "refugees" migrating.
 
@@ -48,11 +48,11 @@ When listening, you won't accidentally change something you didn't mean to; adva
   <img src="assets/screenshots/track-edit-mode.webp" alt="A track in edit mode: metadata, credits, file, sources and history" width="820">
   
 - Mark albums as **singles, EP, mixtape**... or your custom values!
-- **Aliases for artists** - insanely useful when artists release under multiple names, but want their tracks to be sourced in place
-- **Group** tracks, album, and artists under whatever you want: collective, label, era project
+- **Aliases for artists** - insanely useful when artists release under multiple names, but you want their tracks in one place
+- **Group** tracks, album, and artists under whatever you want: collective, label, era, project...
 - **Notes** for tracks, albums, and artists - leave extra detail that doesn't fit elsewhere
 - Link "extra" files to them, **music videos, stems, samples...** anything you want
-- **Bulk editing tools** for everything - metadata, aliases, release status, year. Everything you need
+- **Bulk editing tools** for everything - metadata, aliases, release status, year. Automatic title parsing tools included
   <img src="assets/screenshots/bulk-select.webp" alt="Bulk selecting: marked tracks and the actions for them" width="820">
   <img src="assets/screenshots/bulk-editor.webp" alt="Bulk editing: changing album, status, etc. and reviewing results before applying" width="820">
 
@@ -66,8 +66,8 @@ When listening, you won't accidentally change something you didn't mean to; adva
 
   <img src="assets/screenshots/history.webp" alt="A track's history: every change, who made it and why, with Restore" width="560">
 
-- **Share** with your friends! If they're logged in, they can see it straight from the app, if not, the web version will do just fine
-- Built in **synced lyric editor** - supports headers like [Intro] and [Verse 1: Artist] even in synced lyrics
+- **Share** with your friends! If they're logged in, they can see it straight from the app; if not, the web version will do just fine
+- Built in **synced lyric editor** - supports headers like [Intro] and [Verse 1: Artist] - even in synced lyrics!
 
 <p align="center"><img src="assets/screenshots/lyric-editor.webp" alt="Timing lyrics in the synced lyric editor" width="820"></p>
 
