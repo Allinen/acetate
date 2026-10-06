@@ -324,7 +324,9 @@ impl Mirror {
     /// `wait`: seconds to wait for a change when there's none yet. Whether anything
     /// changed.
     pub async fn refresh(&self, wait: Option<u64>) -> anyhow::Result<bool> {
-        self.refresh_with(&self.token(), wait).await
+        let result = self.refresh_with(&self.token(), wait).await;
+        self.doing(Doing::Idle, 0, 0);
+        result
     }
 
     async fn refresh_with(&self, stop: &StopToken, wait: Option<u64>) -> anyhow::Result<bool> {
