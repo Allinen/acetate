@@ -18,3 +18,4 @@ Parts:
 - [Importing music](ingest.md)
 - [Moving from Navidrome](navidrome.md)
 - [Storage, trash and purging](storage.md)
+- [A mirror on your computer](mirror.md)

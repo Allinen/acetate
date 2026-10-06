@@ -10,6 +10,10 @@
 //! Moving the root moves everything in it (`plan_move`, then `move_root`): a rename when
 //! it stays on the same filesystem; otherwise a copy, each file's hash checked against the
 //! original's before the original is removed.
+//!
+//! The app holds `app.lock` in the default root while it's open (`hold_app_lock`), so the
+//! mirror service knows to step aside (`app_is_open`). It's always in the default root,
+//! wherever the root is, so both find it (with `ACETATE_ROOT`: in that root).
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -19,6 +23,8 @@ use serde::{Deserialize, Serialize};
 
 /// The pointer left in the default root when the root is elsewhere.
 const POINTER: &str = "root.json";
+/// Held by the app while it's open (in the default root).
+const APP_LOCK: &str = "app.lock";
 
 #[derive(Serialize, Deserialize)]
 struct Pointer {
@@ -83,6 +89,44 @@ fn write_pointer(default: &Path, root: &Path) -> anyhow::Result<()> {
     std::fs::rename(&temp, &pointer).with_context(|| format!("writing {}", pointer.display()))
 }
 
+/// The app's lock: in the default root (wherever the root is), or in `ACETATE_ROOT` when
+/// that chooses the root (a separate root: its own app and mirror).
+fn open_app_lock() -> std::io::Result<std::fs::File> {
+    let dir = match std::env::var_os("ACETATE_ROOT").filter(|r| !r.is_empty()) {
+        Some(root) => PathBuf::from(root),
+        None => default_root(),
+    };
+    std::fs::create_dir_all(&dir)?;
+    std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(dir.join(APP_LOCK))
+}
+
+/// Takes the app's lock and holds it until the app exits: on a thread of its own, as a
+/// mirror service checking whether the app is open holds it for a moment. `held` is set
+/// once it's taken.
+pub fn hold_app_lock(held: std::sync::Arc<std::sync::atomic::AtomicBool>) {
+    std::thread::spawn(move || match open_app_lock().and_then(|file| file.lock().map(|()| file)) {
+        Ok(file) => {
+            held.store(true, std::sync::atomic::Ordering::Relaxed);
+            // Held for as long as the app runs.
+            std::mem::forget(file);
+        }
+        Err(err) => eprintln!("couldn't take the app's lock: {err}"),
+    });
+}
+
+/// Whether the app is open (holds its lock). Takes the lock for a moment if it's free.
+pub fn app_is_open() -> bool {
+    let Ok(file) = open_app_lock() else { return false };
+    match file.try_lock() {
+        Ok(()) => {
+            let _ = file.unlock();
+            false
+        }
+        Err(std::fs::TryLockError::WouldBlock) => true,
+        Err(std::fs::TryLockError::Error(_)) => false,
+    }
+}
+
 /// One thing in the root, as a move would take it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Entry {
@@ -130,7 +174,7 @@ pub fn plan_move(from: &Path, to: &Path) -> anyhow::Result<MovePlan> {
     for item in std::fs::read_dir(from).with_context(|| format!("reading {}", from.display()))? {
         let item = item?;
         let name = item.file_name();
-        if name == POINTER {
+        if name == POINTER || name == APP_LOCK {
             continue;
         }
         if to.join(&name).symlink_metadata().is_ok() {

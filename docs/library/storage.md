@@ -10,6 +10,8 @@ Without it there is one volume, `main`, in `ACETATE_DATA_DIR` (default `./data`)
 
 Imports from the same filesystem are reflinks: instant and free of extra space.
 
+The desktop app can keep a [mirror](mirror.md) of the blobs, per volume.
+
 ## Trash
 
 **Nothing is deleted directly.** Covers (need `edit_metadata`), sources (`edit_sources`),

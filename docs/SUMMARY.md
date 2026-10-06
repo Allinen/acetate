@@ -19,6 +19,7 @@
   - [Importing music](library/ingest.md)
   - [Moving from Navidrome](library/navidrome.md)
   - [Storage, trash and purging](library/storage.md)
+  - [A mirror on your computer](library/mirror.md)
 - [Sharing](sharing.md)
 - [Running a server](admin/README.md)
   - [Users and permissions](admin/users.md)

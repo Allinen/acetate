@@ -10,7 +10,9 @@ acetate-desktop mirror <command>
 
   status            what's mirrored, what's missing, what could be removed
   sync              bring the mirror up to date, then stop
-  watch             bring it up to date and keep it so (for a service)
+  watch             keep it up to date (for a service): steps aside while the app
+                    is open (the app mirrors then), waits while not logged in or
+                    while mirroring is off
   rehash            hash every blob here again
   removable         list blobs nothing wants anymore (the server let them go)
   remove <hash>...  remove those (or `remove all`)
@@ -26,6 +28,9 @@ pub fn run(args: &[String]) -> i32 {
         return 2;
     };
     let runtime = tokio::runtime::Runtime::new().expect("a tokio runtime");
+    if command == "watch" && args.len() == 1 {
+        return runtime.block_on(watch());
+    }
     let root = crate::root::root();
     let api = crate::api::Api::new(root.clone());
     if api.session().is_none() {
@@ -52,17 +57,6 @@ pub fn run(args: &[String]) -> i32 {
                 print_run(&mirror);
                 synced?;
                 print_status(&mirror)
-            }
-            ("watch", []) => {
-                let shown = show_progress(mirror.clone());
-                let stopper = mirror.clone();
-                tokio::spawn(async move {
-                    let _ = tokio::signal::ctrl_c().await;
-                    stopper.stop();
-                });
-                mirror.watch().await;
-                shown.abort();
-                Ok(())
             }
             ("rehash", []) => {
                 let shown = show_progress(mirror.clone());
@@ -117,6 +111,103 @@ pub fn run(args: &[String]) -> i32 {
             eprintln!("{err:#}");
             1
         }
+    }
+}
+
+/// `watch`: keeps the mirror up to date until Ctrl+C (or the service is stopped). The
+/// app being open, not being logged in or mirroring being off: waits (saying so once),
+/// and looks again every few seconds. The root, login and settings are read again each
+/// time it starts mirroring (the app may have changed them meanwhile).
+async fn watch() -> i32 {
+    let quit = std::sync::Arc::new(tokio::sync::Notify::new());
+    let quitting = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    {
+        let (quit, quitting) = (quit.clone(), quitting.clone());
+        tokio::spawn(async move {
+            let _ = tokio::signal::ctrl_c().await;
+            quitting.store(true, std::sync::atomic::Ordering::Relaxed);
+            quit.notify_waiters();
+        });
+    }
+    let quit_now = || quitting.load(std::sync::atomic::Ordering::Relaxed);
+    // Sleeps, unless asked to quit meanwhile (then false).
+    let pause = |seconds: u64| {
+        let quit = quit.clone();
+        let quitting = quitting.clone();
+        async move {
+            let notified = quit.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if quitting.load(std::sync::atomic::Ordering::Relaxed) {
+                return false;
+            }
+            tokio::select! {
+                _ = tokio::time::sleep(Duration::from_secs(seconds)) => true,
+                _ = notified => false,
+            }
+        }
+    };
+    let mut said = String::new();
+    let mut say = |text: String| {
+        if text != said {
+            println!("{text}");
+            said = text;
+        }
+    };
+    loop {
+        if quit_now() {
+            return 0;
+        }
+        if crate::root::app_is_open() {
+            say("The app is open: it mirrors meanwhile.".into());
+            if !pause(3).await {
+                return 0;
+            }
+            continue;
+        }
+        let root = crate::root::root();
+        let api = crate::api::Api::new(root.clone());
+        if api.session().is_none() {
+            say("Not logged in: log in with the app.".into());
+            if !pause(30).await {
+                return 0;
+            }
+            continue;
+        }
+        let mirror = match Mirror::open(&root, api) {
+            Ok(mirror) => std::sync::Arc::new(mirror),
+            Err(err) => {
+                say(format!("{err:#}"));
+                if !pause(5).await {
+                    return 0;
+                }
+                continue;
+            }
+        };
+        if !mirror.config().is_ok_and(|c| c.enabled) {
+            say("Mirroring is off (Settings, Mirror).".into());
+            drop(mirror);
+            if !pause(30).await {
+                return 0;
+            }
+            continue;
+        }
+        say(format!("Mirroring {} into {}.", mirror.server().unwrap_or_default(), root.display()));
+        let shown = show_progress(mirror.clone());
+        let watching = tokio::spawn({
+            let mirror = mirror.clone();
+            async move { mirror.watch().await }
+        });
+        // Until the app opens (it takes over), or asked to quit.
+        loop {
+            if !pause(3).await || crate::root::app_is_open() || watching.is_finished() {
+                mirror.stop();
+                break;
+            }
+        }
+        let _ = watching.await;
+        shown.abort();
+        drop(mirror);
     }
 }
 

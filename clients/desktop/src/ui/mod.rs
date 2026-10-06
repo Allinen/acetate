@@ -197,9 +197,15 @@ pub struct Shell {
     /// The catalog was replaced: freed memory is given back next frame (`memory::trim`).
     pub trim_asked: bool,
     pub actions: Vec<Action>,
+    /// The root: where everything's kept (see `root`).
     pub data_dir: PathBuf,
     /// Where copies of things are kept (scaled covers).
     pub cache_dir: PathBuf,
+    /// The mirror of the server's files (admins), kept up to date while the app is open.
+    pub mirror: crate::mirror::in_app::InApp,
+    /// The app holds its lock (see `root::hold_app_lock`): the mirror service has been
+    /// told to step aside.
+    pub app_lock: Arc<std::sync::atomic::AtomicBool>,
     /// Stars, ratings and plays as shown (the catalog's, with this session's changes).
     pub marks: Marks,
     /// The queue kept between runs (set at login), and whether it was brought back yet.
@@ -636,6 +642,8 @@ impl App {
         let runtime = Runtime::new().expect("a tokio runtime");
         let data_dir = crate::root::root();
         let cache_dir = crate::root::cache_dir();
+        let app_lock = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        crate::root::hold_app_lock(app_lock.clone());
         let api = Api::new(data_dir.clone());
         let controller = runtime.block_on(async { Controller::new(api.clone(), cc.egui_ctx.clone()) });
         runtime.spawn(controller.clone().monitor());
@@ -683,6 +691,8 @@ impl App {
             actions: Vec::new(),
             data_dir,
             cache_dir,
+            mirror: Default::default(),
+            app_lock,
             marks: Marks::default(),
             cover_slots: Default::default(),
             resume: None,
@@ -1024,6 +1034,7 @@ impl App {
                     self.forward.clear();
                 }
                 Action::LogOut => {
+                    self.shell.mirror.shut_down(self.shell.runtime.handle());
                     self.shell.api.logout();
                     // (The queue was kept on disk as it played; it comes back at the next login.)
                     let c = self.shell.controller.clone();
@@ -1230,6 +1241,11 @@ impl eframe::App for App {
         self.shell.take_mark_answers();
         self.shell.playlists.poll();
         self.shell.account.poll();
+        // Admins: the mirror is opened (it runs if it's turned on).
+        if self.shell.account.can("admin") {
+            let shell = &mut self.shell;
+            shell.mirror.start(shell.runtime.handle(), shell.api.clone(), shell.data_dir.clone(), shell.app_lock.clone(), ctx.clone());
+        }
         // The library is asked what changed every two minutes (a delta: cheap), so
         // edits made elsewhere show up without F5.
         // (Two minutes after the last attempt, so a failing one isn't retried every frame.)

@@ -29,6 +29,7 @@ pub mod mark_og;
 pub mod marking;
 pub mod not_imported;
 pub mod settings;
+pub mod settings_mirror;
 pub mod sidebar;
 pub mod track_table;
 pub mod trash;

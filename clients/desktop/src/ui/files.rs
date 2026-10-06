@@ -61,6 +61,18 @@ pub fn choose(shell: &crate::ui::Shell, title: &str, kinds: (&str, &[&str]), mul
     });
 }
 
+/// The system's folder dialog, asked in the background; the folder chosen arrives in
+/// `answer`.
+pub fn choose_folder(shell: &crate::ui::Shell, title: &str, answer: &Arc<Mutex<Vec<PathBuf>>>) {
+    let (title, answer, ctx) = (title.to_string(), answer.clone(), shell.ctx.clone());
+    shell.runtime.spawn(async move {
+        if let Some(folder) = rfd::AsyncFileDialog::new().set_title(&title).pick_folder().await {
+            answer.lock().unwrap().push(folder.path().to_path_buf());
+            ctx.request_repaint();
+        }
+    });
+}
+
 /// A file's extension, lowercase ("" without one).
 pub fn extension(path: &std::path::Path) -> String {
     path.extension().and_then(|e| e.to_str()).map(str::to_lowercase).unwrap_or_default()

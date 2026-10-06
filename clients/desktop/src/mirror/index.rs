@@ -62,6 +62,24 @@ pub struct Removable {
     pub volume: Option<String>,
 }
 
+/// What a server has on one of its volumes, as listed: what a mirror would keep, and
+/// the previous files besides.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct VolumeTotal {
+    pub name: String,
+    pub kept: Count,
+    pub previous: Count,
+}
+
+/// Blobs here nothing wants, for one reason: their state on the server ("gone" if it
+/// doesn't list them, None if no mirror of a server lists them at all) and volume.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RemovableGroup {
+    pub state: Option<String>,
+    pub volume: Option<String>,
+    pub count: Count,
+}
+
 /// How many blobs, and their bytes (of those whose size is known).
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Count {
@@ -271,6 +289,52 @@ impl Index {
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
+    /// What's missing, in all: (blobs and bytes, blobs of unknown size).
+    pub fn missing_totals(&self) -> anyhow::Result<(Count, u64)> {
+        Ok(self.conn.query_row(
+            "SELECT count(*), coalesce(sum(w.size), 0), count(*) FILTER (WHERE w.size IS NULL)
+             FROM wanted w WHERE NOT EXISTS (SELECT 1 FROM have h WHERE h.sha256 = w.sha256)",
+            [],
+            |r| Ok((Count { blobs: r.get::<_, i64>(0)? as u64, bytes: r.get::<_, i64>(1)? as u64 }, r.get::<_, i64>(2)? as u64)),
+        )?)
+    }
+
+    /// Per volume of `server`: what a mirror keeps of it, and its previous files.
+    pub fn volume_totals(&self, server: &str) -> anyhow::Result<Vec<VolumeTotal>> {
+        let mut query = self.conn.prepare(
+            "SELECT volume,
+                    count(*) FILTER (WHERE state IN ('audio', 'extra', 'cover', 'not_imported')),
+                    coalesce(sum(size) FILTER (WHERE state IN ('audio', 'extra', 'cover', 'not_imported')), 0),
+                    count(*) FILTER (WHERE state = 'previous'),
+                    coalesce(sum(size) FILTER (WHERE state = 'previous'), 0)
+             FROM listed WHERE server = ?1 AND volume IS NOT NULL GROUP BY volume ORDER BY volume",
+        )?;
+        let rows = query.query_map([server], |r| {
+            Ok(VolumeTotal {
+                name: r.get(0)?,
+                kept: Count { blobs: r.get::<_, i64>(1)? as u64, bytes: r.get::<_, i64>(2)? as u64 },
+                previous: Count { blobs: r.get::<_, i64>(3)? as u64, bytes: r.get::<_, i64>(4)? as u64 },
+            })
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// What `removable` lists, grouped by why.
+    pub fn removable_groups(&self, server: &str) -> anyhow::Result<Vec<RemovableGroup>> {
+        let mut groups: Vec<RemovableGroup> = Vec::new();
+        for r in self.removable(server)? {
+            let size = r.size.max(0) as u64;
+            match groups.iter_mut().find(|g| g.state == r.state && g.volume == r.volume) {
+                Some(group) => {
+                    group.count.blobs += 1;
+                    group.count.bytes += size;
+                }
+                None => groups.push(RemovableGroup { state: r.state, volume: r.volume, count: Count { blobs: 1, bytes: size } }),
+            }
+        }
+        Ok(groups)
+    }
+
     /// Here and not wanted, with why (as `server` lists it, if it does).
     pub fn removable(&self, server: &str) -> anyhow::Result<Vec<Removable>> {
         let mut query = self.conn.prepare(
@@ -296,11 +360,14 @@ impl Index {
 
     // ---- Pins ----
 
+    // For offline downloads of single tracks (next): kept wanted whatever the mirror says.
+    #[allow(dead_code)]
     pub fn pin(&self, sha256: &str, reason: &str) -> anyhow::Result<()> {
         self.conn.execute("INSERT OR IGNORE INTO pins (sha256, reason) VALUES (?1, ?2)", params![sha256, reason])?;
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn unpin(&self, sha256: &str, reason: &str) -> anyhow::Result<()> {
         self.conn.execute("DELETE FROM pins WHERE sha256 = ?1 AND reason = ?2", params![sha256, reason])?;
         Ok(())

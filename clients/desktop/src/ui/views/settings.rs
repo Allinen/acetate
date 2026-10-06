@@ -1,6 +1,6 @@
-//! Settings: the sound output and volume, the account, what the server stores (admins),
-//! and the library kept on this computer (how much, where, and checking it against the
-//! server).
+//! Settings: the sound output and volume, the account, what the server stores and the
+//! mirror of its files (admins, see `settings_mirror`), and the library kept on this
+//! computer (how much, where, moving it, and checking it against the server).
 
 use std::sync::{Arc, Mutex};
 
@@ -25,6 +25,8 @@ pub struct SettingsPage {
     /// What the server stores on each volume (`GET /api/storage`, admins), asked when the
     /// page opens.
     storage: Arc<Mutex<Option<Result<Vec<StorageVolume>, String>>>>,
+    /// The mirror, and moving the folder everything's kept in.
+    mirror: super::settings_mirror::MirrorSection,
 }
 
 #[derive(Clone, serde::Deserialize)]
@@ -56,6 +58,7 @@ fn size(bytes: i64) -> String {
 
 impl SettingsPage {
     pub fn opened(&mut self, shell: &Shell) {
+        self.mirror.opened(shell);
         if shell.account.can("admin") {
             let (api, storage, ctx) = (shell.api.clone(), self.storage.clone(), shell.ctx.clone());
             shell.runtime.spawn(async move {
@@ -203,6 +206,9 @@ impl SettingsPage {
                         hint(ui, "Audio counts tracks' current and previous files; “other” is what nothing refers to anymore. Sizes the server never recorded (older covers) are filled in by acetate measure-covers.");
                     }
                 }
+
+                section(ui, "Mirror");
+                self.mirror.show(ui, shell);
             }
 
             section(ui, "Memory");
@@ -255,10 +261,13 @@ impl SettingsPage {
                 ui.label(RichText::new("Where").color(P.muted));
                 ui.vertical(|ui| {
                     ui.add(egui::Label::new(RichText::new(shell.data_dir.display().to_string()).monospace().small()).selectable(true));
+                    ui.label(RichText::new("Everything: settings, the library, playlists, the mirror").color(P.faint).small());
                     ui.add(egui::Label::new(RichText::new(shell.cache_dir.display().to_string()).monospace().small()).selectable(true));
+                    ui.label(RichText::new("Scaled covers (a cache, made again when needed)").color(P.faint).small());
                 });
                 ui.end_row();
             });
+            self.mirror.show_move(ui, shell);
             ui.add_space(6.0);
             if widgets::chip(ui, "Check for changes now  F5", false) {
                 shell.act(Action::RefreshLibrary);
