@@ -226,6 +226,7 @@ pub(crate) mod tests {
         let dir = tempfile::tempdir()?;
         let app = api::router(AppState {
             uploads: Default::default(),
+            blob_changes: Default::default(),
             pool,
             store: BlobStore::open(dir.path())?,
             web_dir: dir.path().to_path_buf(),

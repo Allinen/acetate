@@ -71,6 +71,7 @@ async fn setup(connect: PgConnectOptions) -> anyhow::Result<Setup> {
     let file = sqlx::query_scalar("SELECT file_id FROM tracks WHERE id = $1").bind(track).fetch_one(&owner).await?;
     let app = api::router(AppState {
         uploads: Default::default(),
+        blob_changes: Default::default(),
         pool,
         store,
         web_dir: dir.path().to_path_buf(),

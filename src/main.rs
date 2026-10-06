@@ -416,6 +416,11 @@ async fn main() -> anyhow::Result<()> {
         if trimmed > 0 {
             tracing::info!("trimmed {trimmed} old catalog changes");
         }
+        // And the mirrors' (migration 0059), as long.
+        let trimmed = db::blobs::trim_changes(&mut conn, 90).await?;
+        if trimmed > 0 {
+            tracing::info!("trimmed {trimmed} old blob changes");
+        }
     }
 
     let store = BlobStore::open_volumes(&config.volumes)?;
@@ -565,8 +570,12 @@ async fn serve(config: Config, owner_pool: sqlx::PgPool, store: BlobStore) -> an
     let upload_limits = api::upload_limits::UploadLimits::load(&pool, config.max_upload_bytes, config.daily_upload_bytes).await?;
     // Failed logins and share lookups, likewise.
     let rate_limits = api::RateLimits::load(&pool).await?;
+    // Mirrors waiting for changes hear of them through this.
+    let blob_changes = std::sync::Arc::new(api::mirror::BlobChanges::default());
+    tokio::spawn(api::mirror::listen(pool.clone(), blob_changes.clone()));
     let app = api::router(api::AppState {
         uploads: Default::default(),
+        blob_changes,
         pool,
         store,
         web_dir: config.web_dir.clone(),

@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM blob_changes WHERE xid <= $1::text::xid8",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "3c46b35a93125df4f8365af244fe2b59134ba74a381e9fa715663aee9ed559d0"
+}

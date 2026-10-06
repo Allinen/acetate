@@ -17,6 +17,9 @@ mod groupings;
 mod groups;
 mod media;
 mod metadata;
+pub mod mirror;
+#[cfg(test)]
+mod mirror_tests;
 mod playlists;
 mod rate_limit;
 mod problems;
@@ -84,6 +87,8 @@ pub struct AppState {
     pub upload_limits: Arc<upload_limits::UploadLimits>,
     /// Chunked uploads under way (see `uploads`).
     pub uploads: Arc<uploads::Uploads>,
+    /// Wakes mirrors waiting for blobs to change (see `mirror`).
+    pub blob_changes: Arc<mirror::BlobChanges>,
 }
 
 impl AppState {
@@ -240,6 +245,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/trash/restore", require(&[EditMetadata, EditSources], post(trash::restore)))
         .route("/api/trash/purge", require(&[Admin], post(trash::purge)))
         .route("/api/storage", require(&[Admin], get(storage::totals)))
+        .route("/api/mirror", require(&[Admin], get(mirror::list)).layer(CompressionLayer::new()))
+        .route("/api/mirror/blobs/{sha256}", require(&[Admin], get(mirror::blob)))
         .route("/api/files/replaced", require(&[Admin], get(trash::replaced_files)))
         .route("/api/files/trash", require(&[Admin], post(trash::trash_files)))
         .route("/api/source-shapes", require(&[Browse], get(sources::shapes)))
