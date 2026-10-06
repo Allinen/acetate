@@ -20,6 +20,9 @@ use crate::api::{Api, CatalogResponse, Session};
 /// Deltas kept on disk beyond this: the next refresh fetches the whole catalog instead.
 const DELTAS_LIMIT: u64 = 32 * 1024 * 1024;
 
+/// Deltas on disk beyond this are folded into the whole catalog after a start.
+const COMPACT_ABOVE: u64 = 4 * 1024 * 1024;
+
 /// The server and user, readable but safe in a file name (things kept on disk are per
 /// server and user).
 pub fn key(session: &Session) -> String {
@@ -42,6 +45,9 @@ pub struct Store {
     body: PathBuf,
     etag: PathBuf,
     deltas: PathBuf,
+    /// Held while the files are read or written: a load never sees a copy half way
+    /// through being compacted, and a delta is never lost to it.
+    files: std::sync::Mutex<()>,
 }
 
 impl Store {
@@ -51,26 +57,29 @@ impl Store {
             body: data_dir.join(format!("catalog-{key}.json")),
             etag: data_dir.join(format!("catalog-{key}.etag")),
             deltas: data_dir.join(format!("catalog-{key}.deltas")),
+            files: std::sync::Mutex::new(()),
         }
     }
 
     /// The copy on disk (the whole catalog, then its deltas), if there is one that reads.
     pub fn load(&self) -> Option<Arc<Catalog>> {
+        let _files = self.files.lock().unwrap_or_else(|e| e.into_inner());
         let body = std::fs::read(&self.body).ok()?;
         // An old format after an update: the server's copy replaces it.
-        let mut raw = model::parse(&body).ok()?;
+        let raw = model::parse(&body).ok()?;
         // Every delta merged into the rows first, the index built once: building it takes
-        // a moment at 185k tracks, and there can be hundreds of deltas.
+        // a moment at 185k tracks, and there can be thousands of deltas.
+        let mut merger = super::index::Merger::new(raw);
         if let Ok(deltas) = std::fs::read(&self.deltas) {
             for line in deltas.split(|b| *b == b'\n').filter(|l| !l.is_empty()) {
                 match model::parse(line) {
-                    Ok(delta) => raw = super::index::merge_raw(raw, delta),
+                    Ok(delta) => merger.add(delta),
                     // A half-written last line (a crash while saving): the rest is fine.
                     Err(_) => break,
                 }
             }
         }
-        Some(Arc::new(Catalog::build(raw)))
+        Some(Arc::new(Catalog::build(merger.finish())))
     }
 
     /// Asks the server what changed since `current` (all of it without one); a new copy
@@ -93,6 +102,7 @@ impl Store {
                     anyhow::Ok((Arc::new(catalog), body, delta))
                 })
                 .await??;
+                let _files = self.files.lock().unwrap_or_else(|e| e.into_inner());
                 if delta {
                     self.save_delta(&body).context("keeping the library on disk")?;
                 } else {
@@ -101,6 +111,29 @@ impl Store {
                 Ok(Some(catalog))
             }
         }
+    }
+
+    /// Folds the deltas into the whole catalog on disk when they've grown (the next start
+    /// reads one file, not hundreds of deltas on top of it). The version stays the same, so
+    /// nothing in memory changes. Blocking: for a thread of its own.
+    fn compact(&self) -> anyhow::Result<()> {
+        let _files = self.files.lock().unwrap_or_else(|e| e.into_inner());
+        if !std::fs::metadata(&self.deltas).is_ok_and(|m| m.len() > COMPACT_ABOVE) {
+            return Ok(());
+        }
+        let folded = {
+            let body = std::fs::read(&self.body)?;
+            let deltas = std::fs::read(&self.deltas)?;
+            super::compact::fold(&body, &deltas)?
+        };
+        // The same order as a whole catalog arriving: the body replaced first, then the
+        // deltas emptied (a crash between the two leaves deltas that apply again, which
+        // does no harm: the rows they hold are replaced by id).
+        let temp = self.body.with_extension("json.part");
+        std::fs::write(&temp, folded)?;
+        std::fs::rename(&temp, &self.body)?;
+        std::fs::write(&self.deltas, b"")?;
+        Ok(())
     }
 
     /// A whole catalog: replaces the copy, and its deltas start over.
@@ -137,6 +170,12 @@ pub async fn load_and_refresh(store: Arc<Store>, api: Api, report: impl Fn(Updat
         report(Update::Loaded { catalog, from_server: false });
     }
     refresh(&store, &api, disk, &report).await;
+    // Once the screen has what it needs: the copy on disk is tidied for the next start
+    // (nothing to report if it fails: the deltas stay, and apply as before).
+    let compacting = store.clone();
+    if let Ok(Ok(())) = tokio::task::spawn_blocking(move || compacting.compact()).await {
+        crate::memory::trim();
+    }
 }
 
 pub async fn refresh(store: &Store, api: &Api, current: Option<Arc<Catalog>>, report: &impl Fn(Update)) {
@@ -161,16 +200,36 @@ mod kept_copy {
         let t = std::time::Instant::now();
         let raw = model::parse(&body).unwrap_or_else(|e| panic!("the copy doesn't read: {e:#}"));
         println!("copy: {} tracks, version {:?}, parsed in {:?}", raw.tracks.rows.len(), raw.version, t.elapsed());
-        let mut raw = raw;
+        let mut merger = crate::catalog::index::Merger::new(raw);
         let deltas = std::fs::read(format!("{prefix}.deltas")).unwrap_or_default();
         let lines: Vec<&[u8]> = deltas.split(|b| *b == b'\n').filter(|l| !l.is_empty()).collect();
         for (n, line) in lines.iter().enumerate() {
             match model::parse(line) {
-                Ok(delta) => raw = crate::catalog::index::merge_raw(raw, delta),
+                Ok(delta) => merger.add(delta),
                 Err(err) => panic!("delta {n} doesn't read: {err:#}"),
             }
         }
+        let t = std::time::Instant::now();
+        let raw = merger.finish();
+        println!("deltas merged in {:?}", t.elapsed());
         let catalog = Catalog::build(raw);
+        println!("built in {:?}", t.elapsed());
         println!("with {} deltas: {} tracks, version {:?}, in {:?} in all", lines.len(), catalog.tracks.len(), catalog.version, t.elapsed());
+        // Folded into one body (in memory only: nothing on disk is touched), the same
+        // catalog has to come out, and load faster.
+        let body = std::fs::read(format!("{prefix}.json")).unwrap();
+        let deltas = std::fs::read(format!("{prefix}.deltas")).unwrap_or_default();
+        let t = std::time::Instant::now();
+        let folded = super::super::compact::fold(&body, &deltas).unwrap_or_else(|e| panic!("folding: {e:#}"));
+        println!("folded in {:?}: {} MB", t.elapsed(), folded.len() / 1_000_000);
+        let t = std::time::Instant::now();
+        let again = Catalog::build(model::parse(&folded).unwrap());
+        println!("the folded copy loads in {:?}: {} tracks, version {:?}", t.elapsed(), again.tracks.len(), again.version);
+        assert_eq!(again.tracks.len(), catalog.tracks.len());
+        assert_eq!(again.version, catalog.version);
+        let (mut a, mut b): (Vec<_>, Vec<_>) = (again.tracks.iter().map(|t| (t.id, t.title.clone())).collect(), catalog.tracks.iter().map(|t| (t.id, t.title.clone())).collect());
+        a.sort();
+        b.sort();
+        assert!(a == b, "the folded copy's tracks differ");
     }
 }

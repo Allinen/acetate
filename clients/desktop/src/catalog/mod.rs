@@ -5,6 +5,7 @@
 //! up quickly (by id, an album's tracks, an artist's...); `store` keeps it on disk and
 //! brings it up to date.
 
+mod compact;
 pub mod index;
 pub mod marks;
 pub mod model;

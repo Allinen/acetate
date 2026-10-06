@@ -497,62 +497,130 @@ fn by_key(keys: &[String], a: u32, b: u32) -> Ordering {
 /// removed ones dropped), without building the index: several deltas are merged first
 /// and the index built once (building it takes a moment at 185k tracks).
 pub fn merge_raw(base: model::Raw, delta: model::Raw) -> model::Raw {
-    fn merge<T>(rows: Vec<T>, changed: Vec<T>, removed: &[Uuid], id: impl Fn(&T) -> Uuid) -> Vec<T> {
-        let removed: std::collections::HashSet<Uuid> = removed.iter().copied().collect();
-        let mut changed: HashMap<Uuid, T> = changed.into_iter().map(|r| (id(&r), r)).collect();
-        let mut out: Vec<T> = rows
-            .into_iter()
-            .filter(|r| !removed.contains(&id(r)))
-            .map(|r| changed.remove(&id(&r)).unwrap_or(r))
-            .collect();
-        // New ones (their order doesn't matter: lists are sorted when shown).
-        out.extend(changed.into_values());
-        out
+    let mut merger = Merger::new(base);
+    merger.add(delta);
+    merger.finish()
+}
+
+/// Rows kept by id, in their order: a change replaces a row where it is, a removal
+/// leaves a hole, new rows come last. A delta costs what it holds, not the catalog's size.
+pub(super) struct Rows<T> {
+    rows: Vec<Option<T>>,
+    at: HashMap<Uuid, usize>,
+}
+
+impl<T> Rows<T> {
+    pub(super) fn new(rows: Vec<T>, id: impl Fn(&T) -> Uuid) -> Rows<T> {
+        let at = rows.iter().enumerate().map(|(i, r)| (id(r), i)).collect();
+        Rows { rows: rows.into_iter().map(Some).collect(), at }
     }
-    let removed = &delta.removed;
-    let tracks = merge(base.tracks.rows, delta.tracks.rows, &removed.tracks, |t| t.id);
-    let albums = merge(base.albums.rows, delta.albums.rows, &removed.albums, |a| a.id);
-    let artists = merge(base.artists.rows, delta.artists.rows, &removed.artists, |a| a.id);
-    // A changed extra replaces its row (one taken off comes flagged, and is left out when
-    // indexed).
-    let extras = merge(base.extras.rows, delta.extras.rows, &removed.extras, |e| e.id);
-    let mut annotations: HashMap<Uuid, model::Annotation> = base.annotations.rows.into_iter().map(|a| (a.id, a)).collect();
-    for id in &removed.annotations {
-        annotations.remove(id);
-    }
-    for a in delta.annotations.rows {
-        annotations.insert(a.id, a);
-    }
-    // A changed track's flags replace its old ones (none left: an empty list).
-    let mut issues: HashMap<Uuid, Vec<(Uuid, String)>> = base.issues.rows.into_iter().map(|i| (i.0, i.1)).collect();
-    for id in &removed.tracks {
-        issues.remove(id);
-    }
-    for model::Issues(track, flags) in delta.issues.rows {
-        if flags.is_empty() {
-            issues.remove(&track);
-        } else {
-            issues.insert(track, flags);
+
+    pub(super) fn apply(&mut self, changed: Vec<T>, removed: &[Uuid], id: impl Fn(&T) -> Uuid) {
+        for gone in removed {
+            if let Some(i) = self.at.remove(gone) {
+                self.rows[i] = None;
+            }
+        }
+        for row in changed {
+            match self.at.get(&id(&row)) {
+                Some(&i) => self.rows[i] = Some(row),
+                None => {
+                    self.at.insert(id(&row), self.rows.len());
+                    self.rows.push(Some(row));
+                }
+            }
         }
     }
-    let part = |rows| model::Part { columns: Vec::new(), rows };
-    model::Raw {
-        format: delta.format,
-        version: delta.version.or(base.version),
-        delta: false,
-        removed: model::Removed::default(),
-        tracks: part(tracks),
-        albums: model::Part { columns: Vec::new(), rows: albums },
-        artists: model::Part { columns: Vec::new(), rows: artists },
-        annotations: model::Part { columns: Vec::new(), rows: annotations.into_values().collect() },
-        issues: model::Part { columns: Vec::new(), rows: issues.into_iter().map(|(t, f)| model::Issues(t, f)).collect() },
-        extras: model::Part { columns: Vec::new(), rows: extras },
-        // Sent whole with every delta.
-        groupings: delta.groupings,
-        playlists: delta.playlists,
+
+    pub(super) fn finish(self) -> Vec<T> {
+        self.rows.into_iter().flatten().collect()
     }
 }
 
+/// A base catalog with deltas merged in one after another.
+pub struct Merger {
+    format: u32,
+    version: Option<String>,
+    tracks: Rows<model::Track>,
+    albums: Rows<model::Album>,
+    artists: Rows<model::Artist>,
+    extras: Rows<model::Extra>,
+    annotations: HashMap<Uuid, model::Annotation>,
+    issues: HashMap<Uuid, Vec<(Uuid, String)>>,
+    groupings: model::Part<model::Grouping>,
+    playlists: Vec<model::Playlist>,
+}
+
+impl Merger {
+    pub fn new(base: model::Raw) -> Merger {
+        Merger {
+            format: base.format,
+            version: base.version,
+            tracks: Rows::new(base.tracks.rows, |t| t.id),
+            albums: Rows::new(base.albums.rows, |a| a.id),
+            artists: Rows::new(base.artists.rows, |a| a.id),
+            extras: Rows::new(base.extras.rows, |e| e.id),
+            annotations: base.annotations.rows.into_iter().map(|a| (a.id, a)).collect(),
+            issues: base.issues.rows.into_iter().map(|i| (i.0, i.1)).collect(),
+            groupings: base.groupings,
+            playlists: base.playlists,
+        }
+    }
+
+    pub fn add(&mut self, delta: model::Raw) {
+        let removed = &delta.removed;
+        self.tracks.apply(delta.tracks.rows, &removed.tracks, |t| t.id);
+        self.albums.apply(delta.albums.rows, &removed.albums, |a| a.id);
+        self.artists.apply(delta.artists.rows, &removed.artists, |a| a.id);
+        // A changed extra replaces its row (one taken off comes flagged, and is left out
+        // when indexed).
+        self.extras.apply(delta.extras.rows, &removed.extras, |e| e.id);
+        for id in &removed.annotations {
+            self.annotations.remove(id);
+        }
+        for a in delta.annotations.rows {
+            self.annotations.insert(a.id, a);
+        }
+        // A changed track's flags replace its old ones (none left: an empty list).
+        for id in &removed.tracks {
+            self.issues.remove(id);
+        }
+        for model::Issues(track, flags) in delta.issues.rows {
+            if flags.is_empty() {
+                self.issues.remove(&track);
+            } else {
+                self.issues.insert(track, flags);
+            }
+        }
+        self.format = delta.format;
+        if delta.version.is_some() {
+            self.version = delta.version;
+        }
+        // Sent whole with every delta.
+        self.groupings = delta.groupings;
+        self.playlists = delta.playlists;
+    }
+
+    pub fn finish(self) -> model::Raw {
+        fn part<T>(rows: Vec<T>) -> model::Part<T> {
+            model::Part { columns: Vec::new(), rows }
+        }
+        model::Raw {
+            format: self.format,
+            version: self.version,
+            delta: false,
+            removed: model::Removed::default(),
+            tracks: part(self.tracks.finish()),
+            albums: part(self.albums.finish()),
+            artists: part(self.artists.finish()),
+            annotations: part(self.annotations.into_values().collect()),
+            issues: part(self.issues.into_iter().map(|(t, f)| model::Issues(t, f)).collect()),
+            extras: part(self.extras.finish()),
+            groupings: self.groupings,
+            playlists: self.playlists,
+        }
+    }
+}
 /// Newest release first (no date last), then newest added.
 fn newest_first(a: &Track, b: &Track) -> Ordering {
     fn date(t: &Track) -> &str {

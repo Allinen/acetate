@@ -95,7 +95,7 @@ pub struct Track {
     pub sample_rate: Option<i32>,
 }
 
-const TRACK_COLUMNS: &[&str] = &[
+pub(super) const TRACK_COLUMNS: &[&str] = &[
     "id", "title", "artist_display", "credits", "albums", "duration_ms", "file_id", "cover_id",
     "cover_key", "release_date", "year", "status", "genres", "created_at", "is_restricted", "codec",
     "groupings", "platforms", "original_filename", "bitrate", "sample_rate",
@@ -122,7 +122,7 @@ pub struct Album {
     pub groupings: Vec<Uuid>,
 }
 
-const ALBUM_COLUMNS: &[&str] = &[
+pub(super) const ALBUM_COLUMNS: &[&str] = &[
     "id", "title", "kind", "artist_display", "credits", "release_date", "year", "cover_id",
     "cover_key", "created_at", "track_count", "duration_ms", "groupings",
 ];
@@ -140,7 +140,7 @@ pub struct Grouping {
     pub artists: Vec<Uuid>,
 }
 
-const GROUPING_COLUMNS: &[&str] = &["id", "kind", "name", "track_count", "album_count", "artists"];
+pub(super) const GROUPING_COLUMNS: &[&str] = &["id", "kind", "name", "track_count", "album_count", "artists"];
 
 /// An extra (vocals, stems, a sample…: not a track), to search and play.
 #[derive(Debug, Clone, Deserialize)]
@@ -173,7 +173,7 @@ impl Extra {
     }
 }
 
-const EXTRA_COLUMNS: &[&str] = &["id", "name", "kind", "is_restricted", "hidden", "links", "files", "first_file", "duration_ms", "video", "thumb_key"];
+pub(super) const EXTRA_COLUMNS: &[&str] = &["id", "name", "kind", "is_restricted", "hidden", "links", "files", "first_file", "duration_ms", "video", "thumb_key"];
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Artist {
@@ -192,7 +192,7 @@ impl Artist {
     }
 }
 
-const ARTIST_COLUMNS: &[&str] = &["id", "name", "disambiguation", "aliases", "track_count", "album_count"];
+pub(super) const ARTIST_COLUMNS: &[&str] = &["id", "name", "disambiguation", "aliases", "track_count", "album_count"];
 
 /// The user's own plays, rating and star on a track, album or artist.
 // Every column is read (rows are arrays in column order); not all are shown yet.
@@ -209,7 +209,7 @@ pub struct Annotation {
     pub starred_at: Option<String>,
 }
 
-const ANNOTATION_COLUMNS: &[&str] = &["kind", "id", "play_count", "last_played_at", "rating", "starred_at"];
+pub(super) const ANNOTATION_COLUMNS: &[&str] = &["kind", "id", "play_count", "last_played_at", "rating", "starred_at"];
 
 /// A track's open review flags: the track, and each flag's id and kind (a kind from
 /// `/api/vocab`'s `review_kinds`), in the order to show them. In a delta, a track with
@@ -217,7 +217,7 @@ const ANNOTATION_COLUMNS: &[&str] = &["kind", "id", "play_count", "last_played_a
 #[derive(Debug, Clone, Deserialize)]
 pub struct Issues(pub Uuid, pub Vec<(Uuid, String)>);
 
-const ISSUE_COLUMNS: &[&str] = &["track_id", "flags"];
+pub(super) const ISSUE_COLUMNS: &[&str] = &["track_id", "flags"];
 
 // Every column is read (rows are arrays in column order); not all are shown yet.
 #[allow(dead_code)]
@@ -324,7 +324,7 @@ pub fn parse(body: &[u8]) -> anyhow::Result<Raw> {
     Ok(raw)
 }
 
-fn check_columns(part: &str, got: &[String], expected: &[&str]) -> anyhow::Result<()> {
+pub(super) fn check_columns(part: &str, got: &[String], expected: &[&str]) -> anyhow::Result<()> {
     if got.iter().map(String::as_str).ne(expected.iter().copied()) {
         anyhow::bail!("the server's {part} columns ({}) aren't what this app reads: update the app", got.join(", "));
     }
