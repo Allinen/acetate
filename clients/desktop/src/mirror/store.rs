@@ -53,13 +53,16 @@ impl LocalStore {
         self.tmp.join(format!("{sha256}.part"))
     }
 
-    /// Moves a finished temp file in as `sha256`: read-only, synced, renamed into place.
-    /// The caller has checked its hash.
-    pub fn commit(&self, temp: &Path, sha256: &str) -> anyhow::Result<PathBuf> {
+    /// Moves a finished temp file in as `sha256`: read-only, renamed into place; synced to
+    /// disk first if `sync` (else the caller calls `sync_written` before recording it). The
+    /// caller has checked its hash, or trusts it.
+    pub fn commit(&self, temp: &Path, sha256: &str, sync: bool) -> anyhow::Result<PathBuf> {
         let dest = self.path_of(sha256).context("not a sha256")?;
         std::fs::create_dir_all(dest.parent().unwrap())?;
         let file = std::fs::File::open(temp)?;
-        file.sync_all()?;
+        if sync {
+            file.sync_all()?;
+        }
         let mut perms = file.metadata()?.permissions();
         perms.set_readonly(true);
         std::fs::set_permissions(temp, perms)?;
@@ -67,9 +70,26 @@ impl LocalStore {
         Ok(dest)
     }
 
+    /// Writes everything taken in since the last time to disk at once (Linux: the whole
+    /// filesystem, `syncfs`; a sync per file made taking in eight times slower). Elsewhere
+    /// each file was synced as it came in.
+    pub fn sync_written(&self) -> anyhow::Result<()> {
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::fd::AsRawFd;
+            let dir = std::fs::File::open(&self.blobs)?;
+            // SAFETY: a valid file descriptor, open for the call.
+            if unsafe { libc::syncfs(dir.as_raw_fd()) } != 0 {
+                return Err(std::io::Error::last_os_error()).context("writing the mirror to disk");
+            }
+        }
+        Ok(())
+    }
+
     /// Takes the local file `source` in as `expected`: a reflink if the filesystem can,
     /// else a copy. `check`: hashes what was made (not the original: a file changing
     /// meanwhile can't give a blob the wrong name) and refuses it if it isn't `expected`.
+    /// Not synced to disk on Linux: call `sync_written` before recording it.
     pub fn take_in(&self, source: &Path, expected: &str, check: bool, stop: &dyn Fn() -> bool) -> anyhow::Result<TakenIn> {
         let temp = self.tmp.join(format!("take-{}", uuid::Uuid::new_v4()));
         let result = (|| {
@@ -87,7 +107,7 @@ impl LocalStore {
                     anyhow::bail!("{} isn't the server's file (it hashes to {sha256})", source.display());
                 }
             }
-            self.commit(&temp, expected)?;
+            self.commit(&temp, expected, !cfg!(target_os = "linux"))?;
             Ok(how)
         })();
         if result.is_err() {

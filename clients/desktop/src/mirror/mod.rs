@@ -131,6 +131,8 @@ pub struct Mirror {
     api: Api,
     store: LocalStore,
     index: Arc<Mutex<Index>>,
+    /// For showing what's there (`snapshot`), without waiting for the mirror's work.
+    reader: Mutex<Index>,
     pub status: Arc<Mutex<Status>>,
     /// Bumped by `stop`: every run started before stops.
     generation: Arc<AtomicU64>,
@@ -201,7 +203,9 @@ impl Mirror {
         let store = LocalStore::open(root)?;
         store.clear_leftovers();
         let index = Index::open(&root.join("mirror.sqlite"))?;
+        let reader = Index::open_reader(&root.join("mirror.sqlite"))?;
         Ok(Mirror {
+            reader: Mutex::new(reader),
             api,
             store,
             index: Arc::new(Mutex::new(index)),
@@ -277,8 +281,12 @@ impl Mirror {
     pub fn plan(&self) -> anyhow::Result<Plan> {
         let server = self.server()?;
         let index = self.index.lock().unwrap();
-        let (missing, missing_unsized) = index.missing_totals()?;
         let removable = index.removable_groups(&server)?;
+        self.plan_from(&index, &removable)
+    }
+
+    fn plan_from(&self, index: &Index, removable: &[RemovableGroup]) -> anyhow::Result<Plan> {
+        let (missing, missing_unsized) = index.missing_totals()?;
         Ok(Plan {
             wanted: index.wanted()?,
             had: index.had()?,
@@ -327,17 +335,17 @@ impl Mirror {
         Ok(Detected { matched: best.as_ref().map_or(0, |(_, n)| *n), server_folder: best.map(|(f, _)| f), files })
     }
 
-    /// Everything the app shows (blocking: a few queries).
+    /// Everything the app shows (blocking: a few queries, on a connection of its own).
     pub fn snapshot(&self) -> anyhow::Result<Snapshot> {
         let server = self.server()?;
-        let plan = self.plan()?;
-        let index = self.index.lock().unwrap();
+        let index = self.reader.lock().unwrap();
+        let removable = index.removable_groups(&server)?;
         Ok(Snapshot {
             config: index.config(&server)?,
             server_volumes: index.server_volumes(&server)?,
             volumes: index.volume_totals(&server)?,
-            plan,
-            removable: index.removable_groups(&server)?,
+            plan: self.plan_from(&index, &removable)?,
+            removable,
             synced_at: index.synced_at(&server)?,
         })
     }
@@ -621,7 +629,7 @@ impl Download {
         }
         let store = self.store.clone();
         let sha = sha256.to_string();
-        tokio::task::spawn_blocking(move || store.commit(&part, &sha)).await??;
+        tokio::task::spawn_blocking(move || store.commit(&part, &sha, true)).await??;
         self.index.lock().unwrap().add(sha256, got, "downloaded", true)
     }
 }
@@ -727,23 +735,49 @@ impl Blocking {
         }
         self.doing(Doing::LookingIn, found.len() as u64, found.iter().map(|(_, s, _)| s).sum());
         let stop = || self.stop.stopped();
+        // Recorded a batch at a time, once the batch is on disk (one sync for all of it).
+        let mut batch: Vec<(String, u64, &str)> = Vec::new();
+        let record = |batch: &mut Vec<(String, u64, &str)>| -> anyhow::Result<()> {
+            if batch.is_empty() {
+                return Ok(());
+            }
+            self.store.sync_written()?;
+            self.index.lock().unwrap().add_many(batch, config.check_hashes)?;
+            self.status.lock().unwrap().taken_in += batch.len() as u64;
+            batch.clear();
+            Ok(())
+        };
+        let mut stopped = None;
         for (sha256, size, path) in found {
-            self.stop.check()?;
+            if self.stop.stopped() {
+                stopped = Some(Stopped);
+                break;
+            }
             match self.store.take_in(&path, sha256, config.check_hashes, &stop) {
                 Ok(how) => {
                     let how = match how {
                         store::TakenIn::Reflinked => "reflinked",
                         store::TakenIn::Copied => "copied",
                     };
-                    self.index.lock().unwrap().add(sha256, size, how, config.check_hashes)?;
-                    self.status.lock().unwrap().taken_in += 1;
+                    batch.push((sha256.clone(), size, how));
+                    if batch.len() >= 500 {
+                        record(&mut batch)?;
+                    }
                 }
-                Err(err) if err.is::<Stopped>() => return Err(err),
+                Err(err) if err.is::<Stopped>() => {
+                    stopped = Some(Stopped);
+                    break;
+                }
                 Err(err) => self.problem(format!("{}: {err:#}", path.display())),
             }
             self.progress(&path, size);
         }
-        Ok(())
+        // Also when stopped: what was taken in is kept.
+        record(&mut batch)?;
+        match stopped {
+            Some(stopped) => Err(stopped.into()),
+            None => Ok(()),
+        }
     }
 
     fn rehash(&self) -> anyhow::Result<Rehashed> {
@@ -773,5 +807,69 @@ impl Blocking {
             self.progress(&path, size);
         }
         Ok(report)
+    }
+}
+
+/// Timing at scale, on btrfs (reflinks): `cargo test --release look_in_at_scale -- --ignored --nocapture`.
+#[cfg(test)]
+mod bench {
+    use super::*;
+
+    #[test]
+    #[ignore]
+    fn look_in_at_scale() {
+        let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/look-in-bench");
+        let _ = std::fs::remove_dir_all(&base);
+        let (root, music) = (base.join("root"), base.join("music"));
+        let n = 2000u64;
+        let mut listed = Vec::new();
+        for i in 0..n {
+            let rel = format!("artist {}/album {}/{i:05} track.flac", i / 100, i / 10);
+            let path = music.join(&rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, vec![(i % 251) as u8; 200_000 + i as usize]).unwrap();
+            listed.push(index::Listed {
+                sha256: format!("{:064x}", i + 1),
+                volume: Some("main".into()),
+                size: Some(200_000 + i as i64),
+                path: Some(format!("/srv/music/{rel}")),
+                state: "audio".into(),
+            });
+        }
+        let store = LocalStore::open(&root).unwrap();
+        let mut index = Index::open(&root.join("mirror.sqlite")).unwrap();
+        let server = "http://nas:3000";
+        index.apply_listing(server, "v1", true, &[], &listed).unwrap();
+        let config = index::Config {
+            enabled: true,
+            volumes: vec!["main".into()],
+            look_in: vec![index::LookIn { folder: music.clone(), server_folder: "/srv/music".into() }],
+            ..index::Config::default()
+        };
+        index.set_config(server, &config).unwrap();
+        let index = Arc::new(Mutex::new(index));
+        let generation = Arc::new(AtomicU64::new(0));
+        let blocking = Blocking { store, index: index.clone(), status: Arc::default(), stop: StopToken { generation, at: 0 } };
+        // The app's Settings page reading what's there meanwhile.
+        let reading = Arc::new(AtomicBool::new(true));
+        let reader = {
+            let (reading, path) = (reading.clone(), root.join("mirror.sqlite"));
+            std::thread::spawn(move || {
+                let reader = Index::open_reader(&path).unwrap();
+                while reading.load(Relaxed) {
+                    let _ = (reader.removable_groups(server).unwrap(), reader.missing_totals().unwrap(), reader.wanted().unwrap());
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+            })
+        };
+        let t = std::time::Instant::now();
+        blocking.look_in(&config).unwrap();
+        let took = t.elapsed();
+        reading.store(false, Relaxed);
+        reader.join().unwrap();
+        let had = index.lock().unwrap().had().unwrap();
+        println!("{} of {n} taken in: {took:?} ({:.0} files/s)", had.blobs, had.blobs as f64 / took.as_secs_f64());
+        assert_eq!(had.blobs, n);
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

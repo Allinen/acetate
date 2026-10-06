@@ -143,6 +143,7 @@ dependencies = [
  "fs4",
  "hex",
  "image",
+ "libc",
  "libloading 0.9.0",
  "nucleo-matcher",
  "raw-window-handle",

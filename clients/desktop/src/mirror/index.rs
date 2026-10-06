@@ -8,9 +8,12 @@
 //! - `pins`: blobs kept for a reason of their own, mirror or not (offline downloads of
 //!   single tracks will be these). Never offered for removal.
 //!
-//! What's *wanted* is worked out from these (the `wanted` view): what an enabled mirror
-//! keeps (its states and volumes) of what its server lists, and anything pinned. Missing
-//! = wanted, not had. Removable = had, not wanted: offered, never removed unasked.
+//! What's *wanted* is worked out from these (the `wanted_now` view): what an enabled
+//! mirror keeps (its states and volumes) of what its server lists, and anything pinned.
+//! That's kept in the `wanted` table, made again whenever a list, a mirror's settings or a
+//! pin changes (a fraction of a second for a big library), so asking what's missing or
+//! removable is quick. Missing = wanted, not had. Removable = had, not wanted: offered,
+//! never removed unasked.
 
 use std::path::{Path, PathBuf};
 
@@ -161,8 +164,12 @@ CREATE TABLE IF NOT EXISTS pins (
     PRIMARY KEY (sha256, reason)
 ) WITHOUT ROWID;
 DROP TABLE IF EXISTS scanned;
-DROP VIEW IF EXISTS wanted;
-CREATE VIEW wanted AS
+CREATE TABLE IF NOT EXISTS wanted (
+    sha256 TEXT PRIMARY KEY,
+    size   INTEGER
+) WITHOUT ROWID;
+DROP VIEW IF EXISTS wanted_now;
+CREATE VIEW wanted_now AS
     SELECT l.sha256, max(l.size) AS size
     FROM listed l JOIN mirrors m ON m.server = l.server
     WHERE json_extract(m.config, '$.enabled')
@@ -185,6 +192,11 @@ impl Index {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.busy_timeout(std::time::Duration::from_secs(10))?;
+        // `wanted` was a view before it was kept as a table.
+        let was_view: bool = conn.query_row("SELECT count(*) FROM sqlite_master WHERE name = 'wanted' AND type = 'view'", [], |r| r.get(0))?;
+        if was_view {
+            conn.execute_batch("DROP VIEW wanted")?;
+        }
         conn.execute_batch(SCHEMA)?;
         // An index from before paths were listed: the column added, and the whole list
         // asked for again to fill it in.
@@ -192,7 +204,24 @@ impl Index {
         if !has_path {
             conn.execute_batch("ALTER TABLE listed ADD COLUMN path TEXT; UPDATE mirrors SET version = NULL;")?;
         }
+        let index = Index { conn };
+        index.rebuild_wanted()?;
+        Ok(index)
+    }
+
+    /// A second connection that only reads (for showing what's there): with the WAL,
+    /// reading never waits for the mirror's writing, nor holds it up.
+    pub fn open_reader(path: &Path) -> anyhow::Result<Index> {
+        let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX)
+            .with_context(|| format!("opening {}", path.display()))?;
+        conn.busy_timeout(std::time::Duration::from_secs(10))?;
         Ok(Index { conn })
+    }
+
+    /// Works out what's wanted again (see the module's notes).
+    fn rebuild_wanted(&self) -> anyhow::Result<()> {
+        self.conn.execute_batch("DELETE FROM wanted; INSERT INTO wanted (sha256, size) SELECT sha256, max(size) FROM wanted_now GROUP BY sha256;")?;
+        Ok(())
     }
 
     // ---- Mirrors ----
@@ -203,12 +232,14 @@ impl Index {
         Ok(config.and_then(|c| serde_json::from_str(&c).ok()).unwrap_or_default())
     }
 
-    pub fn set_config(&self, server: &str, config: &Config) -> anyhow::Result<()> {
-        self.conn.execute(
+    pub fn set_config(&mut self, server: &str, config: &Config) -> anyhow::Result<()> {
+        let tx = self.conn.transaction()?;
+        tx.execute(
             "INSERT INTO mirrors (server, config) VALUES (?1, ?2) ON CONFLICT (server) DO UPDATE SET config = excluded.config",
             params![server, serde_json::to_string(config)?],
         )?;
-        Ok(())
+        tx.commit()?;
+        self.rebuild_wanted()
     }
 
     /// The version of the list last had from `server` (to ask what changed since).
@@ -266,7 +297,7 @@ impl Index {
             params![server, version, serde_json::to_string(volumes)?, now()],
         )?;
         tx.commit()?;
-        Ok(())
+        self.rebuild_wanted()
     }
 
     // ---- What's here ----
@@ -283,6 +314,23 @@ impl Index {
              ON CONFLICT (sha256) DO UPDATE SET size = excluded.size, verified_at = excluded.verified_at",
             params![sha256, size as i64, how, at, if checked { at } else { 0 }],
         )?;
+        Ok(())
+    }
+
+    /// Blobs that came in (`add`), in one transaction: (sha256, size, how).
+    pub fn add_many(&mut self, blobs: &[(String, u64, &str)], checked: bool) -> anyhow::Result<()> {
+        let at = now();
+        let tx = self.conn.transaction()?;
+        {
+            let mut insert = tx.prepare(
+                "INSERT INTO have (sha256, size, how, added_at, verified_at) VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT (sha256) DO UPDATE SET size = excluded.size, verified_at = excluded.verified_at",
+            )?;
+            for (sha256, size, how) in blobs {
+                insert.execute(params![sha256, *size as i64, how, at, if checked { at } else { 0 }])?;
+            }
+        }
+        tx.commit()?;
         Ok(())
     }
 
@@ -434,13 +482,13 @@ impl Index {
     #[allow(dead_code)]
     pub fn pin(&self, sha256: &str, reason: &str) -> anyhow::Result<()> {
         self.conn.execute("INSERT OR IGNORE INTO pins (sha256, reason) VALUES (?1, ?2)", params![sha256, reason])?;
-        Ok(())
+        self.rebuild_wanted()
     }
 
     #[allow(dead_code)]
     pub fn unpin(&self, sha256: &str, reason: &str) -> anyhow::Result<()> {
         self.conn.execute("DELETE FROM pins WHERE sha256 = ?1 AND reason = ?2", params![sha256, reason])?;
-        Ok(())
+        self.rebuild_wanted()
     }
 }
 
@@ -524,5 +572,58 @@ mod tests {
     fn a_setting_that_cant_be_read_doesnt_lose_the_others() {
         let config: Config = serde_json::from_str(r#"{"enabled": true, "volumes": ["main"], "look_in": ["/old/form"]}"#).unwrap();
         assert!(config.enabled && config.look_in.is_empty());
+    }
+}
+
+/// Timing at scale: `cargo test --release mirror_index_at_scale -- --ignored --nocapture`.
+#[cfg(test)]
+mod bench {
+    use super::*;
+
+    #[test]
+    #[ignore]
+    fn mirror_index_at_scale() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut index = Index::open(&dir.path().join("mirror.sqlite")).unwrap();
+        let server = "http://nas:3000";
+        let blobs: Vec<Listed> = (0..200_000u64)
+            .map(|i| Listed {
+                sha256: format!("{:064x}", i * 7919),
+                volume: Some(if i % 10 == 0 { "archive" } else { "main" }.into()),
+                size: Some(1_000_000 + i as i64),
+                path: Some(format!("/srv/music/artist {}/album {}/{i:05} track.flac", i / 300, i / 12)),
+                state: if i % 4 == 0 { "cover" } else { "audio" }.into(),
+            })
+            .collect();
+        let t = std::time::Instant::now();
+        index.apply_listing(server, "v1", true, &[], &blobs).unwrap();
+        println!("apply 200k: {:?}", t.elapsed());
+        let t = std::time::Instant::now();
+        index.set_config(server, &Config { enabled: true, volumes: vec!["main".into()], ..Config::default() }).unwrap();
+        println!("set_config (wanted made again): {:?}", t.elapsed());
+        for b in blobs.iter().take(100_000) {
+            index.add(&b.sha256, 1, "downloaded", true).unwrap();
+        }
+        let time = |name: &str, f: &dyn Fn()| {
+            let t = std::time::Instant::now();
+            f();
+            println!("{name}: {:?}", t.elapsed());
+        };
+        time("wanted", &|| { let _ = index.wanted().unwrap(); });
+        time("had", &|| { let _ = index.had().unwrap(); });
+        time("missing_totals", &|| { let _ = index.missing_totals().unwrap(); });
+        time("missing", &|| drop(index.missing().unwrap()));
+        time("missing_with_paths", &|| drop(index.missing_with_paths().unwrap()));
+        time("removable_groups", &|| drop(index.removable_groups(server).unwrap()));
+        time("volume_totals", &|| drop(index.volume_totals(server).unwrap()));
+        time("unchecked", &|| { let _ = index.unchecked().unwrap(); });
+        let t = std::time::Instant::now();
+        let server_ = server;
+        {
+            let groups = index.removable_groups(server_).unwrap();
+            let _ = (index.wanted().unwrap(), index.had().unwrap(), index.missing_totals().unwrap(), index.unchecked().unwrap(), index.volume_totals(server_).unwrap(), groups);
+        }
+        println!("a whole snapshot's queries: {:?}", t.elapsed());
+        time("100 adds", &|| for b in blobs.iter().skip(150_000).take(100) { index.add(&b.sha256, 1, "reflinked", false).unwrap() });
     }
 }
