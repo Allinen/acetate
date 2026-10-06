@@ -195,9 +195,9 @@ impl MergeView {
         let lt = catalog.track_index(self.left).map(|i| &catalog.tracks[i as usize]);
         let rt = catalog.track_index(self.right).map(|i| &catalog.tracks[i as usize]);
         if self.kept_by.is_none() {
-            let files: Vec<Uuid> = [lt, rt].iter().flatten().map(|t| t.file_id).collect();
-            let controller = shell.controller.clone();
-            shell.runtime.spawn(async move { controller.prepare(files).await });
+            if let (Some(a), Some(b)) = (catalog.track_index(self.left), catalog.track_index(self.right)) {
+                shell.act(Action::Warm { a, b, at: middle(catalog, self.left, self.right) });
+            }
             self.kept_by = Some((shell.controller.clone(), shell.runtime.handle().clone()));
         }
         let singles = lone_singles(catalog, self.left, self.right);
@@ -481,21 +481,35 @@ fn can_share(shell: &Shell) -> bool {
     shell.account.can("replace_file")
 }
 
+/// Where comparing starts (when the other side isn't playing): the middle of the
+/// shorter, the same for both sides (see `Action::Warm`).
+fn middle(catalog: &Catalog, a: Uuid, b: Uuid) -> Duration {
+    let length = |id: Uuid| catalog.track_index(id).and_then(|i| catalog.tracks[i as usize].duration_ms).map(|ms| Duration::from_millis(ms.max(0) as u64));
+    let shorter = match (length(a), length(b)) {
+        (Some(x), Some(y)) => x.min(y),
+        (Some(x), None) | (None, Some(x)) => x,
+        (None, None) => return Duration::ZERO,
+    };
+    // Not too near the end.
+    (shorter / 2).min(shorter.saturating_sub(Duration::from_secs(1)))
+}
+
 /// Plays one side, for comparing: from where the other side is when that one's playing
 /// (switching sides hears the same moment of both), else from the middle (where the
 /// song is, rather than an intro). Playing again the side that plays pauses it.
 fn play(shell: &mut Shell, catalog: &Catalog, player: &PlayerView, track: Uuid, other: Uuid) {
-    let Some(index) = catalog.track_index(track) else { return };
+    let (Some(index), Some(other_index)) = (catalog.track_index(track), catalog.track_index(other)) else { return };
     let playing = playing_track(player);
     if playing == Some(track) {
         shell.act(Action::TogglePause);
         return;
     }
     let length = catalog.tracks[index as usize].duration_ms.map(|ms| Duration::from_millis(ms.max(0) as u64));
-    let at = if playing == Some(other) { player.position_now() } else { length.map(|l| l / 2).unwrap_or_default() };
+    let follow = playing == Some(other);
+    let at = if follow { player.position_now() } else { middle(catalog, track, other) };
     // Not past the end (the other one may be longer).
     let at = length.map_or(at, |l| at.min(l.saturating_sub(Duration::from_secs(1))));
-    shell.act(Action::PlayFrom { track: index, at });
+    shell.act(Action::Compare { track: index, other: other_index, at, follow });
 }
 
 /// Whether a row is the same on both sides: the same text, except covers, whose text is

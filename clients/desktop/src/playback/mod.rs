@@ -272,11 +272,53 @@ impl Controller {
     }
 
     /// Like `play`, starting `at` this point of the first track, with a quick fade from
-    /// what plays (comparing two files: the other one goes on from where this one was).
+    /// what plays.
     pub async fn play_from(self: &Arc<Self>, items: Vec<QueueItem>, start: usize, at: Duration) {
         let item = self.state.lock().await.queue.play_list(items, start, self.shuffle.load(Relaxed));
         if let Some(item) = item {
             self.start_fading(item, false, at, true).await;
+        }
+    }
+
+    /// Comparing two files: plays `item`, with `other` decoded in step beside it, so
+    /// playing the other afterwards is a switch of what's heard, at the same moment, with
+    /// no gap. `follow`: starts where what plays is (else at `at`).
+    pub async fn compare(self: &Arc<Self>, item: QueueItem, other: QueueItem, at: Duration, follow: bool) {
+        let item = self.state.lock().await.queue.play_list(vec![item], 0, self.shuffle.load(Relaxed));
+        let Some(item) = item else { return };
+        let generation = {
+            let mut state = self.state.lock().await;
+            state.generation += 1;
+            state.appended = None;
+            state.fetching = false;
+            state.next_asked += 1;
+            *self.pending_seek.lock().unwrap() = None;
+            state.generation
+        };
+        let (mine, theirs) = (self.fetch(item.file_id, self.path_of(&item)).await, self.fetch(other.file_id, self.path_of(&other)).await);
+        match (mine, theirs) {
+            (Ok(mine), Ok(theirs)) => {
+                if self.state.lock().await.generation == generation {
+                    // Ordered by file id, so a switch back and forth is the same pair.
+                    let side_b = item.file_id > other.file_id;
+                    let (a, b) = if side_b { ((other.file_id, theirs), (item.file_id, mine)) } else { ((item.file_id, mine), (other.file_id, theirs)) };
+                    self.send(Command::Compare { a, b, side_b, at, follow });
+                }
+            }
+            (Err(err), _) | (_, Err(err)) => self.report(format!("{err:#}")),
+        }
+        self.ctx.request_repaint();
+    }
+
+    /// Opens two files for `compare` at `at`, ahead of it: the first play then starts at
+    /// once, like the switches after it.
+    pub async fn warm(&self, a: QueueItem, b: QueueItem, at: Duration) {
+        let (a, b) = if a.file_id > b.file_id { (b, a) } else { (a, b) };
+        // (Both downloaded ahead and kept, as `prepare` does.)
+        self.prepare(vec![a.file_id, b.file_id]).await;
+        let (x, y) = (self.fetch(a.file_id, self.path_of(&a)).await, self.fetch(b.file_id, self.path_of(&b)).await);
+        if let (Ok(x), Ok(y)) = (x, y) {
+            self.send(Command::Warm { a: (a.file_id, x), b: (b.file_id, y), at });
         }
     }
 
@@ -311,7 +353,7 @@ impl Controller {
         self.start_fading(item, paused, at, false).await;
     }
 
-    /// `start`, with `fade`: a quick fade from what plays to it (comparing two files).
+    /// `start`, with `fade`: a quick fade from what plays to it.
     async fn start_fading(self: &Arc<Self>, item: QueueItem, paused: bool, at: Duration, fade: bool) {
         let generation = {
             let mut state = self.state.lock().await;
@@ -325,7 +367,7 @@ impl Controller {
         match self.fetch(item.file_id, self.path_of(&item)).await {
             Ok(file) => {
                 if self.state.lock().await.generation == generation {
-                    self.send(Command::Replace { file, paused, at, fade });
+                    self.send(Command::Replace { file, paused, at, fade, follow: false });
                 }
             }
             Err(err) => self.report(format!("{err:#}")),

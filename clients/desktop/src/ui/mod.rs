@@ -76,7 +76,10 @@ pub enum Action {
     /// Play these tracks (positions in the catalog), starting with `start`.
     Play { tracks: Vec<u32>, start: usize },
     /// Play this one track from this point (comparing two files).
-    PlayFrom { track: u32, at: std::time::Duration },
+    /// Plays `track` with `other` in step beside it (comparing: see `Controller::compare`).
+    /// Opens `a` and `b` for comparing at `at`, ahead of the first play.
+    Warm { a: u32, b: u32, at: std::time::Duration },
+    Compare { track: u32, other: u32, at: std::time::Duration, follow: bool },
     /// Queue these tracks by hand: at the end of the queue, or (`next`) at its start.
     Enqueue { tracks: Vec<u32>, next: bool },
     /// Play this track of the queue or the list now.
@@ -912,10 +915,15 @@ impl App {
                     }
                 }
                 Action::Play { tracks, start } => self.play(tracks, start),
-                Action::PlayFrom { track, at } => {
+                Action::Warm { a, b, at } => {
                     let Some(catalog) = self.shell.catalog.value.clone() else { continue };
                     let controller = self.shell.controller.clone();
-                    self.shell.runtime.spawn(async move { controller.play_from(vec![queue_item(&catalog, track)], 0, at).await });
+                    self.shell.runtime.spawn(async move { controller.warm(queue_item(&catalog, a), queue_item(&catalog, b), at).await });
+                }
+                Action::Compare { track, other, at, follow } => {
+                    let Some(catalog) = self.shell.catalog.value.clone() else { continue };
+                    let controller = self.shell.controller.clone();
+                    self.shell.runtime.spawn(async move { controller.compare(queue_item(&catalog, track), queue_item(&catalog, other), at, follow).await });
                 }
                 Action::Enqueue { tracks, next } => {
                     let Some(catalog) = self.shell.catalog.value.clone() else { continue };

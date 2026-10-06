@@ -19,6 +19,8 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use uuid::Uuid;
+
 use rodio::source::SeekError;
 use rodio::{ChannelCount, Decoder, DeviceSinkBuilder, Player, Sample, SampleRate, Source};
 
@@ -29,9 +31,17 @@ use super::stream::RemoteFile;
 pub enum Command {
     /// Stop whatever plays and play this file (it may still be downloading), from `at`;
     /// `paused`: ready, but paused (a queue restored after a restart).
-    /// `fade`: the old one fades out and the new one in, quickly (comparing two files:
-    /// the switch is heard as a switch, not a click or a stutter).
-    Replace { file: RemoteFile, paused: bool, at: Duration, fade: bool },
+    /// `fade`: the old one fades out and the new one in, very briefly (comparing two
+    /// files: no click, and the new one is opened and positioned before the old one is
+    /// touched, so the switch is seamless). `follow`: start where the old one is at the
+    /// moment of the switch, not at `at`.
+    /// Two files (with their ids) decoded side by side, in step, one heard: switching
+    /// between them (`side_b`) is instant, and the same moment of both. `at`, `follow`:
+    /// as in `Replace`, for when they start playing (not when only the side changes).
+    Compare { a: (Uuid, RemoteFile), b: (Uuid, RemoteFile), side_b: bool, at: Duration, follow: bool },
+    /// Opens two files for a `Compare` at `at`, ahead of it, so it starts at once.
+    Warm { a: (Uuid, RemoteFile), b: (Uuid, RemoteFile), at: Duration },
+    Replace { file: RemoteFile, paused: bool, at: Duration, fade: bool, follow: bool },
     /// What to play when the current track ends (None: nothing, stop there). Replaces
     /// whatever was there before.
     SetNext(Option<RemoteFile>),
@@ -75,9 +85,9 @@ pub const SCOPE_LEN: usize = 4096;
 type Track = Box<dyn Source + Send>;
 
 /// A fading switch (see `Command::Replace`): out, then in.
-const FADE_OUT: Duration = Duration::from_millis(80);
-const FADE_IN: Duration = Duration::from_millis(150);
-const FADE_STEPS: u32 = 16;
+const FADE_OUT: Duration = Duration::from_millis(6);
+const FADE_IN: Duration = Duration::from_millis(12);
+const FADE_STEPS: u32 = 3;
 
 /// Shared between the audio thread's commands and the `Chain` the player plays.
 #[derive(Default)]
@@ -116,46 +126,70 @@ pub fn start(
         let mut switches_before = 0; // switches of chains that ended
         // A fade in going on: since when (the volume goes from 0 to `volume`).
         let mut fading_in: Option<std::time::Instant> = None;
+        // Two files playing side by side, one heard (see `Command::Compare`).
+        let mut pair: Option<Pair_> = None;
+        // Two files opened and in place, waiting for `Compare`.
+        let mut warm: Option<Warm> = None;
         let open_track = |file: RemoteFile| -> Result<Track, String> { Ok(Box::new(Tap::new(decode(file)?, tap_scope.clone()))) };
         loop {
             // Short waits while fading in (the volume moves in small steps), else 30 ms.
             let wait = if fading_in.is_some() { Duration::from_millis(5) } else { Duration::from_millis(30) };
             match receiver.recv_timeout(wait) {
                 Ok(command) => match command {
-                    Command::Replace { file, paused, at, fade } => {
-                        if fade && !player.is_paused() && !player.empty() {
-                            for step in (0..FADE_STEPS).rev() {
-                                player.set_volume(volume * step as f32 / FADE_STEPS as f32);
-                                std::thread::sleep(FADE_OUT / FADE_STEPS);
+                    Command::Replace { file, paused, at, fade, follow } => {
+                        pair = None;
+                        // Open the new one first, while the old one plays on.
+                        let opened = open_track(file);
+                        replace(&mut player, &mut control, &mut switches_before, &mut fading_in, volume, opened, paused, at, fade, follow, &errors);
+                    }
+                    Command::Compare { a, b, side_b, at, follow } => {
+                        // The same two files already play side by side: just hear the other.
+                        let live = pair.as_ref().filter(|p| {
+                            p.a == a.0 && p.b == b.0 && control.as_ref().is_some_and(|c| Arc::ptr_eq(c, &p.control) && c.switches.load(Relaxed) == 0 && !c.ended.load(Relaxed))
+                        });
+                        if let Some(p) = live {
+                            p.select.store(side_b, Relaxed);
+                            player.play();
+                        } else {
+                            pair = None;
+                            // Warmed up (see `Command::Warm`) for exactly this: already open and
+                            // in place.
+                            let warmed = warm.take().filter(|w| w.a == a.0 && w.b == b.0 && w.at == at && !follow);
+                            let was_warm = warmed.is_some();
+                            let (select, opened) = match warmed {
+                                Some(w) => {
+                                    w.select.store(side_b, Relaxed);
+                                    (w.select, Ok(w.track))
+                                }
+                                None => {
+                                    let select = Arc::new(AtomicBool::new(side_b));
+                                    let opened = match (decode(a.1), decode(b.1)) {
+                                        (Ok(x), Ok(y)) => {
+                                            let (x, y) = unify(x, y);
+                                            Ok(Box::new(Tap::new(Pair::new(x, y, select.clone()), tap_scope.clone())) as Track)
+                                        }
+                                        (Err(err), _) | (_, Err(err)) => Err(err),
+                                    };
+                                    (select, opened)
+                                }
+                            };
+                            let fresh = replace(&mut player, &mut control, &mut switches_before, &mut fading_in, volume, opened, false, if was_warm { Duration::ZERO } else { at }, true, follow, &errors);
+                            if let Some(control) = fresh {
+                                pair = Some(Pair_ { a: a.0, b: b.0, select, control });
                             }
                         }
-                        player.clear();
-                        player.set_volume(volume);
-                        fading_in = None;
-                        if let Some(old) = control.take() {
-                            switches_before += old.switches.load(Relaxed);
-                        }
-                        match open_track(file) {
-                            Ok(track) => {
-                                let new = Arc::new(Control::default());
-                                let mut chain = Chain::new(track, new.clone());
-                                if at > Duration::ZERO {
-                                    let _ = chain.try_seek(at);
-                                }
-                                if paused {
-                                    player.pause();
-                                }
-                                if fade && !paused {
-                                    player.set_volume(0.0);
-                                    fading_in = Some(std::time::Instant::now());
-                                }
-                                player.append(chain);
-                                if !paused {
-                                    player.play();
-                                }
-                                control = Some(new);
+                    }
+                    Command::Warm { a, b, at } => {
+                        warm = None;
+                        if let (Ok(x), Ok(y)) = (decode(a.1), decode(b.1)) {
+                            let (x, y) = unify(x, y);
+                            let select = Arc::new(AtomicBool::new(false));
+                            let mut track: Track = Box::new(Tap::new(Pair::new(x, y, select.clone()), tap_scope.clone()));
+                            // (Seeking is what takes the time: the download is asked to go there.)
+                            if at > Duration::ZERO {
+                                let _ = track.try_seek(at);
                             }
-                            Err(err) => errors(err),
+                            warm = Some(Warm { a: a.0, b: b.0, at, select, track });
                         }
                     }
                     Command::SetNext(file) => {
@@ -181,6 +215,8 @@ pub fn start(
                         }
                     }
                     Command::Stop => {
+                        pair = None;
+                        warm = None;
                         player.clear();
                         if let Some(old) = control.take() {
                             switches_before += old.switches.load(Relaxed);
@@ -204,6 +240,7 @@ pub fn start(
                     }
                     Command::Output(name) => {
                         if let Some(opened) = open_output(name.as_deref(), &errors) {
+                            pair = None;
                             player.stop();
                             if let Some(old) = control.take() {
                                 switches_before += old.switches.load(Relaxed);
@@ -232,6 +269,161 @@ pub fn start(
         }
     });
     (sender, status, scope)
+}
+
+/// What `Command::Compare` set going: which files, which one is heard, and the chain.
+struct Pair_ {
+    a: Uuid,
+    b: Uuid,
+    select: Arc<AtomicBool>,
+    control: Arc<Control>,
+}
+
+/// Two files opened and positioned, waiting (see `Command::Warm`).
+struct Warm {
+    a: Uuid,
+    b: Uuid,
+    at: Duration,
+    select: Arc<AtomicBool>,
+    track: Track,
+}
+
+/// Puts `opened` in place of what plays (see `Command::Replace`); the new chain's control.
+#[allow(clippy::too_many_arguments)]
+fn replace(
+    player: &mut Player,
+    control: &mut Option<Arc<Control>>,
+    switches_before: &mut u64,
+    fading_in: &mut Option<std::time::Instant>,
+    volume: f32,
+    opened: Result<Track, String>,
+    paused: bool,
+    at: Duration,
+    fade: bool,
+    follow: bool,
+    errors: &impl Fn(String),
+) -> Option<Arc<Control>> {
+    let track = match opened {
+        Ok(track) => track,
+        Err(err) => {
+            errors(err);
+            return None;
+        }
+    };
+    let new = Arc::new(Control::default());
+    let mut chain = Chain::new(track, new.clone());
+    let started = std::time::Instant::now();
+    let from = match (&*control, follow) {
+        (Some(old), true) if !player.empty() => old.position(),
+        _ => at,
+    };
+    if from > Duration::ZERO {
+        let _ = chain.try_seek(from);
+        if let (true, false, Some(old)) = (follow, player.is_paused(), &*control) {
+            // Seeking took time, in which the old one played on: seek again (quick now),
+            // to where it is.
+            let _ = chain.try_seek(old.position() + started.elapsed() / 4);
+        }
+    }
+    if fade && !player.is_paused() && !player.empty() {
+        for step in (0..FADE_STEPS).rev() {
+            player.set_volume(volume * step as f32 / FADE_STEPS as f32);
+            std::thread::sleep(FADE_OUT / FADE_STEPS);
+        }
+    }
+    player.clear();
+    player.set_volume(volume);
+    *fading_in = None;
+    if let Some(old) = control.take() {
+        *switches_before += old.switches.load(Relaxed);
+    }
+    if paused {
+        player.pause();
+    }
+    if fade && !paused {
+        player.set_volume(0.0);
+        *fading_in = Some(std::time::Instant::now());
+    }
+    player.append(chain);
+    if !paused {
+        player.play();
+    }
+    *control = Some(new.clone());
+    Some(new)
+}
+
+/// Both in one format (the higher sample rate, the more channels), converting the one
+/// that differs, so they can be played in step.
+fn unify(x: Track, y: Track) -> (Track, Track) {
+    let rate = x.sample_rate().max(y.sample_rate());
+    let channels = x.channels().max(y.channels());
+    let convert = |t: Track| -> Track {
+        if t.sample_rate() == rate && t.channels() == channels {
+            t
+        } else {
+            Box::new(rodio::source::UniformSourceIterator::new(t, channels, rate))
+        }
+    };
+    (convert(x), convert(y))
+}
+
+/// Two tracks of the same format (see `unify`) played in step (each sample of both is read), one
+/// heard. The switch is a short crossfade (a few ms, against a click). Ends with the
+/// heard one.
+struct Pair {
+    a: Track,
+    b: Track,
+    /// The one heard: b (else a).
+    select: Arc<AtomicBool>,
+    /// How much of b is heard (0..=1), moving towards what `select` says.
+    mix: f32,
+    step: f32,
+}
+
+impl Pair {
+    fn new(a: Track, b: Track, select: Arc<AtomicBool>) -> Pair {
+        let mix = if select.load(Relaxed) { 1.0 } else { 0.0 };
+        let samples_per_ms = a.sample_rate().get() as f32 * a.channels().get() as f32 / 1000.0;
+        Pair { a, b, select, mix, step: 1.0 / (samples_per_ms * 4.0) }
+    }
+}
+
+impl Iterator for Pair {
+    type Item = Sample;
+
+    fn next(&mut self) -> Option<Sample> {
+        let (x, y) = (self.a.next(), self.b.next());
+        let target = if self.select.load(Relaxed) { 1.0 } else { 0.0 };
+        if self.mix < target {
+            self.mix = (self.mix + self.step).min(target);
+        } else if self.mix > target {
+            self.mix = (self.mix - self.step).max(target);
+        }
+        let heard_ended = if target > 0.5 { y.is_none() } else { x.is_none() };
+        if heard_ended && self.mix == target {
+            return None;
+        }
+        Some(x.unwrap_or(0.0) * (1.0 - self.mix) + y.unwrap_or(0.0) * self.mix)
+    }
+}
+
+impl Source for Pair {
+    fn current_span_len(&self) -> Option<usize> {
+        None
+    }
+    fn channels(&self) -> ChannelCount {
+        self.a.channels()
+    }
+    fn sample_rate(&self) -> SampleRate {
+        self.a.sample_rate()
+    }
+    fn total_duration(&self) -> Option<Duration> {
+        None
+    }
+    fn try_seek(&mut self, position: Duration) -> Result<(), SeekError> {
+        self.a.try_seek(position)?;
+        self.b.try_seek(position)
+    }
 }
 
 /// The names of the output devices there are (the system's default first).
@@ -470,6 +662,22 @@ mod tests {
 
     fn track(channels: u16, samples: &[f32]) -> Track {
         Box::new(SamplesBuffer::new(NonZero::new(channels).unwrap(), NonZero::new(48_000).unwrap(), samples.to_vec()))
+    }
+
+    #[test]
+    fn a_pair_switches_in_step_without_a_gap() {
+        let select = Arc::new(AtomicBool::new(false));
+        let mut pair = Pair::new(track(1, &[1.0; 4000]), track(1, &[2.0; 4000]), select.clone());
+        for _ in 0..1000 {
+            assert_eq!(pair.next(), Some(1.0));
+        }
+        select.store(true, Relaxed);
+        // A short crossfade, then only b, from the same moment (never silence).
+        let after: Vec<f32> = (0..1000).map(|_| pair.next().unwrap()).collect();
+        assert!(after.iter().all(|s| (1.0..=2.0).contains(s)));
+        assert_eq!(after[999], 2.0);
+        // b ends: so does the pair.
+        assert_eq!(pair.by_ref().count(), 2000);
     }
 
     #[test]
