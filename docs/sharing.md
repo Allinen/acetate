@@ -19,6 +19,7 @@ It has its own commandline, and the same things by mouse:
 | Command | |
 |---|---|
 | `original:yes` / `original:no` | play the original file, or (the default) a lower-quality copy. Needs `download_original` |
+| `quality:64` | the copy's bitrate in kbps, one of the server's (`default` for its usual) |
 | `expires:7d` | `never` (the default), `1d`, `7d`, `30d`, or any number of days (`10d`) or weeks (`2w`) |
 
 `original:yes expires:7d` sets both. `Enter` applies what's typed; on an empty line it makes

@@ -15,10 +15,10 @@ pub struct Config {
     /// folder. Only ever derived from the originals: it can be emptied at any time.
     pub cache_dir: PathBuf,
     /// Transcoded copies for listeners without `download_original` (see
-    /// `storage::transcode`): Opus at this many kbps (`ACETATE_TRANSCODE_KBPS`, default
-    /// 128), and the cache folder's size limit in bytes (`ACETATE_TRANSCODE_CACHE_GB`,
+    /// `storage::transcode`): Opus at these qualities, in kbps (`ACETATE_TRANSCODE_KBPS`, a
+    /// list like `128,64,192`, the first being the default; default 128), and the cache folder's size limit in bytes (`ACETATE_TRANSCODE_CACHE_GB`,
     /// default 20; 0: no limit).
-    pub transcode_kbps: u32,
+    pub transcode_kbps: Vec<u32>,
     pub transcode_cache_bytes: u64,
     /// Uploads through the API (music, covers, ingest from another machine): at most this
     /// many bytes per request (`ACETATE_MAX_UPLOAD_MB`, default 100: what Cloudflare lets
@@ -62,12 +62,9 @@ impl Config {
                 _ => Ok(default),
             }
         };
-        let transcode_kbps = number("ACETATE_TRANSCODE_KBPS", 128)?;
-        if !(24..=510).contains(&transcode_kbps) {
-            anyhow::bail!("ACETATE_TRANSCODE_KBPS: {transcode_kbps} isn't between 24 and 510");
-        }
+        let transcode_kbps = parse_kbps(&std::env::var("ACETATE_TRANSCODE_KBPS").unwrap_or_default())?;
         Ok(Config {
-            transcode_kbps: transcode_kbps as u32,
+            transcode_kbps,
             transcode_cache_bytes: number("ACETATE_TRANSCODE_CACHE_GB", 20)? * 1_000_000_000,
             max_upload_bytes: number("ACETATE_MAX_UPLOAD_MB", 100)? * 1_000_000,
             daily_upload_bytes: number("ACETATE_UPLOAD_DAILY_GB", 20)? * 1_000_000_000,
@@ -82,6 +79,25 @@ impl Config {
             trust_proxy: std::env::var("ACETATE_TRUST_PROXY").is_ok_and(|v| v == "true"),
         })
     }
+}
+
+/// `128,64,192` → [128, 64, 192]: the qualities copies are made at (24 to 510 kbps), the
+/// first the default. Empty: just 128.
+pub fn parse_kbps(text: &str) -> anyhow::Result<Vec<u32>> {
+    let mut kbps: Vec<u32> = Vec::new();
+    for part in text.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+        let n: u32 = part.parse().with_context(|| format!("ACETATE_TRANSCODE_KBPS: \"{part}\" isn't a whole number"))?;
+        if !(24..=510).contains(&n) {
+            anyhow::bail!("ACETATE_TRANSCODE_KBPS: {n} isn't between 24 and 510");
+        }
+        if !kbps.contains(&n) {
+            kbps.push(n);
+        }
+    }
+    if kbps.is_empty() {
+        kbps.push(128);
+    }
+    Ok(kbps)
 }
 
 /// `main=/srv/acetate,archive=/mnt/hdd/acetate` → [(main, /srv/acetate), (archive, ...)].
@@ -112,6 +128,14 @@ pub fn parse_volumes(text: &str) -> anyhow::Result<Vec<(String, PathBuf)>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn qualities_from_the_environment_format() {
+        assert_eq!(parse_kbps("").unwrap(), [128]);
+        assert_eq!(parse_kbps("192, 64,192,128").unwrap(), [192, 64, 128]);
+        assert!(parse_kbps("128,9").is_err());
+        assert!(parse_kbps("high").is_err());
+    }
 
     #[test]
     fn volumes_from_the_environment_format() {

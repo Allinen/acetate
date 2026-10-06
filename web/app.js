@@ -2340,7 +2340,13 @@ function shareForm(kind, id) {
   const original = can("download_original")
     ? h("input", { type: "checkbox" })
     : null;
-  const form = h("form", { class: "row" }, expiry,
+  // The copy's quality, from the ones the server makes (the first is its default).
+  const quality = h("select", { hidden: true }, h("option", { value: "" }, "default quality"));
+  api("/api/qualities").then((q) => {
+    for (const k of q.kbps) quality.append(h("option", { value: String(k) }, `${k} kbps`));
+    quality.hidden = q.kbps.length < 2;
+  }).catch(() => {});
+  const form = h("form", { class: "row" }, expiry, quality,
     original ? h("label", { title: "Otherwise the link plays a lower-quality copy" }, original, " give the original file") : null,
     h("button", { type: "submit" }, "Create link"), result);
   form.addEventListener("submit", async (event) => {
@@ -2348,6 +2354,7 @@ function shareForm(kind, id) {
     const body = { [`${kind}_id`]: id };
     if (expiry.value) body.expires_at = new Date(Date.now() + expiry.value * 86400000).toISOString();
     if (original?.checked) body.original = true;
+    else if (quality.value) body.kbps = Number(quality.value);
     try {
       const share = await postJson("/api/shares", body);
       const url = location.origin + share.path;
@@ -2379,7 +2386,7 @@ async function showShares() {
           h("div", { class: "row" },
             h("a", { href: s.track_id ? `#/track/${s.track_id}` : `#/album/${s.album_id}` }, s.title),
             h("span", { class: "tag" }, s.track_id ? "track" : "album"),
-            h("span", { class: "tag" }, s.original ? "original file" : "lower-quality copy"),
+            h("span", { class: "tag" }, s.original ? "original file" : s.kbps ? `copy, ${s.kbps} kbps` : "lower-quality copy"),
             h("span", { class: s.state === "active" ? "ok" : "muted" }, state),
             s.state !== "revoked" && s.state !== "expired" ? h("button", {
               class: "small",

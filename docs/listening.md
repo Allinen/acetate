@@ -44,7 +44,7 @@ to the [trash](library/storage.md) and can be restored.
 ## Quality and downloads
 
 With the `download_original` permission, you stream the original files. Without it you stream
-a transcoded copy (Opus, 128 kbps by default), made the first time anyone plays the track
+a transcoded copy (Opus, 128 kbps by default; other bitrates if the admin lists them: `?kbps=64` on the stream, `GET /api/qualities` says which), made the first time anyone plays the track
 (a few seconds, then it's kept). A copy has none of the original's tags or cover. Videos
 aren't transcoded.
 

@@ -245,6 +245,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/source-shapes", require(&[Browse], get(sources::shapes)))
         // Previous (replaced) files additionally need `view_history`, checked in the handler.
         .route("/api/files/{id}/stream", require(&[Stream], get(media::stream_file)))
+        .route("/api/qualities", require(&[Stream, Share], get(media::qualities)))
         .route("/api/tracks/{id}/download", require(&[DownloadOriginal], get(media::download)))
         .route("/api/files/{id}/origin", require(&[EditSources], put(sources::set_origin)))
         .route("/api/files/{id}/original-filename", require(&[EditFiles], put(sources::set_original_filename)))

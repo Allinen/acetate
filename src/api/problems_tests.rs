@@ -98,7 +98,7 @@ async fn setup_with(connect: PgConnectOptions, file: &str) -> anyhow::Result<Set
         trust_proxy: false,
         rate_limits: std::sync::Arc::new(api::rate_limit::RateLimits::new()),
         images: std::sync::Arc::new(crate::storage::images::ImageCache::new(dir.path().join("cache"))),
-        transcodes: std::sync::Arc::new(crate::storage::transcode::TranscodeCache::new(dir.path().join("cache"), 128, 0)),
+        transcodes: std::sync::Arc::new(crate::storage::transcode::TranscodeCache::new(dir.path().join("cache"), vec![128, 64], 0)),
         upload_limits: std::sync::Arc::new(api::upload_limits::UploadLimits::new(0, 0)),
     });
     Ok(Setup { owner, pool, store, options, app, token, problem, _dir: dir })

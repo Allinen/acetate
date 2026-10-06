@@ -3,12 +3,13 @@
 //! one (`?transcode=true`): Opus in an Ogg file, with `ffmpeg`.
 //!
 //! A copy is made the first time it's asked for and kept in the cache folder
-//! (`Config::cache_dir`, `transcodes/opus-<kbps>/ab/<sha256>.opus`). The whole file is made
+//! (`Config::cache_dir`, `transcodes/opus-<kbps>/ab/<sha256>.opus`), one set for each quality the
+//! admin allows (`ACETATE_TRANSCODE_KBPS`: a list; a request for any other is refused). The whole file is made
 //! before anything is sent, so it's served like any file: with its size and `Range`
 //! requests (seeking). A file never changes under its hash, so a copy is good until the
 //! folder is pruned: the oldest-used copies go when it grows past the limit
 //! (`ACETATE_TRANSCODE_CACHE_GB`), and it can be emptied at any time (they're made again).
-//! The bitrate is in the folder's name, so changing it starts a new set.
+//! The bitrate is in the folder's name, so a new one starts a new set; the limit is for all.
 //!
 //! The original is never touched, and a copy carries nothing of the original's tags,
 //! cover or chapters (even a file that's small already gets a copy: its tags are not for
@@ -38,8 +39,10 @@ pub enum TranscodeError {
 }
 
 pub struct TranscodeCache {
-    dir: PathBuf,
-    kbps: u32,
+    /// `transcodes/`: a folder for each bitrate in it.
+    root: PathBuf,
+    /// The qualities allowed, the first being the default.
+    allowed: Vec<u32>,
     /// The most the folder may hold, in bytes; 0: no limit.
     limit_bytes: u64,
     /// Encoding is CPU work: this many at once (the rest wait).
@@ -50,11 +53,12 @@ pub struct TranscodeCache {
 }
 
 impl TranscodeCache {
-    pub fn new(cache_dir: PathBuf, kbps: u32, limit_bytes: u64) -> TranscodeCache {
+    pub fn new(cache_dir: PathBuf, allowed: Vec<u32>, limit_bytes: u64) -> TranscodeCache {
+        assert!(!allowed.is_empty(), "at least one quality");
         let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2);
         TranscodeCache {
-            dir: cache_dir.join("transcodes").join(format!("opus-{kbps}")),
-            kbps,
+            root: cache_dir.join("transcodes"),
+            allowed,
             limit_bytes,
             working: Semaphore::new(cores.div_ceil(2)),
             making: Mutex::new(HashMap::new()),
@@ -67,13 +71,32 @@ impl TranscodeCache {
         "audio/ogg".parse().expect("a valid content type")
     }
 
-    fn path(&self, sha256: &str) -> PathBuf {
-        self.dir.join(&sha256[..2]).join(format!("{sha256}.opus"))
+    /// The qualities that can be asked for (kbps), the default first.
+    pub fn allowed(&self) -> &[u32] {
+        &self.allowed
+    }
+
+    /// The bitrate to make: what was asked for, if that's allowed; the default if nothing
+    /// was. The error says what's allowed.
+    pub fn pick(&self, asked: Option<u32>) -> Result<u32, String> {
+        match asked {
+            None => Ok(self.allowed[0]),
+            Some(kbps) if self.allowed.contains(&kbps) => Ok(kbps),
+            Some(kbps) => {
+                let list: Vec<String> = self.allowed.iter().map(|k| k.to_string()).collect();
+                Err(format!("this server doesn't make copies at {kbps} kbps: it makes {}", list.join(", ")))
+            }
+        }
+    }
+
+    fn path(&self, sha256: &str, kbps: u32) -> PathBuf {
+        self.root.join(format!("opus-{kbps}")).join(&sha256[..2]).join(format!("{sha256}.opus"))
     }
 
     /// The copy of `original` (the blob with this hash): made now if it isn't there yet.
-    pub async fn get(self: &Arc<Self>, original: &Path, sha256: &str) -> Result<PathBuf, TranscodeError> {
-        let path = self.path(sha256);
+    /// `kbps` is one of `allowed` (see `pick`).
+    pub async fn get(self: &Arc<Self>, original: &Path, sha256: &str, kbps: u32) -> Result<PathBuf, TranscodeError> {
+        let path = self.path(sha256, kbps);
         if used(&path).await {
             return Ok(path);
         }
@@ -81,13 +104,14 @@ impl TranscodeCache {
         // track) doesn't waste it: the next request finds the copy.
         let this = self.clone();
         let (original, sha256) = (original.to_path_buf(), sha256.to_string());
-        tokio::spawn(async move { this.make_once(&original, &sha256, &path).await.map(|()| path) })
+        tokio::spawn(async move { this.make_once(&original, &sha256, kbps, &path).await.map(|()| path) })
             .await
             .map_err(|err| TranscodeError::Failed(err.into()))?
     }
 
-    async fn make_once(&self, original: &Path, sha256: &str, path: &Path) -> Result<(), TranscodeError> {
-        let lock = self.making.lock().unwrap().entry(sha256.to_string()).or_default().clone();
+    async fn make_once(&self, original: &Path, sha256: &str, kbps: u32, path: &Path) -> Result<(), TranscodeError> {
+        let key = format!("{sha256}-{kbps}");
+        let lock = self.making.lock().unwrap().entry(key.clone()).or_default().clone();
         let result = async {
             let _one_at_a_time = lock.lock().await;
             // Made meanwhile, by the request that was here first.
@@ -95,10 +119,10 @@ impl TranscodeCache {
                 return Ok(());
             }
             let _permit = self.working.acquire().await.map_err(|err| TranscodeError::Failed(err.into()))?;
-            encode(original, path, self.kbps).await?;
+            encode(original, path, kbps).await?;
             if self.limit_bytes > 0 && self.made_since_prune.fetch_add(1, Ordering::Relaxed) + 1 >= PRUNE_EVERY {
                 self.made_since_prune.store(0, Ordering::Relaxed);
-                let (dir, limit) = (self.dir.clone(), self.limit_bytes);
+                let (dir, limit) = (self.root.clone(), self.limit_bytes);
                 tokio::task::spawn_blocking(move || prune(&dir, limit));
             }
             Ok(())
@@ -106,8 +130,8 @@ impl TranscodeCache {
         .await;
         let mut making = self.making.lock().unwrap();
         // Last one out clears the entry (this task's `lock` and the map's are the two).
-        if making.get(sha256).is_some_and(|l| Arc::strong_count(l) <= 2) {
-            making.remove(sha256);
+        if making.get(&key).is_some_and(|l| Arc::strong_count(l) <= 2) {
+            making.remove(&key);
         }
         result
     }
@@ -170,8 +194,9 @@ async fn encode(original: &Path, target: &Path, kbps: u32) -> Result<(), Transco
 /// Blocking.
 fn prune(dir: &Path, limit: u64) {
     let mut files: Vec<(SystemTime, u64, PathBuf)> = Vec::new();
-    let Ok(shards) = std::fs::read_dir(dir) else { return };
-    for shard in shards.flatten() {
+    // `dir` (all the bitrates) / opus-128 / ab / copies.
+    let shards = std::fs::read_dir(dir).into_iter().flatten().flatten().flat_map(|set| std::fs::read_dir(set.path()).into_iter().flatten().flatten());
+    for shard in shards {
         let Ok(entries) = std::fs::read_dir(shard.path()) else { continue };
         for entry in entries.flatten() {
             let path = entry.path();
@@ -208,13 +233,23 @@ mod tests {
     use super::*;
 
     fn cache(dir: &Path) -> Arc<TranscodeCache> {
-        Arc::new(TranscodeCache::new(dir.to_path_buf(), 128, 0))
+        Arc::new(TranscodeCache::new(dir.to_path_buf(), vec![128, 64], 0))
+    }
+
+    #[test]
+    fn only_the_listed_qualities_can_be_asked_for() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = cache(dir.path());
+        assert_eq!(cache.pick(None), Ok(128), "the first listed is the default");
+        assert_eq!(cache.pick(Some(64)), Ok(64));
+        let refused = cache.pick(Some(320)).unwrap_err();
+        assert!(refused.contains("320") && refused.contains("128, 64"), "{refused}");
     }
 
     #[test]
     fn pruning_drops_the_oldest_first() {
         let dir = tempfile::tempdir().unwrap();
-        let shard = dir.path().join("ab");
+        let shard = dir.path().join("opus-128").join("ab");
         std::fs::create_dir_all(&shard).unwrap();
         let now = SystemTime::now();
         for (name, age) in [("old", 300), ("mid", 200), ("new", 100)] {
@@ -236,7 +271,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let cache = cache(dir.path());
         let sha = "ab".repeat(32);
-        let path = match cache.get(&source, &sha).await {
+        let path = match cache.get(&source, &sha, 128).await {
             Ok(path) => path,
             Err(TranscodeError::NoFfmpeg) => return, // no ffmpeg here
             Err(TranscodeError::Failed(err)) => panic!("{err:#}"),
@@ -247,7 +282,7 @@ mod tests {
         let has = |needle: &[u8]| bytes.windows(needle.len()).any(|w| w.eq_ignore_ascii_case(needle));
         assert!(!has(b"Glass Harbor") && !has(b"Mira Vale") && !has(b"METADATA_BLOCK_PICTURE"));
         assert!(bytes.windows(8).any(|w| w == b"OpusHead"));
-        let again = cache.get(Path::new("/nonexistent"), &sha).await.ok();
+        let again = cache.get(Path::new("/nonexistent"), &sha, 128).await.ok();
         assert_eq!(again, Some(path), "found, not made again");
     }
 }

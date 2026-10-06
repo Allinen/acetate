@@ -18,6 +18,8 @@ pub struct ActiveShare {
     /// Plays the original files, not copies: chosen when it was made, and its creator
     /// still has `download_original`.
     pub original: bool,
+    /// The quality of its copies (kbps); None: the default.
+    pub kbps: Option<i32>,
 }
 
 /// Looks up a working share by token hash. Takes the pool: this is how we find out which
@@ -31,7 +33,8 @@ pub async fn find_active(pool: &PgPool, token_sha256: &str) -> sqlx::Result<Opti
                    SELECT 1 FROM user_groups ug
                    JOIN group_permissions gp ON gp.group_id = ug.group_id
                    WHERE ug.user_id = s.created_by AND gp.permission IN ('download_original', 'admin')
-               )) AS "original!"
+               )) AS "original!",
+               s.kbps
         FROM shares s
         WHERE s.token_sha256 = $1
           AND s.revoked_at IS NULL
@@ -58,18 +61,20 @@ pub async fn create(
     album_id: Option<Uuid>,
     expires_at: Option<DateTime<Utc>>,
     original: bool,
+    kbps: Option<i32>,
 ) -> sqlx::Result<Uuid> {
     sqlx::query_scalar!(
         r#"
-        INSERT INTO shares (token_sha256, track_id, album_id, expires_at, original)
-        VALUES ($1, $2, $3, $4, $5)
+        INSERT INTO shares (token_sha256, track_id, album_id, expires_at, original, kbps)
+        VALUES ($1, $2, $3, $4, $5, $6)
         RETURNING id
         "#,
         token_sha256,
         track_id,
         album_id,
         expires_at,
-        original
+        original,
+        kbps
     )
     .fetch_one(conn)
     .await
@@ -89,6 +94,8 @@ pub struct ShareInfo {
     /// Plays the original files (as chosen, and its creator still may give them), not
     /// transcoded copies.
     pub original: bool,
+    /// The quality of its copies (kbps); None: the default.
+    pub kbps: Option<i32>,
     /// Whether the link works: "active", or why not: "revoked", "expired",
     /// "creator_cannot_share" (its creator lost the permission to share) or
     /// "target_hidden" (its creator can't see anything it shares anymore).
@@ -110,6 +117,7 @@ pub async fn list(conn: &mut PgConnection, created_by: Option<Uuid>) -> sqlx::Re
                    JOIN group_permissions gp ON gp.group_id = ug.group_id
                    WHERE ug.user_id = s.created_by AND gp.permission IN ('download_original', 'admin')
                )) AS "original!",
+               s.kbps,
                share_state(s.id) AS "state!"
         FROM shares s
         JOIN users u ON u.id = s.created_by

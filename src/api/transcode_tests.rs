@@ -78,7 +78,7 @@ async fn setup(connect: PgConnectOptions) -> anyhow::Result<Setup> {
         trust_proxy: false,
         rate_limits: std::sync::Arc::new(api::rate_limit::RateLimits::new()),
         images: std::sync::Arc::new(crate::storage::images::ImageCache::new(dir.path().join("cache"))),
-        transcodes: std::sync::Arc::new(crate::storage::transcode::TranscodeCache::new(dir.path().join("cache"), 128, 0)),
+        transcodes: std::sync::Arc::new(crate::storage::transcode::TranscodeCache::new(dir.path().join("cache"), vec![128, 64], 0)),
         upload_limits: std::sync::Arc::new(api::upload_limits::UploadLimits::new(0, 0)),
     });
     Ok(Setup { owner, app, admin, listener, track, file, original: std::fs::read(path)?, _dir: dir })
@@ -149,6 +149,36 @@ async fn streaming_gives_the_original_only_to_those_allowed_it(_: PgPoolOptions,
     assert!(is_opus(&s.stream(&s.listener, "?transcode=false").await));
 
     assert!(is_opus(&s.stream(&s.admin, "?transcode=true").await), "asked for a copy");
+    Ok(())
+}
+
+#[sqlx::test]
+async fn only_the_listed_qualities_can_be_asked_for(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
+    let s = setup(connect).await?;
+    let list = s.go("GET", "/api/qualities", Some(&s.listener), None).await;
+    assert_eq!(serde_json::from_slice::<Value>(&list.body)?, json!({ "kbps": [128, 64] }));
+
+    let refused = s.stream(&s.listener, "?kbps=320").await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST);
+    assert!(String::from_utf8_lossy(&refused.body).contains("128, 64"));
+    assert_eq!(s.stream(&s.admin, "?kbps=1").await.status, StatusCode::BAD_REQUEST, "even with the original allowed");
+
+    let (high, low) = (s.stream(&s.listener, "").await, s.stream(&s.listener, "?kbps=64").await);
+    if can_copy(&high) {
+        assert!(is_opus(&high) && is_opus(&low));
+        assert_ne!(high.body, low.body, "two qualities, two copies");
+        assert!(is_opus(&s.stream(&s.admin, "?kbps=64").await), "asking for a quality means a copy");
+    }
+
+    // A share link: its own quality, validated when it's made.
+    let bad = s.go("POST", "/api/shares", Some(&s.listener), Some(json!({ "track_id": s.track, "kbps": 320 }))).await;
+    assert_eq!(bad.status, StatusCode::BAD_REQUEST);
+    let link = s.go("POST", "/api/shares", Some(&s.listener), Some(json!({ "track_id": s.track, "kbps": 64 }))).await;
+    assert_eq!(link.status, StatusCode::OK);
+    let opened = s.open_share(&link).await;
+    if can_copy(&opened) {
+        assert_eq!(opened.body, low.body, "the link plays the 64 kbps copy");
+    }
     Ok(())
 }
 

@@ -31,6 +31,9 @@ pub struct NewShare {
     /// Play the original files, not transcoded copies. Needs `download_original`.
     #[serde(default)]
     original: bool,
+    /// The quality of the copies, in kbps: one of the server's (`GET /api/qualities`).
+    /// The default if left out.
+    kbps: Option<u32>,
 }
 
 #[derive(Debug, Serialize)]
@@ -69,6 +72,10 @@ pub async fn create(
         ));
     }
 
+    if let Some(kbps) = body.kbps {
+        state.transcodes.pick(Some(kbps)).map_err(AppError::BadRequest)?;
+    }
+
     let mut tx = state.db(&user).await?;
     // You can only share what you can see (the lookup goes through row-level security).
     if !db::sources::owner_exists(&mut tx, owner).await? {
@@ -82,6 +89,7 @@ pub async fn create(
         body.album_id,
         body.expires_at,
         body.original,
+        body.kbps.map(|k| k as i32),
     )
     .await?;
     tx.commit().await?;
@@ -193,7 +201,9 @@ pub async fn stream(
     drop(tx);
     let file = file.ok_or(AppError::NotFound)?;
     let blob = AudioBlob { sha256: file.sha256, container: file.container, codec: file.codec };
-    serve_audio(&state, &blob, share.original, request).await
+    // A quality the server doesn't make anymore (its admin changed the list): the default.
+    let kbps = state.transcodes.pick(share.kbps.map(|k| k as u32)).or_else(|_| state.transcodes.pick(None)).map_err(AppError::BadRequest)?;
+    serve_audio(&state, &blob, share.original, kbps, request).await
 }
 
 /// `GET /api/share/{token}/covers/{cover_id}`: a cover of a shared track or album.

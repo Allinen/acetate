@@ -5,11 +5,14 @@
 //!
 //! * `original:yes|no`: the link plays the original file (needs `download_original`), or,
 //!   by default, a lower-quality copy that has none of the original's tags.
+//! * `quality:128`: the copy's bitrate in kbps, one of the server's (it says which; the first
+//!   it lists is the default). Not for a link that gives the original.
 //! * `expires:never|1d|7d|30d|Nd|Nw`: when the link stops working.
 //!
 //! Keys in the field: ↑/↓ choose, Tab takes the choice, Enter applies what's typed (an
 //! empty field: makes the link), Ctrl+Enter applies it and makes the link. Esc closes.
 
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use eframe::egui::{self, RichText};
@@ -25,9 +28,10 @@ use crate::ui::{modal, widgets};
 enum K {
     Original,
     Expires,
+    Quality,
 }
 
-const KEYS: &[(K, &[&str])] = &[(K::Original, &["original", "orig", "og"]), (K::Expires, &["expires", "expire", "expiry", "exp"])];
+const KEYS: &[(K, &[&str])] = &[(K::Original, &["original", "orig", "og"]), (K::Expires, &["expires", "expire", "expiry", "exp"]), (K::Quality, &["quality", "kbps", "bitrate"])];
 
 impl Keys for K {
     const MINUS: bool = false;
@@ -53,6 +57,8 @@ enum Change {
     Original(bool),
     /// None: never.
     Expires(Option<u32>),
+    /// None: the server's default.
+    Quality(Option<u32>),
 }
 
 /// The days for `7d`, `2w`, `30`, or None for "never" (the outer Err: not understood).
@@ -75,6 +81,16 @@ fn parse_days(text: &str) -> Result<Option<u32>, String> {
         return Err("a link can last 1 day to 10 years (or never)".into());
     }
     Ok(Some(days))
+}
+
+/// `128`, `128k`, `128kbps`, or `default`; None: the default.
+fn parse_kbps(text: &str) -> Result<Option<u32>, String> {
+    let text = text.trim().to_lowercase();
+    if matches!(text.as_str(), "default" | "auto" | "") {
+        return Ok(None);
+    }
+    let digits = text.trim_end_matches("kbps").trim_end_matches('k').trim();
+    digits.parse().map(Some).map_err(|_| format!("“{text}” isn't a bitrate: try 128 or default"))
 }
 
 fn parse_yes(text: &str) -> Option<bool> {
@@ -125,34 +141,44 @@ pub struct ShareDialog {
     cl: CommandLine,
     original: bool,
     days: Option<u32>,
+    /// None: the server's default.
+    kbps: Option<u32>,
     can_original: bool,
+    /// The server's qualities, the default first (asked when the popup opens).
+    qualities: Option<Vec<u32>>,
+    answer: Arc<Mutex<Option<Vec<u32>>>>,
 }
 
 pub enum Outcome {
     Open,
     Close,
-    Create { target: Target, original: bool, days: Option<u32> },
+    Create { target: Target, original: bool, days: Option<u32>, kbps: Option<u32> },
 }
 
 impl ShareDialog {
-    pub fn new(target: Target, can_original: bool) -> ShareDialog {
+    /// `answer`: where the server's list of qualities arrives (the app asks).
+    pub fn new(target: Target, can_original: bool, answer: Arc<Mutex<Option<Vec<u32>>>>) -> ShareDialog {
         let mut cl = CommandLine::new(egui::Id::new("share-commandline"));
         cl.focus = true;
-        ShareDialog { target, cl, original: false, days: None, can_original }
+        ShareDialog { target, cl, original: false, days: None, kbps: None, can_original, qualities: None, answer }
     }
 
     fn rows(&self, line: &Line<K>) -> Vec<Row> {
         let row = |label: &str, sub: &str, what: What| Row { label: label.to_string(), sub: sub.to_string(), what };
         if let Some(last) = line.parts.last() {
             let typed = &last.value;
-            let options: Vec<(&str, &str)> = match last.key {
-                K::Original => vec![("yes", "the original file"), ("no", "a lower-quality copy")],
-                K::Expires => vec![("never", ""), ("1d", "1 day"), ("7d", "7 days"), ("30d", "30 days")],
+            let own = |a: &str, b: &str| (a.to_string(), b.to_string());
+            let options: Vec<(String, String)> = match last.key {
+                K::Original => vec![own("yes", "the original file"), own("no", "a lower-quality copy")],
+                K::Expires => vec![own("never", ""), own("1d", "1 day"), own("7d", "7 days"), own("30d", "30 days")],
+                K::Quality => std::iter::once(own("default", "the server's usual"))
+                    .chain(self.qualities.iter().flatten().map(|k| (k.to_string(), format!("{k} kbps"))))
+                    .collect(),
             };
             return options
                 .into_iter()
                 .filter(|(v, _)| typed.is_empty() || loosely_in(typed, v))
-                .map(|(v, sub)| row(v, sub, What::Value(v.to_string())))
+                .map(|(v, sub)| Row { label: v.clone(), sub, what: What::Value(v) })
                 .collect();
         }
         let words = line.words.join(" ");
@@ -163,6 +189,9 @@ impl ShareDialog {
         }
         if found("original", &["file"]) {
             rows.push(row("original:", "the original file, or a lower-quality copy", What::Insert("original:".into())));
+        }
+        if found("quality", &["kbps", "bitrate"]) {
+            rows.push(row("quality:", "the copy's bitrate (kbps)", What::Insert("quality:".into())));
         }
         if found("expires", &["expiry", "time"]) {
             rows.push(row("expires:", "never, 1d, 7d, 30d…", What::Insert("expires:".into())));
@@ -182,6 +211,23 @@ impl ShareDialog {
                     }
                     let label = if yes { "the link plays the original file" } else { "the link plays a lower-quality copy" };
                     Ok((Change::Original(yes), label.into()))
+                }
+                K::Quality => {
+                    let kbps = parse_kbps(&part.value)?;
+                    if let (Some(k), Some(list)) = (kbps, &self.qualities)
+                        && !list.contains(&k)
+                    {
+                        let list: Vec<String> = list.iter().map(|k| k.to_string()).collect();
+                        return Err(format!("the server makes copies at {} kbps", list.join(", ")));
+                    }
+                    if kbps.is_some() && self.qualities.is_none() {
+                        return Err("still asking the server which qualities it has…".into());
+                    }
+                    let label = match kbps {
+                        None => "the copy has the server's usual quality".to_string(),
+                        Some(k) => format!("the copy is {k} kbps"),
+                    };
+                    Ok((Change::Quality(kbps), label))
                 }
                 K::Expires => {
                     let days = parse_days(&part.value)?;
@@ -207,6 +253,7 @@ impl ShareDialog {
             match change {
                 Change::Original(yes) => self.original = yes,
                 Change::Expires(days) => self.days = days,
+                Change::Quality(kbps) => self.kbps = kbps,
             }
         }
         self.cl.text.clear();
@@ -234,6 +281,9 @@ impl ShareDialog {
 
     /// Draws the popup and handles its keys.
     pub fn show(&mut self, ctx: &egui::Context) -> Outcome {
+        if let Some(list) = self.answer.lock().unwrap().take() {
+            self.qualities = Some(list);
+        }
         let ctrl_enter = ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Enter));
         let focused = self.cl.hold_focus(ctx);
         let line = commandline::parse::<K>(&self.cl.text);
@@ -276,7 +326,8 @@ impl ShareDialog {
         let list: Vec<(String, String)> = rows.iter().map(|r| (r.label.clone(), r.sub.clone())).collect();
         let highlighted = self.cl.highlighted;
 
-        let (can_original, mut original, mut days) = (self.can_original, self.original, self.days);
+        let (can_original, mut original, mut days, mut kbps) = (self.can_original, self.original, self.days, self.kbps);
+        let qualities = self.qualities.clone().unwrap_or_default();
         let mut make = false;
         let closed = modal::show(ctx, "share-dialog", "Share link", egui::vec2(560.0, 520.0), |ui| {
             ui.label(RichText::new("Anyone with the link can open it, no account needed. You can take it back in the web UI's Shares.").color(P.muted));
@@ -303,8 +354,22 @@ impl ShareDialog {
                     widgets::chip(ui, &format!("{n} days"), true);
                 }
             });
+            if !original {
+                ui.add_space(4.0);
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(RichText::new("Quality").color(P.muted));
+                    if widgets::chip(ui, "default", kbps.is_none()) {
+                        kbps = None;
+                    }
+                    for k in &qualities {
+                        if widgets::chip(ui, &format!("{k} kbps"), kbps == Some(*k)) {
+                            kbps = Some(*k);
+                        }
+                    }
+                });
+            }
             ui.add_space(12.0);
-            self.cl.field(ui, true, "original:yes expires:7d, or Enter to make the link");
+            self.cl.field(ui, true, "original:yes quality:64 expires:7d, or Enter to make the link");
             ui.add_space(4.0);
             widget::list(ui, list, highlighted, &mut clicked, "↑↓ choose · Tab takes · Enter applies (empty: makes the link) · Ctrl+Enter both · Esc closes");
             ui.add_space(6.0);
@@ -316,6 +381,7 @@ impl ShareDialog {
         });
         self.original = original;
         self.days = days;
+        self.kbps = kbps;
 
         if let Some(n) = clicked
             && n < rows.len()
@@ -325,7 +391,7 @@ impl ShareDialog {
         }
         if create || make {
             // What the popup shows is what's made (a toggle clicked this frame included).
-            return Outcome::Create { target: self.target, original: self.original, days: self.days };
+            return Outcome::Create { target: self.target, original: self.original, days: self.days, kbps: if self.original { None } else { self.kbps } };
         }
         if closed { Outcome::Close } else { Outcome::Open }
     }
@@ -336,7 +402,11 @@ mod tests {
     use super::*;
 
     fn dialog(can_original: bool) -> ShareDialog {
-        ShareDialog::new(Target::Track(uuid::Uuid::nil()), can_original)
+        {
+            let mut d = ShareDialog::new(Target::Track(uuid::Uuid::nil()), can_original, Default::default());
+            d.qualities = Some(vec![128, 64]);
+            d
+        }
     }
 
     fn type_and_apply(d: &mut ShareDialog, text: &str) -> bool {
@@ -370,6 +440,11 @@ mod tests {
         assert!(d.cl.text.is_empty());
         assert!(type_and_apply(&mut d, "og:no | exp:never"));
         assert!(!d.original && d.days.is_none());
+        assert!(type_and_apply(&mut d, "quality:64k"));
+        assert_eq!(d.kbps, Some(64));
+        assert!(!type_and_apply(&mut d, "quality:320"), "a quality the server doesn't make");
+        assert!(type_and_apply(&mut d, "quality:default"));
+        assert_eq!(d.kbps, None);
     }
 
     #[test]
@@ -389,7 +464,9 @@ mod tests {
         assert_eq!(labels("expires:"), ["never", "1d", "7d", "30d"]);
         assert_eq!(labels("expires:7"), ["7d"]);
         assert_eq!(labels("original:n"), ["no"]);
-        assert_eq!(labels(""), ["Make the link", "original:", "expires:"]);
+        assert_eq!(labels(""), ["Make the link", "original:", "quality:", "expires:"]);
         assert_eq!(labels("exp"), ["expires:"]);
+        assert_eq!(labels("quality:"), ["default", "128", "64"]);
+        assert_eq!(labels("quality:6"), ["64"]);
     }
 }

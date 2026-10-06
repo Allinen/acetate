@@ -751,7 +751,20 @@ impl App {
             self.shell.playlists.notice = Some(("Making share links needs the share permission (the plain link, Ctrl+L, works for anyone with an account).".into(), Instant::now()));
             return;
         }
-        self.share_dialog = Some(share::ShareDialog::new(target, self.shell.account.can("download_original")));
+        // The qualities the server makes copies at: asked now, they arrive in the popup.
+        let answer = Arc::new(Mutex::new(None));
+        self.share_dialog = Some(share::ShareDialog::new(target, self.shell.account.can("download_original"), answer.clone()));
+        let (api, ctx) = (self.shell.api.clone(), self.shell.ctx.clone());
+        self.shell.runtime.spawn(async move {
+            #[derive(serde::Deserialize)]
+            struct Qualities {
+                kbps: Vec<u32>,
+            }
+            if let Ok(q) = api.send_json::<Qualities>(reqwest::Method::GET, "/api/qualities", None).await {
+                *answer.lock().unwrap() = Some(q.kbps);
+                ctx.request_repaint();
+            }
+        });
     }
 
     /// The popup, while it's open; makes the link when it asks.
@@ -761,9 +774,9 @@ impl App {
         match dialog.show(ctx) {
             share::Outcome::Open => {}
             share::Outcome::Close => self.share_dialog = None,
-            share::Outcome::Create { target, original, days } => {
+            share::Outcome::Create { target, original, days, kbps } => {
                 self.share_dialog = None;
-                self.make_share(target, original, days);
+                self.make_share(target, original, days, kbps);
             }
         }
     }
@@ -771,7 +784,7 @@ impl App {
     /// Makes a share link (`POST /api/shares`) to a track or album; it's copied when the
     /// server answers (`take_share`). `original`: it plays the original file, not a
     /// lower-quality copy; `days`: it expires after that many (None: never).
-    fn make_share(&mut self, target: crate::links::Target, original: bool, days: Option<u32>) {
+    fn make_share(&mut self, target: crate::links::Target, original: bool, days: Option<u32>, kbps: Option<u32>) {
         use crate::links::Target;
         let mut body = match target {
             Target::Track(id) => serde_json::json!({ "track_id": id }),
@@ -779,6 +792,9 @@ impl App {
             Target::Artist(_) => return,
         };
         body["original"] = original.into();
+        if let Some(kbps) = kbps {
+            body["kbps"] = kbps.into();
+        }
         if let Some(days) = days {
             body["expires_at"] = share::expires_at(days).into();
         }

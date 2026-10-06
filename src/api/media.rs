@@ -26,6 +26,9 @@ pub struct StreamQuery {
     /// `true`: a transcoded copy even if you're allowed the original (for a client that
     /// can't play the file, or wants less to download).
     transcode: Option<bool>,
+    /// The quality of the copy, in kbps: one of the server's (`GET /api/qualities`). Asking
+    /// for one means a copy even if you're allowed the original. Without it: the default.
+    kbps: Option<u32>,
 }
 
 /// `GET /api/files/{id}/stream`: the file as stored if you have `download_original`
@@ -74,8 +77,9 @@ pub async fn stream_file(
     }
 
     let blob = AudioBlob { sha256: file.sha256, container: file.container, codec: file.codec };
-    let original_allowed = user.has(Permission::DownloadOriginal) && !query.transcode.unwrap_or(false);
-    serve_audio(&state, &blob, original_allowed, request).await
+    let kbps = state.transcodes.pick(query.kbps).map_err(AppError::BadRequest)?;
+    let original_allowed = user.has(Permission::DownloadOriginal) && !query.transcode.unwrap_or(false) && query.kbps.is_none();
+    serve_audio(&state, &blob, original_allowed, kbps, request).await
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -223,6 +227,7 @@ pub(super) async fn serve_audio(
     state: &AppState,
     blob: &AudioBlob,
     original_allowed: bool,
+    kbps: u32,
     request: Request,
 ) -> Result<Response, AppError> {
     use crate::storage::transcode::TranscodeError;
@@ -232,13 +237,18 @@ pub(super) async fn serve_audio(
         let mime = audio_mime(blob.container.as_deref(), blob.codec.as_deref());
         return serve_blob(original, &mime, request).await;
     }
-    match state.transcodes.get(&original, &blob.sha256).await {
+    match state.transcodes.get(&original, &blob.sha256, kbps).await {
         Ok(copy) => serve_blob(copy, &state.transcodes.mime(), request).await,
         Err(TranscodeError::NoFfmpeg) => Err(AppError::Unavailable(
             "this server can't make the lower-quality copy you'd get (ffmpeg isn't installed on it): ask its admin to install it, or for the download_original permission".to_string(),
         )),
         Err(TranscodeError::Failed(err)) => Err(AppError::Internal(err.context(format!("transcoding file {}", blob.sha256)))),
     }
+}
+
+/// `GET /api/qualities`: the qualities copies are made at (kbps), the default first.
+pub async fn qualities(State(state): State<AppState>) -> axum::Json<serde_json::Value> {
+    axum::Json(serde_json::json!({ "kbps": state.transcodes.allowed() }))
 }
 
 /// `GET /api/covers/{id}`: a cover image of a track or album.
