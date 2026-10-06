@@ -1,0 +1,407 @@
+//! What the mirror knows, in `<root>/mirror.sqlite`:
+//!
+//! - `have`: the blobs here, each with its size, how it came and when its hash was last
+//!   checked. Only blobs whose hash was checked here are in it.
+//! - `mirrors`: each server mirrored (by address): what to keep (`Config`), and the
+//!   version of the list last had from it.
+//! - `listed`: that list: every blob the server has, its volume, size and state.
+//! - `pins`: blobs kept for a reason of their own, mirror or not (offline downloads of
+//!   single tracks will be these). Never offered for removal.
+//! - `scanned`: local files hashed while looking for blobs (by path, size and time
+//!   changed), so they aren't hashed again.
+//!
+//! What's *wanted* is worked out from these (the `wanted` view): what an enabled mirror
+//! keeps (its states and volumes) of what its server lists, and anything pinned. Missing
+//! = wanted, not had. Removable = had, not wanted: offered, never removed unasked.
+
+use std::path::{Path, PathBuf};
+
+use anyhow::Context;
+use rusqlite::{Connection, OptionalExtension, params};
+use serde::{Deserialize, Serialize};
+
+/// What a mirror keeps of a server's blobs. Off until turned on.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Config {
+    pub enabled: bool,
+    /// The server's volumes mirrored (by name). A blob on another isn't fetched.
+    pub volumes: Vec<String>,
+    /// Also tracks' previous files (replaced ones, kept on the server). Off by default:
+    /// they can be many, and aren't played.
+    pub previous: bool,
+    /// Folders on this machine to look in for wanted blobs before downloading them (e.g.
+    /// the music folder the library was imported from): taken in as reflinks.
+    pub look_in: Vec<PathBuf>,
+}
+
+/// A blob as a server lists it (`GET /api/mirror`).
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Listed {
+    pub sha256: String,
+    pub volume: Option<String>,
+    pub size: Option<i64>,
+    pub state: String,
+}
+
+/// One of the server's volumes, as listed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ServerVolume {
+    pub name: String,
+    pub default: bool,
+}
+
+/// A blob here that nothing wants anymore, and why.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Removable {
+    pub sha256: String,
+    pub size: i64,
+    /// Its state on the server ("trashed", "previous"…), "gone" if the server doesn't
+    /// list it; None if no mirror of a server lists it at all.
+    pub state: Option<String>,
+    pub volume: Option<String>,
+}
+
+/// How many blobs, and their bytes (of those whose size is known).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Count {
+    pub blobs: u64,
+    pub bytes: u64,
+}
+
+pub struct Index {
+    conn: Connection,
+}
+
+const SCHEMA: &str = r#"
+CREATE TABLE IF NOT EXISTS have (
+    sha256      TEXT PRIMARY KEY,
+    size        INTEGER NOT NULL,
+    -- 'downloaded', 'reflinked', 'copied', or 'found' (in the blobs folder already).
+    how         TEXT NOT NULL,
+    added_at    INTEGER NOT NULL,
+    verified_at INTEGER NOT NULL
+) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS mirrors (
+    server         TEXT PRIMARY KEY,
+    config         TEXT NOT NULL,
+    version        TEXT,
+    server_volumes TEXT NOT NULL DEFAULT '[]',
+    synced_at      INTEGER
+);
+CREATE TABLE IF NOT EXISTS listed (
+    server TEXT NOT NULL,
+    sha256 TEXT NOT NULL,
+    volume TEXT,
+    size   INTEGER,
+    state  TEXT NOT NULL,
+    PRIMARY KEY (server, sha256)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS listed_sha256 ON listed (sha256);
+CREATE TABLE IF NOT EXISTS pins (
+    sha256 TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    PRIMARY KEY (sha256, reason)
+) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS scanned (
+    path   TEXT PRIMARY KEY,
+    size   INTEGER NOT NULL,
+    mtime  INTEGER NOT NULL,
+    sha256 TEXT NOT NULL
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS scanned_sha256 ON scanned (sha256);
+DROP VIEW IF EXISTS wanted;
+CREATE VIEW wanted AS
+    SELECT l.sha256, max(l.size) AS size
+    FROM listed l JOIN mirrors m ON m.server = l.server
+    WHERE json_extract(m.config, '$.enabled')
+      AND (l.state IN ('audio', 'extra', 'cover', 'not_imported')
+           OR (l.state = 'previous' AND json_extract(m.config, '$.previous')))
+      AND l.volume IN (SELECT value FROM json_each(m.config, '$.volumes'))
+    GROUP BY l.sha256
+    UNION
+    SELECT sha256, NULL FROM pins;
+"#;
+
+fn now() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
+}
+
+impl Index {
+    pub fn open(path: &Path) -> anyhow::Result<Index> {
+        let conn = Connection::open(path).with_context(|| format!("opening {}", path.display()))?;
+        // WAL: the app reading while a sync writes doesn't wait.
+        conn.pragma_update(None, "journal_mode", "WAL")?;
+        conn.pragma_update(None, "synchronous", "NORMAL")?;
+        conn.busy_timeout(std::time::Duration::from_secs(10))?;
+        conn.execute_batch(SCHEMA)?;
+        Ok(Index { conn })
+    }
+
+    // ---- Mirrors ----
+
+    pub fn config(&self, server: &str) -> anyhow::Result<Config> {
+        let config: Option<String> =
+            self.conn.query_row("SELECT config FROM mirrors WHERE server = ?1", [server], |r| r.get(0)).optional()?;
+        Ok(config.and_then(|c| serde_json::from_str(&c).ok()).unwrap_or_default())
+    }
+
+    pub fn set_config(&self, server: &str, config: &Config) -> anyhow::Result<()> {
+        self.conn.execute(
+            "INSERT INTO mirrors (server, config) VALUES (?1, ?2) ON CONFLICT (server) DO UPDATE SET config = excluded.config",
+            params![server, serde_json::to_string(config)?],
+        )?;
+        Ok(())
+    }
+
+    /// The version of the list last had from `server` (to ask what changed since).
+    pub fn version(&self, server: &str) -> anyhow::Result<Option<String>> {
+        Ok(self.conn.query_row("SELECT version FROM mirrors WHERE server = ?1", [server], |r| r.get(0)).optional()?.flatten())
+    }
+
+    /// The server's volumes as last listed.
+    pub fn server_volumes(&self, server: &str) -> anyhow::Result<Vec<ServerVolume>> {
+        let json: Option<String> =
+            self.conn.query_row("SELECT server_volumes FROM mirrors WHERE server = ?1", [server], |r| r.get(0)).optional()?;
+        Ok(json.and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default())
+    }
+
+    /// When the list was last brought up to date (seconds since 1970).
+    pub fn synced_at(&self, server: &str) -> anyhow::Result<Option<i64>> {
+        Ok(self.conn.query_row("SELECT synced_at FROM mirrors WHERE server = ?1", [server], |r| r.get(0)).optional()?.flatten())
+    }
+
+    /// Takes in a list from `server`: the whole list (`full`: what isn't in it is gone),
+    /// or what changed (a blob "gone" is dropped). In one transaction, with the version.
+    pub fn apply_listing(
+        &mut self,
+        server: &str,
+        version: &str,
+        full: bool,
+        volumes: &[ServerVolume],
+        blobs: &[Listed],
+    ) -> anyhow::Result<()> {
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "INSERT INTO mirrors (server, config) VALUES (?1, ?2) ON CONFLICT (server) DO NOTHING",
+            params![server, serde_json::to_string(&Config::default())?],
+        )?;
+        if full {
+            tx.execute("DELETE FROM listed WHERE server = ?1", [server])?;
+        }
+        {
+            let mut upsert = tx.prepare(
+                "INSERT INTO listed (server, sha256, volume, size, state) VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT (server, sha256) DO UPDATE SET volume = excluded.volume, size = excluded.size, state = excluded.state",
+            )?;
+            let mut drop = tx.prepare("DELETE FROM listed WHERE server = ?1 AND sha256 = ?2")?;
+            for blob in blobs {
+                if blob.state == "gone" {
+                    drop.execute(params![server, blob.sha256])?;
+                } else {
+                    upsert.execute(params![server, blob.sha256, blob.volume, blob.size, blob.state])?;
+                }
+            }
+        }
+        tx.execute(
+            "UPDATE mirrors SET version = ?2, server_volumes = ?3, synced_at = ?4 WHERE server = ?1",
+            params![server, version, serde_json::to_string(volumes)?, now()],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    // ---- What's here ----
+
+    pub fn has(&self, sha256: &str) -> anyhow::Result<bool> {
+        Ok(self.conn.query_row("SELECT 1 FROM have WHERE sha256 = ?1", [sha256], |_| Ok(())).optional()?.is_some())
+    }
+
+    /// A blob came in, its hash checked.
+    pub fn add(&self, sha256: &str, size: u64, how: &str) -> anyhow::Result<()> {
+        let at = now();
+        self.conn.execute(
+            "INSERT INTO have (sha256, size, how, added_at, verified_at) VALUES (?1, ?2, ?3, ?4, ?4)
+             ON CONFLICT (sha256) DO UPDATE SET size = excluded.size, verified_at = excluded.verified_at",
+            params![sha256, size as i64, how, at],
+        )?;
+        Ok(())
+    }
+
+    /// Its hash was checked again, and is right.
+    pub fn verified(&self, sha256: &str) -> anyhow::Result<()> {
+        self.conn.execute("UPDATE have SET verified_at = ?2 WHERE sha256 = ?1", params![sha256, now()])?;
+        Ok(())
+    }
+
+    pub fn forget(&self, sha256: &str) -> anyhow::Result<()> {
+        self.conn.execute("DELETE FROM have WHERE sha256 = ?1", [sha256])?;
+        Ok(())
+    }
+
+    /// Every blob here: (sha256, size).
+    pub fn all_had(&self) -> anyhow::Result<Vec<(String, u64)>> {
+        let mut query = self.conn.prepare("SELECT sha256, size FROM have ORDER BY sha256")?;
+        let rows = query.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as u64)))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    pub fn had(&self) -> anyhow::Result<Count> {
+        self.count("SELECT count(*), coalesce(sum(size), 0) FROM have")
+    }
+
+    fn count(&self, sql: &str) -> anyhow::Result<Count> {
+        Ok(self.conn.query_row(sql, [], |r| Ok(Count { blobs: r.get::<_, i64>(0)? as u64, bytes: r.get::<_, i64>(1)? as u64 }))?)
+    }
+
+    // ---- Wanted, missing, removable ----
+
+    pub fn wanted(&self) -> anyhow::Result<Count> {
+        self.count("SELECT count(*), coalesce(sum(size), 0) FROM wanted")
+    }
+
+    /// Wanted and not here: (sha256, size if known), smallest first (covers before
+    /// albums' worth of audio, so a mirror is useful soonest).
+    pub fn missing(&self) -> anyhow::Result<Vec<(String, Option<u64>)>> {
+        let mut query = self.conn.prepare(
+            "SELECT w.sha256, w.size FROM wanted w WHERE NOT EXISTS (SELECT 1 FROM have h WHERE h.sha256 = w.sha256)
+             ORDER BY w.size IS NULL, w.size, w.sha256",
+        )?;
+        let rows = query.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<i64>>(1)?.map(|s| s as u64))))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// Here and not wanted, with why (as `server` lists it, if it does).
+    pub fn removable(&self, server: &str) -> anyhow::Result<Vec<Removable>> {
+        let mut query = self.conn.prepare(
+            "SELECT h.sha256, h.size,
+                    CASE WHEN l.state IS NOT NULL THEN l.state
+                         WHEN EXISTS (SELECT 1 FROM mirrors WHERE server = ?1) THEN 'gone' END,
+                    l.volume
+             FROM have h
+             LEFT JOIN listed l ON l.server = ?1 AND l.sha256 = h.sha256
+             WHERE NOT EXISTS (SELECT 1 FROM wanted w WHERE w.sha256 = h.sha256)
+             ORDER BY h.sha256",
+        )?;
+        let rows = query.query_map([server], |r| {
+            Ok(Removable { sha256: r.get(0)?, size: r.get(1)?, state: r.get(2)?, volume: r.get(3)? })
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// Whether a blob is wanted (checked again right before removing it).
+    pub fn is_wanted(&self, sha256: &str) -> anyhow::Result<bool> {
+        Ok(self.conn.query_row("SELECT 1 FROM wanted WHERE sha256 = ?1", [sha256], |_| Ok(())).optional()?.is_some())
+    }
+
+    // ---- Pins ----
+
+    pub fn pin(&self, sha256: &str, reason: &str) -> anyhow::Result<()> {
+        self.conn.execute("INSERT OR IGNORE INTO pins (sha256, reason) VALUES (?1, ?2)", params![sha256, reason])?;
+        Ok(())
+    }
+
+    pub fn unpin(&self, sha256: &str, reason: &str) -> anyhow::Result<()> {
+        self.conn.execute("DELETE FROM pins WHERE sha256 = ?1 AND reason = ?2", params![sha256, reason])?;
+        Ok(())
+    }
+
+    // ---- Local files looked in ----
+
+    /// A local file's hash, if it was hashed already and hasn't changed since.
+    pub fn scanned(&self, path: &Path, size: u64, mtime: i64) -> anyhow::Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT sha256 FROM scanned WHERE path = ?1 AND size = ?2 AND mtime = ?3",
+                params![path.to_string_lossy(), size as i64, mtime],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
+    pub fn set_scanned(&self, path: &Path, size: u64, mtime: i64, sha256: &str) -> anyhow::Result<()> {
+        self.conn.execute(
+            "INSERT INTO scanned (path, size, mtime, sha256) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT (path) DO UPDATE SET size = excluded.size, mtime = excluded.mtime, sha256 = excluded.sha256",
+            params![path.to_string_lossy(), size as i64, mtime, sha256],
+        )?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sha(c: char) -> String {
+        c.to_string().repeat(64)
+    }
+
+    fn listed(c: char, volume: &str, size: i64, state: &str) -> Listed {
+        Listed { sha256: sha(c), volume: Some(volume.into()), size: Some(size), state: state.into() }
+    }
+
+    #[test]
+    fn wanted_is_what_the_mirror_keeps_and_nothing_is_removed_unasked() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut index = Index::open(&dir.path().join("mirror.sqlite")).unwrap();
+        let server = "http://nas:3000";
+        let volumes = [ServerVolume { name: "main".into(), default: true }, ServerVolume { name: "archive".into(), default: false }];
+        index
+            .apply_listing(server, "v1", true, &volumes, &[
+                listed('a', "main", 10, "audio"),
+                listed('b', "main", 20, "cover"),
+                listed('c', "archive", 30, "audio"),
+                listed('d', "main", 40, "previous"),
+                listed('e', "main", 50, "trashed"),
+                listed('f', "main", 60, "not_imported"),
+            ])
+            .unwrap();
+        assert_eq!(index.version(server).unwrap().as_deref(), Some("v1"));
+        assert_eq!(index.server_volumes(server).unwrap(), volumes);
+
+        // Not enabled yet: nothing wanted.
+        assert_eq!(index.wanted().unwrap(), Count::default());
+
+        index.set_config(server, &Config { enabled: true, volumes: vec!["main".into()], ..Config::default() }).unwrap();
+        let missing: Vec<_> = index.missing().unwrap().into_iter().map(|(s, _)| s).collect();
+        assert_eq!(missing, [sha('a'), sha('b'), sha('f')], "kept states, mirrored volume, smallest first");
+
+        index.set_config(server, &Config { enabled: true, volumes: vec!["main".into(), "archive".into()], previous: true, ..Config::default() }).unwrap();
+        assert_eq!(index.wanted().unwrap(), Count { blobs: 5, bytes: 160 });
+
+        // Had: a, d. Then d's file is trashed on the server and a is purged: offered, not removed.
+        index.add(&sha('a'), 10, "downloaded").unwrap();
+        index.add(&sha('d'), 40, "downloaded").unwrap();
+        assert!(index.removable(server).unwrap().is_empty());
+        index.apply_listing(server, "v2", false, &volumes, &[
+            listed('d', "main", 40, "trashed"),
+            Listed { sha256: sha('a'), volume: None, size: None, state: "gone".into() },
+        ]).unwrap();
+        let removable = index.removable(server).unwrap();
+        let why: Vec<_> = removable.iter().map(|r| (r.sha256.clone(), r.state.clone())).collect();
+        assert_eq!(why, [(sha('a'), Some("gone".into())), (sha('d'), Some("trashed".into()))]);
+        assert!(index.has(&sha('a')).unwrap(), "still here until removed");
+
+        // A pin keeps one wanted whatever the mirror says.
+        index.pin(&sha('a'), "offline").unwrap();
+        assert!(index.is_wanted(&sha('a')).unwrap());
+        assert_eq!(index.removable(server).unwrap().len(), 1);
+        index.unpin(&sha('a'), "offline").unwrap();
+
+        // The whole list again: anything not in it is gone.
+        index.apply_listing(server, "v3", true, &volumes, &[listed('b', "main", 20, "cover")]).unwrap();
+        assert_eq!(index.wanted().unwrap(), Count { blobs: 1, bytes: 20 });
+    }
+
+    #[test]
+    fn a_hashed_file_isnt_hashed_again_unless_it_changed() {
+        let dir = tempfile::tempdir().unwrap();
+        let index = Index::open(&dir.path().join("mirror.sqlite")).unwrap();
+        let path = Path::new("/music/song.flac");
+        index.set_scanned(path, 5, 100, &sha('a')).unwrap();
+        assert_eq!(index.scanned(path, 5, 100).unwrap(), Some(sha('a')));
+        assert_eq!(index.scanned(path, 5, 101).unwrap(), None);
+    }
+}

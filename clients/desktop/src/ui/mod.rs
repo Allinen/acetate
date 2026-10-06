@@ -634,10 +634,8 @@ impl App {
     pub fn new(cc: &eframe::CreationContext, link: Option<String>) -> App {
         theme::apply(&cc.egui_ctx);
         let runtime = Runtime::new().expect("a tokio runtime");
-        // Local: on Windows, not the roaming folder (the library kept here is hundreds of
-        // MB); elsewhere the same as `data_dir`.
-        let data_dir = app_dir(dirs::data_local_dir());
-        let cache_dir = app_dir(dirs::cache_dir());
+        let data_dir = crate::root::root();
+        let cache_dir = crate::root::cache_dir();
         let api = Api::new(data_dir.clone());
         let controller = runtime.block_on(async { Controller::new(api.clone(), cc.egui_ctx.clone()) });
         runtime.spawn(controller.clone().monitor());
@@ -1302,23 +1300,6 @@ impl eframe::App for App {
         keymap::overlay(&ctx, &mut self.keys_open);
         self.apply(&ctx);
     }
-}
-
-/// The app's own folder in `base` (the system's data or cache folder). It used to be
-/// named `dev.acetate.desktop`: a folder by that name is moved over (renamed, so the
-/// session, library, covers and queue are kept) the first time.
-fn app_dir(base: Option<PathBuf>) -> PathBuf {
-    const NAME: &str = "allinen.acetate.desktop";
-    const OLD: &str = "dev.acetate.desktop";
-    let base = base.unwrap_or_default();
-    let (dir, old) = (base.join(NAME), base.join(OLD));
-    if !dir.exists() && old.exists()
-        && let Err(err) = std::fs::rename(&old, &dir)
-    {
-        // It starts afresh; the old folder stays as it was.
-        eprintln!("couldn't move {} to {}: {err}", old.display(), dir.display());
-    }
-    dir
 }
 
 /// The window's handle, for the system's media controls (Windows ties them to a window;

@@ -1,0 +1,652 @@
+//! A mirror of the server's blobs on this machine (admins): its audio, covers, extras and
+//! files that didn't import, for offline playback and as a second copy. Opt in, per
+//! server volume (`index::Config`).
+//!
+//! It keeps what's *wanted* (`index`): what the mirror keeps of what the server lists,
+//! plus anything pinned. A sync brings the server's list up to date (all of it the first
+//! time, then what changed), then fetches what's missing: first by looking in folders on
+//! this machine (a file with a wanted blob's size is hashed; one that matches is taken in
+//! as a reflink), then by downloading the rest. Every blob is hashed as it comes in, and
+//! only goes in if its hash is its name. `rehash` checks every blob here again.
+//!
+//! Nothing is removed because the server let something go (trashed, purged, replaced):
+//! those are listed as removable, for the user to remove or keep.
+//!
+//! One mirror at a time per root (`mirror.lock`): the app's or the headless one's.
+
+pub mod cli;
+pub mod index;
+pub mod store;
+
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
+use std::sync::{Arc, Mutex};
+
+use anyhow::Context;
+use sha2::{Digest, Sha256};
+use tokio::io::AsyncWriteExt;
+use tokio::sync::Notify;
+
+use crate::api::Api;
+use index::{Count, Index, Removable};
+use store::LocalStore;
+
+/// Downloads at once.
+const PARALLEL: usize = 3;
+/// How long a watching mirror's request waits for a change (the server allows 55).
+const WAIT_SECONDS: u64 = 50;
+/// Problems kept to show.
+const PROBLEMS_KEPT: usize = 50;
+
+/// What the mirror is doing, for showing.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Doing {
+    #[default]
+    Idle,
+    /// Checking the blobs here against what the index says (and hashing ones it doesn't
+    /// know yet).
+    Checking,
+    /// Asking the server what it has.
+    Listing,
+    /// Looking for wanted blobs in folders on this machine.
+    LookingIn,
+    Downloading,
+    Rehashing,
+    Removing,
+    /// Up to date, waiting for the server to say something changed.
+    Waiting,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct Status {
+    pub doing: Doing,
+    /// Progress through what it's doing: blobs (or files) done of how many, and bytes.
+    pub done: u64,
+    pub of: u64,
+    pub bytes: u64,
+    pub of_bytes: u64,
+    /// The file or blob at hand.
+    pub current: Option<String>,
+    /// This run's totals.
+    pub downloaded: u64,
+    pub taken_in: u64,
+    /// The latest problems, newest last.
+    pub problems: Vec<String>,
+}
+
+/// What a sync would do and where it stands, worked out from the index.
+#[derive(Debug, Clone, Default)]
+pub struct Plan {
+    pub wanted: Count,
+    pub had: Count,
+    pub missing: Count,
+    /// Missing blobs whose size the server doesn't know (some thumbnails).
+    pub missing_unsized: u64,
+    pub removable: Count,
+    /// Free space where the blobs go (None: couldn't tell).
+    pub free_bytes: Option<u64>,
+}
+
+/// What a rehash found.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Rehashed {
+    pub checked: u64,
+    /// Blobs not what their names say: set aside (`<root>/corrupt/`), fetched again.
+    pub set_aside: Vec<String>,
+    /// Blobs the index had that weren't here anymore: forgotten, fetched again.
+    pub missing: u64,
+}
+
+pub struct Mirror {
+    api: Api,
+    store: LocalStore,
+    index: Arc<Mutex<Index>>,
+    pub status: Arc<Mutex<Status>>,
+    stopping: Arc<AtomicBool>,
+    stop: Arc<Notify>,
+    /// The blobs folder was checked against the index (once per run).
+    checked: AtomicBool,
+    /// Blobs the server listed but couldn't give (404): not asked for again until its
+    /// list says something changed about them.
+    unavailable: Mutex<HashSet<String>>,
+    _lock: std::fs::File,
+}
+
+/// Why something stopped: asked to (not a problem to show).
+#[derive(Debug)]
+pub struct Stopped;
+
+impl std::fmt::Display for Stopped {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("stopped")
+    }
+}
+
+impl std::error::Error for Stopped {}
+
+/// The server lists a blob it doesn't have (its file is missing there).
+#[derive(Debug)]
+struct NotOnServer;
+
+impl std::fmt::Display for NotOnServer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the server lists it but doesn't have it (not asked for again until that changes)")
+    }
+}
+
+impl std::error::Error for NotOnServer {}
+
+impl Mirror {
+    /// Opens the mirror in `root`. Fails if another is open there (the app's or the
+    /// headless one).
+    pub fn open(root: &Path, api: Api) -> anyhow::Result<Mirror> {
+        std::fs::create_dir_all(root)?;
+        let lock = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(root.join("mirror.lock"))?;
+        match lock.try_lock() {
+            Ok(()) => {}
+            Err(std::fs::TryLockError::WouldBlock) => {
+                anyhow::bail!("another Acetate (the app or its mirror service) is mirroring into {} already", root.display())
+            }
+            Err(std::fs::TryLockError::Error(err)) => return Err(err).context("locking the mirror"),
+        }
+        let store = LocalStore::open(root)?;
+        store.clear_leftovers();
+        let index = Index::open(&root.join("mirror.sqlite"))?;
+        Ok(Mirror {
+            api,
+            store,
+            index: Arc::new(Mutex::new(index)),
+            status: Arc::default(),
+            stopping: Arc::default(),
+            stop: Arc::default(),
+            checked: AtomicBool::new(false),
+            unavailable: Mutex::default(),
+            _lock: lock,
+        })
+    }
+
+    /// The server logged in to (the mirror is of its blobs).
+    pub fn server(&self) -> anyhow::Result<String> {
+        Ok(self.api.session().context("not logged in")?.server)
+    }
+
+    pub fn config(&self) -> anyhow::Result<index::Config> {
+        self.index.lock().unwrap().config(&self.server()?)
+    }
+
+    pub fn set_config(&self, config: &index::Config) -> anyhow::Result<()> {
+        self.index.lock().unwrap().set_config(&self.server()?, config)
+    }
+
+    pub fn server_volumes(&self) -> anyhow::Result<Vec<index::ServerVolume>> {
+        self.index.lock().unwrap().server_volumes(&self.server()?)
+    }
+
+    /// Stops what's running as soon as it can (a download in the middle is gone on from
+    /// next time).
+    pub fn stop(&self) {
+        self.stopping.store(true, Relaxed);
+        self.stop.notify_waiters();
+    }
+
+    fn check_stop(&self) -> anyhow::Result<()> {
+        if self.stopping.load(Relaxed) { Err(Stopped.into()) } else { Ok(()) }
+    }
+
+    fn set_status(&self, change: impl FnOnce(&mut Status)) {
+        change(&mut self.status.lock().unwrap());
+    }
+
+    fn doing(&self, doing: Doing, of: u64, of_bytes: u64) {
+        self.set_status(|s| {
+            *s = Status { doing, of, of_bytes, downloaded: s.downloaded, taken_in: s.taken_in, problems: std::mem::take(&mut s.problems), ..Status::default() }
+        });
+    }
+
+    fn problem(&self, problem: String) {
+        self.set_status(|s| {
+            s.problems.push(problem);
+            let extra = s.problems.len().saturating_sub(PROBLEMS_KEPT);
+            s.problems.drain(..extra);
+        });
+    }
+
+    /// Where it stands (from the index; `refresh` first for the server's latest).
+    pub fn plan(&self) -> anyhow::Result<Plan> {
+        let server = self.server()?;
+        let index = self.index.lock().unwrap();
+        let missing = index.missing()?;
+        let removable = index.removable(&server)?;
+        Ok(Plan {
+            wanted: index.wanted()?,
+            had: index.had()?,
+            missing: Count { blobs: missing.len() as u64, bytes: missing.iter().filter_map(|(_, s)| *s).sum() },
+            missing_unsized: missing.iter().filter(|(_, s)| s.is_none()).count() as u64,
+            removable: Count { blobs: removable.len() as u64, bytes: removable.iter().map(|r| r.size as u64).sum() },
+            free_bytes: fs4::available_space(self.store.blobs_dir()).ok(),
+        })
+    }
+
+    pub fn removable(&self) -> anyhow::Result<Vec<Removable>> {
+        self.index.lock().unwrap().removable(&self.server()?)
+    }
+
+    /// Checks the blobs folder against the index, once per run: a blob the index has but
+    /// isn't here (or has another size) is forgotten (and fetched again); a file here the
+    /// index doesn't know is hashed, and kept if it's what its name says (else set aside).
+    /// The first time over a folder of blobs from elsewhere this hashes all of them.
+    pub async fn check_here(&self) -> anyhow::Result<()> {
+        if self.checked.load(Relaxed) {
+            return Ok(());
+        }
+        let this = self.blocking_parts();
+        let done = tokio::task::spawn_blocking(move || this.check_here()).await?;
+        self.checked.store(done?, Relaxed);
+        Ok(())
+    }
+
+    /// Brings the server's list up to date: what changed since last time, or all of it.
+    /// `wait`: seconds to wait for a change when there's none yet. Whether anything
+    /// changed.
+    pub async fn refresh(&self, wait: Option<u64>) -> anyhow::Result<bool> {
+        self.check_stop()?;
+        let server = self.server()?;
+        let since = self.index.lock().unwrap().version(&server)?;
+        self.doing(if wait.is_some() { Doing::Waiting } else { Doing::Listing }, 0, 0);
+        let listing = tokio::select! {
+            listing = self.api.mirror_list(since.as_deref(), wait) => listing.map_err(|err| match err.status {
+                Some(403) => anyhow::anyhow!("mirroring needs an admin account"),
+                _ => anyhow::Error::new(err),
+            })?,
+            _ = self.stop.notified() => return Err(Stopped.into()),
+        };
+        self.check_stop()?;
+        let changed = listing.full || !listing.blobs.is_empty();
+        {
+            let mut unavailable = self.unavailable.lock().unwrap();
+            if listing.full {
+                unavailable.clear();
+            }
+            for blob in &listing.blobs {
+                unavailable.remove(&blob.sha256);
+            }
+        }
+        let index = self.index.clone();
+        tokio::task::spawn_blocking(move || {
+            index.lock().unwrap().apply_listing(&server, &listing.version, listing.full, &listing.volumes, &listing.blobs)
+        })
+        .await??;
+        Ok(changed)
+    }
+
+    /// Fetches what's missing: from the folders to look in, then the server.
+    pub async fn fetch_missing(&self) -> anyhow::Result<()> {
+        let config = self.config()?;
+        let missing = self.index.lock().unwrap().missing()?;
+        if missing.is_empty() {
+            return Ok(());
+        }
+        if !config.look_in.is_empty() {
+            let this = self.blocking_parts();
+            let wanted: HashMap<String, Option<u64>> = missing.iter().cloned().collect();
+            tokio::task::spawn_blocking(move || this.look_in(&config.look_in, &wanted)).await??;
+        }
+        let mut missing = self.index.lock().unwrap().missing()?;
+        let unavailable = self.unavailable.lock().unwrap().clone();
+        missing.retain(|(sha256, _)| !unavailable.contains(sha256));
+        self.download(missing).await
+    }
+
+    /// One sync: check what's here (once a run), the server's latest list, then fetch
+    /// what's missing.
+    pub async fn sync(&self) -> anyhow::Result<()> {
+        self.check_here().await?;
+        self.refresh(None).await?;
+        self.fetch_missing().await?;
+        self.doing(Doing::Idle, 0, 0);
+        Ok(())
+    }
+
+    /// Syncs, then keeps up: waits for the server to say something changed, fetches it,
+    /// and so on until stopped. A problem (the server unreachable) is noted and tried
+    /// again a little later.
+    pub async fn watch(&self) {
+        let mut first = true;
+        let mut delay = 5;
+        loop {
+            let result = async {
+                self.check_here().await?;
+                let changed = self.refresh(if first { None } else { Some(WAIT_SECONDS) }).await?;
+                // Also when nothing changed: something that failed before is tried again.
+                let missing = !self.index.lock().unwrap().missing()?.is_empty();
+                if changed || missing || first {
+                    self.fetch_missing().await?;
+                }
+                anyhow::Ok(())
+            }
+            .await;
+            match result {
+                Ok(()) => {
+                    first = false;
+                    delay = 5;
+                }
+                Err(err) if err.is::<Stopped>() => return,
+                Err(err) => {
+                    self.problem(format!("{err:#}"));
+                    self.doing(Doing::Idle, 0, 0);
+                    tokio::select! {
+                        _ = tokio::time::sleep(std::time::Duration::from_secs(delay)) => {}
+                        _ = self.stop.notified() => return,
+                    }
+                    delay = (delay * 2).min(300);
+                }
+            }
+            if self.stopping.load(Relaxed) {
+                return;
+            }
+        }
+    }
+
+    /// Hashes every blob here again. One not what its name says is set aside and
+    /// forgotten (so it's fetched again).
+    pub async fn rehash(&self) -> anyhow::Result<Rehashed> {
+        let this = self.blocking_parts();
+        let result = tokio::task::spawn_blocking(move || this.rehash()).await?;
+        self.doing(Doing::Idle, 0, 0);
+        result
+    }
+
+    /// Removes these blobs (the user chose to), except any wanted again meanwhile. How
+    /// many were removed.
+    pub fn remove(&self, sha256s: &[String]) -> anyhow::Result<u64> {
+        self.doing(Doing::Removing, sha256s.len() as u64, 0);
+        let mut removed = 0;
+        for sha256 in sha256s {
+            let index = self.index.lock().unwrap();
+            if index.is_wanted(sha256)? || !index.has(sha256)? {
+                continue;
+            }
+            self.store.remove(sha256)?;
+            index.forget(sha256)?;
+            removed += 1;
+            self.set_status(|s| s.done += 1);
+        }
+        self.doing(Doing::Idle, 0, 0);
+        Ok(removed)
+    }
+
+    /// Downloads these blobs, a few at a time.
+    async fn download(&self, missing: Vec<(String, Option<u64>)>) -> anyhow::Result<()> {
+        let total_bytes = missing.iter().filter_map(|(_, s)| *s).sum();
+        self.doing(Doing::Downloading, missing.len() as u64, total_bytes);
+        let mut queue = missing.into_iter();
+        let mut running = tokio::task::JoinSet::new();
+        loop {
+            while running.len() < PARALLEL
+                && let Some((sha256, size)) = queue.next()
+            {
+                let job = Download {
+                    api: self.api.clone(),
+                    store: self.store.clone(),
+                    index: self.index.clone(),
+                    status: self.status.clone(),
+                    stopping: self.stopping.clone(),
+                };
+                running.spawn(async move {
+                    let result = job.run(&sha256, size).await;
+                    (sha256, result)
+                });
+            }
+            let Some(done) = running.join_next().await else { break };
+            let (sha256, result) = done?;
+            match result {
+                Ok(()) => self.set_status(|s| {
+                    s.done += 1;
+                    s.downloaded += 1;
+                }),
+                Err(err) if err.is::<Stopped>() => {
+                    running.abort_all();
+                    return Err(err);
+                }
+                Err(err) if err.is::<NotOnServer>() => {
+                    self.unavailable.lock().unwrap().insert(sha256.clone());
+                    self.set_status(|s| s.done += 1);
+                    self.problem(format!("{sha256}: {err}"));
+                }
+                Err(err) => {
+                    self.set_status(|s| s.done += 1);
+                    self.problem(format!("{sha256}: {err:#}"));
+                }
+            }
+        }
+        self.check_stop()
+    }
+
+    /// What the blocking work needs, to move to another thread.
+    fn blocking_parts(&self) -> Blocking {
+        Blocking { store: self.store.clone(), index: self.index.clone(), status: self.status.clone(), stopping: self.stopping.clone() }
+    }
+}
+
+/// One download: into `tmp/<sha256>.part` (from where an earlier one stopped), hashed as
+/// it comes, moved in if the hash is its name.
+struct Download {
+    api: Api,
+    store: LocalStore,
+    index: Arc<Mutex<Index>>,
+    status: Arc<Mutex<Status>>,
+    stopping: Arc<AtomicBool>,
+}
+
+impl Download {
+    async fn run(&self, sha256: &str, size: Option<u64>) -> anyhow::Result<()> {
+        let part = self.store.part_path(sha256);
+        self.status.lock().unwrap().current = Some(sha256.to_string());
+        // What an earlier download got: hashed first, then gone on from.
+        let earlier = part.clone();
+        let (mut hasher, mut got) = tokio::task::spawn_blocking(move || -> std::io::Result<(Sha256, u64)> {
+            let mut hasher = Sha256::new();
+            let got = match std::fs::File::open(&earlier) {
+                Ok(mut file) => store::hash_into(&mut hasher, &mut file)?,
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => 0,
+                Err(err) => return Err(err),
+            };
+            Ok((hasher, got))
+        })
+        .await??;
+        if size.is_some_and(|size| got > size) {
+            (hasher, got) = (Sha256::new(), 0);
+            let _ = tokio::fs::remove_file(&part).await;
+        }
+        if Some(got) != size {
+            match self.api.stream_from(&format!("/api/mirror/blobs/{sha256}"), got).await {
+                Ok(mut response) => {
+                    let mut file = tokio::fs::OpenOptions::new().create(true).append(true).open(&part).await?;
+                    if response.status() != reqwest::StatusCode::PARTIAL_CONTENT && got > 0 {
+                        // The whole file, not the rest: start over.
+                        file.set_len(0).await?;
+                        (hasher, got) = (Sha256::new(), 0);
+                    }
+                    while let Some(chunk) = response.chunk().await.context("downloading")? {
+                        if self.stopping.load(Relaxed) {
+                            file.flush().await?;
+                            return Err(Stopped.into());
+                        }
+                        hasher.update(&chunk);
+                        file.write_all(&chunk).await?;
+                        got += chunk.len() as u64;
+                        self.status.lock().unwrap().bytes += chunk.len() as u64;
+                    }
+                    file.flush().await?;
+                }
+                // Asked from its end: it was all here.
+                Err(err) if err.status == Some(416) && got > 0 => {}
+                Err(err) if err.status == Some(404) => return Err(NotOnServer.into()),
+                Err(err) => return Err(err.into()),
+            }
+        }
+        let hashed = hex::encode(hasher.finalize());
+        if hashed != sha256 {
+            let _ = tokio::fs::remove_file(&part).await;
+            anyhow::bail!("what came hashes to {hashed}, not its name: thrown away (it's fetched again next time)");
+        }
+        let store = self.store.clone();
+        let sha = sha256.to_string();
+        tokio::task::spawn_blocking(move || store.commit(&part, &sha)).await??;
+        self.index.lock().unwrap().add(sha256, got, "downloaded")
+    }
+}
+
+/// The mirror's blocking work (hashing, walking folders), on a thread of its own.
+struct Blocking {
+    store: LocalStore,
+    index: Arc<Mutex<Index>>,
+    status: Arc<Mutex<Status>>,
+    stopping: Arc<AtomicBool>,
+}
+
+impl Blocking {
+    fn check_stop(&self) -> anyhow::Result<()> {
+        if self.stopping.load(Relaxed) { Err(Stopped.into()) } else { Ok(()) }
+    }
+
+    fn doing(&self, doing: Doing, of: u64, of_bytes: u64) {
+        let mut s = self.status.lock().unwrap();
+        *s = Status { doing, of, of_bytes, downloaded: s.downloaded, taken_in: s.taken_in, problems: std::mem::take(&mut s.problems), ..Status::default() };
+    }
+
+    fn progress(&self, current: &Path, bytes: u64) {
+        let mut s = self.status.lock().unwrap();
+        s.done += 1;
+        s.bytes += bytes;
+        s.current = Some(current.display().to_string());
+    }
+
+    fn problem(&self, problem: String) {
+        let mut s = self.status.lock().unwrap();
+        s.problems.push(problem);
+        let extra = s.problems.len().saturating_sub(PROBLEMS_KEPT);
+        s.problems.drain(..extra);
+    }
+
+    /// See `Mirror::check_here`. Whether it got through (not stopped).
+    fn check_here(&self) -> anyhow::Result<bool> {
+        let had: HashMap<String, u64> = self.index.lock().unwrap().all_had()?.into_iter().collect();
+        let files = self.store.walk();
+        let unknown: Vec<_> = files.iter().filter(|(name, _, _)| !had.contains_key(name)).collect();
+        self.doing(Doing::Checking, unknown.len() as u64, unknown.iter().map(|(_, _, s)| s).sum());
+        // In the index but not here (removed by hand), or another size: fetched again.
+        let here: HashMap<&str, u64> = files.iter().map(|(name, _, size)| (name.as_str(), *size)).collect();
+        for (sha256, size) in &had {
+            match here.get(sha256.as_str()) {
+                Some(found) if found == size => {}
+                Some(_) => {
+                    if let Some(path) = self.store.path_of(sha256) {
+                        let aside = self.store.set_aside(&path)?;
+                        self.problem(format!("{sha256} wasn't the size it was: set aside as {}", aside.display()));
+                    }
+                    self.index.lock().unwrap().forget(sha256)?;
+                }
+                None => self.index.lock().unwrap().forget(sha256)?,
+            }
+        }
+        // Here but not in the index: kept if it's what its name says.
+        for (name, path, size) in unknown {
+            if self.stopping.load(Relaxed) {
+                return Ok(false);
+            }
+            let in_place = self.store.path_of(name).is_some_and(|p| &p == path);
+            let (sha256, _) = store::hash_file(path)?;
+            if in_place && &sha256 == name {
+                self.index.lock().unwrap().add(name, *size, "found")?;
+            } else {
+                let aside = self.store.set_aside(path)?;
+                self.problem(format!("{} isn't a blob of this mirror (it hashes to {sha256}): set aside as {}", path.display(), aside.display()));
+            }
+            self.progress(path, *size);
+        }
+        Ok(true)
+    }
+
+    /// Takes in wanted blobs found in `folders`: a file with a wanted size is hashed (or
+    /// its hash from an earlier look is used, if it hasn't changed), and taken in if the
+    /// hash is wanted.
+    fn look_in(&self, folders: &[PathBuf], wanted: &HashMap<String, Option<u64>>) -> anyhow::Result<()> {
+        let sizes: HashSet<u64> = wanted.values().filter_map(|s| *s).collect();
+        let mut candidates = Vec::new();
+        for folder in folders {
+            if !folder.is_dir() {
+                self.problem(format!("{} isn't a folder (or isn't there): not looked in", folder.display()));
+                continue;
+            }
+            store::walk_files(folder, &mut |path, size| {
+                if sizes.contains(&size) {
+                    candidates.push((path.to_path_buf(), size));
+                }
+            });
+        }
+        self.doing(Doing::LookingIn, candidates.len() as u64, candidates.iter().map(|(_, s)| s).sum());
+        for (path, size) in candidates {
+            self.check_stop()?;
+            let result = (|| -> anyhow::Result<()> {
+                let mtime = std::fs::metadata(&path)?
+                    .modified()?
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_nanos() as i64)
+                    .unwrap_or(0);
+                let known = self.index.lock().unwrap().scanned(&path, size, mtime)?;
+                let sha256 = match known {
+                    Some(sha256) => sha256,
+                    None => {
+                        let (sha256, _) = store::hash_file(&path)?;
+                        self.index.lock().unwrap().set_scanned(&path, size, mtime, &sha256)?;
+                        sha256
+                    }
+                };
+                if wanted.contains_key(&sha256) && !self.index.lock().unwrap().has(&sha256)? {
+                    let how = self.store.take_in(&path, &sha256)?;
+                    let how = match how {
+                        store::TakenIn::Reflinked => "reflinked",
+                        store::TakenIn::Copied => "copied",
+                    };
+                    self.index.lock().unwrap().add(&sha256, size, how)?;
+                    self.status.lock().unwrap().taken_in += 1;
+                }
+                Ok(())
+            })();
+            if let Err(err) = result {
+                self.problem(format!("{}: {err:#}", path.display()));
+            }
+            self.progress(&path, size);
+        }
+        Ok(())
+    }
+
+    fn rehash(&self) -> anyhow::Result<Rehashed> {
+        let had = self.index.lock().unwrap().all_had()?;
+        self.doing(Doing::Rehashing, had.len() as u64, had.iter().map(|(_, s)| s).sum());
+        let mut report = Rehashed::default();
+        for (sha256, size) in had {
+            self.check_stop()?;
+            let Some(path) = self.store.path_of(&sha256) else { continue };
+            match store::hash_file(&path) {
+                Ok((hashed, _)) if hashed == sha256 => self.index.lock().unwrap().verified(&sha256)?,
+                Ok(_) => {
+                    let aside = self.store.set_aside(&path)?;
+                    self.problem(format!("{sha256} isn't what its name says: set aside as {}", aside.display()));
+                    self.index.lock().unwrap().forget(&sha256)?;
+                    report.set_aside.push(sha256.clone());
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                    self.index.lock().unwrap().forget(&sha256)?;
+                    report.missing += 1;
+                }
+                Err(err) => return Err(err).with_context(|| format!("reading {}", path.display())),
+            }
+            report.checked += 1;
+            self.progress(&path, size);
+        }
+        Ok(report)
+    }
+}

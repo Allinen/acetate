@@ -277,12 +277,35 @@ impl Api {
         self.stream_from(&format!("/api/files/{file_id}/stream"), from).await
     }
 
+    /// The server's blobs for a mirror (admins): all, or what changed since `since`;
+    /// `wait`: seconds to wait for a change if nothing changed yet (see `mirror`).
+    pub async fn mirror_list(&self, since: Option<&str>, wait: Option<u64>) -> Result<MirrorListing, ApiError> {
+        let (mut request, server) = self.request(reqwest::Method::GET, "/api/mirror")?;
+        if let Some(since) = since {
+            request = request.query(&[("since", since)]);
+        }
+        if let Some(wait) = wait {
+            request = request.query(&[("wait", wait)]);
+        }
+        read_json(self.go(request, &server).await?).await
+    }
+
     /// Audio at `path` (a file's stream, a kept file that didn't import) from `from` on (a
     /// Range request), as a response to read in chunks.
     pub async fn stream_from(&self, path: &str, from: u64) -> Result<reqwest::Response, ApiError> {
         let (request, server) = self.request(reqwest::Method::GET, path)?;
         self.go(request.header(reqwest::header::RANGE, format!("bytes={from}-")), &server).await
     }
+}
+
+/// What `GET /api/mirror` answers.
+#[derive(Debug, Deserialize)]
+pub struct MirrorListing {
+    pub version: String,
+    /// The whole list (else what changed).
+    pub full: bool,
+    pub volumes: Vec<crate::mirror::index::ServerVolume>,
+    pub blobs: Vec<crate::mirror::index::Listed>,
 }
 
 /// A successful answer's JSON; an answer this app can't read says so.
