@@ -357,7 +357,7 @@ fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
 }
 
 /// The "Share" chip on a track's, album's or artist's page: a click copies the link (for
-/// someone with an account), Shift+click makes a share link (for anyone).
+/// someone with an account), Shift+click opens the share link popup (for anyone).
 pub fn share_chip(ui: &mut egui::Ui, shell: &mut crate::ui::Shell, target: crate::links::Target) {
     let clicked = chip(ui, "Share", false);
     if clicked {
@@ -370,7 +370,7 @@ pub fn share_chip(ui: &mut egui::Ui, shell: &mut crate::ui::Shell, target: crate
 /// the link, Shift+click makes a share link (as the pages' "Share").
 pub fn share_menu(response: &egui::Response, shell: &mut crate::ui::Shell, target: crate::links::Target) {
     response.context_menu(|ui| {
-        let item = ui.button("Share").on_hover_text("Copies a link, for someone with an account (Ctrl+L). Shift+click: a share link anyone can open (Ctrl+Shift+L).");
+        let item = ui.button("Share").on_hover_text("Copies a link, for someone with an account (Ctrl+L). Shift+click: the popup for a share link anyone can open (Ctrl+Shift+L).");
         if item.clicked() {
             let shift = ui.input(|i| i.modifiers.shift);
             shell.act(if shift { crate::ui::Action::CopyShareLink(target) } else { crate::ui::Action::CopyLink(target) });

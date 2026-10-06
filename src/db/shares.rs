@@ -213,7 +213,6 @@ pub struct SharedBlob {
     pub sha256: String,
     pub container: Option<String>,
     pub codec: Option<String>,
-    pub bitrate: Option<i32>,
 }
 
 /// The *current* file of a track, if the track is part of the share. (Current, so an
@@ -226,7 +225,7 @@ pub async fn file(
     sqlx::query_as!(
         SharedBlob,
         r#"
-        SELECT f.sha256, f.container, f.codec, f.bitrate
+        SELECT f.sha256, f.container, f.codec
         FROM tracks t
         JOIN files f ON f.id = t.file_id
         WHERE t.id = $1

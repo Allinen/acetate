@@ -192,7 +192,7 @@ pub async fn stream(
     let file = db::shares::file(&mut tx, &share, track_id).await?;
     drop(tx);
     let file = file.ok_or(AppError::NotFound)?;
-    let blob = AudioBlob { sha256: file.sha256, container: file.container, codec: file.codec, bitrate: file.bitrate };
+    let blob = AudioBlob { sha256: file.sha256, container: file.container, codec: file.codec };
     serve_audio(&state, &blob, share.original, request).await
 }
 

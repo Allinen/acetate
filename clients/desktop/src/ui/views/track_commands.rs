@@ -668,8 +668,8 @@ pub fn actions(typed: &str, here: &Here) -> Vec<Row> {
     if found("Copy link", &["link", "share"]) {
         rows.push(act("Copy link", "for someone with an account (Ctrl+L)", Act::CopyLink));
     }
-    if found("Copy a share link", &["share", "link"]) {
-        rows.push(act("Copy a share link", "anyone can open it (Ctrl+Shift+L)", Act::ShareLink));
+    if found("Make a share link", &["share", "link"]) {
+        rows.push(act("Make a share link…", "anyone can open it (Ctrl+Shift+L)", Act::ShareLink));
     }
     for (video, name) in here.videos {
         let label = if here.videos.len() > 1 { format!("Watch “{name}”") } else { "Watch the video".to_string() };

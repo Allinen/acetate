@@ -1,8 +1,8 @@
 //! Serving stored blobs: audio files (with range requests, for seeking) and cover images.
 //!
 //! Audio goes out as the original file only to those allowed it (`download_original`), and
-//! as a transcoded copy (Opus, see `storage::transcode`) to everyone else; a file that's
-//! small and lossy already is sent as it is to anyone (`serve_audio`). Downloads are the
+//! as a transcoded copy (Opus, see `storage::transcode`, with none of the original's tags)
+//! to everyone else (`serve_audio`). Downloads are the
 //! original with the track's current tags written in (`download`). Cover images may also be
 //! asked for smaller (`?size=small|standard`: copies, see `storage::images`). Stored files
 //! are never changed: tags and copies are made on the side.
@@ -41,7 +41,7 @@ pub async fn stream_file(
     let mut tx = state.db(&user).await?;
     let file = sqlx::query!(
         r#"
-        SELECT f.sha256, f.container, f.codec, f.bitrate, f.purged_at,
+        SELECT f.sha256, f.container, f.codec, f.purged_at,
                EXISTS (SELECT 1 FROM tracks t WHERE t.file_id = f.id) AS "is_current!",
                EXISTS (
                    SELECT 1 FROM track_file_history h
@@ -73,7 +73,7 @@ pub async fn stream_file(
         )));
     }
 
-    let blob = AudioBlob { sha256: file.sha256, container: file.container, codec: file.codec, bitrate: file.bitrate };
+    let blob = AudioBlob { sha256: file.sha256, container: file.container, codec: file.codec };
     let original_allowed = user.has(Permission::DownloadOriginal) && !query.transcode.unwrap_or(false);
     serve_audio(&state, &blob, original_allowed, request).await
 }
@@ -214,11 +214,9 @@ pub(super) struct AudioBlob {
     pub sha256: String,
     pub container: Option<String>,
     pub codec: Option<String>,
-    pub bitrate: Option<i32>,
 }
 
-/// Sends audio: the original if `original_allowed` (or if a copy would be no better, see
-/// `TranscodeCache::already_small`), otherwise a transcoded copy, made now if it's the first
+/// Sends audio: the original if `original_allowed`, otherwise a transcoded copy, made now if it's the first
 /// time. Without ffmpeg on the server, the copy can't be made: that's said, and the
 /// original is *not* sent instead (it would hand it to those who aren't allowed it).
 pub(super) async fn serve_audio(
@@ -230,7 +228,7 @@ pub(super) async fn serve_audio(
     use crate::storage::transcode::TranscodeError;
 
     let original = state.store.path_for(&blob.sha256).await;
-    if original_allowed || state.transcodes.already_small(blob.codec.as_deref(), blob.bitrate) {
+    if original_allowed {
         let mime = audio_mime(blob.container.as_deref(), blob.codec.as_deref());
         return serve_blob(original, &mime, request).await;
     }

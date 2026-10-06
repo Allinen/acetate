@@ -14,8 +14,8 @@ matched by the character you type, so it works on non-US layouts.
 | `1 … 6` | the same, outside a text field |
 | `Ctrl+,` | settings |
 | `Ctrl+L` | copy a link to the track, album or artist shown (for someone with an account) |
-| `Ctrl+Shift+L` | make a share link to the track or album shown (anyone can open it) |
-| `right-click a track or album` | Share (Shift+click: a share link) |
+| `Ctrl+Shift+L` | share link popup for the track or album shown (anyone can open it) |
+| `right-click a track or album` | Share (Shift+click: share link popup) |
 | `?  or  F1` | these keys |
 | `Alt+← / Alt+→` | back / forward |
 | `Esc  or  Backspace` | back (a text field: leave it) |

@@ -10,7 +10,9 @@
 //! (`ACETATE_TRANSCODE_CACHE_GB`), and it can be emptied at any time (they're made again).
 //! The bitrate is in the folder's name, so changing it starts a new set.
 //!
-//! The original is never touched, and a copy carries no tags: it's for listening.
+//! The original is never touched, and a copy carries nothing of the original's tags,
+//! cover or chapters (even a file that's small already gets a copy: its tags are not for
+//! those who aren't allowed the original): it's for listening.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -63,13 +65,6 @@ impl TranscodeCache {
     /// The content type of a copy.
     pub fn mime(&self) -> mime::Mime {
         "audio/ogg".parse().expect("a valid content type")
-    }
-
-    /// A lossy file that's no bigger than a copy would be: nothing a copy would take away,
-    /// so it's sent as it is, to anyone. (A copy of it would only be worse.)
-    pub fn already_small(&self, codec: Option<&str>, bitrate_kbps: Option<i32>) -> bool {
-        let lossy = matches!(codec, Some("mp3" | "aac" | "vorbis" | "opus"));
-        lossy && bitrate_kbps.is_some_and(|b| b > 0 && b as u32 <= self.kbps)
     }
 
     fn path(&self, sha256: &str) -> PathBuf {
@@ -146,7 +141,7 @@ async fn encode(original: &Path, target: &Path, kbps: u32) -> Result<(), Transco
         .args(["-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-i"])
         .arg(original)
         // The first audio stream only, without tags or pictures: a copy to listen to.
-        .args(["-map", "0:a:0", "-vn", "-map_metadata", "-1"])
+        .args(["-map", "0:a:0", "-vn", "-map_metadata", "-1", "-map_chapters", "-1", "-bitexact"])
         .args(["-c:a", "libopus", "-application", "audio", "-vbr", "on", "-b:a"])
         .arg(format!("{kbps}k"))
         .args(["-f", "ogg"])
@@ -217,17 +212,6 @@ mod tests {
     }
 
     #[test]
-    fn small_lossy_files_are_sent_as_they_are() {
-        let dir = tempfile::tempdir().unwrap();
-        let cache = cache(dir.path());
-        assert!(cache.already_small(Some("mp3"), Some(128)));
-        assert!(cache.already_small(Some("aac"), Some(96)));
-        assert!(!cache.already_small(Some("mp3"), Some(320)));
-        assert!(!cache.already_small(Some("flac"), Some(60)), "lossless is never small");
-        assert!(!cache.already_small(Some("mp3"), None), "unknown: copy to be safe");
-    }
-
-    #[test]
     fn pruning_drops_the_oldest_first() {
         let dir = tempfile::tempdir().unwrap();
         let shard = dir.path().join("ab");
@@ -259,6 +243,9 @@ mod tests {
         };
         let bytes = std::fs::read(&path).unwrap();
         assert_eq!(&bytes[..4], b"OggS");
+        // Nothing of the original's tags (Glass Harbor's title, artist, cover…).
+        let has = |needle: &[u8]| bytes.windows(needle.len()).any(|w| w.eq_ignore_ascii_case(needle));
+        assert!(!has(b"Glass Harbor") && !has(b"Mira Vale") && !has(b"METADATA_BLOCK_PICTURE"));
         assert!(bytes.windows(8).any(|w| w == b"OpusHead"));
         let again = cache.get(Path::new("/nonexistent"), &sha).await.ok();
         assert_eq!(again, Some(path), "found, not made again");

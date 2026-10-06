@@ -45,8 +45,8 @@ to the [trash](library/storage.md) and can be restored.
 
 With the `download_original` permission, you stream the original files. Without it you stream
 a transcoded copy (Opus, 128 kbps by default), made the first time anyone plays the track
-(a few seconds, then it's kept). A lossy file that's already no bigger than that (an MP3 at
-128 kbps) is sent as it is: a copy would only be worse. Videos aren't transcoded.
+(a few seconds, then it's kept). A copy has none of the original's tags or cover. Videos
+aren't transcoded.
 
 The web UI's **Download** on a track page (needs `download_original`) gives the original
 file with the library's *current* title, artists, album, track and disc number, date, genres,

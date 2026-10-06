@@ -27,7 +27,7 @@ rating:4.5
 - `queue:` puts it at the end of the queue, `queue:next` before what's queued.
 - `star:` stars it, or unstars it if it's starred (`star:yes`, `star:no` and `-star` say
   which). `rating:3.5` is your rating, in half stars; `-rating` clears it.
-- *Copy link*, *Copy a share link*, *Watch the video* and *Cover in full* (as words) do
+- *Copy link*, *Make a share link…*, *Watch the video* and *Cover in full* (as words) do
   what they say.
 
 ## Moving around

@@ -16,6 +16,7 @@ pub mod watch;
 pub mod edit;
 pub mod keymap;
 pub mod modal;
+pub mod share;
 pub mod theme;
 pub mod widgets;
 mod views;
@@ -622,6 +623,8 @@ pub struct App {
     pending_link: Option<crate::links::Link>,
     /// A share link being made: the server's answer (the link, or why not).
     share_answer: Arc<Mutex<Option<Result<String, String>>>>,
+    /// The share link popup, while it's open (see `share`).
+    share_dialog: Option<share::ShareDialog>,
 }
 
 impl App {
@@ -718,6 +721,7 @@ impl App {
             links: crate::links::listen(cc.egui_ctx.clone()),
             pending_link: link.as_deref().and_then(crate::links::parse),
             share_answer: Arc::default(),
+            share_dialog: None,
         }
     }
 
@@ -732,21 +736,51 @@ impl App {
         }
     }
 
-    /// Makes a share link (`POST /api/shares`) to a track or album; it's copied when the
-    /// server answers (`take_share`).
-    fn make_share(&mut self, target: crate::links::Target) {
+    /// Opens the share link popup for a track or album (`share`): its options, then the
+    /// link is made (`make_share`).
+    fn open_share_dialog(&mut self, target: crate::links::Target) {
         use crate::links::Target;
-        let body = match target {
-            Target::Track(id) => serde_json::json!({ "track_id": id }),
-            Target::Album(id) => serde_json::json!({ "album_id": id }),
+        match target {
+            Target::Track(_) | Target::Album(_) => {}
             Target::Artist(_) => {
                 self.shell.playlists.notice = Some(("Share links are to a track or an album (an artist has its plain link: Ctrl+L).".into(), Instant::now()));
                 return;
             }
-        };
+        }
         if !self.shell.account.can("share") {
             self.shell.playlists.notice = Some(("Making share links needs the share permission (the plain link, Ctrl+L, works for anyone with an account).".into(), Instant::now()));
             return;
+        }
+        self.share_dialog = Some(share::ShareDialog::new(target, self.shell.account.can("download_original")));
+    }
+
+    /// The popup, while it's open; makes the link when it asks.
+    fn show_share(&mut self, ctx: &egui::Context) {
+        let Some(dialog) = self.share_dialog.as_mut() else { return };
+        self.shell.modal_open = true;
+        match dialog.show(ctx) {
+            share::Outcome::Open => {}
+            share::Outcome::Close => self.share_dialog = None,
+            share::Outcome::Create { target, original, days } => {
+                self.share_dialog = None;
+                self.make_share(target, original, days);
+            }
+        }
+    }
+
+    /// Makes a share link (`POST /api/shares`) to a track or album; it's copied when the
+    /// server answers (`take_share`). `original`: it plays the original file, not a
+    /// lower-quality copy; `days`: it expires after that many (None: never).
+    fn make_share(&mut self, target: crate::links::Target, original: bool, days: Option<u32>) {
+        use crate::links::Target;
+        let mut body = match target {
+            Target::Track(id) => serde_json::json!({ "track_id": id }),
+            Target::Album(id) => serde_json::json!({ "album_id": id }),
+            Target::Artist(_) => return,
+        };
+        body["original"] = original.into();
+        if let Some(days) = days {
+            body["expires_at"] = share::expires_at(days).into();
         }
         let Some(session) = self.shell.api.session() else { return };
         #[derive(serde::Deserialize)]
@@ -934,9 +968,9 @@ impl App {
                 Action::RenamePlaylist(id) => self.pages.palette.open(ctx, views::palette::Mode::Name(Some(id))),
                 Action::RefreshLibrary => self.shell.refresh_library(ctx),
                 Action::ShowKeys => self.keys_open = true,
-                Action::CopyShareLink(target) => self.make_share(target),
+                Action::CopyShareLink(target) => self.open_share_dialog(target),
                 Action::CopyPageShareLink => match self.page_target() {
-                    Some(target) => self.make_share(target),
+                    Some(target) => self.open_share_dialog(target),
                     None => self.shell.playlists.notice = Some(("Share links are to a track or an album: open or select one, then Ctrl+Shift+L.".into(), Instant::now())),
                 },
                 Action::CopyPageLink => {
@@ -1239,6 +1273,7 @@ impl eframe::App for App {
         self.pages.palette.show(&ctx, &mut self.shell);
         self.shell.show_original(&ctx);
         self.shell.show_watch(&ctx);
+        self.show_share(&ctx);
         keymap::overlay(&ctx, &mut self.keys_open);
         self.apply(&ctx);
     }

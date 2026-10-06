@@ -3,16 +3,30 @@
 There are two kinds of link.
 
 - **`acetate://` link** (`Ctrl+L`): a link to the track, album or artist you're looking at,
-  for someone with an account. It opens straight in their desktop app. The app registers the
-  `acetate://` address with the system on Linux and Windows.
+  for someone with an account. It's copied at once, with no options. It opens straight in
+  their desktop app. The app registers the `acetate://` address with the system on Linux and
+  Windows.
 - **Share link** (`Ctrl+Shift+L`, or right-click → Share with `Shift` held): a web link to a
   track or album that *anyone* can open, no account needed. Creating one needs the `share`
-  permission.
+  permission. It opens a popup first.
 
 Right-click a track or album for the Share menu.
 
-A share link plays in the browser. By default it plays a lower-quality copy (Opus, 128 kbps),
-so the link can't be used to collect original files. If you have the `download_original`
-permission, the web UI's Share form has **give the original file**: that link plays the
-original. If you later lose that permission, your links go back to playing copies.
-The web UI's Shares page says which kind each link is.
+## The share popup
+
+It has its own commandline, and the same things by mouse:
+
+| Command | |
+|---|---|
+| `original:yes` / `original:no` | play the original file, or (the default) a lower-quality copy. Needs `download_original` |
+| `expires:7d` | `never` (the default), `1d`, `7d`, `30d`, or any number of days (`10d`) or weeks (`2w`) |
+
+`original:yes expires:7d` sets both. `Enter` applies what's typed; on an empty line it makes
+the link and copies it. `Ctrl+Enter` does both, `Esc` closes.
+
+## What a link plays
+
+By default a share link plays a lower-quality copy (Opus, 128 kbps) with none of the file's
+tags or cover, so the link can't be used to collect original files. With **original** the link
+plays the original file. If its creator later loses `download_original`, the link goes back
+to playing copies. The web UI's Shares page says which kind each link is.

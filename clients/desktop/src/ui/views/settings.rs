@@ -255,7 +255,7 @@ impl SettingsPage {
                     Err(err) => shell.controller.report(err),
                 }
             }
-            hint(ui, "Ctrl+L (or “Share” on a page) copies a link to the track, album or artist shown, for someone with an account here; Ctrl+Shift+L (or Shift+click “Share”) makes a share link anyone can open. Opened by someone logged in, either one goes to the app (or the web UI, if the app doesn't take it).");
+            hint(ui, "Ctrl+L (or “Share” on a page) copies a link to the track, album or artist shown, for someone with an account here; Ctrl+Shift+L (or Shift+click “Share”) opens a popup to make a share link anyone can open: its expiry, and whether it plays the original file or a lower-quality copy. Opened by someone logged in, either one goes to the app (or the web UI, if the app doesn't take it).");
 
             section(ui, "Keys");
             if widgets::chip(ui, "Show every key  ?", false) {

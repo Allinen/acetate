@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT f.sha256, f.container, f.codec, f.bitrate, f.purged_at,\n               EXISTS (SELECT 1 FROM tracks t WHERE t.file_id = f.id) AS \"is_current!\",\n               EXISTS (\n                   SELECT 1 FROM track_file_history h\n                   JOIN tracks t ON t.id = h.track_id\n                   WHERE h.old_file_id = f.id\n               ) AS \"is_previous!\"\n        FROM files f\n        WHERE f.id = $1\n        ",
+  "query": "\n        SELECT f.sha256, f.container, f.codec, f.purged_at,\n               EXISTS (SELECT 1 FROM tracks t WHERE t.file_id = f.id) AS \"is_current!\",\n               EXISTS (\n                   SELECT 1 FROM track_file_history h\n                   JOIN tracks t ON t.id = h.track_id\n                   WHERE h.old_file_id = f.id\n               ) AS \"is_previous!\"\n        FROM files f\n        WHERE f.id = $1\n        ",
   "describe": {
     "columns": [
       {
@@ -38,17 +38,6 @@
       },
       {
         "ordinal": 3,
-        "name": "bitrate",
-        "type_info": "Int4",
-        "origin": {
-          "Table": {
-            "table": "files",
-            "name": "bitrate"
-          }
-        }
-      },
-      {
-        "ordinal": 4,
         "name": "purged_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -59,13 +48,13 @@
         }
       },
       {
-        "ordinal": 5,
+        "ordinal": 4,
         "name": "is_current!",
         "type_info": "Bool",
         "origin": "Expression"
       },
       {
-        "ordinal": 6,
+        "ordinal": 5,
         "name": "is_previous!",
         "type_info": "Bool",
         "origin": "Expression"
@@ -81,10 +70,9 @@
       true,
       true,
       true,
-      true,
       null,
       null
     ]
   },
-  "hash": "dde55a61f72aa9cb0351b259ee8ec451408111dfcfe9a6540219d9c5bc5a756e"
+  "hash": "060c486e8604c0b2e0af2df72c56f40fc3299ad19658a1764075352ecc7f4243"
 }
