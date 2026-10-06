@@ -14,6 +14,12 @@ pub struct Config {
     /// `storage::images`). From `ACETATE_CACHE_DIR`; default `cache` in the first volume's
     /// folder. Only ever derived from the originals: it can be emptied at any time.
     pub cache_dir: PathBuf,
+    /// Transcoded copies for listeners without `download_original` (see
+    /// `storage::transcode`): Opus at this many kbps (`ACETATE_TRANSCODE_KBPS`, default
+    /// 128), and the cache folder's size limit in bytes (`ACETATE_TRANSCODE_CACHE_GB`,
+    /// default 20; 0: no limit).
+    pub transcode_kbps: u32,
+    pub transcode_cache_bytes: u64,
     /// Uploads through the API (music, covers, ingest from another machine): at most this
     /// many bytes per request (`ACETATE_MAX_UPLOAD_MB`, default 100: what Cloudflare lets
     /// through), and this many a day, all accounts together (`ACETATE_UPLOAD_DAILY_GB`,
@@ -56,7 +62,13 @@ impl Config {
                 _ => Ok(default),
             }
         };
+        let transcode_kbps = number("ACETATE_TRANSCODE_KBPS", 128)?;
+        if !(24..=510).contains(&transcode_kbps) {
+            anyhow::bail!("ACETATE_TRANSCODE_KBPS: {transcode_kbps} isn't between 24 and 510");
+        }
         Ok(Config {
+            transcode_kbps: transcode_kbps as u32,
+            transcode_cache_bytes: number("ACETATE_TRANSCODE_CACHE_GB", 20)? * 1_000_000_000,
             max_upload_bytes: number("ACETATE_MAX_UPLOAD_MB", 100)? * 1_000_000,
             daily_upload_bytes: number("ACETATE_UPLOAD_DAILY_GB", 20)? * 1_000_000_000,
             database_url: std::env::var("DATABASE_URL").context("DATABASE_URL must be set")?,

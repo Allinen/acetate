@@ -574,6 +574,11 @@ async fn serve(config: Config, owner_pool: sqlx::PgPool, store: BlobStore) -> an
         trust_proxy: config.trust_proxy,
         rate_limits: std::sync::Arc::new(rate_limits),
         images: std::sync::Arc::new(storage::images::ImageCache::new(config.cache_dir.clone())),
+        transcodes: std::sync::Arc::new(storage::transcode::TranscodeCache::new(
+            config.cache_dir.clone(),
+            config.transcode_kbps,
+            config.transcode_cache_bytes,
+        )),
         upload_limits: std::sync::Arc::new(upload_limits),
     });
     let listener = tokio::net::TcpListener::bind(&config.bind)

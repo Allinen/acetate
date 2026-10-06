@@ -11,5 +11,8 @@ There are two kinds of link.
 
 Right-click a track or album for the Share menu.
 
-A share link plays a stream in the browser. (Transcoding and a "share the original" option
-are not built yet.)
+A share link plays in the browser. By default it plays a lower-quality copy (Opus, 128 kbps),
+so the link can't be used to collect original files. If you have the `download_original`
+permission, the web UI's Share form has **give the original file**: that link plays the
+original. If you later lose that permission, your links go back to playing copies.
+The web UI's Shares page says which kind each link is.

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT s.id, s.track_id, s.album_id,\n               -- NULL when you can't see it anymore (then the share shows nothing either).\n               COALESCE(t.title, al.title, '(no longer visible to you)') AS \"title!\",\n               u.username AS created_by,\n               s.created_at, s.expires_at, s.revoked_at, share_state(s.id) AS \"state!\"\n        FROM shares s\n        JOIN users u ON u.id = s.created_by\n        LEFT JOIN tracks t ON t.id = s.track_id\n        LEFT JOIN albums al ON al.id = s.album_id\n        WHERE s.created_by = $1 OR $1 IS NULL\n        ORDER BY s.id DESC\n        ",
+  "query": "\n        SELECT s.id, s.track_id, s.album_id,\n               -- NULL when you can't see it anymore (then the share shows nothing either).\n               COALESCE(t.title, al.title, '(no longer visible to you)') AS \"title!\",\n               u.username AS created_by,\n               s.created_at, s.expires_at, s.revoked_at,\n               (s.original AND EXISTS (\n                   SELECT 1 FROM user_groups ug\n                   JOIN group_permissions gp ON gp.group_id = ug.group_id\n                   WHERE ug.user_id = s.created_by AND gp.permission IN ('download_original', 'admin')\n               )) AS \"original!\",\n               share_state(s.id) AS \"state!\"\n        FROM shares s\n        JOIN users u ON u.id = s.created_by\n        LEFT JOIN tracks t ON t.id = s.track_id\n        LEFT JOIN albums al ON al.id = s.album_id\n        WHERE s.created_by = $1 OR $1 IS NULL\n        ORDER BY s.id DESC\n        ",
   "describe": {
     "columns": [
       {
@@ -88,6 +88,12 @@
       },
       {
         "ordinal": 8,
+        "name": "original!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 9,
         "name": "state!",
         "type_info": "Text",
         "origin": "Expression"
@@ -107,8 +113,9 @@
       false,
       true,
       true,
+      null,
       null
     ]
   },
-  "hash": "746a6d5c8d7a2e2ba5cb73d975e50d906cf2272d16df6783229e5e2a381e9200"
+  "hash": "0aee0635a779a23d3da8f0885ff5372389be29f96e1489b7a46faf4b2f66bc8a"
 }

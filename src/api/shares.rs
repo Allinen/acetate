@@ -12,7 +12,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::media::{audio_mime, serve_blob};
+use super::media::{AudioBlob, serve_audio, serve_blob};
 use super::{AppError, AppState};
 use crate::auth::{self, CurrentUser, Permission};
 use crate::db;
@@ -28,6 +28,9 @@ pub struct NewShare {
     album_id: Option<Uuid>,
     /// When the link stops working. Never, if left out.
     expires_at: Option<DateTime<Utc>>,
+    /// Play the original files, not transcoded copies. Needs `download_original`.
+    #[serde(default)]
+    original: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -40,7 +43,8 @@ pub struct CreatedShare {
 }
 
 /// `POST /api/shares`, JSON `{"track_id": "..."}` or `{"album_id": "..."}`, optionally
-/// with `"expires_at": "2026-12-31T00:00:00Z"`.
+/// with `"expires_at": "2026-12-31T00:00:00Z"`, and `"original": true` to play the original
+/// files instead of transcoded copies (only with `download_original`).
 pub async fn create(
     State(state): State<AppState>,
     user: CurrentUser,
@@ -59,6 +63,12 @@ pub async fn create(
         return Err(AppError::BadRequest("`expires_at` is in the past".to_string()));
     }
 
+    if body.original && !user.has(Permission::DownloadOriginal) {
+        return Err(AppError::Forbidden(
+            "sharing the original file needs the download_original permission: a share link without it plays a transcoded copy".to_string(),
+        ));
+    }
+
     let mut tx = state.db(&user).await?;
     // You can only share what you can see (the lookup goes through row-level security).
     if !db::sources::owner_exists(&mut tx, owner).await? {
@@ -71,6 +81,7 @@ pub async fn create(
         body.track_id,
         body.album_id,
         body.expires_at,
+        body.original,
     )
     .await?;
     tx.commit().await?;
@@ -169,7 +180,8 @@ pub async fn view(
     Ok(Json(view))
 }
 
-/// `GET /api/share/{token}/tracks/{track_id}/stream`: a shared track's current file.
+/// `GET /api/share/{token}/tracks/{track_id}/stream`: a shared track's current file: a
+/// transcoded copy, or the original if the link gives it (`ActiveShare::original`).
 pub async fn stream(
     State(state): State<AppState>,
     Path((token, track_id)): Path<(String, Uuid)>,
@@ -180,8 +192,8 @@ pub async fn stream(
     let file = db::shares::file(&mut tx, &share, track_id).await?;
     drop(tx);
     let file = file.ok_or(AppError::NotFound)?;
-    let mime = audio_mime(file.container.as_deref(), file.codec.as_deref());
-    serve_blob(state.store.path_for(&file.sha256).await, &mime, request).await
+    let blob = AudioBlob { sha256: file.sha256, container: file.container, codec: file.codec, bitrate: file.bitrate };
+    serve_audio(&state, &blob, share.original, request).await
 }
 
 /// `GET /api/share/{token}/covers/{cover_id}`: a cover of a shared track or album.

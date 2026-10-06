@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT f.sha256, f.container, f.codec\n        FROM tracks t\n        JOIN files f ON f.id = t.file_id\n        WHERE t.id = $1\n          AND (t.id = $2 OR EXISTS (\n              SELECT 1 FROM album_tracks at WHERE at.track_id = t.id AND at.album_id = $3\n          ))\n        ",
+  "query": "\n        SELECT f.sha256, f.container, f.codec, f.bitrate\n        FROM tracks t\n        JOIN files f ON f.id = t.file_id\n        WHERE t.id = $1\n          AND (t.id = $2 OR EXISTS (\n              SELECT 1 FROM album_tracks at WHERE at.track_id = t.id AND at.album_id = $3\n          ))\n        ",
   "describe": {
     "columns": [
       {
@@ -35,6 +35,17 @@
             "name": "codec"
           }
         }
+      },
+      {
+        "ordinal": 3,
+        "name": "bitrate",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "files",
+            "name": "bitrate"
+          }
+        }
       }
     ],
     "parameters": {
@@ -47,8 +58,9 @@
     "nullable": [
       false,
       true,
+      true,
       true
     ]
   },
-  "hash": "66810c60b05049b1090b150c55b638a065defbd6bc110f044b5533aabd5a3700"
+  "hash": "f7ef3f443cc03759b9f2bb593e04e19ab8d3b8db5420a11f80d2b03d8bd379da"
 }

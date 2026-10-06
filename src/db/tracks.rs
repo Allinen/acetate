@@ -634,6 +634,22 @@ async fn lyrics_of(conn: &mut PgConnection, track_id: Uuid, with_history: bool) 
     Ok(lyrics)
 }
 
+/// An album's artists as credited, joined with ", " (None if it has none).
+pub async fn album_artist(conn: &mut PgConnection, album_id: Uuid) -> sqlx::Result<Option<String>> {
+    sqlx::query_scalar!(
+        r#"
+        SELECT string_agg(COALESCE(aa.alias, a.name), ', ' ORDER BY ac.position)
+        FROM album_credits ac
+        JOIN artists a ON a.id = ac.artist_id
+        LEFT JOIN artist_aliases aa ON aa.id = ac.alias_id
+        WHERE ac.album_id = $1
+        "#,
+        album_id
+    )
+    .fetch_one(conn)
+    .await
+}
+
 /// The covers of a track or an album (by the owner's id), main cover first, without
 /// the ones in the trash.
 pub async fn covers_of(conn: &mut PgConnection, owner_id: Uuid) -> sqlx::Result<Vec<Cover>> {

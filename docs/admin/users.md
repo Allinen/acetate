@@ -30,7 +30,7 @@ through the API too.
 | `restore_revision` | restore an older revision |
 | `manage_access` | restrict tracks, and change which groups can see them |
 | `manage_users` | create users, manage groups and their permissions |
-| `download_original` | download the untouched original (not yet enforced separately from streaming) |
+| `download_original` | stream and download the original file. Without it, `stream` plays a transcoded copy (Opus) instead; see [Quality and downloads](../listening.md#quality-and-downloads) |
 | `share` | create share links |
 
 ## Restricting tracks

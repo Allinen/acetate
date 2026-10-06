@@ -41,6 +41,18 @@ Make one from the `+` in the sidebar, or with `p` on anything. Inside a playlist
 `Delete` takes a track out, `Ctrl+↑`/`Ctrl+↓` reorders, `F2` renames. Deleted playlists go
 to the [trash](library/storage.md) and can be restored.
 
+## Quality and downloads
+
+With the `download_original` permission, you stream the original files. Without it you stream
+a transcoded copy (Opus, 128 kbps by default), made the first time anyone plays the track
+(a few seconds, then it's kept). A lossy file that's already no bigger than that (an MP3 at
+128 kbps) is sent as it is: a copy would only be worse. Videos aren't transcoded.
+
+The web UI's **Download** on a track page (needs `download_original`) gives the original
+file with the library's *current* title, artists, album, track and disc number, date, genres,
+lyrics and main cover written into its tags. The stored file is never changed: the tags go
+into a copy. Add `?tags=false` to the address to get the stored bytes untouched.
+
 ## Lyrics and videos
 
 Tracks can have lyrics, synced or plain, shown on Now playing. Music videos are *extras*

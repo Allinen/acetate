@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT string_agg(COALESCE(aa.alias, a.name), ', ' ORDER BY ac.position)\n        FROM album_credits ac\n        JOIN artists a ON a.id = ac.artist_id\n        LEFT JOIN artist_aliases aa ON aa.id = ac.alias_id\n        WHERE ac.album_id = $1\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "string_agg",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "0aee5e0e5c62fccb92e6753e0da3d8613400cbf9eddbb84284bd4e671ec15ecb"
+}

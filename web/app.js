@@ -703,7 +703,7 @@ async function showTrack(id) {
         h("div", { class: "row" },
           can("stream") ? h("button", { onclick: () => play(f.id, t.title, t.artist_display, cover?.id, null, t.id) }, "▶ Play") : null,
           can("download_original")
-            ? h("a", { href: `/api/files/${f.id}/stream`, download: f.original_filename ?? f.uploaded_filename }, "Download original")
+            ? h("a", { href: `/api/tracks/${id}/download`, title: "The original file, with the library's current tags written in" }, "Download")
             : null),
         can("share") ? shareForm("track", id) : null)),
 
@@ -2336,11 +2336,18 @@ function shareForm(kind, id) {
     h("option", { value: "7" }, "expires in 7 days"),
     h("option", { value: "30" }, "expires in 30 days"));
   const result = h("div", {});
-  const form = h("form", { class: "row" }, expiry, h("button", { type: "submit" }, "Create link"), result);
+  // Without it a link plays a lower-quality copy (Opus), which can't be saved as the original.
+  const original = can("download_original")
+    ? h("input", { type: "checkbox" })
+    : null;
+  const form = h("form", { class: "row" }, expiry,
+    original ? h("label", { title: "Otherwise the link plays a lower-quality copy" }, original, " give the original file") : null,
+    h("button", { type: "submit" }, "Create link"), result);
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     const body = { [`${kind}_id`]: id };
     if (expiry.value) body.expires_at = new Date(Date.now() + expiry.value * 86400000).toISOString();
+    if (original?.checked) body.original = true;
     try {
       const share = await postJson("/api/shares", body);
       const url = location.origin + share.path;
@@ -2372,6 +2379,7 @@ async function showShares() {
           h("div", { class: "row" },
             h("a", { href: s.track_id ? `#/track/${s.track_id}` : `#/album/${s.album_id}` }, s.title),
             h("span", { class: "tag" }, s.track_id ? "track" : "album"),
+            h("span", { class: "tag" }, s.original ? "original file" : "lower-quality copy"),
             h("span", { class: s.state === "active" ? "ok" : "muted" }, state),
             s.state !== "revoked" && s.state !== "expired" ? h("button", {
               class: "small",

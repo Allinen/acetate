@@ -11,6 +11,8 @@
 //!    instead deletes the temp file (used when the file turns out to be a duplicate).
 
 pub mod images;
+pub mod tagged;
+pub mod transcode;
 
 use std::path::{Path, PathBuf};
 
@@ -237,6 +239,12 @@ impl BlobStore {
         let sha256 = pending.sha256.clone();
         self.commit(pending, self.default_volume()).await?;
         Ok(sha256)
+    }
+
+    /// A temporary file next to the blobs (on the default volume's filesystem, not in a
+    /// possibly small `/tmp`), deleted when dropped. `suffix`: e.g. ".flac".
+    pub fn temp_file(&self, suffix: &str) -> std::io::Result<tempfile::NamedTempFile> {
+        tempfile::Builder::new().suffix(suffix).tempfile_in(&self.volumes[0].tmp_dir)
     }
 }
 

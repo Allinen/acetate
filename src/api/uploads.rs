@@ -233,6 +233,7 @@ pub(crate) mod tests {
             trust_proxy: false,
             rate_limits: std::sync::Arc::new(api::rate_limit::RateLimits::new()),
             images: std::sync::Arc::new(crate::storage::images::ImageCache::new(dir.path().join("cache"))),
+            transcodes: std::sync::Arc::new(crate::storage::transcode::TranscodeCache::new(dir.path().join("cache"), 128, 0)),
             upload_limits: std::sync::Arc::new(api::upload_limits::UploadLimits::new(0, 0)),
         });
         Ok((owner, app, dir))

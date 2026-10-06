@@ -15,6 +15,9 @@ pub struct ActiveShare {
     pub id: Uuid,
     pub track_id: Option<Uuid>,
     pub album_id: Option<Uuid>,
+    /// Plays the original files, not copies: chosen when it was made, and its creator
+    /// still has `download_original`.
+    pub original: bool,
 }
 
 /// Looks up a working share by token hash. Takes the pool: this is how we find out which
@@ -23,7 +26,12 @@ pub async fn find_active(pool: &PgPool, token_sha256: &str) -> sqlx::Result<Opti
     sqlx::query_as!(
         ActiveShare,
         r#"
-        SELECT s.id, s.track_id, s.album_id
+        SELECT s.id, s.track_id, s.album_id,
+               (s.original AND EXISTS (
+                   SELECT 1 FROM user_groups ug
+                   JOIN group_permissions gp ON gp.group_id = ug.group_id
+                   WHERE ug.user_id = s.created_by AND gp.permission IN ('download_original', 'admin')
+               )) AS "original!"
         FROM shares s
         WHERE s.token_sha256 = $1
           AND s.revoked_at IS NULL
@@ -49,17 +57,19 @@ pub async fn create(
     track_id: Option<Uuid>,
     album_id: Option<Uuid>,
     expires_at: Option<DateTime<Utc>>,
+    original: bool,
 ) -> sqlx::Result<Uuid> {
     sqlx::query_scalar!(
         r#"
-        INSERT INTO shares (token_sha256, track_id, album_id, expires_at)
-        VALUES ($1, $2, $3, $4)
+        INSERT INTO shares (token_sha256, track_id, album_id, expires_at, original)
+        VALUES ($1, $2, $3, $4, $5)
         RETURNING id
         "#,
         token_sha256,
         track_id,
         album_id,
-        expires_at
+        expires_at,
+        original
     )
     .fetch_one(conn)
     .await
@@ -76,6 +86,9 @@ pub struct ShareInfo {
     pub created_at: DateTime<Utc>,
     pub expires_at: Option<DateTime<Utc>>,
     pub revoked_at: Option<DateTime<Utc>>,
+    /// Plays the original files (as chosen, and its creator still may give them), not
+    /// transcoded copies.
+    pub original: bool,
     /// Whether the link works: "active", or why not: "revoked", "expired",
     /// "creator_cannot_share" (its creator lost the permission to share) or
     /// "target_hidden" (its creator can't see anything it shares anymore).
@@ -91,7 +104,13 @@ pub async fn list(conn: &mut PgConnection, created_by: Option<Uuid>) -> sqlx::Re
                -- NULL when you can't see it anymore (then the share shows nothing either).
                COALESCE(t.title, al.title, '(no longer visible to you)') AS "title!",
                u.username AS created_by,
-               s.created_at, s.expires_at, s.revoked_at, share_state(s.id) AS "state!"
+               s.created_at, s.expires_at, s.revoked_at,
+               (s.original AND EXISTS (
+                   SELECT 1 FROM user_groups ug
+                   JOIN group_permissions gp ON gp.group_id = ug.group_id
+                   WHERE ug.user_id = s.created_by AND gp.permission IN ('download_original', 'admin')
+               )) AS "original!",
+               share_state(s.id) AS "state!"
         FROM shares s
         JOIN users u ON u.id = s.created_by
         LEFT JOIN tracks t ON t.id = s.track_id
@@ -194,6 +213,7 @@ pub struct SharedBlob {
     pub sha256: String,
     pub container: Option<String>,
     pub codec: Option<String>,
+    pub bitrate: Option<i32>,
 }
 
 /// The *current* file of a track, if the track is part of the share. (Current, so an
@@ -206,7 +226,7 @@ pub async fn file(
     sqlx::query_as!(
         SharedBlob,
         r#"
-        SELECT f.sha256, f.container, f.codec
+        SELECT f.sha256, f.container, f.codec, f.bitrate
         FROM tracks t
         JOIN files f ON f.id = t.file_id
         WHERE t.id = $1

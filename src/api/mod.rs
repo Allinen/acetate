@@ -22,6 +22,8 @@ mod rate_limit;
 mod problems;
 #[cfg(test)]
 mod problems_tests;
+#[cfg(test)]
+mod transcode_tests;
 mod review;
 mod shares;
 mod storage;
@@ -76,6 +78,8 @@ pub struct AppState {
     pub rate_limits: Arc<RateLimits>,
     /// Smaller copies of cover images (`GET /api/images/{hash}?size=`).
     pub images: Arc<crate::storage::images::ImageCache>,
+    /// Transcoded copies of audio (`GET /api/files/{id}/stream`, share links).
+    pub transcodes: Arc<crate::storage::transcode::TranscodeCache>,
     /// How much may be uploaded per request and per day (see `upload_limits`).
     pub upload_limits: Arc<upload_limits::UploadLimits>,
     /// Chunked uploads under way (see `uploads`).
@@ -241,6 +245,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/source-shapes", require(&[Browse], get(sources::shapes)))
         // Previous (replaced) files additionally need `view_history`, checked in the handler.
         .route("/api/files/{id}/stream", require(&[Stream], get(media::stream_file)))
+        .route("/api/tracks/{id}/download", require(&[DownloadOriginal], get(media::download)))
         .route("/api/files/{id}/origin", require(&[EditSources], put(sources::set_origin)))
         .route("/api/files/{id}/original-filename", require(&[EditFiles], put(sources::set_original_filename)))
         .route("/api/tracks/mark-original", require(&[EditFiles], post(sources::mark_original)))

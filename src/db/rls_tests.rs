@@ -442,7 +442,7 @@ async fn artists_are_visible_when_logged_in_and_through_a_share_only_its_own(
     // A share of O (credited to Both) shows Both, not X or Z.
     let mut tx = db::begin(&lib.owner, Some(lib.bob)).await?;
     let token_hash = crate::auth::token_hash("share of O");
-    db::shares::create(&mut tx, &token_hash, Some(lib.o), None, None).await?;
+    db::shares::create(&mut tx, &token_hash, Some(lib.o), None, None, false).await?;
     tx.commit().await?;
     let share = db::shares::find_active(&lib.app, &token_hash).await?.unwrap();
     let mut tx = db::begin_share(&lib.app, share.id).await?;
@@ -474,7 +474,7 @@ async fn shares_open_only_their_target(_: PgPoolOptions, connect: PgConnectOptio
     // bob shares album A (V and H).
     let mut tx = db::begin(&lib.owner, Some(lib.bob)).await?;
     let token_hash = crate::auth::token_hash("share token");
-    db::shares::create(&mut tx, &token_hash, None, Some(lib.album), None).await?;
+    db::shares::create(&mut tx, &token_hash, None, Some(lib.album), None, false).await?;
     tx.commit().await?;
     let share = db::shares::find_active(&lib.app, &token_hash).await?.unwrap();
 
@@ -502,8 +502,8 @@ async fn the_share_list_says_whether_a_link_still_works(_: PgPoolOptions, connec
     let lib = setup(connect).await?;
     // bob shares H (restricted to friends, which he's in) and O.
     let mut tx = db::begin(&lib.owner, Some(lib.bob)).await?;
-    let share_h = db::shares::create(&mut tx, &crate::auth::token_hash("h"), Some(lib.h), None, None).await?;
-    let share_o = db::shares::create(&mut tx, &crate::auth::token_hash("o"), Some(lib.o), None, None).await?;
+    let share_h = db::shares::create(&mut tx, &crate::auth::token_hash("h"), Some(lib.h), None, None, false).await?;
+    let share_o = db::shares::create(&mut tx, &crate::auth::token_hash("o"), Some(lib.o), None, None, false).await?;
     tx.commit().await?;
     let states = || async {
         // As carol would list them if she were an admin: she can't see H herself.

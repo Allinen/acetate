@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        INSERT INTO shares (token_sha256, track_id, album_id, expires_at)\n        VALUES ($1, $2, $3, $4)\n        RETURNING id\n        ",
+  "query": "\n        INSERT INTO shares (token_sha256, track_id, album_id, expires_at, original)\n        VALUES ($1, $2, $3, $4, $5)\n        RETURNING id\n        ",
   "describe": {
     "columns": [
       {
@@ -20,12 +20,13 @@
         "Text",
         "Uuid",
         "Uuid",
-        "Timestamptz"
+        "Timestamptz",
+        "Bool"
       ]
     },
     "nullable": [
       false
     ]
   },
-  "hash": "f81d943a2a74b75f1f0012e88573197c28039469ac26b9ae699ffe5fe85a86cc"
+  "hash": "d0230e7d40383c57a3de5cdf0968135f91eeaf58a4d7ebf9c6ad17941a80763a"
 }
