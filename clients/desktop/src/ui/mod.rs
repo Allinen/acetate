@@ -99,6 +99,8 @@ pub enum Action {
     ToggleMute,
     /// Play through this sound output (None: the system's default).
     SetOutput(Option<String>),
+    /// Stream copies at this quality (kbps); None: as the server decides.
+    SetStreamQuality(Option<u32>),
     /// Loop the current track (or stop looping it).
     ToggleRepeat,
     ToggleShuffle,
@@ -702,6 +704,7 @@ impl App {
             shell.load_library(&cc.egui_ctx);
         }
         shell.controller.set_volume(shell.settings.volume, shell.settings.muted);
+        shell.runtime.block_on(shell.controller.set_quality(shell.settings.stream_kbps));
         if let Some(output) = shell.settings.output.clone() {
             let c = shell.controller.clone();
             shell.runtime.spawn(async move { c.set_output(Some(output)).await });
@@ -958,6 +961,12 @@ impl App {
                     self.shell.settings.save(&self.shell.data_dir);
                     let c = self.shell.controller.clone();
                     self.shell.runtime.spawn(async move { c.set_output(name).await });
+                }
+                Action::SetStreamQuality(kbps) => {
+                    self.shell.settings.stream_kbps = kbps;
+                    self.shell.settings.save(&self.shell.data_dir);
+                    let c = self.shell.controller.clone();
+                    self.shell.runtime.spawn(async move { c.set_quality(kbps).await });
                 }
                 Action::ToggleRepeat => {
                     let c = self.shell.controller.clone();

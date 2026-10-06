@@ -48,6 +48,10 @@ a transcoded copy (Opus, 128 kbps by default; other bitrates if the admin lists 
 (a few seconds, then it's kept). A copy has none of the original's tags or cover. Videos
 aren't transcoded.
 
+**Streaming quality** (desktop Settings → Sound; the web UI's account page) lets you pick one
+of the server's copy qualities (for less to download), or Automatic. It applies from the next
+track you play. The queue's next track is fetched again at the new quality.
+
 The web UI's **Download** on a track page (needs `download_original`) gives the original
 file with the library's *current* title, artists, album, track and disc number, date, genres,
 lyrics and main cover written into its tags. The stored file is never changed: the tags go

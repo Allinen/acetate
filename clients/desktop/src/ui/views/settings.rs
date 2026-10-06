@@ -15,6 +15,8 @@ pub struct SettingsPage {
     /// The sound outputs there are, listed in the background when the page opens (it can
     /// take a moment).
     outputs: Arc<Mutex<Option<Vec<String>>>>,
+    /// The qualities the server makes copies at (`GET /api/qualities`), the default first.
+    qualities: Arc<Mutex<Option<Vec<u32>>>>,
     /// The size of the kept covers (small, standard, and an earlier version's no longer
     /// used), measured in the background: (files, bytes) each.
     covers_size: Arc<Mutex<Option<[(usize, u64); 3]>>>,
@@ -64,6 +66,17 @@ impl SettingsPage {
         }
         let outputs = self.outputs.clone();
         shell.runtime.spawn_blocking(move || *outputs.lock().unwrap() = Some(crate::playback::engine::outputs()));
+        let (qualities, api, ctx) = (self.qualities.clone(), shell.api.clone(), shell.ctx.clone());
+        shell.runtime.spawn(async move {
+            #[derive(serde::Deserialize)]
+            struct Qualities {
+                kbps: Vec<u32>,
+            }
+            if let Ok(q) = api.send_json::<Qualities>(reqwest::Method::GET, "/api/qualities", None).await {
+                *qualities.lock().unwrap() = Some(q.kbps);
+                ctx.request_repaint();
+            }
+        });
         let handler = self.links_handler.clone();
         shell.runtime.spawn_blocking(move || *handler.lock().unwrap() = Some(crate::links::handler()));
         let (size, dir) = (self.covers_size.clone(), shell.cache_dir.clone());
@@ -122,6 +135,27 @@ impl SettingsPage {
                 });
                 ui.end_row();
             });
+            egui::Grid::new("quality").num_columns(2).spacing([24.0, 10.0]).show(ui, |ui| {
+                ui.label(RichText::new("Streaming quality").color(P.muted));
+                let current = shell.settings.stream_kbps;
+                let qualities = self.qualities.lock().unwrap().clone();
+                let shown = match current {
+                    None => "Automatic".to_string(),
+                    Some(k) => format!("{k} kbps copy"),
+                };
+                egui::ComboBox::from_id_salt("stream-quality").selected_text(shown).width(320.0).show_ui(ui, |ui| {
+                    if ui.selectable_label(current.is_none(), "Automatic: the original if you may have it, else the server's usual copy").clicked() {
+                        shell.act(Action::SetStreamQuality(None));
+                    }
+                    for k in qualities.iter().flatten() {
+                        if ui.selectable_label(current == Some(*k), format!("{k} kbps copy")).clicked() {
+                            shell.act(Action::SetStreamQuality(Some(*k)));
+                        }
+                    }
+                });
+                ui.end_row();
+            });
+            hint(ui, "Copies are Opus, made by the server (and kept there). A lower quality downloads less; it applies from the next track.");
             hint(ui, "9 and 0 turn it down and up, m mutes, anywhere outside a text field.");
 
             section(ui, "Account");

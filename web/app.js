@@ -251,8 +251,30 @@ const playerCover = document.getElementById("player-cover");
 // `trackId`: this is a listen of that track (its current file), so it counts as a play once
 // it's been heard long enough. Previews (a previous file, the merge view) don't pass it.
 function play(fileId, title, artist, coverId, note, trackId) {
-  playSrc(`/api/files/${fileId}/stream`, title, artist, coverId && `/api/covers/${coverId}`, note);
+  const kbps = streamKbps();
+  playSrc(`/api/files/${fileId}/stream${kbps ? `?kbps=${kbps}` : ""}`, title, artist, coverId && `/api/covers/${coverId}`, note);
   playing = trackId ? { trackId, counted: false } : null;
+}
+
+// The streaming quality chosen on the account page (kbps; none: as the server decides, the
+// original if you may have it). Kept in this browser only.
+function streamKbps() {
+  try { return Number(localStorage.getItem("streamKbps")) || null; } catch { return null; }
+}
+function setStreamKbps(kbps) {
+  try { kbps ? localStorage.setItem("streamKbps", String(kbps)) : localStorage.removeItem("streamKbps"); } catch {}
+}
+
+// The "Streaming quality" choice: Automatic, or one of the server's copy qualities.
+function qualityPicker() {
+  const select = h("select", {}, h("option", { value: "" }, "Automatic (the original if you may have it)"));
+  api("/api/qualities").then((q) => {
+    for (const k of q.kbps) select.append(h("option", { value: String(k) }, `${k} kbps copy`));
+    select.value = String(streamKbps() ?? "");
+  }).catch(() => {});
+  select.addEventListener("change", () => setStreamKbps(Number(select.value) || null));
+  return h("div", { class: "row" }, select,
+    h("span", { class: "muted" }, "Applies from the next track you play."));
 }
 
 // What's playing, for counting plays: counted after half the track or 4 minutes, like
@@ -2321,6 +2343,7 @@ async function showAccount() {
 
   setDetail(
     h("h2", {}, me.username),
+    can("stream") ? [h("h3", {}, "Streaming quality"), qualityPicker()] : null,
     h("h3", {}, "Change password"),
     passwordForm,
     h("h3", {}, "Where you're logged in"),

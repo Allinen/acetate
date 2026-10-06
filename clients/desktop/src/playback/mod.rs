@@ -171,6 +171,8 @@ pub struct Controller {
     volume: Mutex<(f32, bool)>,
     /// Plays reported to the server, with its answers, for the UI to take.
     pub played: Mutex<Vec<(Uuid, Result<Annotation, String>)>>,
+    /// The quality asked for (kbps, see `set_quality`): None, as the server decides.
+    quality: Mutex<Option<u32>>,
     /// Files downloaded ahead (see `prepare`).
     kept: Mutex<Vec<(Uuid, stream::RemoteFile)>>,
     /// The last two files handed to the audio thread (what plays, and what's next): a
@@ -204,6 +206,7 @@ impl Controller {
             shuffle: Default::default(),
             volume: Mutex::new((1.0, false)),
             played: Mutex::default(),
+            quality: Mutex::new(None),
             kept: Mutex::default(),
             recent: Mutex::default(),
             ctx,
@@ -212,6 +215,37 @@ impl Controller {
 
     fn send(&self, command: Command) {
         let _ = self.audio.lock().unwrap().send(command);
+    }
+
+    /// Where an item's audio is fetched from, at the quality set (library files only).
+    fn path_of(&self, item: &QueueItem) -> String {
+        let path = item.stream_path();
+        match (item.source, *self.quality.lock().unwrap()) {
+            (AudioSource::File, Some(kbps)) => format!("{path}?kbps={kbps}"),
+            _ => path,
+        }
+    }
+
+    /// `path_of` for a library file by its id.
+    fn path_of_file(&self, id: Uuid) -> String {
+        match *self.quality.lock().unwrap() {
+            Some(kbps) => format!("/api/files/{id}/stream?kbps={kbps}"),
+            None => format!("/api/files/{id}/stream"),
+        }
+    }
+
+    /// Streams copies at this quality (kbps, one the server makes; None: what the server
+    /// gives: the original if you may have it, else its usual copy). Applies from the next
+    /// track: what plays goes on, and what was fetched ahead is let go.
+    pub async fn set_quality(self: &Arc<Self>, kbps: Option<u32>) {
+        *self.quality.lock().unwrap() = kbps;
+        self.kept.lock().unwrap().clear();
+        self.recent.lock().unwrap().clear();
+        let mut state = self.state.lock().await;
+        state.appended = None;
+        state.fetching = false;
+        state.next_asked += 1;
+        self.send(Command::SetNext(None));
     }
 
     /// Starts downloading a file; it can be played as soon as this returns.
@@ -257,7 +291,7 @@ impl Controller {
         };
         for id in missing {
             // (Library files: comparing two tracks.)
-            match self.fetch(id, format!("/api/files/{id}/stream")).await {
+            match self.fetch(id, self.path_of_file(id)).await {
                 Ok(file) => self.kept.lock().unwrap().push((id, file)),
                 Err(err) => self.report(format!("{err:#}")),
             }
@@ -288,7 +322,7 @@ impl Controller {
             *self.pending_seek.lock().unwrap() = None;
             state.generation
         };
-        match self.fetch(item.file_id, item.stream_path()).await {
+        match self.fetch(item.file_id, self.path_of(&item)).await {
             Ok(file) => {
                 if self.state.lock().await.generation == generation {
                     self.send(Command::Replace { file, paused, at, fade });
@@ -304,7 +338,7 @@ impl Controller {
     fn upcoming(&self, state: &State) -> Option<(queue::Upcoming, (Uuid, String))> {
         let upcoming = state.queue.upcoming(self.repeat.load(Relaxed))?;
         let item = state.queue.item(upcoming)?;
-        Some((upcoming, (item.file_id, item.stream_path())))
+        Some((upcoming, (item.file_id, self.path_of(item))))
     }
 
     /// After a change: if what comes next isn't what it was, the "next" slot is emptied
@@ -685,6 +719,32 @@ fn shuffle<T>(items: &mut [T]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A set quality is asked for on library files only (not on videos or kept files).
+    #[test]
+    fn the_quality_is_asked_for_on_library_files_only() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let dir = std::env::temp_dir().join(format!("acetate-quality-test-{}", std::process::id()));
+        let controller = runtime.block_on(async { Controller::new(Api::new(dir), egui::Context::default()) });
+        let item = |source| QueueItem {
+            track_id: Uuid::nil(),
+            file_id: Uuid::nil(),
+            source,
+            title: String::new(),
+            artist: String::new(),
+            album: None,
+            duration_ms: None,
+            cover: None,
+        };
+        let nil = Uuid::nil();
+        assert_eq!(controller.path_of(&item(AudioSource::File)), format!("/api/files/{nil}/stream"));
+        runtime.block_on(controller.set_quality(Some(64)));
+        assert_eq!(controller.path_of(&item(AudioSource::File)), format!("/api/files/{nil}/stream?kbps=64"));
+        assert_eq!(controller.path_of_file(nil), format!("/api/files/{nil}/stream?kbps=64"));
+        assert_eq!(controller.path_of(&item(AudioSource::Extra)), format!("/api/extra-files/{nil}/stream"));
+        runtime.block_on(controller.set_quality(None));
+        assert_eq!(controller.path_of(&item(AudioSource::File)), format!("/api/files/{nil}/stream"));
+    }
 
     /// The playback loop and the volume use the same locks: neither may wait on the
     /// other forever (they once did, and the app never drew its window).
