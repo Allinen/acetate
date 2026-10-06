@@ -622,6 +622,8 @@ impl Download {
                 Err(err) => return Err(err.into()),
             }
         }
+        // Nothing was fetched for an empty file (size 0): it's made here, empty.
+        tokio::fs::OpenOptions::new().create(true).append(true).open(&part).await?;
         let hashed = hex::encode(hasher.finalize());
         if hashed != sha256 {
             let _ = tokio::fs::remove_file(&part).await;
