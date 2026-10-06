@@ -1,0 +1,68 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        WITH refs (sha256, rank) AS (\n            SELECT f.sha256,\n                   CASE WHEN f.trashed_at IS NOT NULL THEN 6\n                        WHEN EXISTS (SELECT 1 FROM tracks t WHERE t.file_id = f.id) THEN 1\n                        ELSE 5 END\n            FROM files f\n            WHERE f.purged_at IS NULL AND ($1::text[] IS NULL OR f.sha256 = ANY ($1))\n            UNION ALL\n            SELECT sha256, 2 FROM extra_files WHERE $1::text[] IS NULL OR sha256 = ANY ($1)\n            UNION ALL\n            SELECT thumb_sha256, 2 FROM extra_files\n            WHERE thumb_sha256 IS NOT NULL AND ($1::text[] IS NULL OR thumb_sha256 = ANY ($1))\n            UNION ALL\n            SELECT c.blob_sha256, CASE WHEN c.trashed_at IS NULL THEN 3 ELSE 6 END\n            FROM covers c\n            WHERE $1::text[] IS NULL OR c.blob_sha256 = ANY ($1)\n            UNION ALL\n            -- Open, or resolved by hand and in the trash (one that imported later has its\n            -- file and covers elsewhere).\n            SELECT s, CASE WHEN p.resolved_at IS NULL THEN 4 ELSE 6 END\n            FROM ingest_problems p, unnest(p.cover_blobs || p.sha256) s\n            WHERE p.audio_purged_at IS NULL AND (p.resolved_at IS NULL OR p.track_id IS NULL)\n              AND ($1::text[] IS NULL OR s = ANY ($1))\n        ),\n        paths (sha256, path) AS (\n            SELECT sha256, imported_from FROM files\n            WHERE imported_from IS NOT NULL AND purged_at IS NULL AND ($1::text[] IS NULL OR sha256 = ANY ($1))\n            UNION ALL\n            SELECT sha256, path FROM ingest_problems\n            WHERE path IS NOT NULL AND audio_purged_at IS NULL AND ($1::text[] IS NULL OR sha256 = ANY ($1))\n        ),\n        wanted (sha256) AS (\n            SELECT sha256 FROM blobs WHERE $1::text[] IS NULL\n            UNION ALL\n            SELECT DISTINCT unnest($1::text[])\n        )\n        SELECT w.sha256 AS \"sha256!\", b.volume AS \"volume?\", b.size_bytes AS \"size?\", b.sha256 IS NOT NULL AS \"stored!\",\n               r.rank AS \"rank?\", p.path AS \"path?\"\n        FROM wanted w\n        LEFT JOIN blobs b ON b.sha256 = w.sha256\n        LEFT JOIN (SELECT sha256, min(rank) AS rank FROM refs GROUP BY sha256) r ON r.sha256 = w.sha256\n        LEFT JOIN (SELECT sha256, min(path) AS path FROM paths GROUP BY sha256) p ON p.sha256 = w.sha256\n        ORDER BY w.sha256\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "sha256!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "volume?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "blobs",
+            "name": "volume"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "size?",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "blobs",
+            "name": "size_bytes"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "stored!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 4,
+        "name": "rank?",
+        "type_info": "Int4",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 5,
+        "name": "path?",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      null,
+      false,
+      true,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "a639fcdae86326c5cd135afbe25846acf63f4bbb17713f6cd8aaf86ff7ad3f6d"
+}

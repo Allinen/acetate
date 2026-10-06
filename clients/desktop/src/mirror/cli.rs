@@ -16,8 +16,10 @@ acetate-desktop mirror <command>
   rehash            hash every blob here again
   removable         list blobs nothing wants anymore (the server let them go)
   remove <hash>...  remove those (or `remove all`)
+  match <folder>    which of the server's folders a folder here has the files of
   set <key>=<value> enabled=yes|no  volumes=main,archive  previous=yes|no
-                    look-in=<folder>[,<folder>...]  (empty: none)
+                    look-in=<folder>=<server folder>[,...]  (empty: none)
+                    check-hashes=yes|no  (hash files taken in from look-in folders)
 
 The app's folder is used ($ACETATE_ROOT for another), with the app's login.";
 
@@ -65,6 +67,18 @@ pub fn run(args: &[String]) -> i32 {
                 println!("{} blobs hashed: {} set aside, {} not here", report.checked, report.set_aside.len(), report.missing);
                 Ok(())
             }
+            ("match", [folder]) => {
+                mirror.refresh(None).await?;
+                let found = mirror.detect(std::path::Path::new(folder), &|| false)?;
+                match found.server_folder {
+                    Some(server_folder) => println!(
+                        "{} of its {} files are the server's, under {server_folder}: look-in={folder}={server_folder}",
+                        found.matched, found.files
+                    ),
+                    None => println!("none of its {} files are the server's (by path and size)", found.files),
+                }
+                Ok(())
+            }
             ("removable", []) => {
                 mirror.refresh(None).await?;
                 for r in mirror.removable()? {
@@ -91,8 +105,17 @@ pub fn run(args: &[String]) -> i32 {
                         "enabled" => config.enabled = yes(value)?,
                         "previous" => config.previous = yes(value)?,
                         "volumes" => config.volumes = list().map(String::from).collect(),
-                        "look-in" => config.look_in = list().map(std::path::PathBuf::from).collect(),
-                        _ => anyhow::bail!("{key}: not a setting (enabled, volumes, previous, look-in)"),
+                        "look-in" => {
+                            config.look_in = list()
+                                .map(|pair| {
+                                    let (folder, server_folder) =
+                                        pair.split_once('=').ok_or_else(|| anyhow::anyhow!("{pair}: <folder>=<server folder>"))?;
+                                    Ok(super::index::LookIn { folder: folder.into(), server_folder: server_folder.into() })
+                                })
+                                .collect::<anyhow::Result<_>>()?
+                        }
+                        "check-hashes" => config.check_hashes = yes(value)?,
+                        _ => anyhow::bail!("{key}: not a setting (enabled, volumes, previous, look-in, check-hashes)"),
                     }
                 }
                 mirror.set_config(&config)?;
@@ -240,11 +263,16 @@ fn print_status(mirror: &Mirror) -> anyhow::Result<()> {
     println!("mirroring:  {}", if config.enabled { "yes" } else { "no" });
     println!("volumes:    {}", volumes.join(", "));
     println!("previous:   {}", if config.previous { "yes" } else { "no" });
-    println!("look in:    {}", config.look_in.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", "));
+    println!(
+        "look in:    {}",
+        config.look_in.iter().map(|l| format!("{} (the server's {})", l.folder.display(), l.server_folder)).collect::<Vec<_>>().join(", ")
+    );
+    println!("check hashes of files taken in: {}", if config.check_hashes { "yes" } else { "no" });
     println!("wanted:     {} blobs, {}", plan.wanted.blobs, bytes(plan.wanted.bytes));
     println!("here:       {} blobs, {}", plan.had.blobs, bytes(plan.had.bytes));
     println!("missing:    {} blobs, {}{}", plan.missing.blobs, bytes(plan.missing.bytes), if plan.missing_unsized > 0 { format!(" (+{} of unknown size)", plan.missing_unsized) } else { String::new() });
     println!("removable:  {} blobs, {}", plan.removable.blobs, bytes(plan.removable.bytes));
+    println!("unchecked:  {} blobs, {} (taken in by path and size: rehash checks them)", plan.unchecked.blobs, bytes(plan.unchecked.bytes));
     if let Some(free) = plan.free_bytes {
         println!("free space: {}", bytes(free));
     }

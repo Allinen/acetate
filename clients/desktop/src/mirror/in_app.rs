@@ -12,12 +12,15 @@ use std::time::{Duration, Instant};
 use tokio::runtime::Handle;
 use tokio::sync::mpsc;
 
-use super::{Mirror, Snapshot, Status};
+use super::{Detected, Mirror, Snapshot, Status};
 use crate::api::Api;
 
 pub enum Command {
-    /// The settings changed: watch again with them (or stop, if mirroring is off).
+    /// The settings changed, or "Sync now": watch again with them (or stop, if mirroring
+    /// is off). Ends a pause.
     Restart,
+    /// Stop what's running and don't watch until `Restart` (or the app starts again).
+    Pause,
     /// Ask the server for its list (to show what there is before mirroring is on).
     Refresh,
     Rehash,
@@ -46,6 +49,12 @@ pub struct InApp {
     snapshot: Arc<Mutex<Option<Result<Snapshot, String>>>>,
     snapshot_at: Option<Instant>,
     snapshot_running: Arc<AtomicBool>,
+    /// Paused (`Command::Pause`).
+    pub paused: Arc<AtomicBool>,
+    /// Which of the server's folders a folder here has the files of (`detect`), and a way
+    /// to stop looking.
+    pub detected: Arc<Mutex<Option<(PathBuf, Option<Result<Detected, String>>)>>>,
+    detect_stop: Arc<AtomicBool>,
 }
 
 impl InApp {
@@ -58,7 +67,7 @@ impl InApp {
         }
         let (sender, receiver) = mpsc::unbounded_channel();
         self.commands = Some(sender);
-        let (slot, opening, outcome) = (self.mirror.clone(), self.opening.clone(), self.outcome.clone());
+        let (slot, opening, outcome, paused) = (self.mirror.clone(), self.opening.clone(), self.outcome.clone(), self.paused.clone());
         *opening.lock().unwrap() = Some(Opening::NotYet);
         self.task = Some(runtime.spawn(async move {
             let started = Instant::now();
@@ -90,7 +99,7 @@ impl InApp {
             *slot.lock().unwrap() = Some(mirror.clone());
             *opening.lock().unwrap() = Some(Opening::Open);
             ctx.request_repaint();
-            supervise(mirror, receiver, outcome, ctx).await;
+            supervise(mirror, receiver, outcome, paused, ctx).await;
         }));
     }
 
@@ -98,6 +107,7 @@ impl InApp {
     /// (moments: a run stops between files).
     pub fn shut_down(&mut self, runtime: &Handle) {
         self.commands = None;
+        self.detect_stop.store(true, Relaxed);
         if let Some(mirror) = self.mirror.lock().unwrap().take() {
             mirror.stop();
         }
@@ -137,6 +147,32 @@ impl InApp {
         Ok(())
     }
 
+    /// Works out (in the background) which of the server's folders `folder` has the files
+    /// of: `detected` has it when done.
+    pub fn detect(&mut self, runtime: &Handle, folder: PathBuf, ctx: &eframe::egui::Context) {
+        let Some(mirror) = self.mirror.lock().unwrap().clone() else { return };
+        self.detect_stop.store(true, Relaxed);
+        let stop = Arc::new(AtomicBool::new(false));
+        self.detect_stop = stop.clone();
+        *self.detected.lock().unwrap() = Some((folder.clone(), None));
+        let (slot, ctx) = (self.detected.clone(), ctx.clone());
+        runtime.spawn_blocking(move || {
+            let found = mirror.detect(&folder, &|| stop.load(Relaxed)).map_err(|e| format!("{e:#}"));
+            let mut slot = slot.lock().unwrap();
+            // Still the folder asked about (not cancelled, not another one since).
+            if !stop.load(Relaxed) && slot.as_ref().is_some_and(|(f, _)| *f == folder) {
+                *slot = Some((folder, Some(found)));
+            }
+            ctx.request_repaint();
+        });
+    }
+
+    /// Stops looking at a folder (and forgets it).
+    pub fn cancel_detect(&mut self) {
+        self.detect_stop.store(true, Relaxed);
+        *self.detected.lock().unwrap() = None;
+    }
+
     /// The latest snapshot, reading a new one in the background if this one's older than
     /// `every`.
     pub fn snapshot(&mut self, runtime: &Handle, every: Duration, ctx: &eframe::egui::Context) -> Option<Result<Snapshot, String>> {
@@ -160,9 +196,15 @@ impl InApp {
 
 /// Watches while mirroring is on, and runs each command from the app, one at a time
 /// (a command stops the watching; it starts again after).
-async fn supervise(mirror: Arc<Mirror>, mut commands: mpsc::UnboundedReceiver<Command>, outcome: Arc<Mutex<Option<String>>>, ctx: eframe::egui::Context) {
+async fn supervise(
+    mirror: Arc<Mirror>,
+    mut commands: mpsc::UnboundedReceiver<Command>,
+    outcome: Arc<Mutex<Option<String>>>,
+    paused: Arc<AtomicBool>,
+    ctx: eframe::egui::Context,
+) {
     loop {
-        let on = mirror.config().is_ok_and(|c| c.enabled);
+        let on = mirror.config().is_ok_and(|c| c.enabled) && !paused.load(Relaxed);
         let command = if on {
             tokio::select! {
                 _ = mirror.watch() => commands.recv().await,
@@ -175,7 +217,14 @@ async fn supervise(mirror: Arc<Mirror>, mut commands: mpsc::UnboundedReceiver<Co
         mirror.stop();
         let said = match command {
             None => return,
-            Some(Command::Restart) => None,
+            Some(Command::Restart) => {
+                paused.store(false, Relaxed);
+                None
+            }
+            Some(Command::Pause) => {
+                paused.store(true, Relaxed);
+                None
+            }
             Some(Command::Refresh) => mirror.refresh(None).await.err().map(|e| format!("Couldn't ask the server: {e:#}")),
             Some(Command::Rehash) => Some(match mirror.rehash().await {
                 Ok(r) if r.set_aside.is_empty() && r.missing == 0 => format!("All {} files hashed: each is what its name says.", r.checked),

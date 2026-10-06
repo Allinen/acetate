@@ -4,10 +4,12 @@
 //!
 //! It keeps what's *wanted* (`index`): what the mirror keeps of what the server lists,
 //! plus anything pinned. A sync brings the server's list up to date (all of it the first
-//! time, then what changed), then fetches what's missing: first by looking in folders on
-//! this machine (a file with a wanted blob's size is hashed; one that matches is taken in
-//! as a reflink), then by downloading the rest. Every blob is hashed as it comes in, and
-//! only goes in if its hash is its name. `rehash` checks every blob here again.
+//! time, then what changed), then fetches what's missing: first from folders on this
+//! machine that have the files the server imported (by path: a blob imported from
+//! `/srv/music/a.flac` is at `<folder>/a.flac` if it's there with the right size; taken in
+//! as a reflink), then by downloading the rest. Downloads are hashed as they come in, and
+//! only go in if the hash is their name; files from folders too if `check_hashes` is on,
+//! else they're trusted by path and size until `rehash` checks every blob here.
 //!
 //! Nothing is removed because the server let something go (trashed, purged, replaced):
 //! those are listed as removable, for the user to remove or keep.
@@ -21,7 +23,7 @@ pub mod service;
 pub mod store;
 
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
 use std::sync::{Arc, Mutex};
 
@@ -86,6 +88,8 @@ pub struct Plan {
     /// Missing blobs whose size the server doesn't know (some thumbnails).
     pub missing_unsized: u64,
     pub removable: Count,
+    /// Here, taken in by path and size without a hash check (yet).
+    pub unchecked: Count,
     /// Free space where the blobs go (None: couldn't tell).
     pub free_bytes: Option<u64>,
 }
@@ -100,6 +104,17 @@ pub struct Snapshot {
     pub removable: Vec<RemovableGroup>,
     /// When the server's list was last had (seconds since 1970).
     pub synced_at: Option<i64>,
+}
+
+/// What `Mirror::detect` found about a folder here.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Detected {
+    /// The server's folder it has the files of (None: none of its files are the server's).
+    pub server_folder: Option<String>,
+    /// Its files found at the same path below that folder, with the same size.
+    pub matched: u64,
+    /// Its files in all.
+    pub files: u64,
 }
 
 /// What a rehash found.
@@ -221,6 +236,7 @@ impl Mirror {
     pub fn stop(&self) {
         self.generation.fetch_add(1, Relaxed);
         self.stop.notify_waiters();
+        self.doing(Doing::Idle, 0, 0);
     }
 
     fn token(&self) -> StopToken {
@@ -272,8 +288,43 @@ impl Mirror {
                 blobs: removable.iter().map(|g| g.count.blobs).sum(),
                 bytes: removable.iter().map(|g| g.count.bytes).sum(),
             },
+            unchecked: index.unchecked()?,
             free_bytes: fs4::available_space(self.store.blobs_dir()).ok(),
         })
+    }
+
+    /// Which of the server's folders a folder here has the files of: the one under which
+    /// most of its files are at the same path (below the folder) with the same size, as
+    /// the server's last list has them. Blocking: walks the folder (stops early when
+    /// `stop` says).
+    pub fn detect(&self, folder: &Path, stop: &dyn Fn() -> bool) -> anyhow::Result<Detected> {
+        let server = self.server()?;
+        let listed = self.index.lock().unwrap().listed_paths(&server)?;
+        // By file name: (the server's path, `/` between its parts; size).
+        let mut by_name: HashMap<String, Vec<(String, u64)>> = HashMap::new();
+        for (path, size) in listed {
+            let path = path.replace('\\', "/");
+            let name = path.rsplit('/').next().unwrap_or_default().to_string();
+            by_name.entry(name).or_default().push((path, size));
+        }
+        let mut counts: HashMap<String, u64> = HashMap::new();
+        let mut files = 0;
+        store::walk_files(folder, &mut |path, size| {
+            files += 1;
+            let Ok(rel) = path.strip_prefix(folder) else { return };
+            let rel = rel.to_string_lossy().replace('\\', "/");
+            let name = rel.rsplit('/').next().unwrap_or_default();
+            for (server_path, server_size) in by_name.get(name).into_iter().flatten() {
+                if *server_size == size
+                    && let Some(above) = server_path.strip_suffix(rel.as_str())
+                    && let Some(server_folder) = above.strip_suffix('/')
+                {
+                    *counts.entry(server_folder.to_string()).or_default() += 1;
+                }
+            }
+        }, stop);
+        let best = counts.into_iter().max_by_key(|(_, n)| *n);
+        Ok(Detected { matched: best.as_ref().map_or(0, |(_, n)| *n), server_folder: best.map(|(f, _)| f), files })
     }
 
     /// Everything the app shows (blocking: a few queries).
@@ -314,8 +365,9 @@ impl Mirror {
         if self.checked.load(Relaxed) {
             return Ok(());
         }
+        let check = self.config().is_ok_and(|c| c.check_hashes);
         let this = self.blocking_parts(stop);
-        let done = tokio::task::spawn_blocking(move || this.check_here()).await?;
+        let done = tokio::task::spawn_blocking(move || this.check_here(check)).await?;
         self.checked.store(done?, Relaxed);
         Ok(())
     }
@@ -365,8 +417,7 @@ impl Mirror {
         }
         if !config.look_in.is_empty() {
             let this = self.blocking_parts(stop);
-            let wanted: HashMap<String, Option<u64>> = missing.iter().cloned().collect();
-            tokio::task::spawn_blocking(move || this.look_in(&config.look_in, &wanted)).await??;
+            tokio::task::spawn_blocking(move || this.look_in(&config)).await??;
         }
         let mut missing = self.index.lock().unwrap().missing()?;
         let unavailable = self.unavailable.lock().unwrap().clone();
@@ -525,7 +576,7 @@ impl Download {
         let (mut hasher, mut got) = tokio::task::spawn_blocking(move || -> std::io::Result<(Sha256, u64)> {
             let mut hasher = Sha256::new();
             let got = match std::fs::File::open(&earlier) {
-                Ok(mut file) => store::hash_into(&mut hasher, &mut file)?,
+                Ok(mut file) => store::hash_into(&mut hasher, &mut file, &|| false)?.unwrap_or(0),
                 Err(err) if err.kind() == std::io::ErrorKind::NotFound => 0,
                 Err(err) => return Err(err),
             };
@@ -571,7 +622,7 @@ impl Download {
         let store = self.store.clone();
         let sha = sha256.to_string();
         tokio::task::spawn_blocking(move || store.commit(&part, &sha)).await??;
-        self.index.lock().unwrap().add(sha256, got, "downloaded")
+        self.index.lock().unwrap().add(sha256, got, "downloaded", true)
     }
 }
 
@@ -590,6 +641,9 @@ impl Blocking {
     }
 
     fn progress(&self, current: &Path, bytes: u64) {
+        if self.stop.stopped() {
+            return;
+        }
         let mut s = self.status.lock().unwrap();
         s.done += 1;
         s.bytes += bytes;
@@ -604,7 +658,7 @@ impl Blocking {
     }
 
     /// See `Mirror::check_here`. Whether it got through (not stopped).
-    fn check_here(&self) -> anyhow::Result<bool> {
+    fn check_here(&self, check: bool) -> anyhow::Result<bool> {
         let had: HashMap<String, u64> = self.index.lock().unwrap().all_had()?.into_iter().collect();
         let files = self.store.walk();
         let unknown: Vec<_> = files.iter().filter(|(name, _, _)| !had.contains_key(name)).collect();
@@ -624,72 +678,68 @@ impl Blocking {
                 None => self.index.lock().unwrap().forget(sha256)?,
             }
         }
-        // Here but not in the index: kept if it's what its name says.
+        // Here but not in the index (a copy of a server's volume, say): kept if it's in its
+        // place and the size a server lists it with (hashed first if `check`); one no server
+        // lists, or not where its name says, is hashed.
+        let stop = || self.stop.stopped();
         for (name, path, size) in unknown {
             if self.stop.stopped() {
                 return Ok(false);
             }
             let in_place = self.store.path_of(name).is_some_and(|p| &p == path);
-            let (sha256, _) = store::hash_file(path)?;
-            if in_place && &sha256 == name {
-                self.index.lock().unwrap().add(name, *size, "found")?;
+            let listed = self.index.lock().unwrap().listed_size(name)?;
+            if in_place && !check && listed == Some(*size) {
+                self.index.lock().unwrap().add(name, *size, "found", false)?;
             } else {
-                let aside = self.store.set_aside(path)?;
-                self.problem(format!("{} isn't a blob of this mirror (it hashes to {sha256}): set aside as {}", path.display(), aside.display()));
+                let Some((sha256, _)) = store::hash_file_until(path, &stop)? else { return Ok(false) };
+                if in_place && &sha256 == name {
+                    self.index.lock().unwrap().add(name, *size, "found", true)?;
+                } else {
+                    let aside = self.store.set_aside(path)?;
+                    self.problem(format!("{} isn't a blob of this mirror (it hashes to {sha256}): set aside as {}", path.display(), aside.display()));
+                }
             }
             self.progress(path, *size);
         }
         Ok(true)
     }
 
-    /// Takes in wanted blobs found in `folders`: a file with a wanted size is hashed (or
-    /// its hash from an earlier look is used, if it hasn't changed), and taken in if the
-    /// hash is wanted.
-    fn look_in(&self, folders: &[PathBuf], wanted: &HashMap<String, Option<u64>>) -> anyhow::Result<()> {
-        let sizes: HashSet<u64> = wanted.values().filter_map(|s| *s).collect();
-        let mut candidates = Vec::new();
-        for folder in folders {
-            if !folder.is_dir() {
-                self.problem(format!("{} isn't a folder (or isn't there): not looked in", folder.display()));
-                continue;
+    /// Takes in missing blobs from the folders to look in: each at the path its server
+    /// path maps to (`index::LookIn`), if it's there with the right size. Hashed first if
+    /// `check_hashes`, else trusted (and marked unchecked).
+    fn look_in(&self, config: &index::Config) -> anyhow::Result<()> {
+        let missing = self.index.lock().unwrap().missing_with_paths()?;
+        let mut found = Vec::new();
+        for (sha256, size, server_path) in &missing {
+            if let Some(local) = config.look_in.iter().find_map(|l| l.local_path(server_path))
+                && std::fs::metadata(&local).is_ok_and(|m| m.is_file() && m.len() == *size)
+            {
+                found.push((sha256, *size, local));
             }
-            store::walk_files(folder, &mut |path, size| {
-                if sizes.contains(&size) {
-                    candidates.push((path.to_path_buf(), size));
-                }
-            });
         }
-        self.doing(Doing::LookingIn, candidates.len() as u64, candidates.iter().map(|(_, s)| s).sum());
-        for (path, size) in candidates {
+        for folder in &config.look_in {
+            if !folder.folder.is_dir() {
+                self.problem(format!("{} isn't a folder (or isn't there): not looked in", folder.folder.display()));
+            }
+        }
+        if found.is_empty() {
+            return Ok(());
+        }
+        self.doing(Doing::LookingIn, found.len() as u64, found.iter().map(|(_, s, _)| s).sum());
+        let stop = || self.stop.stopped();
+        for (sha256, size, path) in found {
             self.stop.check()?;
-            let result = (|| -> anyhow::Result<()> {
-                let mtime = std::fs::metadata(&path)?
-                    .modified()?
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_nanos() as i64)
-                    .unwrap_or(0);
-                let known = self.index.lock().unwrap().scanned(&path, size, mtime)?;
-                let sha256 = match known {
-                    Some(sha256) => sha256,
-                    None => {
-                        let (sha256, _) = store::hash_file(&path)?;
-                        self.index.lock().unwrap().set_scanned(&path, size, mtime, &sha256)?;
-                        sha256
-                    }
-                };
-                if wanted.contains_key(&sha256) && !self.index.lock().unwrap().has(&sha256)? {
-                    let how = self.store.take_in(&path, &sha256)?;
+            match self.store.take_in(&path, sha256, config.check_hashes, &stop) {
+                Ok(how) => {
                     let how = match how {
                         store::TakenIn::Reflinked => "reflinked",
                         store::TakenIn::Copied => "copied",
                     };
-                    self.index.lock().unwrap().add(&sha256, size, how)?;
+                    self.index.lock().unwrap().add(sha256, size, how, config.check_hashes)?;
                     self.status.lock().unwrap().taken_in += 1;
                 }
-                Ok(())
-            })();
-            if let Err(err) = result {
-                self.problem(format!("{}: {err:#}", path.display()));
+                Err(err) if err.is::<Stopped>() => return Err(err),
+                Err(err) => self.problem(format!("{}: {err:#}", path.display())),
             }
             self.progress(&path, size);
         }
@@ -700,11 +750,13 @@ impl Blocking {
         let had = self.index.lock().unwrap().all_had()?;
         self.doing(Doing::Rehashing, had.len() as u64, had.iter().map(|(_, s)| s).sum());
         let mut report = Rehashed::default();
+        let stop = || self.stop.stopped();
         for (sha256, size) in had {
             self.stop.check()?;
             let Some(path) = self.store.path_of(&sha256) else { continue };
-            match store::hash_file(&path) {
-                Ok((hashed, _)) if hashed == sha256 => self.index.lock().unwrap().verified(&sha256)?,
+            match store::hash_file_until(&path, &stop) {
+                Ok(None) => return Err(Stopped.into()),
+                Ok(Some((hashed, _))) if hashed == sha256 => self.index.lock().unwrap().verified(&sha256)?,
                 Ok(_) => {
                     let aside = self.store.set_aside(&path)?;
                     self.problem(format!("{sha256} isn't what its name says: set aside as {}", aside.display()));

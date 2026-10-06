@@ -53,7 +53,7 @@ async fn ingest_file(pool: &PgPool, store: &BlobStore, file_name: &str, song_id:
         sources: Vec::new(),
         restrict_to: None,
         hints: Default::default(),
-        local_path: None,
+        local_path: Some(format!("/srv/music/{file_name}")),
         edited_after: false,
         tags_from: None,
         volume: None,
@@ -171,6 +171,7 @@ async fn the_list_says_where_each_blob_is_and_what_its_for(_: PgPoolOptions, con
     assert_eq!(entry["volume"], "main");
     assert_eq!(entry["size"], s.original.len());
     assert_eq!(entry["state"], "audio");
+    assert_eq!(entry["path"], "/srv/music/01 - Glass Harbor.flac", "where it was imported from");
     // Its embedded cover is stored too.
     assert!(listing["blobs"].as_array().unwrap().iter().any(|b| b["state"] == "cover"), "{listing}");
     Ok(())
@@ -188,7 +189,7 @@ async fn a_delta_has_what_changed_and_how_it_is_now(_: PgPoolOptions, connect: P
     let stray = crate::storage::sha256_hex(b"stray");
     sqlx::query("INSERT INTO blobs (sha256, volume, size_bytes) VALUES ($1, 'main', 5)").bind(&stray).execute(&s.owner).await?;
     let second = s.list(&since(&first)).await;
-    assert_eq!(second["blobs"], json!([{ "sha256": stray, "volume": "main", "size": 5, "state": "other" }]));
+    assert_eq!(second["blobs"], json!([{ "sha256": stray, "volume": "main", "size": 5, "path": null, "state": "other" }]));
     sqlx::query("UPDATE blobs SET volume = 'archive' WHERE sha256 = $1").bind(&stray).execute(&s.owner).await?;
     let third = s.list(&since(&second)).await;
     assert_eq!(third["blobs"][0]["volume"], "archive");
@@ -201,7 +202,7 @@ async fn a_delta_has_what_changed_and_how_it_is_now(_: PgPoolOptions, connect: P
     sqlx::query("UPDATE files SET purged_at = now() WHERE sha256 = $1").bind(&s.sha256).execute(&s.owner).await?;
     sqlx::query("DELETE FROM blobs WHERE sha256 = $1").bind(&s.sha256).execute(&s.owner).await?;
     let fifth = s.list(&since(&fourth)).await;
-    assert_eq!(fifth["blobs"], json!([{ "sha256": s.sha256, "volume": null, "size": null, "state": "gone" }]));
+    assert_eq!(fifth["blobs"], json!([{ "sha256": s.sha256, "volume": null, "size": null, "path": null, "state": "gone" }]));
 
     // Gone isn't in the whole list.
     assert_eq!(Setup::state_in(&s.list("").await, &s.sha256), None);

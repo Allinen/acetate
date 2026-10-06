@@ -22,6 +22,10 @@ pub struct MirrorSection {
     confirm: Option<(Option<String>, Option<String>)>,
     /// A folder chosen to look in.
     folder_chosen: Arc<Mutex<Vec<PathBuf>>>,
+    /// The server folder for the folder being added (suggested, editable).
+    server_folder: String,
+    /// The mirror is paused (shown in the status line).
+    paused: bool,
     /// The server was asked for its list since the page opened (to show sizes while
     /// mirroring is off).
     refreshed: bool,
@@ -80,6 +84,7 @@ impl MirrorSection {
             ui.ctx().request_repaint_after(Duration::from_millis(400));
         }
 
+        self.paused = shell.mirror.paused.load(std::sync::atomic::Ordering::Relaxed);
         self.status_line(ui, opening.as_ref(), status.as_ref(), snapshot.as_ref());
         let (Some(Opening::Open), Some(snapshot)) = (opening, snapshot) else { return };
         // Mirroring off: the server's list asked for once, so there's something to choose from.
@@ -131,9 +136,10 @@ impl MirrorSection {
             ui.label(RichText::new("Look in").color(P.muted));
             ui.vertical(|ui| {
                 let mut gone = None;
-                for (i, folder) in config.look_in.iter().enumerate() {
+                for (i, look) in config.look_in.iter().enumerate() {
                     ui.horizontal(|ui| {
-                        ui.add(egui::Label::new(RichText::new(folder.display().to_string()).monospace().small()).selectable(true));
+                        ui.add(egui::Label::new(RichText::new(look.folder.display().to_string()).monospace().small()).selectable(true));
+                        ui.label(RichText::new(format!("has the server's {}", look.server_folder)).color(P.faint).small());
                         if ui.small_button("✕").on_hover_text("Don't look here").clicked() {
                             gone = Some(i);
                         }
@@ -143,15 +149,21 @@ impl MirrorSection {
                     config.look_in.remove(i);
                     changed = true;
                 }
-                for folder in self.folder_chosen.lock().unwrap().drain(..) {
-                    if !config.look_in.contains(&folder) {
-                        config.look_in.push(folder);
-                        changed = true;
-                    }
+                if let Some(folder) = self.folder_chosen.lock().unwrap().pop() {
+                    self.server_folder.clear();
+                    shell.mirror.detect(shell.runtime.handle(), folder, &shell.ctx);
                 }
-                if ui.small_button("Add a folder…").clicked() {
-                    crate::ui::files::choose_folder(shell, "A folder to look in for the server's files", &self.folder_chosen);
+                if let Some(look) = self.adding(ui, shell) {
+                    config.look_in.retain(|l| l.folder != look.folder);
+                    config.look_in.push(look);
+                    changed = true;
                 }
+                if shell.mirror.detected.lock().unwrap().is_none() && ui.small_button("Add a folder…").clicked() {
+                    crate::ui::files::choose_folder(shell, "A folder with the files the server imported", &self.folder_chosen);
+                }
+                changed |= ui
+                    .checkbox(&mut config.check_hashes, "Hash files from these folders before taking them in (slow; else their path and size are trusted)")
+                    .changed();
             });
             ui.end_row();
 
@@ -159,6 +171,11 @@ impl MirrorSection {
             ui.label(RichText::new("Here").color(P.muted));
             ui.label(format!("{} of {} wanted", files(plan.had), thousands(plan.wanted.blobs as usize)));
             ui.end_row();
+            if plan.unchecked.blobs > 0 {
+                ui.label(RichText::new("Not hashed yet").color(P.muted));
+                ui.label(format!("{}: taken in by path and size. “Hash every file again” checks them.", files(plan.unchecked)));
+                ui.end_row();
+            }
             if plan.missing.blobs > 0 {
                 ui.label(RichText::new("To fetch").color(P.muted));
                 let unknown = if plan.missing_unsized > 0 { format!(" (and {} of unknown size)", thousands(plan.missing_unsized as usize)) } else { String::new() };
@@ -185,8 +202,12 @@ impl MirrorSection {
         }
 
         ui.add_space(6.0);
+        let busy = status.as_ref().is_some_and(|s| !matches!(s.doing, Doing::Idle | Doing::Waiting));
         ui.horizontal(|ui| {
-            if config.enabled && widgets::chip(ui, "Sync now", false) {
+            if busy && widgets::chip(ui, "Stop", false) {
+                shell.mirror.send(Command::Pause);
+            }
+            if config.enabled && !busy && widgets::chip(ui, "Sync now", false) {
                 shell.mirror.send(Command::Restart);
             }
             if snapshot.plan.had.blobs > 0 && widgets::chip(ui, "Hash every file again", false) {
@@ -225,8 +246,64 @@ impl MirrorSection {
         self.service(ui, shell);
         hint(
             ui,
-            "Each file is hashed as it comes in, and only kept if it's what the server says it is. Files found in the folders to look in are taken in as reflinks where the disk can (no extra space), else copied. Your own files are never changed.",
+            "Downloads are hashed as they come in, and only kept if they're what the server says. Files in the folders to look in are found by the path the server imported them from and their size, and taken in as reflinks where the disk can (no extra space), else copied. Your own files are never changed.",
         );
+    }
+
+    /// The folder being added: its server folder, worked out and shown to change or
+    /// accept. The folder to add, once accepted.
+    fn adding(&mut self, ui: &mut egui::Ui, shell: &mut Shell) -> Option<crate::mirror::index::LookIn> {
+        let detected = shell.mirror.detected.lock().unwrap().clone();
+        let (folder, found) = detected?;
+        ui.add_space(4.0);
+        ui.label(RichText::new(folder.display().to_string()).monospace().small());
+        let mut add = None;
+        match found {
+            None => {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Matching its files to the server's…").color(P.faint));
+                    if ui.small_button("Cancel").clicked() {
+                        shell.mirror.cancel_detect();
+                    }
+                });
+                ui.ctx().request_repaint_after(Duration::from_millis(300));
+                return None;
+            }
+            Some(Err(err)) => {
+                ui.label(RichText::new(format!("Couldn't look: {err}")).color(P.danger));
+            }
+            Some(Ok(found)) => {
+                if self.server_folder.is_empty()
+                    && let Some(server_folder) = &found.server_folder
+                {
+                    self.server_folder = server_folder.clone();
+                }
+                let said = match &found.server_folder {
+                    Some(server_folder) => format!(
+                        "{} of its {} files are the server's, at the same paths under {server_folder}.",
+                        thousands(found.matched as usize),
+                        thousands(found.files as usize)
+                    ),
+                    None => format!("None of its {} files are the server's by path and size: say which folder of the server's it is.", thousands(found.files as usize)),
+                };
+                ui.label(RichText::new(said).color(P.muted));
+            }
+        }
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("The server's folder").color(P.muted));
+            ui.add(egui::TextEdit::singleline(&mut self.server_folder).desired_width(320.0).font(egui::TextStyle::Monospace));
+            if !self.server_folder.trim().is_empty() && ui.button("Add").clicked() {
+                add = Some(crate::mirror::index::LookIn { folder: folder.clone(), server_folder: self.server_folder.trim().to_string() });
+            }
+            if ui.button("Cancel").clicked() {
+                shell.mirror.cancel_detect();
+            }
+        });
+        if add.is_some() {
+            shell.mirror.cancel_detect();
+            self.server_folder.clear();
+        }
+        add
     }
 
     fn status_line(&self, ui: &mut egui::Ui, opening: Option<&Opening>, status: Option<&crate::mirror::Status>, snapshot: Option<&Snapshot>) {
@@ -240,6 +317,7 @@ impl MirrorSection {
                 match status.doing {
                     Doing::Idle | Doing::Waiting => match snapshot {
                         Some(s) if !s.config.enabled => ("Off.".to_string(), P.muted),
+                        Some(_) if self.paused => ("Stopped. “Sync now” goes on.".to_string(), P.muted),
                         Some(s) if s.plan.missing.blobs == 0 => {
                             let heard = s.synced_at.map(|at| format!(" Heard from the server {}.", ago(at))).unwrap_or_default();
                             (format!("Up to date: {} here. New files come in as the server gets them.{heard}", files(s.plan.had)), P.text)

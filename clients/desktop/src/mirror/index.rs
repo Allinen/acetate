@@ -1,14 +1,12 @@
 //! What the mirror knows, in `<root>/mirror.sqlite`:
 //!
 //! - `have`: the blobs here, each with its size, how it came and when its hash was last
-//!   checked. Only blobs whose hash was checked here are in it.
+//!   checked (0: not yet: taken in from a folder by its path and size, without hashing).
 //! - `mirrors`: each server mirrored (by address): what to keep (`Config`), and the
 //!   version of the list last had from it.
 //! - `listed`: that list: every blob the server has, its volume, size and state.
 //! - `pins`: blobs kept for a reason of their own, mirror or not (offline downloads of
 //!   single tracks will be these). Never offered for removal.
-//! - `scanned`: local files hashed while looking for blobs (by path, size and time
-//!   changed), so they aren't hashed again.
 //!
 //! What's *wanted* is worked out from these (the `wanted` view): what an enabled mirror
 //! keeps (its states and volumes) of what its server lists, and anything pinned. Missing
@@ -32,7 +30,44 @@ pub struct Config {
     pub previous: bool,
     /// Folders on this machine to look in for wanted blobs before downloading them (e.g.
     /// the music folder the library was imported from): taken in as reflinks.
-    pub look_in: Vec<PathBuf>,
+    #[serde(deserialize_with = "lenient")]
+    pub look_in: Vec<LookIn>,
+    /// Hash each file taken in from a folder before it counts (else its path and size are
+    /// trusted, and `rehash` checks it later). Downloads are always hashed as they come.
+    pub check_hashes: bool,
+}
+
+/// A folder on this machine that has the same files as a folder the server imported from:
+/// a blob imported from `<server_folder>/a/b.flac` is looked for at `<folder>/a/b.flac`,
+/// and taken in if it's there with the right size.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LookIn {
+    pub folder: PathBuf,
+    /// As the server has it (its paths, `/` or `\\` as they were).
+    pub server_folder: String,
+}
+
+impl LookIn {
+    /// Where a blob imported from `server_path` would be here, if it's under this folder.
+    pub fn local_path(&self, server_path: &str) -> Option<PathBuf> {
+        let (path, folder) = (server_path.replace('\\', "/"), self.server_folder.replace('\\', "/"));
+        let folder = folder.trim_end_matches('/');
+        let rest = path.strip_prefix(folder)?.strip_prefix('/')?;
+        let mut local = self.folder.clone();
+        for part in rest.split('/') {
+            if part.is_empty() || part == "." || part == ".." {
+                return None;
+            }
+            local.push(part);
+        }
+        Some(local)
+    }
+}
+
+/// A setting that can't be read is left empty, not the whole configuration lost.
+fn lenient<'de, D: serde::Deserializer<'de>, T: serde::de::DeserializeOwned + Default>(d: D) -> Result<T, D::Error> {
+    let value = serde_json::Value::deserialize(d)?;
+    Ok(serde_json::from_value(value).unwrap_or_default())
 }
 
 /// A blob as a server lists it (`GET /api/mirror`).
@@ -41,6 +76,9 @@ pub struct Listed {
     pub sha256: String,
     pub volume: Option<String>,
     pub size: Option<i64>,
+    /// Where the server imported it from, if known.
+    #[serde(default)]
+    pub path: Option<String>,
     pub state: String,
 }
 
@@ -112,6 +150,7 @@ CREATE TABLE IF NOT EXISTS listed (
     sha256 TEXT NOT NULL,
     volume TEXT,
     size   INTEGER,
+    path   TEXT,
     state  TEXT NOT NULL,
     PRIMARY KEY (server, sha256)
 ) WITHOUT ROWID;
@@ -121,13 +160,7 @@ CREATE TABLE IF NOT EXISTS pins (
     reason TEXT NOT NULL,
     PRIMARY KEY (sha256, reason)
 ) WITHOUT ROWID;
-CREATE TABLE IF NOT EXISTS scanned (
-    path   TEXT PRIMARY KEY,
-    size   INTEGER NOT NULL,
-    mtime  INTEGER NOT NULL,
-    sha256 TEXT NOT NULL
-) WITHOUT ROWID;
-CREATE INDEX IF NOT EXISTS scanned_sha256 ON scanned (sha256);
+DROP TABLE IF EXISTS scanned;
 DROP VIEW IF EXISTS wanted;
 CREATE VIEW wanted AS
     SELECT l.sha256, max(l.size) AS size
@@ -153,6 +186,12 @@ impl Index {
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.busy_timeout(std::time::Duration::from_secs(10))?;
         conn.execute_batch(SCHEMA)?;
+        // An index from before paths were listed: the column added, and the whole list
+        // asked for again to fill it in.
+        let has_path: bool = conn.query_row("SELECT count(*) FROM pragma_table_info('listed') WHERE name = 'path'", [], |r| r.get(0))?;
+        if !has_path {
+            conn.execute_batch("ALTER TABLE listed ADD COLUMN path TEXT; UPDATE mirrors SET version = NULL;")?;
+        }
         Ok(Index { conn })
     }
 
@@ -209,15 +248,16 @@ impl Index {
         }
         {
             let mut upsert = tx.prepare(
-                "INSERT INTO listed (server, sha256, volume, size, state) VALUES (?1, ?2, ?3, ?4, ?5)
-                 ON CONFLICT (server, sha256) DO UPDATE SET volume = excluded.volume, size = excluded.size, state = excluded.state",
+                "INSERT INTO listed (server, sha256, volume, size, path, state) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 ON CONFLICT (server, sha256) DO UPDATE SET volume = excluded.volume, size = excluded.size,
+                     path = excluded.path, state = excluded.state",
             )?;
             let mut drop = tx.prepare("DELETE FROM listed WHERE server = ?1 AND sha256 = ?2")?;
             for blob in blobs {
                 if blob.state == "gone" {
                     drop.execute(params![server, blob.sha256])?;
                 } else {
-                    upsert.execute(params![server, blob.sha256, blob.volume, blob.size, blob.state])?;
+                    upsert.execute(params![server, blob.sha256, blob.volume, blob.size, blob.path, blob.state])?;
                 }
             }
         }
@@ -235,15 +275,45 @@ impl Index {
         Ok(self.conn.query_row("SELECT 1 FROM have WHERE sha256 = ?1", [sha256], |_| Ok(())).optional()?.is_some())
     }
 
-    /// A blob came in, its hash checked.
-    pub fn add(&self, sha256: &str, size: u64, how: &str) -> anyhow::Result<()> {
+    /// A blob came in: its hash checked, or (`checked` false) taken by its path and size.
+    pub fn add(&self, sha256: &str, size: u64, how: &str, checked: bool) -> anyhow::Result<()> {
         let at = now();
         self.conn.execute(
-            "INSERT INTO have (sha256, size, how, added_at, verified_at) VALUES (?1, ?2, ?3, ?4, ?4)
+            "INSERT INTO have (sha256, size, how, added_at, verified_at) VALUES (?1, ?2, ?3, ?4, ?5)
              ON CONFLICT (sha256) DO UPDATE SET size = excluded.size, verified_at = excluded.verified_at",
-            params![sha256, size as i64, how, at],
+            params![sha256, size as i64, how, at, if checked { at } else { 0 }],
         )?;
         Ok(())
+    }
+
+    /// Blobs here whose hash wasn't checked yet.
+    pub fn unchecked(&self) -> anyhow::Result<Count> {
+        self.count("SELECT count(*), coalesce(sum(size), 0) FROM have WHERE verified_at = 0")
+    }
+
+    /// The size a server lists a blob with (any server), if one does.
+    pub fn listed_size(&self, sha256: &str) -> anyhow::Result<Option<u64>> {
+        let size: Option<Option<i64>> =
+            self.conn.query_row("SELECT max(size) FROM listed WHERE sha256 = ?1", [sha256], |r| r.get(0)).optional()?;
+        Ok(size.flatten().map(|s| s as u64))
+    }
+
+    /// Every blob `server` lists with a path: (path, size).
+    pub fn listed_paths(&self, server: &str) -> anyhow::Result<Vec<(String, u64)>> {
+        let mut query = self.conn.prepare("SELECT path, size FROM listed WHERE server = ?1 AND path IS NOT NULL AND size IS NOT NULL")?;
+        let rows = query.query_map([server], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as u64)))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// Missing blobs with a known path and size: (sha256, size, path where imported from).
+    pub fn missing_with_paths(&self) -> anyhow::Result<Vec<(String, u64, String)>> {
+        let mut query = self.conn.prepare(
+            "SELECT w.sha256, w.size, (SELECT l.path FROM listed l WHERE l.sha256 = w.sha256 AND l.path IS NOT NULL LIMIT 1) AS path
+             FROM wanted w
+             WHERE w.size IS NOT NULL AND path IS NOT NULL AND NOT EXISTS (SELECT 1 FROM have h WHERE h.sha256 = w.sha256)",
+        )?;
+        let rows = query.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as u64, r.get::<_, String>(2)?)))?;
+        Ok(rows.collect::<Result<_, _>>()?)
     }
 
     /// Its hash was checked again, and is right.
@@ -372,29 +442,6 @@ impl Index {
         self.conn.execute("DELETE FROM pins WHERE sha256 = ?1 AND reason = ?2", params![sha256, reason])?;
         Ok(())
     }
-
-    // ---- Local files looked in ----
-
-    /// A local file's hash, if it was hashed already and hasn't changed since.
-    pub fn scanned(&self, path: &Path, size: u64, mtime: i64) -> anyhow::Result<Option<String>> {
-        Ok(self
-            .conn
-            .query_row(
-                "SELECT sha256 FROM scanned WHERE path = ?1 AND size = ?2 AND mtime = ?3",
-                params![path.to_string_lossy(), size as i64, mtime],
-                |r| r.get(0),
-            )
-            .optional()?)
-    }
-
-    pub fn set_scanned(&self, path: &Path, size: u64, mtime: i64, sha256: &str) -> anyhow::Result<()> {
-        self.conn.execute(
-            "INSERT INTO scanned (path, size, mtime, sha256) VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT (path) DO UPDATE SET size = excluded.size, mtime = excluded.mtime, sha256 = excluded.sha256",
-            params![path.to_string_lossy(), size as i64, mtime, sha256],
-        )?;
-        Ok(())
-    }
 }
 
 #[cfg(test)]
@@ -406,7 +453,7 @@ mod tests {
     }
 
     fn listed(c: char, volume: &str, size: i64, state: &str) -> Listed {
-        Listed { sha256: sha(c), volume: Some(volume.into()), size: Some(size), state: state.into() }
+        Listed { sha256: sha(c), volume: Some(volume.into()), size: Some(size), path: None, state: state.into() }
     }
 
     #[test]
@@ -439,12 +486,13 @@ mod tests {
         assert_eq!(index.wanted().unwrap(), Count { blobs: 5, bytes: 160 });
 
         // Had: a, d. Then d's file is trashed on the server and a is purged: offered, not removed.
-        index.add(&sha('a'), 10, "downloaded").unwrap();
-        index.add(&sha('d'), 40, "downloaded").unwrap();
+        index.add(&sha('a'), 10, "downloaded", true).unwrap();
+        index.add(&sha('d'), 40, "reflinked", false).unwrap();
+        assert_eq!(index.unchecked().unwrap(), Count { blobs: 1, bytes: 40 });
         assert!(index.removable(server).unwrap().is_empty());
         index.apply_listing(server, "v2", false, &volumes, &[
             listed('d', "main", 40, "trashed"),
-            Listed { sha256: sha('a'), volume: None, size: None, state: "gone".into() },
+            Listed { sha256: sha('a'), volume: None, size: None, path: None, state: "gone".into() },
         ]).unwrap();
         let removable = index.removable(server).unwrap();
         let why: Vec<_> = removable.iter().map(|r| (r.sha256.clone(), r.state.clone())).collect();
@@ -463,12 +511,18 @@ mod tests {
     }
 
     #[test]
-    fn a_hashed_file_isnt_hashed_again_unless_it_changed() {
-        let dir = tempfile::tempdir().unwrap();
-        let index = Index::open(&dir.path().join("mirror.sqlite")).unwrap();
-        let path = Path::new("/music/song.flac");
-        index.set_scanned(path, 5, 100, &sha('a')).unwrap();
-        assert_eq!(index.scanned(path, 5, 100).unwrap(), Some(sha('a')));
-        assert_eq!(index.scanned(path, 5, 101).unwrap(), None);
+    fn a_folder_here_stands_for_a_folder_on_the_server() {
+        let look = LookIn { folder: PathBuf::from("/home/me/Music"), server_folder: "/srv/music/".into() };
+        assert_eq!(look.local_path("/srv/music/Artist/01 a.flac"), Some(PathBuf::from("/home/me/Music/Artist/01 a.flac")));
+        assert_eq!(look.local_path("/srv/musicals/x.flac"), None, "a whole folder name, not a prefix");
+        assert_eq!(look.local_path("/srv/music/../etc/passwd"), None);
+        let windows = LookIn { folder: PathBuf::from("/mnt/d"), server_folder: "D:\\Music".into() };
+        assert_eq!(windows.local_path("D:\\Music\\A\\b.mp3"), Some(PathBuf::from("/mnt/d/A/b.mp3")));
+    }
+
+    #[test]
+    fn a_setting_that_cant_be_read_doesnt_lose_the_others() {
+        let config: Config = serde_json::from_str(r#"{"enabled": true, "volumes": ["main"], "look_in": ["/old/form"]}"#).unwrap();
+        assert!(config.enabled && config.look_in.is_empty());
     }
 }

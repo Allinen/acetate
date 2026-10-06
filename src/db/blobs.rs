@@ -92,6 +92,9 @@ pub struct MirrorEntry {
     pub volume: Option<String>,
     /// None when not measured yet (some thumbnails), or gone.
     pub size: Option<i64>,
+    /// Where it was imported from (a file's `imported_from`, or the path of a file that
+    /// didn't import), if known: a mirror finds it on its own disk by this and the size.
+    pub path: Option<String>,
     /// What it's for, the first that applies: "audio" (a track plays it), "extra" (an
     /// extra's file or thumbnail, also hidden ones), "cover", "not_imported" (a file that
     /// didn't import, or a cover sent with one, still open), "previous" (a track's earlier
@@ -134,16 +137,24 @@ async fn mirror_entries(conn: &mut PgConnection, only: Option<&[String]>) -> sql
             WHERE p.audio_purged_at IS NULL AND (p.resolved_at IS NULL OR p.track_id IS NULL)
               AND ($1::text[] IS NULL OR s = ANY ($1))
         ),
+        paths (sha256, path) AS (
+            SELECT sha256, imported_from FROM files
+            WHERE imported_from IS NOT NULL AND purged_at IS NULL AND ($1::text[] IS NULL OR sha256 = ANY ($1))
+            UNION ALL
+            SELECT sha256, path FROM ingest_problems
+            WHERE path IS NOT NULL AND audio_purged_at IS NULL AND ($1::text[] IS NULL OR sha256 = ANY ($1))
+        ),
         wanted (sha256) AS (
             SELECT sha256 FROM blobs WHERE $1::text[] IS NULL
             UNION ALL
             SELECT DISTINCT unnest($1::text[])
         )
         SELECT w.sha256 AS "sha256!", b.volume AS "volume?", b.size_bytes AS "size?", b.sha256 IS NOT NULL AS "stored!",
-               r.rank AS "rank?"
+               r.rank AS "rank?", p.path AS "path?"
         FROM wanted w
         LEFT JOIN blobs b ON b.sha256 = w.sha256
         LEFT JOIN (SELECT sha256, min(rank) AS rank FROM refs GROUP BY sha256) r ON r.sha256 = w.sha256
+        LEFT JOIN (SELECT sha256, min(path) AS path FROM paths GROUP BY sha256) p ON p.sha256 = w.sha256
         ORDER BY w.sha256
         "#,
         only as Option<&[String]>
@@ -157,6 +168,7 @@ async fn mirror_entries(conn: &mut PgConnection, only: Option<&[String]>) -> sql
             sha256: r.sha256,
             volume: r.volume,
             size: r.size,
+            path: if r.stored { r.path } else { None },
             state: match (r.stored, r.rank) {
                 (false, _) => "gone",
                 (true, None) => "other",

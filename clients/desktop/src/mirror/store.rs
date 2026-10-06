@@ -1,11 +1,13 @@
 //! The blobs kept on this machine: `<root>/blobs/ab/cd/abcd…` (by sha256, no extension),
 //! laid out like a server's volume. Each is made read-only and never changed.
 //!
-//! Everything comes in through `<root>/tmp`, on the same filesystem, and is hashed there:
-//! a download (`<sha256>.part`, kept to go on from), or a local file taken in as a reflink
-//! (a copy sharing the original's data blocks: no space, no time, yet a separate file:
-//! changing the original never changes the blob) or, where the filesystem can't, a plain
-//! copy. Only bytes whose hash is their name are moved in.
+//! Everything comes in through `<root>/tmp`, on the same filesystem: a download
+//! (`<sha256>.part`, kept to go on from, hashed as it comes), or a local file taken in as a
+//! reflink (a copy sharing the original's data blocks: no space, no time, yet a separate
+//! file: changing the original never changes the blob) or, where the filesystem can't, a
+//! plain copy (hashed if asked to; else trusted by its path and size, and checked later).
+//!
+//! Long work (hashing, copying) is done in chunks and stops between them when `stop` says.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -65,23 +67,25 @@ impl LocalStore {
         Ok(dest)
     }
 
-    /// Takes the local file `source` in as `expected` (its hash, worked out already): a
-    /// reflink if the filesystem can, else a copy. Hashes what was made (not the original:
-    /// a file changing meanwhile can't give a blob the wrong name) before it goes in.
-    pub fn take_in(&self, source: &Path, expected: &str) -> anyhow::Result<TakenIn> {
+    /// Takes the local file `source` in as `expected`: a reflink if the filesystem can,
+    /// else a copy. `check`: hashes what was made (not the original: a file changing
+    /// meanwhile can't give a blob the wrong name) and refuses it if it isn't `expected`.
+    pub fn take_in(&self, source: &Path, expected: &str, check: bool, stop: &dyn Fn() -> bool) -> anyhow::Result<TakenIn> {
         let temp = self.tmp.join(format!("take-{}", uuid::Uuid::new_v4()));
-        let how = match reflink_copy::reflink(source, &temp) {
-            Ok(()) => TakenIn::Reflinked,
-            Err(_) => {
-                let _ = std::fs::remove_file(&temp);
-                std::fs::copy(source, &temp).with_context(|| format!("copying {}", source.display()))?;
-                TakenIn::Copied
-            }
-        };
         let result = (|| {
-            let (sha256, _) = hash_file(&temp)?;
-            if sha256 != expected {
-                anyhow::bail!("{} changed while it was taken in", source.display());
+            let how = match reflink_copy::reflink(source, &temp) {
+                Ok(()) => TakenIn::Reflinked,
+                Err(_) => {
+                    let _ = std::fs::remove_file(&temp);
+                    copy_file(source, &temp, stop).with_context(|| format!("copying {}", source.display()))?;
+                    TakenIn::Copied
+                }
+            };
+            if check {
+                let (sha256, _) = hash_file_until(&temp, stop)?.ok_or(super::Stopped)?;
+                if sha256 != expected {
+                    anyhow::bail!("{} isn't the server's file (it hashes to {sha256})", source.display());
+                }
             }
             self.commit(&temp, expected)?;
             Ok(how)
@@ -127,18 +131,39 @@ impl LocalStore {
         let mut out = Vec::new();
         walk_files(&self.blobs, &mut |path, size| {
             out.push((path.file_name().unwrap_or_default().to_string_lossy().into_owned(), path.to_path_buf(), size))
-        });
+        }, &|| false);
         out
     }
 }
 
-/// Every file below `dir` with its size, recursively. Links aren't followed.
-pub fn walk_files(dir: &Path, found: &mut dyn FnMut(&Path, u64)) {
+/// Copies `from` to `to` in chunks, stopping between them when `stop` says (then fails).
+fn copy_file(from: &Path, to: &Path, stop: &dyn Fn() -> bool) -> anyhow::Result<()> {
+    let mut reader = std::fs::File::open(from)?;
+    let mut writer = std::fs::File::create(to)?;
+    let mut buf = vec![0u8; 1024 * 1024];
+    loop {
+        if stop() {
+            return Err(super::Stopped.into());
+        }
+        let n = reader.read(&mut buf)?;
+        if n == 0 {
+            return Ok(());
+        }
+        std::io::Write::write_all(&mut writer, &buf[..n])?;
+    }
+}
+
+/// Every file below `dir` with its size, recursively. Links aren't followed. Stops early
+/// when `stop` says.
+pub fn walk_files(dir: &Path, found: &mut dyn FnMut(&Path, u64), stop: &dyn Fn() -> bool) {
     let Ok(items) = std::fs::read_dir(dir) else { return };
     for item in items.flatten() {
+        if stop() {
+            return;
+        }
         let Ok(kind) = item.file_type() else { continue };
         if kind.is_dir() {
-            walk_files(&item.path(), found);
+            walk_files(&item.path(), found, stop);
         } else if kind.is_file()
             && let Ok(meta) = item.metadata()
         {
@@ -153,19 +178,28 @@ pub fn is_sha256(text: &str) -> bool {
 
 /// A file's sha256 (hex, as blobs are named) and size. Only reads it.
 pub fn hash_file(path: &Path) -> std::io::Result<(String, u64)> {
-    let mut hasher = Sha256::new();
-    let size = hash_into(&mut hasher, &mut std::fs::File::open(path)?)?;
-    Ok((hex::encode(hasher.finalize()), size))
+    Ok(hash_file_until(path, &|| false)?.expect("never stopped"))
 }
 
-/// Feeds everything `reader` has into `hasher`: how many bytes.
-pub fn hash_into(hasher: &mut Sha256, reader: &mut impl Read) -> std::io::Result<u64> {
+/// `hash_file`, unless `stop` says to stop (checked between chunks): then None.
+pub fn hash_file_until(path: &Path, stop: &dyn Fn() -> bool) -> std::io::Result<Option<(String, u64)>> {
+    let mut hasher = Sha256::new();
+    let Some(size) = hash_into(&mut hasher, &mut std::fs::File::open(path)?, stop)? else { return Ok(None) };
+    Ok(Some((hex::encode(hasher.finalize()), size)))
+}
+
+/// Feeds everything `reader` has into `hasher`: how many bytes; None if `stop` said to
+/// stop first.
+pub fn hash_into(hasher: &mut Sha256, reader: &mut impl Read, stop: &dyn Fn() -> bool) -> std::io::Result<Option<u64>> {
     let mut buf = vec![0u8; 1024 * 1024];
     let mut size = 0;
     loop {
+        if stop() {
+            return Ok(None);
+        }
         let n = reader.read(&mut buf)?;
         if n == 0 {
-            return Ok(size);
+            return Ok(Some(size));
         }
         hasher.update(&buf[..n]);
         size += n as u64;
@@ -186,7 +220,7 @@ mod tests {
         std::fs::write(&source, b"hello").unwrap();
         assert_eq!(hash_file(&source).unwrap(), (HELLO.to_string(), 5));
 
-        store.take_in(&source, HELLO).unwrap();
+        store.take_in(&source, HELLO, true, &|| false).unwrap();
         let blob = store.path_of(HELLO).unwrap();
         assert!(blob.ends_with(format!("2c/f2/{HELLO}")));
         assert!(std::fs::metadata(&blob).unwrap().permissions().readonly());
@@ -197,11 +231,21 @@ mod tests {
 
         // Taken in under the wrong hash: refused, nothing left behind.
         let wrong = "0".repeat(64);
-        assert!(store.take_in(&source, &wrong).is_err());
+        assert!(store.take_in(&source, &wrong, true, &|| false).is_err());
         assert!(!store.path_of(&wrong).unwrap().exists());
         assert_eq!(std::fs::read_dir(root.path().join("tmp")).unwrap().count(), 0);
 
-        assert_eq!(store.walk().len(), 1);
+        // Without a hash check: trusted (by its path and size, the caller's look).
+        let other = "1".repeat(64);
+        store.take_in(&source, &other, false, &|| false).unwrap();
+        assert!(store.path_of(&other).unwrap().exists());
+        // Stopped: nothing taken in, nothing left behind.
+        let third = "2".repeat(64);
+        assert!(store.take_in(&source, &third, true, &|| true).is_err());
+        assert!(!store.path_of(&third).unwrap().exists());
+        assert_eq!(std::fs::read_dir(root.path().join("tmp")).unwrap().count(), 0);
+
+        assert_eq!(store.walk().len(), 2);
         store.remove(HELLO).unwrap();
         assert!(!blob.exists());
     }

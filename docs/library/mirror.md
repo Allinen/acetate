@@ -16,25 +16,37 @@ tracks' too. It's off until you turn it on, in **Settings, Mirror**.
 The files are kept as the server keeps them: `blobs/ab/cd/abcd1234…`, by their SHA-256,
 with no extension and no tags written in. Not a folder of tagged copies.
 
-## Every file is checked
+## Checking files
 
-- A file is hashed as it downloads, and only kept if its hash is its name. One that isn't
-  is thrown away and fetched again.
+- A download is hashed as it comes in (that costs nothing extra), and only kept if its hash
+  is its name. One that isn't is thrown away and fetched again.
 - A download that stopped goes on from where it was the next time (and what it had is
   hashed first).
-- **Hash every file again** checks every file here. One that changed on disk is set aside
-  in the `corrupt` folder (never deleted) and fetched again.
+- Files taken in from your own folders (below) are trusted by their path and size, unless
+  you tick **Hash files from these folders before taking them in** (slow: it reads every
+  file). Settings shows how many weren't hashed yet.
+- **Hash every file again** checks every file here, those too. One that isn't what its name
+  says is set aside in the `corrupt` folder (never deleted) and fetched again.
 - Files already in the mirror's folder that it didn't put there (a copy of a server volume,
-  say) are hashed before they count.
+  say) count if they're the size the server lists them with (or are hashed, with that box
+  ticked).
+- **Stop** stops what's running (between files, or mid-file when hashing or copying);
+  **Sync now** goes on.
 
 ## Files you already have
 
 If the music the library was imported from is on this computer, add its folder under
-**Look in**. Before downloading, the mirror hashes the files there that have the size of a
-missing one, and takes in those that match: as reflinks where the disk can (btrfs, XFS,
-ZFS with block cloning: no extra space, and changing your file later never changes the
-mirror's), else as copies. Your files are only read. A file hashed once isn't hashed again
-unless it changes.
+**Look in**. The server remembers where it imported each file from (`/srv/music/Artist/a.flac`),
+so the folder is paired with the server's folder it has the files of: the app works that
+out when you add it (how many of its files are at the same paths, with the same sizes) and
+shows it to change or accept.
+
+Before downloading, the mirror then looks for each missing file at its path in your folder
+(`/srv/music/Artist/a.flac` → `<your folder>/Artist/a.flac`), and takes it in if it's there
+with the right size: as a reflink where the disk can (btrfs, XFS, ZFS with block cloning:
+no extra space, and changing your file later never changes the mirror's), else as a copy.
+Nothing is read to find them, so it's quick. Your files are only read, never changed.
+Covers and extras have no such path: they're downloaded.
 
 ## Keeping up
 
@@ -72,7 +84,8 @@ The same mirror runs from the command line, with the app's folder and login:
 
 ```sh
 acetate-desktop mirror status      # what's mirrored, missing and removable
-acetate-desktop mirror set enabled=yes volumes=main look-in=/music
+acetate-desktop mirror match /music  # which of the server's folders it has the files of
+acetate-desktop mirror set enabled=yes volumes=main look-in=/music=/srv/music
 acetate-desktop mirror sync        # bring it up to date once
 acetate-desktop mirror watch       # keep it up to date (what the service runs)
 acetate-desktop mirror rehash
