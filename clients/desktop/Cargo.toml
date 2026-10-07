@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+acetate-core = { path = "../core" }
 anyhow = "1.0.104"
 arboard = { version = "3.6", features = ["wayland-data-control"] }
 dirs = "7.0.0"
@@ -13,7 +14,6 @@ fs4 = "1.1.0"
 hex = "0.4.3"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
 libloading = "0.9.0"
-nucleo-matcher = "0.3.1"
 reflink-copy = "0.1.30"
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "json", "query", "zstd", "gzip", "multipart"] }
 rfd = { version = "0.17.2", default-features = false, features = ["xdg-portal"] }
@@ -45,5 +45,6 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Securit
 winreg = "0.55"
 
 [dev-dependencies]
+acetate-core = { path = "../core", features = ["test-support"] }
 tempfile = "3.27.0"
 tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread"] }

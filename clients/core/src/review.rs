@@ -84,10 +84,10 @@ impl Flags {
     }
 
     /// Fetches every open flag in the background.
-    pub fn refresh(&mut self, api: &Api, runtime: &tokio::runtime::Handle, ctx: &eframe::egui::Context) {
+    pub fn refresh(&mut self, api: &Api, runtime: &tokio::runtime::Handle, waker: &crate::Waker) {
         self.asked += 1;
         self.loading = true;
-        let (api, arrived, ctx, number) = (api.clone(), self.arrived.clone(), ctx.clone(), self.asked);
+        let (api, arrived, waker, number) = (api.clone(), self.arrived.clone(), waker.clone(), self.asked);
         runtime.spawn(async move {
             let result = async {
                 let mut all: Vec<Flag> = Vec::new();
@@ -104,7 +104,7 @@ impl Flags {
             .await
             .map_err(|err: crate::api::ApiError| err.message);
             *arrived.lock().unwrap() = Some((number, result));
-            ctx.request_repaint();
+            waker.changed();
         });
     }
 

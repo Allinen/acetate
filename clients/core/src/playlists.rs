@@ -92,7 +92,7 @@ enum Answer {
 pub struct Playlists {
     api: Api,
     runtime: tokio::runtime::Handle,
-    ctx: eframe::egui::Context,
+    waker: crate::Waker,
     /// Where each playlist is kept (None until logged in).
     dir: Option<PathBuf>,
     /// The list, fresher than the catalog's after a change here (and when that was).
@@ -110,11 +110,11 @@ pub struct Playlists {
 }
 
 impl Playlists {
-    pub fn new(api: Api, runtime: tokio::runtime::Handle, ctx: eframe::egui::Context) -> Playlists {
+    pub fn new(api: Api, runtime: tokio::runtime::Handle, waker: crate::Waker) -> Playlists {
         Playlists {
             api,
             runtime,
-            ctx,
+            waker,
             dir: None,
             list: None,
             details: HashMap::new(),
@@ -214,11 +214,11 @@ impl Playlists {
     where
         F: std::future::Future<Output = Vec<Answer>> + Send + 'static,
     {
-        let (answers, ctx) = (self.answers.clone(), self.ctx.clone());
+        let (answers, waker) = (self.answers.clone(), self.waker.clone());
         self.runtime.spawn(async move {
             let got = work.await;
             answers.lock().unwrap().extend(got);
-            ctx.request_repaint();
+            waker.changed();
         });
     }
 
@@ -438,7 +438,7 @@ mod against_a_server {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("session.json"), json!({"server": server, "token": token, "username": "test"}).to_string()).unwrap();
         let runtime = tokio::runtime::Runtime::new().unwrap();
-        let mut store = Playlists::new(Api::new(dir.clone()), runtime.handle().clone(), eframe::egui::Context::default());
+        let mut store = Playlists::new(Api::new(dir.clone()), runtime.handle().clone(), std::sync::Arc::new(crate::NoWake));
         store.reset(Some(dir.join("playlists")));
         // Polls until `done` says so (or gives up).
         let wait = |store: &mut Playlists, done: &dyn Fn(&mut Playlists) -> bool| {

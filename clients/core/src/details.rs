@@ -508,7 +508,7 @@ pub struct Details<T> {
     kind: &'static str,
     api: Api,
     runtime: tokio::runtime::Handle,
-    ctx: eframe::egui::Context,
+    waker: crate::Waker,
     dir: Option<PathBuf>,
     kept: HashMap<Uuid, Cached<T>>,
     /// Numbers each fetch: only the latest one's answer is kept.
@@ -519,8 +519,8 @@ pub struct Details<T> {
 }
 
 impl<T: DeserializeOwned + Send + Sync + 'static> Details<T> {
-    pub fn new(kind: &'static str, api: Api, runtime: tokio::runtime::Handle, ctx: eframe::egui::Context) -> Details<T> {
-        Details { kind, api, runtime, ctx, dir: None, kept: HashMap::new(), asked: HashMap::new(), answers: Arc::default(), _kind: PhantomData }
+    pub fn new(kind: &'static str, api: Api, runtime: tokio::runtime::Handle, waker: crate::Waker) -> Details<T> {
+        Details { kind, api, runtime, waker, dir: None, kept: HashMap::new(), asked: HashMap::new(), answers: Arc::default(), _kind: PhantomData }
     }
 
     /// Starts over for a login: `dir` is where this server's and user's copies are kept.
@@ -558,7 +558,7 @@ impl<T: DeserializeOwned + Send + Sync + 'static> Details<T> {
         if let Some(cached) = self.kept.get_mut(&id) {
             cached.refreshing = true;
         }
-        let (api, answers, ctx, path) = (self.api.clone(), self.answers.clone(), self.ctx.clone(), format!("/api/{}/{id}", self.kind));
+        let (api, answers, waker, path) = (self.api.clone(), self.answers.clone(), self.waker.clone(), format!("/api/{}/{id}", self.kind));
         self.runtime.spawn(async move {
             let result = async {
                 let body: serde_json::Value = api.send_json(reqwest::Method::GET, &path, None).await?;
@@ -571,7 +571,7 @@ impl<T: DeserializeOwned + Send + Sync + 'static> Details<T> {
                 (format!("{err:#}"), extra)
             });
             answers.lock().unwrap().push((id, number, result));
-            ctx.request_repaint();
+            waker.changed();
         });
     }
 

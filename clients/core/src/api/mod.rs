@@ -272,7 +272,7 @@ impl Api {
     }
 
     /// A file's bytes from `from` on (a Range request), as a response to read in chunks.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn file_from(&self, file_id: Uuid, from: u64) -> Result<reqwest::Response, ApiError> {
         self.stream_from(&format!("/api/files/{file_id}/stream"), from).await
     }
@@ -304,8 +304,8 @@ pub struct MirrorListing {
     pub version: String,
     /// The whole list (else what changed).
     pub full: bool,
-    pub volumes: Vec<crate::mirror::index::ServerVolume>,
-    pub blobs: Vec<crate::mirror::index::Listed>,
+    pub volumes: Vec<ServerVolume>,
+    pub blobs: Vec<Listed>,
 }
 
 /// A successful answer's JSON; an answer this app can't read says so.
@@ -330,4 +330,23 @@ pub fn unreachable(err: &reqwest::Error, server: &str) -> ApiError {
         format!("Couldn't talk to the server at {server} ({err}).")
     };
     ApiError { status: None, code: "unreachable".into(), message, extra_id: None }
+}
+
+/// A blob as a server lists it (`GET /api/mirror`).
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Listed {
+    pub sha256: String,
+    pub volume: Option<String>,
+    pub size: Option<i64>,
+    /// Where the server imported it from, if known.
+    #[serde(default)]
+    pub path: Option<String>,
+    pub state: String,
+}
+
+/// One of the server's volumes, as listed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ServerVolume {
+    pub name: String,
+    pub default: bool,
 }

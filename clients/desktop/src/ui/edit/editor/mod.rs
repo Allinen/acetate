@@ -1487,11 +1487,11 @@ impl TrackEditor {
             return;
         }
         shell.act(Action::RefreshLibrary);
-        shell.flags.refresh(&shell.api, shell.runtime.handle(), &shell.ctx);
+        shell.flags.refresh(&shell.api, shell.runtime.handle(), &shell.waker);
         // New kinds of flag: named everywhere from now on.
         if !model::new_flag_kinds(&self.ops()).is_empty() {
             let api = shell.api.clone();
-            shell.account.refresh_vocab(&api, shell.runtime.handle(), &shell.ctx);
+            shell.account.refresh_vocab(&api, shell.runtime.handle(), &shell.waker);
         }
         // (A draft is gone: the track it became is new.)
         if targets.len() <= 100 && !self.engine.is_draft() {

@@ -158,7 +158,7 @@ impl Review {
         }
         if !self.asked_flags {
             self.asked_flags = true;
-            shell.flags.refresh(&shell.api, shell.runtime.handle(), &shell.ctx);
+            shell.flags.refresh(&shell.api, shell.runtime.handle(), &shell.waker);
         }
         if !self.asked_not_imported {
             self.asked_not_imported = true;
@@ -818,7 +818,7 @@ impl Review {
                         });
                         shell.track_details.refresh(kept);
                         shell.track_editors.remove(&gone);
-                        shell.flags.refresh(&shell.api, shell.runtime.handle(), &shell.ctx);
+                        shell.flags.refresh(&shell.api, shell.runtime.handle(), &shell.waker);
                         shell.act(Action::RefreshLibrary);
                     }
                     Some(Outcome::NotSame) => {
@@ -832,7 +832,7 @@ impl Review {
                         self.notice = Some("Both kept, sharing one file. The other file stays as a previous file.".into());
                         shell.track_details.refresh(view_pair.0);
                         shell.track_details.refresh(view_pair.1);
-                        shell.flags.refresh(&shell.api, shell.runtime.handle(), &shell.ctx);
+                        shell.flags.refresh(&shell.api, shell.runtime.handle(), &shell.waker);
                         shell.act(Action::RefreshLibrary);
                     }
                     Some(Outcome::Closed) => self.merge = None,

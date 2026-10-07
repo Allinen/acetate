@@ -1,0 +1,23 @@
+[package]
+name = "acetate-core"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.104"
+nucleo-matcher = "0.3.1"
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "json", "query", "zstd", "gzip", "multipart"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = { version = "1.0.151", features = ["raw_value"] }
+tokio = { version = "1.53.1", features = ["fs", "io-util", "macros", "rt-multi-thread", "sync", "time"] }
+uuid = { version = "1.26.1", features = ["serde", "v4"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_System_ProcessStatus", "Win32_System_Threading"] }
+
+[dev-dependencies]
+tempfile = "3.27.0"
+
+[features]
+# Helpers the desktop's tests build their fixtures with.
+test-support = []

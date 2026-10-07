@@ -142,6 +142,8 @@ pub enum Action {
 pub struct Shell {
     /// For waking the UI from background work.
     pub ctx: egui::Context,
+    /// Tells the window background work finished (a repaint), for what the core runs.
+    pub waker: acetate_core::Waker,
     /// The logo, as a texture.
     pub logo: egui::TextureHandle,
     /// Volume and sound output, kept between runs.
@@ -505,7 +507,7 @@ impl Shell {
         self.grouping_details.reset(Some(details));
         self.catalog = Cached { refreshing: true, ..Cached::default() };
         self.refresh_asked = Some(Instant::now());
-        self.account.fetch(&self.api, self.runtime.handle(), ctx);
+        self.account.fetch(&self.api, self.runtime.handle(), &self.waker);
         self.edit_mode = false;
         self.track_editors.clear();
         self.album_forms.clear();
@@ -652,8 +654,9 @@ impl App {
         runtime.spawn(controller.clone().monitor());
         controller.attach_media_keys(runtime.handle().clone(), cache_dir.clone(), window_handle(cc));
         let covers = Covers::new(api.clone(), runtime.handle().clone(), cache_dir.clone());
-        let playlists = crate::playlists::Playlists::new(api.clone(), runtime.handle().clone(), cc.egui_ctx.clone());
-        let details = |kind| (kind, api.clone(), runtime.handle().clone(), cc.egui_ctx.clone());
+        let waker: acetate_core::Waker = Arc::new(Repaint(cc.egui_ctx.clone()));
+        let playlists = crate::playlists::Playlists::new(api.clone(), runtime.handle().clone(), waker.clone());
+        let details = |kind| (kind, api.clone(), runtime.handle().clone(), waker.clone());
         let (k, a, r, c) = details("tracks");
         let track_details = crate::details::Details::new(k, a, r, c);
         let (k, a, r, c) = details("albums");
@@ -664,6 +667,7 @@ impl App {
         let grouping_details = crate::details::Details::new(k, a, r, c);
         let mut shell = Shell {
             ctx: cc.egui_ctx.clone(),
+            waker,
             logo: widgets::logo_texture(&cc.egui_ctx),
             settings: crate::settings::Settings::load(&data_dir),
             account: crate::account::Account::default(),
@@ -1382,4 +1386,13 @@ pub fn thousands(n: usize) -> String {
 pub fn playing_track(player: &PlayerView) -> Option<Uuid> {
     // A file that didn't import plays like a track, but isn't one.
     player.current().filter(|c| c.source == crate::playback::AudioSource::File).map(|c| c.track_id)
+}
+
+/// The core's way to wake the window: a repaint.
+struct Repaint(egui::Context);
+
+impl acetate_core::Wake for Repaint {
+    fn changed(&self) {
+        self.0.request_repaint();
+    }
 }

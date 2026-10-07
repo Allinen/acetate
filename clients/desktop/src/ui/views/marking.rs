@@ -409,14 +409,14 @@ impl Marking {
                 self.clear();
                 shell.track_details.refresh(kept);
                 shell.track_editors.remove(&gone);
-                shell.flags.refresh(&shell.api, shell.runtime.handle(), &shell.ctx);
+                shell.flags.refresh(&shell.api, shell.runtime.handle(), &shell.waker);
                 shell.act(Action::RefreshLibrary);
                 shell.playlists.notice = Some(("Merged.".into(), std::time::Instant::now()));
             }
             Some(Outcome::Shared) => {
                 shell.track_details.refresh(pair.0);
                 shell.track_details.refresh(pair.1);
-                shell.flags.refresh(&shell.api, shell.runtime.handle(), &shell.ctx);
+                shell.flags.refresh(&shell.api, shell.runtime.handle(), &shell.waker);
                 shell.act(Action::RefreshLibrary);
             }
             Some(Outcome::NotSame | Outcome::Closed) | None => {}

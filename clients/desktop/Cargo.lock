@@ -132,9 +132,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "acetate-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "nucleo-matcher",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "uuid",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "acetate-desktop"
 version = "0.1.0"
 dependencies = [
+ "acetate-core",
  "anyhow",
  "arboard",
  "dirs",
@@ -145,7 +160,6 @@ dependencies = [
  "image",
  "libc",
  "libloading 0.9.0",
- "nucleo-matcher",
  "raw-window-handle",
  "reflink-copy",
  "reqwest",

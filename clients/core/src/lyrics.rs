@@ -121,7 +121,7 @@ fn without_language(line: &str) -> &str {
 }
 
 /// The timed lines, in time order. Empty if nothing has a timestamp.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub fn parse(body: &str) -> Vec<Line> {
     parse_with_sections(body).0
 }

@@ -102,10 +102,10 @@ pub struct Account {
 
 impl Account {
     /// Asks the server (again, after a login).
-    pub fn fetch(&mut self, api: &Api, runtime: &tokio::runtime::Handle, ctx: &eframe::egui::Context) {
+    pub fn fetch(&mut self, api: &Api, runtime: &tokio::runtime::Handle, waker: &crate::Waker) {
         self.me = None;
         self.vocab = None;
-        let (api, arrived, ctx) = (api.clone(), self.arrived.clone(), ctx.clone());
+        let (api, arrived, waker) = (api.clone(), self.arrived.clone(), waker.clone());
         runtime.spawn(async move {
             let me = api.send_json::<Me>(reqwest::Method::GET, "/api/auth/me", None).await.ok();
             let mut vocab = api.send_json::<Vocab>(reqwest::Method::GET, "/api/vocab", None).await.ok();
@@ -113,7 +113,7 @@ impl Account {
                 vocab.source_shapes = api.send_json(reqwest::Method::GET, "/api/source-shapes", None).await.unwrap_or_default();
             }
             *arrived.lock().unwrap() = Some((me, vocab));
-            ctx.request_repaint();
+            waker.changed();
         });
     }
 
@@ -127,9 +127,9 @@ impl Account {
 
     /// Asks for the vocabulary again (e.g. a kind of flag was made), keeping who's logged
     /// in.
-    pub fn refresh_vocab(&mut self, api: &Api, runtime: &tokio::runtime::Handle, ctx: &eframe::egui::Context) {
+    pub fn refresh_vocab(&mut self, api: &Api, runtime: &tokio::runtime::Handle, waker: &crate::Waker) {
         let me = self.me.clone();
-        let (api, arrived, ctx) = (api.clone(), self.arrived.clone(), ctx.clone());
+        let (api, arrived, waker) = (api.clone(), self.arrived.clone(), waker.clone());
         runtime.spawn(async move {
             let mut vocab = api.send_json::<Vocab>(reqwest::Method::GET, "/api/vocab", None).await.ok();
             if let Some(vocab) = vocab.as_mut() {
@@ -137,7 +137,7 @@ impl Account {
             }
             if vocab.is_some() {
                 *arrived.lock().unwrap() = Some((me, vocab));
-                ctx.request_repaint();
+                waker.changed();
             }
         });
     }

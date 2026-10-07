@@ -410,7 +410,7 @@ impl TrackPage {
                     self.sent_to.push(track);
                 }
             }
-            shell.flags.refresh(&shell.api, shell.runtime.handle(), &shell.ctx);
+            shell.flags.refresh(&shell.api, shell.runtime.handle(), &shell.waker);
             shell.act(Action::RefreshLibrary);
             if !said.is_empty() {
                 shell.playlists.notice = Some((said.join(" "), std::time::Instant::now()));
@@ -623,7 +623,7 @@ impl TrackPage {
                 self.merge = None;
                 shell.track_details.refresh(kept);
                 shell.track_editors.remove(&gone);
-                shell.flags.refresh(&shell.api, shell.runtime.handle(), &shell.ctx);
+                shell.flags.refresh(&shell.api, shell.runtime.handle(), &shell.waker);
                 shell.act(Action::RefreshLibrary);
                 if kept != d.id {
                     shell.act(Action::Go(Page::Track(kept)));
@@ -633,7 +633,7 @@ impl TrackPage {
                 self.merge = None;
                 shell.track_details.refresh(pair.0);
                 shell.track_details.refresh(pair.1);
-                shell.flags.refresh(&shell.api, shell.runtime.handle(), &shell.ctx);
+                shell.flags.refresh(&shell.api, shell.runtime.handle(), &shell.waker);
                 shell.act(Action::RefreshLibrary);
             }
             Some(Outcome::NotSame | Outcome::Closed) => self.merge = None,
@@ -703,7 +703,7 @@ impl TrackPage {
             self.undoing = None;
             if answer.is_ok() {
                 shell.track_details.refresh(d.id);
-                shell.flags.refresh(&shell.api, shell.runtime.handle(), &shell.ctx);
+                shell.flags.refresh(&shell.api, shell.runtime.handle(), &shell.waker);
                 shell.act(Action::RefreshLibrary);
             }
             self.undo_result = Some(answer);

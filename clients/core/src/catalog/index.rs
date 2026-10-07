@@ -134,7 +134,7 @@ fn ranks(n: usize, key: impl Fn(u32) -> String) -> Vec<u32> {
 
 impl Catalog {
     /// A catalog from all its rows (a test's, or the server's parsed whole).
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn build(raw: model::Raw) -> Catalog {
         Merger::from_raw(raw).build(None).expect("rows parsed already")
     }
@@ -653,7 +653,7 @@ impl<'a> Merger<'a> {
         })
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fn from_raw(raw: model::Raw) -> Merger<'static> {
         Merger {
             version: raw.version,

@@ -73,24 +73,7 @@ fn lenient<'de, D: serde::Deserializer<'de>, T: serde::de::DeserializeOwned + De
     Ok(serde_json::from_value(value).unwrap_or_default())
 }
 
-/// A blob as a server lists it (`GET /api/mirror`).
-#[derive(Debug, Clone, PartialEq, Deserialize)]
-pub struct Listed {
-    pub sha256: String,
-    pub volume: Option<String>,
-    pub size: Option<i64>,
-    /// Where the server imported it from, if known.
-    #[serde(default)]
-    pub path: Option<String>,
-    pub state: String,
-}
-
-/// One of the server's volumes, as listed.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ServerVolume {
-    pub name: String,
-    pub default: bool,
-}
+pub use acetate_core::api::{Listed, ServerVolume};
 
 /// A blob here that nothing wants anymore, and why.
 #[derive(Debug, Clone, PartialEq)]

@@ -507,7 +507,7 @@ impl ArtistPage {
                         self.merge = None;
                         shell.artist_details.refresh(kept);
                         shell.artist_details.refresh(gone);
-                        shell.flags.refresh(&shell.api, shell.runtime.handle(), &shell.ctx);
+                        shell.flags.refresh(&shell.api, shell.runtime.handle(), &shell.waker);
                         shell.act(Action::RefreshLibrary);
                         if kept != id {
                             shell.act(Action::Go(Page::Artist(kept)));

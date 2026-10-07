@@ -24,22 +24,12 @@
 // debug build keeps it, for what's printed).
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
-mod account;
-mod api;
-mod catalog;
-mod commandline;
-mod details;
 mod links;
-mod lyrics;
-mod memory;
 mod mirror;
 mod playback;
-mod playlists;
-mod resume;
+pub use acetate_core::{account, api, catalog, commandline, details, lyrics, memory, playlists, resume, review, title_credits};
 mod root;
-mod review;
 mod settings;
-mod title_credits;
 mod video;
 mod ui;
 
