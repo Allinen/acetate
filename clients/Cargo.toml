@@ -1,5 +1,5 @@
 [workspace]
-members = ["core", "desktop"]
+members = ["core", "desktop", "android/rust"]
 resolver = "3"
 
 [profile.release]
