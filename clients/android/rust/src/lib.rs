@@ -21,19 +21,19 @@ uniffi::setup_scaffolding!();
 /// A request that failed: `message` is a sentence for a person, `code` is for acting on.
 #[derive(Debug, uniffi::Error)]
 pub enum CoreError {
-    Failed { code: String, message: String },
+    Failed { code: String, reason: String },
 }
 
 impl std::fmt::Display for CoreError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let CoreError::Failed { message, .. } = self;
-        f.write_str(message)
+        let CoreError::Failed { reason, .. } = self;
+        f.write_str(reason)
     }
 }
 
 impl From<ApiError> for CoreError {
     fn from(err: ApiError) -> Self {
-        CoreError::Failed { code: err.code, message: err.message }
+        CoreError::Failed { code: err.code, reason: err.message }
     }
 }
 
