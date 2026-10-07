@@ -252,7 +252,7 @@ impl Marking {
             let Some(catalog) = shell.catalog.value.clone() else { return };
             let (marked, title) = match self.quick {
                 Some(id) => {
-                    let title = catalog.track_index(id).map(|i| catalog.tracks[i as usize].title.clone()).unwrap_or_default();
+                    let title = catalog.track_index(id).map(|i| catalog.track_at(i).title().to_string()).unwrap_or_default();
                     (vec![id], format!("Change “{title}”"))
                 }
                 None => {

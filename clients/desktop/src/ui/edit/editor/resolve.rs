@@ -811,19 +811,19 @@ fn goes(at: Option<usize>) -> String {
 fn cover_owner(value: &str, ctx: &Ctx) -> Result<(PinKind, Uuid, String), String> {
     let title = |kind: PinKind, id: Uuid| match kind {
         PinKind::Album => album_title(ctx, id),
-        _ => ctx.catalog.track_index(id).map(|i| ctx.catalog.tracks[i as usize].title.clone()).unwrap_or_else(|| value.to_string()),
+        _ => ctx.catalog.track_index(id).map(|i| ctx.catalog.track_at(i).title().to_string()).unwrap_or_else(|| value.to_string()),
     };
     if let Some((kind, id)) = ctx.names.pinned_any(&[PinKind::Album, PinKind::Track], value) {
         return Ok((kind, id, title(kind, id)));
     }
     if let Some(i) = Search::default().run_part(ctx.catalog, value, SearchPart::Albums, 1).first().map(|h| h.0) {
-        let a = &ctx.catalog.albums[i as usize];
-        return Ok((PinKind::Album, a.id, a.title.clone()));
+        let a = &ctx.catalog.album_at(i);
+        return Ok((PinKind::Album, a.id(), a.title().to_string()));
     }
     match Search::default().run_part(ctx.catalog, value, SearchPart::Tracks, 1).first().map(|h| h.0) {
         Some(i) => {
-            let t = &ctx.catalog.tracks[i as usize];
-            Ok((PinKind::Track, t.id, t.title.clone()))
+            let t = &ctx.catalog.track_at(i);
+            Ok((PinKind::Track, t.id(), t.title().to_string()))
         }
         None => Err(format!("no album or track like “{value}” to copy a cover from")),
     }
@@ -863,8 +863,8 @@ fn album(value: &str, ctx: &Ctx) -> Result<(Uuid, String), String> {
     let hit = Search::default().run_part(ctx.catalog, value, SearchPart::Albums, 1).first().map(|h| h.0);
     match hit {
         Some(i) => {
-            let a = &ctx.catalog.albums[i as usize];
-            Ok((a.id, a.title.clone()))
+            let a = &ctx.catalog.album_at(i);
+            Ok((a.id(), a.title().to_string()))
         }
         None => Err(format!("no album like “{value}” (a new one: choose “New album” in the list)")),
     }
@@ -872,14 +872,14 @@ fn album(value: &str, ctx: &Ctx) -> Result<(Uuid, String), String> {
 
 fn track(value: &str, ctx: &Ctx) -> Result<(Uuid, String), String> {
     if let Some(id) = ctx.names.pinned(PinKind::Track, value) {
-        let title = ctx.catalog.track_index(id).map(|i| ctx.catalog.tracks[i as usize].title.clone()).unwrap_or_else(|| value.to_string());
+        let title = ctx.catalog.track_index(id).map(|i| ctx.catalog.track_at(i).title().to_string()).unwrap_or_else(|| value.to_string());
         return Ok((id, title));
     }
     let hit = Search::default().run_part(ctx.catalog, value, SearchPart::Tracks, 1).first().map(|h| h.0);
     match hit {
         Some(i) => {
-            let t = &ctx.catalog.tracks[i as usize];
-            Ok((t.id, t.title.clone()))
+            let t = &ctx.catalog.track_at(i);
+            Ok((t.id(), t.title().to_string()))
         }
         None => Err(format!("no track like “{value}”")),
     }
@@ -888,7 +888,7 @@ fn track(value: &str, ctx: &Ctx) -> Result<(Uuid, String), String> {
 fn album_title(ctx: &Ctx, id: Uuid) -> String {
     ctx.catalog
         .album(id)
-        .map(|a| a.title.clone())
+        .map(|a| a.title().to_string())
         .or_else(|| ctx.names.new_albums.iter().find(|a| a.0 == id).map(|a| a.1.clone()))
         .unwrap_or_else(|| "the album".into())
 }
@@ -993,8 +993,8 @@ pub fn candidates(part: &Part, group: &[Part], ctx: &Ctx, hits: &[u32], track_hi
         K::Album => {
             for &i in hits {
                 let (title, sub) = crate::ui::edit::inline_search::describe(ctx.catalog, SearchPart::Albums, i);
-                let a = &ctx.catalog.albums[i as usize];
-                out.push(Candidate { label: title, sub, text: a.title.clone(), pick: Some(Pick::Pin(PinKind::Album, a.id)), next: (!part.minus).then(|| "#".into()) });
+                let a = &ctx.catalog.album_at(i);
+                out.push(Candidate { label: title, sub, text: a.title().to_string(), pick: Some(Pick::Pin(PinKind::Album, a.id())), next: (!part.minus).then(|| "#".into()) });
             }
             if !value.is_empty() && !part.minus {
                 out.push(Candidate { label: format!("New album “{value}”"), sub: "made when it's applied".into(), text: value.to_string(), pick: Some(Pick::NewAlbum), next: Some("kind:".into()) });
@@ -1003,8 +1003,8 @@ pub fn candidates(part: &Part, group: &[Part], ctx: &Ctx, hits: &[u32], track_hi
         K::Related => {
             for &i in hits {
                 let (title, sub) = crate::ui::edit::inline_search::describe(ctx.catalog, SearchPart::Tracks, i);
-                let t = &ctx.catalog.tracks[i as usize];
-                out.push(Candidate { label: title, sub, text: t.title.clone(), pick: Some(Pick::Pin(PinKind::Track, t.id)), next: (!part.minus).then(|| "kind:".into()) });
+                let t = &ctx.catalog.track_at(i);
+                out.push(Candidate { label: title, sub, text: t.title().to_string(), pick: Some(Pick::Pin(PinKind::Track, t.id())), next: (!part.minus).then(|| "kind:".into()) });
             }
         }
         K::Status => out = simple(&ctx.vocab.statuses, &|s| crate::ui::edit::capitalized(s)),
@@ -1084,13 +1084,13 @@ pub fn candidates(part: &Part, group: &[Part], ctx: &Ctx, hits: &[u32], track_hi
             }
             for &i in hits.iter().take(5) {
                 let (title, sub) = crate::ui::edit::inline_search::describe(ctx.catalog, SearchPart::Albums, i);
-                let a = &ctx.catalog.albums[i as usize];
-                out.push(Candidate { label: format!("its cover: {title}"), sub, text: a.title.clone(), pick: Some(Pick::Pin(PinKind::Album, a.id)), next: Some("#".into()) });
+                let a = &ctx.catalog.album_at(i);
+                out.push(Candidate { label: format!("its cover: {title}"), sub, text: a.title().to_string(), pick: Some(Pick::Pin(PinKind::Album, a.id())), next: Some("#".into()) });
             }
             for &i in track_hits.iter().take(5) {
                 let (title, sub) = crate::ui::edit::inline_search::describe(ctx.catalog, SearchPart::Tracks, i);
-                let t = &ctx.catalog.tracks[i as usize];
-                out.push(Candidate { label: format!("its cover: {title}"), sub, text: t.title.clone(), pick: Some(Pick::Pin(PinKind::Track, t.id)), next: Some("#".into()) });
+                let t = &ctx.catalog.track_at(i);
+                out.push(Candidate { label: format!("its cover: {title}"), sub, text: t.title().to_string(), pick: Some(Pick::Pin(PinKind::Track, t.id())), next: Some("#".into()) });
             }
         }
         K::Source if !part.minus && part.hash.is_none() && ctx.may_source => {

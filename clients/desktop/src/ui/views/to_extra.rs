@@ -169,10 +169,10 @@ impl ToExtra {
             if self.belongs_to.is_none() {
                 let hit = self.search.show(ui, shell, catalog.as_deref(), egui::Id::new("to-extra-song"), "the song: type its title", &[]);
                 if let (Some((Choice::Hit(i), _)), Some(c)) = (hit, catalog.as_deref())
-                    && let Some(t) = c.tracks.get(i as usize)
-                    && t.id != self.track
+                    && let Some(t) = c.get_track(i)
+                    && t.id() != self.track
                 {
-                    self.belongs_to = Some((t.id, format!("{} · {}", t.title, t.artist_display)));
+                    self.belongs_to = Some((t.id(), format!("{} · {}", t.title(), t.artist_display())));
                 }
             }
             ui.add(egui::TextEdit::multiline(&mut self.description).hint_text("Description (optional)").desired_rows(2).desired_width(f32::INFINITY));

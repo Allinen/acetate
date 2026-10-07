@@ -109,8 +109,8 @@ pub struct Know<'a> {
 pub fn rows(r: &Ready, know: &Know, now: &[String], after: Option<&[String]>) -> Vec<Row> {
     let catalog = know.catalog;
     let artist = |id: Uuid| catalog.artist(id).map(|a| a.name.clone()).or_else(|| know.names.get(&id).map(|n| format!("{n} (new)"))).unwrap_or_else(|| "(an artist)".into());
-    let album = |id: Uuid| catalog.album(id).map(|a| a.title.clone()).or_else(|| know.names.get(&id).map(|n| format!("{n} (new)"))).unwrap_or_else(|| "(an album)".into());
-    let track = |id: Uuid| catalog.track_index(id).map(|i| catalog.tracks[i as usize].title.clone()).unwrap_or_else(|| "(a track)".into());
+    let album = |id: Uuid| catalog.album(id).map(|a| a.title().to_string()).or_else(|| know.names.get(&id).map(|n| format!("{n} (new)"))).unwrap_or_else(|| "(an album)".into());
+    let track = |id: Uuid| catalog.track_index(id).map(|i| catalog.track_at(i).title().to_string()).unwrap_or_else(|| "(a track)".into());
     // "Ann", "Ann as “Annie”", "Bo (featured)".
     let credit = |c: &super::model::Credit| {
         let mut text = artist(c.artist_id);

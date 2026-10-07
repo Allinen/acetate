@@ -20,7 +20,7 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 
 use crate::catalog::index::album_order;
-use crate::catalog::model::Track;
+use crate::catalog::Track;
 use crate::catalog::Catalog;
 use crate::ui::theme::PALETTE as P;
 use crate::ui::{Action, Shell};
@@ -89,7 +89,7 @@ impl TrackOrder {
                     }
                 }
                 // Moves the library has now (someone else's, say) aren't changes anymore.
-                Saving::No => draft.wanted.retain(|track, wanted| catalog.track_index(*track).is_some_and(|t| place(&catalog.tracks[t as usize], id) != *wanted)),
+                Saving::No => draft.wanted.retain(|track, wanted| catalog.track_index(*track).is_some_and(|t| place(catalog.track_at(t), id) != *wanted)),
                 Saving::Sending => {}
             }
         }
@@ -113,8 +113,8 @@ impl TrackOrder {
         let draft = self.shown(shell, album)?;
         let mut list = tracks.to_vec();
         list.sort_by(|&a, &b| {
-            let (a, b) = (&catalog.tracks[a as usize], &catalog.tracks[b as usize]);
-            album_order(draft_place(draft, a, album), &a.title, draft_place(draft, b, album), &b.title)
+            let (a, b) = (catalog.track_at(a), catalog.track_at(b));
+            album_order(draft_place(draft, a, album), a.title(), draft_place(draft, b, album), b.title())
         });
         Some(list)
     }
@@ -137,7 +137,7 @@ impl TrackOrder {
             shell.playlists.notice = Some(("Saving the new order: a moment".into(), Instant::now()));
             return None;
         }
-        let shown: Vec<(Uuid, Place)> = tracks.iter().map(|&t| &catalog.tracks[t as usize]).map(|t| (t.id, draft_place(draft, t, album))).collect();
+        let shown: Vec<(Uuid, Place)> = tracks.iter().map(|&t| catalog.track_at(t)).map(|t| (t.id(), draft_place(draft, t, album))).collect();
         let changes = match plan(&shown, row, to) {
             Plan::OtherDisc(disc) => {
                 let end = if by < 0 { "first" } else { "last" };
@@ -152,7 +152,7 @@ impl TrackOrder {
         };
         // Only what differs from the library: a track moved back is no change.
         for (track, new) in changes {
-            let theirs = catalog.track_index(track).map(|t| place(&catalog.tracks[t as usize], album));
+            let theirs = catalog.track_index(track).map(|t| place(catalog.track_at(t), album));
             if theirs == Some(new) {
                 draft.wanted.remove(&track);
             } else {
@@ -163,7 +163,7 @@ impl TrackOrder {
         draft.confirm_discard = false;
         let id = shown[row].0;
         let order = self.tracks(shell, catalog, album, tracks).unwrap_or_else(|| tracks.to_vec());
-        order.iter().position(|&t| catalog.tracks[t as usize].id == id)
+        order.iter().position(|&t| catalog.track_at(t).id() == id)
     }
 
     /// Above the list (edit mode), once tracks have moved: how many it renumbers, Save and
@@ -226,17 +226,17 @@ impl TrackOrder {
 
 /// The library has every place the draft wanted (a track gone from it has nothing to wait for).
 fn caught_up(catalog: &Catalog, album: Uuid, wanted: &HashMap<Uuid, Place>) -> bool {
-    wanted.iter().all(|(id, wanted)| catalog.track_index(*id).is_none_or(|t| place(&catalog.tracks[t as usize], album) == *wanted))
+    wanted.iter().all(|(id, wanted)| catalog.track_index(*id).is_none_or(|t| place(catalog.track_at(t), album) == *wanted))
 }
 
 /// The track's place on the album: as the draft has it if moved, else the library's.
-fn draft_place(draft: &Draft, t: &Track, album: Uuid) -> Place {
-    draft.wanted.get(&t.id).copied().unwrap_or_else(|| place(t, album))
+fn draft_place(draft: &Draft, t: Track<'_>, album: Uuid) -> Place {
+    draft.wanted.get(&t.id()).copied().unwrap_or_else(|| place(t, album))
 }
 
 /// The track's place on the album, as the library has it.
-fn place(t: &Track, album: Uuid) -> Place {
-    t.albums.iter().find(|m| m.0 == album).map_or((None, None), |m| (m.1, m.2))
+fn place(t: Track<'_>, album: Uuid) -> Place {
+    t.albums().iter().find(|m| m.0 == album).map_or((None, None), |m| (m.1, m.2))
 }
 
 /// What moving a track does to the places of the tracks shown.

@@ -221,8 +221,8 @@ impl SettingsPage {
                     ui.label(RichText::new("Kept here").color(P.muted));
                     ui.label(format!(
                         "{} tracks · {} albums · {} artists · {} playlists",
-                        thousands(c.tracks.len()),
-                        thousands(c.albums.len()),
+                        thousands(c.track_count()),
+                        thousands(c.album_count()),
                         thousands(c.artists.len()),
                         thousands(c.playlists.len())
                     ));
@@ -321,9 +321,10 @@ impl SettingsPage {
                 ui.end_row();
             }
             if let Some(c) = &shell.catalog.value {
-                // Measured once on a real library: about 2.2 kB a track with everything.
+                // Measured once on a real library (`catalog::measure`): about 810 bytes a
+                // track with everything.
                 ui.label(RichText::new("The library").color(P.muted));
-                ui.label(format!("about {} ({} tracks; twice that for a moment while it's refreshed)", mb(c.tracks.len() as u64 * 2_230), thousands(c.tracks.len())));
+                ui.label(format!("about {} ({} tracks; twice that for a moment while it's refreshed)", mb(c.track_count() as u64 * 810), thousands(c.track_count())));
                 ui.end_row();
             }
             let (covers, cover_bytes) = shell.covers.textures();

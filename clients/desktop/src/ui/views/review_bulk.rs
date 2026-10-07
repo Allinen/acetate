@@ -131,7 +131,7 @@ impl ReviewBulk {
         let done = &shell.flags.done;
         let flags: Vec<Uuid> = tracks
             .iter()
-            .flat_map(|&i| catalog.issues.get(&catalog.tracks[i as usize].id).into_iter().flatten())
+            .flat_map(|&i| catalog.issues.get(&catalog.track_at(i).id()).into_iter().flatten())
             .filter(|(id, k)| k == kind && !done.contains(id))
             .map(|(id, _)| *id)
             .collect();
@@ -249,9 +249,9 @@ impl ReviewBulk {
             let row = 20.0;
             egui::ScrollArea::vertical().auto_shrink([false, false]).show_rows(ui, row, self.tracks.len(), |ui, range| {
                 for n in range {
-                    let t = &catalog.tracks[self.tracks[n] as usize];
-                    let artist = if t.artist_display.is_empty() { "(no artist)" } else { t.artist_display.as_str() };
-                    ui.label(format!("{}  ·  {artist}", t.title));
+                    let t = catalog.track_at(self.tracks[n]);
+                    let artist = if t.artist_display().is_empty() { "(no artist)" } else { t.artist_display() };
+                    ui.label(format!("{}  ·  {artist}", t.title()));
                 }
             });
         });
@@ -419,7 +419,7 @@ impl ReviewBulk {
     fn make_singles(&mut self, shell: &Shell, catalog: &Catalog) {
         self.sending = true;
         self.progress.store(0, Ordering::Relaxed);
-        let tracks: Vec<Uuid> = self.tracks.iter().map(|&i| catalog.tracks[i as usize].id).collect();
+        let tracks: Vec<Uuid> = self.tracks.iter().map(|&i| catalog.track_at(i).id()).collect();
         let (api, answer, ctx, progress, reason) = (shell.api.clone(), self.answer.clone(), shell.ctx.clone(), self.progress.clone(), self.reason.trim().to_string());
         shell.runtime.spawn(async move {
             let mut all = Singles::default();

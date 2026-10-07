@@ -208,8 +208,8 @@ pub struct Here<'a> {
 }
 
 impl Here<'_> {
-    fn track(&self) -> Option<&crate::catalog::model::Track> {
-        self.catalog.track_index(self.id).map(|i| &self.catalog.tracks[i as usize])
+    fn track(&self) -> Option<crate::catalog::Track<'_>> {
+        self.catalog.track(self.id)
     }
 
     fn loaded(&self) -> Result<&TrackDetail, String> {
@@ -404,7 +404,7 @@ pub fn resolve(command: &[Part], here: &Here, known: &Known) -> Result<(String, 
     match key {
         PageKey::Play if here.track().is_none() => Err("it isn't in the library you can see".into()),
         PageKey::Play => {
-            let label = if here.track().is_some_and(|t| !t.albums.is_empty()) { "play it, then the rest of its album" } else { "play it" };
+            let label = if here.track().is_some_and(|t| !t.albums().is_empty()) { "play it, then the rest of its album" } else { "play it" };
             nothing_after(label, Act::Play)
         }
         PageKey::Queue if here.track().is_none() => Err("it isn't in the library you can see".into()),
@@ -647,7 +647,7 @@ pub fn actions(typed: &str, here: &Here) -> Vec<Row> {
     let track = here.track();
     if track.is_some() {
         if found("Play", &[]) {
-            let sub = if track.is_some_and(|t| !t.albums.is_empty()) { "it, then the rest of its album" } else { "it" };
+            let sub = if track.is_some_and(|t| !t.albums().is_empty()) { "it, then the rest of its album" } else { "it" };
             rows.push(act("Play", sub, Act::Play));
         }
         if found("Queue it", &["queue", "enqueue"]) {
@@ -701,7 +701,7 @@ pub fn actions(typed: &str, here: &Here) -> Vec<Row> {
             }
         };
         if let Some(t) = track {
-            for c in &t.credits {
+            for c in t.credits() {
                 if let Some(a) = here.catalog.artist(c.0) {
                     go(&a.name, "its page", Page::Artist(a.id));
                     if let Some(alias) = &c.2 {
@@ -709,12 +709,12 @@ pub fn actions(typed: &str, here: &Here) -> Vec<Row> {
                     }
                 }
             }
-            for m in &t.albums {
+            for m in t.albums() {
                 if let Some(a) = here.catalog.album(m.0) {
-                    go(&a.title, &format!("{}: its page", a.kind), Page::Album(a.id));
+                    go(a.title(), &format!("{}: its page", a.kind()), Page::Album(a.id()));
                 }
             }
-            for g in t.groupings.iter().filter_map(|id| here.catalog.grouping(*id)) {
+            for g in t.groupings().iter().filter_map(|id| here.catalog.grouping(*id)) {
                 go(&g.name, &format!("{}: its page", g.kind), Page::Grouping(g.id));
             }
         }

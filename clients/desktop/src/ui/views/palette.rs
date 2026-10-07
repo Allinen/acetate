@@ -348,8 +348,8 @@ impl Palette {
                     let not = |id: Uuid| Some(id) != *except;
                     match kind {
                         PickKind::Artist => entries.extend(self.hits.artists.iter().filter(|h| not(c.artists[h.0 as usize].id)).map(|h| Entry::Artist(h.0))),
-                        PickKind::Album => entries.extend(self.hits.albums.iter().filter(|h| not(c.albums[h.0 as usize].id)).map(|h| Entry::Album(h.0))),
-                        PickKind::Track => entries.extend(self.hits.tracks.iter().filter(|h| not(c.tracks[h.0 as usize].id)).map(|h| Entry::Track(h.0))),
+                        PickKind::Album => entries.extend(self.hits.albums.iter().filter(|h| not(c.album_at(h.0).id())).map(|h| Entry::Album(h.0))),
+                        PickKind::Track => entries.extend(self.hits.tracks.iter().filter(|h| not(c.track_at(h.0).id())).map(|h| Entry::Track(h.0))),
                     }
                 }
                 // A new one, even when one by that name exists: two artists can share a
@@ -369,7 +369,7 @@ impl Palette {
         let text_left = rect.left() + 50.0;
         let width = rect.width() - 50.0 - 90.0;
         // An original file's track: the OG badge after its title.
-        let og = matches!((entry, catalog), (Entry::Track(i), Some(c)) if c.tracks[i as usize].original_filename.is_some());
+        let og = matches!((entry, catalog), (Entry::Track(i), Some(c)) if c.track_at(i).original_filename().is_some());
         let (title, sub, kind) = match (entry, catalog) {
             (Entry::Playlist(id), _) => {
                 let Some(p) = playlists.iter().find(|p| p.0 == id) else { return };
@@ -406,13 +406,13 @@ impl Palette {
                 (artist.label(), aliases, "Artist".into())
             }
             (Entry::Album(i), Some(c)) => {
-                let album = &c.albums[i as usize];
-                shell.cover(ui, album.cover(), album.id, cover_rect, 5, 0.0);
-                let sub = match album.year {
-                    Some(year) => format!("{} · {year}", album.artist_display),
-                    None => album.artist_display.clone(),
+                let album = c.album_at(i);
+                shell.cover(ui, album.cover(), album.id(), cover_rect, 5, 0.0);
+                let sub = match album.year() {
+                    Some(year) => format!("{} · {year}", album.artist_display()),
+                    None => album.artist_display().to_string(),
                 };
-                (album.title.clone(), Some(sub), capitalized(&album.kind))
+                (album.title().to_string(), Some(sub), capitalized(album.kind()))
             }
             (Entry::Grouping(i), Some(c)) => {
                 let grouping = &c.groupings[i as usize];
@@ -434,8 +434,8 @@ impl Palette {
                 }
                 // What it belongs to (the first thing, by name).
                 let belongs = extra.links.iter().find_map(|(kind, id)| match kind.as_str() {
-                    "track" => c.track_index(*id).map(|t| c.tracks[t as usize].title.clone()),
-                    "album" => c.album(*id).map(|a| a.title.clone()),
+                    "track" => c.track_index(*id).map(|t| c.track_at(t).title().to_string()),
+                    "album" => c.album(*id).map(|a| a.title().to_string()),
                     "grouping" => c.grouping(*id).map(|g| g.name.clone()),
                     _ => c.artist(*id).map(|a| a.name.clone()),
                 });
@@ -448,13 +448,13 @@ impl Palette {
                 (extra.name.clone(), Some(sub), "Extra".into())
             }
             (Entry::Track(i), Some(c)) => {
-                let track = &c.tracks[i as usize];
-                shell.cover(ui, track.cover(), track.id, cover_rect, 5, 0.0);
+                let track = c.track_at(i);
+                shell.cover(ui, track.cover(), track.id(), cover_rect, 5, 0.0);
                 let sub = match c.main_album(track) {
-                    Some(album) if album.kind != "single" => format!("{} · {}", track.artist_display, album.title),
-                    _ => track.artist_display.clone(),
+                    Some(album) if album.kind() != "single" => format!("{} · {}", track.artist_display(), album.title()),
+                    _ => track.artist_display().to_string(),
                 };
-                (track.title.clone(), Some(sub), "Track".into())
+                (track.title().to_string(), Some(sub), "Track".into())
             }
             _ => return,
         };
@@ -482,8 +482,8 @@ fn run(shell: &mut Shell, catalog: Option<&Catalog>, mode: &Mode, query: &str, e
             let Some(c) = catalog else { return };
             let (id, name) = match entry {
                 Entry::Artist(i) => (c.artists[i as usize].id, c.artists[i as usize].name.clone()),
-                Entry::Album(i) => (c.albums[i as usize].id, c.albums[i as usize].title.clone()),
-                Entry::Track(i) => (c.tracks[i as usize].id, c.tracks[i as usize].title.clone()),
+                Entry::Album(i) => (c.album_at(i).id(), c.album_at(i).title().to_string()),
+                Entry::Track(i) => (c.track_at(i).id(), c.track_at(i).title().to_string()),
                 _ => return,
             };
             shell.picker.pick(*kind, Some(id), name);
@@ -529,16 +529,16 @@ fn search_result(shell: &mut Shell, catalog: Option<&Catalog>, entry: Entry, shi
             }
         }
         (Entry::Album(i), Some(c)) => {
-            let album = &c.albums[i as usize];
+            let album = c.album_at(i);
             if shift {
-                super::albums::play_album(shell, c, album.id);
+                super::albums::play_album(shell, c, album.id());
             } else {
-                shell.act(Action::Go(Page::Album(album.id)));
+                shell.act(Action::Go(Page::Album(album.id())));
             }
         }
         (Entry::Track(i), Some(c)) => {
-            let track = &c.tracks[i as usize];
-            let album = track.albums.first().map(|m| m.0);
+            let track = c.track_at(i);
+            let album = track.albums().first().map(|m| m.0);
             if shift {
                 if let Some(album) = album {
                     shell.act(Action::Go(Page::Album(album)));

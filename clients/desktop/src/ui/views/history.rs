@@ -214,7 +214,7 @@ fn describe(key: &str, value: Option<&Value>, catalog: &Catalog, names: &HashMap
             .map(|a| {
                 let album = id(a, "album_id");
                 let title = album
-                    .and_then(|x| catalog.album(x).map(|x| format!("“{}”", x.title)).or_else(|| names.get(&x).map(|n| format!("“{n}” (new)"))))
+                    .and_then(|x| catalog.album(x).map(|x| format!("“{}”", x.title())).or_else(|| names.get(&x).map(|n| format!("“{n}” (new)"))))
                     .unwrap_or_else(|| "(an album)".into());
                 match (a.get("disc_number").and_then(|x| x.as_i64()), a.get("track_number").and_then(|x| x.as_i64())) {
                     (Some(disc), Some(n)) if disc > 1 => format!("{title} #{disc}-{n}"),
@@ -227,7 +227,7 @@ fn describe(key: &str, value: Option<&Value>, catalog: &Catalog, names: &HashMap
             .iter()
             .map(|r| {
                 let kind = r.get("kind").and_then(|k| k.as_str()).unwrap_or("?").replace('_', " ");
-                let title = id(r, "track_id").and_then(|t| catalog.track_index(t)).map(|i| catalog.tracks[i as usize].title.clone()).unwrap_or_else(|| "a track".into());
+                let title = id(r, "track_id").and_then(|t| catalog.track_index(t)).map(|i| catalog.track_at(i).title().to_string()).unwrap_or_else(|| "a track".into());
                 format!("{kind} “{title}”")
             })
             .collect(),

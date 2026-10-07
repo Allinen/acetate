@@ -203,7 +203,7 @@ mod tests {
             let g = c.grouping(made.id).expect("in the catalog");
             assert_eq!((g.kind.as_str(), g.name.as_str(), g.track_count), ("collective", name.as_str(), 1));
             let i = c.track_index(track).unwrap();
-            assert!(c.tracks[i as usize].groupings.contains(&made.id));
+            assert!(c.track_at(i).groupings().contains(&made.id));
             assert_eq!(c.grouping_tracks(made.id), [i]);
             let q = crate::catalog::query::Query::parse(&format!("group:{name}"));
             assert!(q.matches_track(&c, i, ""));
@@ -213,7 +213,7 @@ mod tests {
             assert!(d.changes.iter().any(|c| c.action == "added" && c.track_id == Some(track)));
 
             api.send_json::<Value>(reqwest::Method::POST, &format!("/api/groupings/{}/remove", made.id), Some(Member::Track(track).body())).await.unwrap();
-            assert!(!catalog().await.tracks[i as usize].groupings.contains(&made.id));
+            assert!(!catalog().await.track_at(i).groupings().contains(&made.id));
         });
     }
 }

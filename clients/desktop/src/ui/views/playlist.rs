@@ -61,7 +61,7 @@ impl PlaylistPage {
         let facts = format!("{} · star a track to add it here (s)", count_and_length(catalog, tracks.iter().copied()));
         // Unstarred since the page opened: still here, in their place.
         for (&t, at) in tracks.iter().zip(&starred) {
-            self.liked_seen.insert(catalog.tracks[t as usize].id, at.clone());
+            self.liked_seen.insert(catalog.track_at(t).id(), at.clone());
         }
         let kept: Vec<(u32, String)> = self
             .liked_seen
@@ -260,7 +260,7 @@ fn liked(shell: &Shell, catalog: &Catalog) -> (Vec<u32>, Vec<String>) {
         .filter(|a| a.kind == "track")
         .filter_map(|a| Some((a.starred_at.as_deref()?, catalog.track_index(a.id)?)))
         // Unstarred in this session: gone.
-        .filter(|(_, t)| shell.mark(catalog.tracks[*t as usize].id).starred)
+        .filter(|(_, t)| shell.mark(catalog.track_at(*t).id()).starred)
         .collect();
     earlier.sort_by(|a, b| b.0.cmp(a.0));
     for (at, t) in earlier {

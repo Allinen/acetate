@@ -460,8 +460,8 @@ impl Engine {
             .iter()
             .enumerate()
             .map(|(position, &track)| {
-                let in_catalog = catalog.track_index(track).map(|i| &catalog.tracks[i as usize]);
-                let mut title = in_catalog.map(|t| t.title.clone()).unwrap_or_default();
+                let in_catalog = catalog.track(track);
+                let mut title = in_catalog.map(|t| t.title().to_string()).unwrap_or_default();
                 let state = match loaded.details.get(&track) {
                     None => PlanState::Loading,
                     Some(Err(err)) => PlanState::Failed(format!("couldn't load it: {err}")),
@@ -477,7 +477,7 @@ impl Engine {
                         match Base::for_variant(d, variant) {
                             None => PlanState::Failed("it has no version to edit".into()),
                             Some(mut base) => {
-                                base.attached.groups = in_catalog.map(|t| t.groupings.clone()).unwrap_or_default();
+                                base.attached.groups = in_catalog.map(|t| t.groupings().to_vec()).unwrap_or_default();
                                 // A new version starts from nothing: only what the changes say.
                                 let version = model::version(ops);
                                 let start = if version.is_some() { Meta::default() } else { base.meta.clone() };

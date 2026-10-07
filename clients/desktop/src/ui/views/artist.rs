@@ -104,30 +104,30 @@ pub(super) fn release_cards(ui: &mut egui::Ui, shell: &mut Shell, catalog: &Cata
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = Vec2::new(CARD_GAP, CARD_GAP);
         for (n, &index) in releases.iter().enumerate() {
-            let album = &catalog.albums[index as usize];
+            let album = catalog.album_at(index);
             let (rect, response) = ui.allocate_exact_size(Vec2::new(CARD, CARD + 48.0), Sense::click());
             let hover = ctx.animate_bool_with_time(response.id, response.hovered(), 0.16);
             let cover = Rect::from_min_size(rect.min + Vec2::new(0.0, 6.0 - hover * 4.0), Vec2::splat(CARD));
-            shell.cover(ui, album.cover(), album.id, cover, 8, hover);
+            shell.cover(ui, album.cover(), album.id(), cover, 8, hover);
             if let Some((at, moved)) = selected
                 && at == n
             {
                 ui.painter().rect_stroke(cover.expand(3.0), 10, egui::Stroke::new(2.0, P.accent), egui::StrokeKind::Outside);
-                shell.list_target = Some(crate::links::Target::Album(album.id));
+                shell.list_target = Some(crate::links::Target::Album(album.id()));
                 if moved {
                     response.scroll_to_me(None);
                 }
             }
             let top = cover.bottom() + 8.0 + hover * 4.0;
-            widgets::text_in(ui.painter(), Rect::from_min_size(Pos2::new(rect.left(), top), Vec2::new(CARD, 17.0)), &album.title, font(13.0, semibold()), P.text);
-            let sub = match album.year {
-                Some(year) => format!("{year} · {}", album.kind),
-                None => album.kind.clone(),
+            widgets::text_in(ui.painter(), Rect::from_min_size(Pos2::new(rect.left(), top), Vec2::new(CARD, 17.0)), album.title(), font(13.0, semibold()), P.text);
+            let sub = match album.year() {
+                Some(year) => format!("{year} · {}", album.kind()),
+                None => album.kind().to_string(),
             };
             widgets::text_in(ui.painter(), Rect::from_min_size(Pos2::new(rect.left(), top + 18.0), Vec2::new(CARD, 15.0)), &sub, font(12.0, medium()), P.muted);
-            widgets::share_menu(&response, shell, crate::links::Target::Album(album.id));
+            widgets::share_menu(&response, shell, crate::links::Target::Album(album.id()));
             if response.clicked() {
-                shell.act(Action::Go(Page::Album(album.id)));
+                shell.act(Action::Go(Page::Album(album.id())));
             }
         }
     });
@@ -141,7 +141,7 @@ pub(super) fn release_grid(ui: &mut egui::Ui, shell: &mut Shell, catalog: &Catal
     let moved = widgets::move_selection(ui.ctx(), selected, releases.len(), fit, page);
     *selected = (*selected).min(releases.len().saturating_sub(1));
     if let Some(&a) = releases.get(*selected) {
-        super::albums::album_keys(shell, catalog, &moved, catalog.albums[a as usize].id);
+        super::albums::album_keys(shell, catalog, &moved, catalog.album_at(a).id());
     }
     egui::ScrollArea::vertical().id_salt(salt).auto_shrink([false, false]).show(ui, |ui| {
         release_cards(ui, shell, catalog, releases, Some((*selected, moved.moved)));
@@ -158,7 +158,7 @@ fn names_in(credits: &[crate::catalog::model::Credit], artist: Uuid) -> impl Ite
 fn credited_names(catalog: &Catalog, tracks: &[u32], artist: Uuid) -> Vec<(Option<String>, usize)> {
     let mut counts: std::collections::HashMap<Option<String>, usize> = Default::default();
     for &t in tracks {
-        let mut names: Vec<Option<&str>> = names_in(&catalog.tracks[t as usize].credits, artist).collect();
+        let mut names: Vec<Option<&str>> = names_in(catalog.track_at(t).credits(), artist).collect();
         names.dedup();
         for name in names {
             *counts.entry(name.map(str::to_string)).or_default() += 1;
@@ -204,7 +204,7 @@ impl ArtistPage {
             self.filters.names.clear();
         }
         // Its original files (og files): a chip to see only those (and releases with one).
-        let is_og = |t: u32| catalog.tracks[t as usize].original_filename.is_some();
+        let is_og = |t: u32| catalog.track_at(t).original_filename().is_some();
         let og_count = all_tracks.iter().filter(|&&t| is_og(t)).count();
         if og_count == 0 {
             self.filters.og_only = false;
@@ -246,14 +246,14 @@ impl ArtistPage {
         let filters = self.commands.preview(&here(&[]), &self.filters);
         let og_only = filters.og_only;
         // Every track it's credited on (under the names chosen, if any are), in any role.
-        let tracks: Vec<u32> = all_tracks.iter().copied().filter(|&t| names_in(&catalog.tracks[t as usize].credits, id).any(|n| filters.shows(n)) && (!og_only || is_og(t))).collect();
+        let tracks: Vec<u32> = all_tracks.iter().copied().filter(|&t| names_in(catalog.track_at(t).credits(), id).any(|n| filters.shows(n)) && (!og_only || is_og(t))).collect();
         let tracks = &tracks[..];
         // What it's credited for, as what (and under the names chosen, if any are).
         use crate::catalog::model::Role;
         let credited = |credits: &[crate::catalog::model::Credit], role: Role| credits.iter().any(|c| c.0 == id && c.1 == role && filters.shows(c.2.as_deref()));
-        let has_og = |a: u32| catalog.album_tracks(catalog.albums[a as usize].id).iter().any(|&t| is_og(t));
-        let releases: Vec<u32> = all_albums.iter().copied().filter(|&a| credited(&catalog.albums[a as usize].credits, Role::Primary) && (!og_only || has_og(a))).collect();
-        let by_role = |role: Role| -> Vec<u32> { all_tracks.iter().copied().filter(|&t| credited(&catalog.tracks[t as usize].credits, role) && (!og_only || is_og(t))).collect() };
+        let has_og = |a: u32| catalog.album_tracks(catalog.album_at(a).id()).iter().any(|&t| is_og(t));
+        let releases: Vec<u32> = all_albums.iter().copied().filter(|&a| credited(catalog.album_at(a).credits(), Role::Primary) && (!og_only || has_og(a))).collect();
+        let by_role = |role: Role| -> Vec<u32> { all_tracks.iter().copied().filter(|&t| credited(catalog.track_at(t).credits(), role) && (!og_only || is_og(t))).collect() };
         let (own, featured, produced) = (by_role(Role::Primary), by_role(Role::Featured), by_role(Role::Producer));
         let extras_shown = extras.iter().filter(|e| !e.hidden).count();
         let mut sections = vec![(Section::Releases, releases.len()), (Section::Tracks, own.len()), (Section::Featured, featured.len()), (Section::Produced, produced.len())];
@@ -373,7 +373,7 @@ impl ArtistPage {
             // The groupings its tracks are in (collectives it posts under, eras…), most first.
             let mut in_groupings: Vec<(Uuid, usize)> = Vec::new();
             for &t in all_tracks {
-                for g in &catalog.tracks[t as usize].groupings {
+                for g in catalog.track_at(t).groupings() {
                     match in_groupings.iter_mut().find(|(id, _)| id == g) {
                         Some((_, n)) => *n += 1,
                         None => in_groupings.push((*g, 1)),

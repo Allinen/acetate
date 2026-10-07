@@ -403,7 +403,7 @@ fn edit_tracks(part: &commandline::Part<K>, here: &Here) -> Result<(String, Does
     } else {
         vec![track_at(here, part)?]
     };
-    let title = |n: usize| here.catalog.tracks[here.tracks[n] as usize].title.as_str();
+    let title = |n: usize| here.catalog.track_at(here.tracks[n]).title();
     match places.as_slice() {
         [] => Err("it has no tracks you can see".into()),
         [n] => Ok((format!("the track editor: #{} “{}”", n + 1, title(*n)), Does::Act(Act::EditTracks(places)))),
@@ -427,7 +427,7 @@ fn track_at(here: &Here, part: &commandline::Part<K>) -> Result<usize, String> {
         return place(h, here.tracks.len(), "tracks");
     }
     let typed = part.value.trim();
-    let title = |n: usize| here.catalog.tracks[here.tracks[n] as usize].title.as_str();
+    let title = |n: usize| here.catalog.track_at(here.tracks[n]).title();
     let found: Vec<usize> = (0..here.tracks.len()).filter(|&n| crate::catalog::query::loosely_in(typed, title(n))).collect();
     match found.as_slice() {
         [n] => Ok(*n),
@@ -590,16 +590,16 @@ fn cover(main: &commandline::Part<K>, here: &Here, known: &Known) -> Result<(Str
 /// The cover of an album or track by name: one chosen in the list, else the best match
 /// (albums first). Its cover's id, and what it is (in words).
 fn cover_of(here: &Here, known: &Known, typed: &str) -> Result<(Uuid, String), String> {
-    let album = |id: Uuid| here.catalog.album(id).map(|a| (a.cover_id, format!("the album “{}”", a.title)));
-    let track = |id: Uuid| here.catalog.track_index(id).map(|i| &here.catalog.tracks[i as usize]).map(|t| (t.cover_id, format!("the track “{}”", t.title)));
+    let album = |id: Uuid| here.catalog.album(id).map(|a| (a.cover_id(), format!("the album “{}”", a.title())));
+    let track = |id: Uuid| here.catalog.track(id).map(|t| (t.cover_id(), format!("the track “{}”", t.title())));
     let found = match (known.pinned(Pinned::Album, typed), known.pinned(Pinned::Track, typed)) {
         (Some(id), _) => album(id),
         (_, Some(id)) => track(id),
         _ => {
             let hit = |part| Search::default().run_part(here.catalog, typed, part, 1).first().map(|h| h.0);
             match (hit(SearchPart::Albums), hit(SearchPart::Tracks)) {
-                (Some(i), _) => album(here.catalog.albums[i as usize].id),
-                (_, Some(i)) => track(here.catalog.tracks[i as usize].id),
+                (Some(i), _) => album(here.catalog.album_at(i).id()),
+                (_, Some(i)) => track(here.catalog.track_at(i).id()),
                 _ => None,
             }
         }
@@ -682,7 +682,7 @@ fn resolve(text: &str, here: &Here, known: &Known) -> Vec<Result<(String, Does),
             K::Tracks => Ok((format!("its tracks, filtered: {value}"), Does::Words(value.to_string()))),
             K::Play if here.tracks.is_empty() => Err("it has no tracks you can see".into()),
             K::Play if value.is_empty() && main.hashes.is_empty() => Ok(("play it".into(), Does::Act(Act::Play(0)))),
-            K::Play => track_at(here, main).map(|n| (format!("play it from #{} “{}”", n + 1, here.catalog.tracks[here.tracks[n] as usize].title), Does::Act(Act::Play(n)))),
+            K::Play => track_at(here, main).map(|n| (format!("play it from #{} “{}”", n + 1, here.catalog.track_at(here.tracks[n]).title()), Does::Act(Act::Play(n)))),
             K::Queue if here.tracks.is_empty() => Err("it has no tracks you can see".into()),
             K::Queue => match value.to_lowercase().as_str() {
                 "" | "end" | "last" => Ok(("queued, at the end".into(), Does::Act(Act::Queue(false)))),
@@ -740,7 +740,7 @@ fn resolve(text: &str, here: &Here, known: &Known) -> Vec<Result<(String, Does),
                 Ok(()) => match main.hashes.as_slice() {
                     [from, to] => match (place(from, here.tracks.len(), "tracks"), place(to, here.tracks.len(), "tracks")) {
                         (Ok(a), Ok(b)) if a == b => Err(format!("#{from} is there already")),
-                        (Ok(a), Ok(b)) => Ok((format!("track #{} “{}” → #{} (the tracklist's draft)", a + 1, here.catalog.tracks[here.tracks[a] as usize].title, b + 1), Does::Act(Act::Move(a, b)))),
+                        (Ok(a), Ok(b)) => Ok((format!("track #{} “{}” → #{} (the tracklist's draft)", a + 1, here.catalog.track_at(here.tracks[a]).title(), b + 1), Does::Act(Act::Move(a, b)))),
                         (Err(err), _) | (_, Err(err)) => Err(err),
                     },
                     _ => Err("move:#5 #2 moves the fifth track to the second place".into()),
@@ -813,7 +813,7 @@ fn actions(typed: &str, here: &Here) -> Vec<Row> {
     if !typed.trim().is_empty() {
         if let Some(album) = here.catalog.album(here.id) {
             let mut seen = Vec::new();
-            for c in &album.credits {
+            for c in album.credits() {
                 let Some(a) = here.catalog.artist(c.0).filter(|_| !seen.contains(&c.0)) else { continue };
                 seen.push(c.0);
                 if found(&a.name, &[]) || c.2.as_deref().is_some_and(|alias| found(alias, &[])) {
@@ -870,8 +870,8 @@ fn track_rows(here: &Here, typed: &str, sub: &str, next: Option<&str>) -> Vec<Ro
     here.tracks
         .iter()
         .enumerate()
-        .filter(|&(_, &t)| typed.is_empty() || crate::catalog::query::loosely_in(typed, &here.catalog.tracks[t as usize].title))
-        .map(|(n, &t)| Row { label: format!("#{} {}", n + 1, here.catalog.tracks[t as usize].title), sub: sub.into(), choice: Choice::Raw(format!("#{}", n + 1), next.map(str::to_string)) })
+        .filter(|&(_, &t)| typed.is_empty() || crate::catalog::query::loosely_in(typed, here.catalog.track_at(t).title()))
+        .map(|(n, &t)| Row { label: format!("#{} {}", n + 1, here.catalog.track_at(t).title()), sub: sub.into(), choice: Choice::Raw(format!("#{}", n + 1), next.map(str::to_string)) })
         .collect()
 }
 
@@ -967,8 +967,8 @@ fn choices(part: &commandline::Part<K>, group: &[commandline::Part<K>], here: &H
                     for (i, _) in Search::default().run_part(here.catalog, value, part, 5) {
                         let (title, sub) = crate::ui::edit::inline_search::describe(here.catalog, part, i);
                         let id = match kind {
-                            Pinned::Album => here.catalog.albums[i as usize].id,
-                            _ => here.catalog.tracks[i as usize].id,
+                            Pinned::Album => here.catalog.album_at(i).id(),
+                            _ => here.catalog.track_at(i).id(),
                         };
                         rows.push(Row { label: title.clone(), sub: format!("{sub} · a copy of its cover"), choice: Choice::Pin(kind, title, id, None) });
                     }

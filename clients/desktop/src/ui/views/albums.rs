@@ -85,7 +85,7 @@ impl Albums {
             }
         }
         if let Some(&index) = self.list.get(self.selected) {
-            album_keys(shell, catalog, &moved, catalog.albums[index as usize].id);
+            album_keys(shell, catalog, &moved, catalog.album_at(index).id());
         }
 
         let mut scroll = egui::ScrollArea::vertical().auto_shrink([false, false]).id_salt("albums");
@@ -99,12 +99,12 @@ impl Albums {
                     for column in 0..columns {
                         let n = row * columns + column;
                         let Some(&index) = self.list.get(n) else { break };
-                        let album = &catalog.albums[index as usize];
+                        let album = catalog.album_at(index);
                         let (rect, response) = ui.allocate_exact_size(Vec2::new(card, row_height - 8.0), Sense::click());
                         let hover = ctx.animate_bool_with_time(response.id, response.hovered(), 0.16);
                         let cover_rect = Rect::from_min_size(rect.min - Vec2::new(0.0, hover * 5.0), Vec2::splat(card));
-                        shell.cover(ui, album.cover(), album.id, cover_rect, 10, hover);
-                        if shell.mark(album.id).starred {
+                        shell.cover(ui, album.cover(), album.id(), cover_rect, 10, hover);
+                        if shell.mark(album.id()).starred {
                             let badge = cover_rect.left_top() + Vec2::splat(18.0);
                             ui.painter().circle_filled(badge, 12.0, Color32::from_black_alpha(140));
                             widgets::draw_star(ui.painter(), badge, 7.0, P.accent);
@@ -124,22 +124,22 @@ impl Albums {
                             widgets::draw_icon(ui.painter(), widgets::Icon::Play, button_center, 9.0, P.bg.gamma_multiply(hover));
                         }
                         let text_top = cover_rect.bottom() + 10.0 + hover * 5.0;
-                        widgets::text_in(ui.painter(), Rect::from_min_size(Pos2::new(rect.left(), text_top), Vec2::new(card, 18.0)), &album.title, font(13.5, semibold()), P.text);
-                        let sub = match album.year {
-                            Some(year) => format!("{} · {year}", album.artist_display),
-                            None => album.artist_display.clone(),
+                        widgets::text_in(ui.painter(), Rect::from_min_size(Pos2::new(rect.left(), text_top), Vec2::new(card, 18.0)), album.title(), font(13.5, semibold()), P.text);
+                        let sub = match album.year() {
+                            Some(year) => format!("{} · {year}", album.artist_display()),
+                            None => album.artist_display().to_string(),
                         };
                         widgets::text_in(ui.painter(), Rect::from_min_size(Pos2::new(rect.left(), text_top + 19.0), Vec2::new(card, 16.0)), &sub, font(12.0, medium()), P.muted);
-                        widgets::share_menu(&response, shell, crate::links::Target::Album(album.id));
+                        widgets::share_menu(&response, shell, crate::links::Target::Album(album.id()));
                         if n == self.selected {
-                            shell.list_target = Some(crate::links::Target::Album(album.id));
+                            shell.list_target = Some(crate::links::Target::Album(album.id()));
                         }
                         if response.clicked() {
                             self.selected = n;
                             if over_button {
-                                play_album(shell, catalog, album.id);
+                                play_album(shell, catalog, album.id());
                             } else {
-                                shell.act(Action::Go(Page::Album(album.id)));
+                                shell.act(Action::Go(Page::Album(album.id())));
                             }
                         }
                     }
@@ -163,7 +163,7 @@ pub fn album_keys(shell: &mut Shell, catalog: &Catalog, moved: &widgets::Moved, 
         shell.act(Action::Enqueue { tracks: catalog.album_tracks(id).to_vec(), next });
     }
     if moved.add {
-        let tracks = catalog.album_tracks(id).iter().map(|&t| catalog.tracks[t as usize].id).collect();
+        let tracks = catalog.album_tracks(id).iter().map(|&t| catalog.track_at(t).id()).collect();
         shell.act(Action::AddToPlaylist(tracks));
     }
     if moved.enter {

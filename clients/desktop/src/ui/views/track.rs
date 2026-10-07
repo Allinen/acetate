@@ -109,7 +109,7 @@ impl TrackPage {
             shell.act(Action::Back);
             shell.act(Action::Go(Page::Extra(extra)));
         }
-        let track = catalog.track_index(id).map(|i| &catalog.tracks[i as usize]);
+        let track = catalog.track(id);
         if track.is_none() && detail.is_none() {
             let text = error.unwrap_or_else(|| if refreshing { "Loading…".into() } else { "This track isn't in the library (anymore).".into() });
             ui.label(RichText::new(text).color(P.muted));
@@ -163,13 +163,13 @@ impl TrackPage {
             let cover = track.and_then(|t| t.cover()).or_else(|| detail.as_ref().and_then(|d| d.covers.first().and_then(|c| c.cover())));
             shell.cover_with_original(ui, cover, id, cover_rect, 12, 0.6);
             // An original file (an og file): an amber edge, an amber title, and it says so.
-            let og = track.is_some_and(|t| t.original_filename.is_some());
+            let og = track.is_some_and(|t| t.original_filename().is_some());
             if og {
                 widgets::og_edge(ui.painter(), cover_rect, 12, 2.0);
             }
             let left = cover_rect.right() + 28.0;
             let width = header.right() - left;
-            let title = track.map(|t| t.title.clone()).or_else(|| detail.as_ref().map(|d| d.title.clone())).unwrap_or_default();
+            let title = track.map(|t| t.title().to_string()).or_else(|| detail.as_ref().map(|d| d.title.clone())).unwrap_or_default();
             let painter = ui.painter().clone();
             let kind = if og { "TRACK  ·  ORIGINAL FILE" } else { "TRACK" };
             painter.text(Pos2::new(left, cover_rect.top() + 40.0), Align2::LEFT_BOTTOM, kind, font(11.0, semibold()), P.accent);
@@ -179,16 +179,16 @@ impl TrackPage {
             let layout = egui::Layout::left_to_right(egui::Align::Center);
             let mut line = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_size(Pos2::new(left, cover_rect.top() + 94.0), Vec2::new(width, 22.0))).layout(layout));
             if let Some(t) = track {
-                super::artist_links(&mut line, shell, catalog, &t.credits, &t.artist_display, font(15.0, medium()), P.text);
+                super::artist_links(&mut line, shell, catalog, t.credits(), t.artist_display(), font(15.0, medium()), P.text);
             }
             let mut line = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_size(Pos2::new(left, cover_rect.top() + 120.0), Vec2::new(width, 20.0))).layout(layout));
             line.spacing_mut().item_spacing.x = 0.0;
             if let Some(t) = track {
-                for (n, membership) in t.albums.iter().enumerate() {
+                for (n, membership) in t.albums().iter().enumerate() {
                     let Some(album) = catalog.album(membership.0) else { continue };
                     line.label(RichText::new(if n == 0 { "on " } else { ", " }).font(font(13.5, medium())).color(P.faint));
-                    if widgets::link(&mut line, &album.title, font(13.5, medium()), P.muted) {
-                        shell.act(Action::Go(Page::Album(album.id)));
+                    if widgets::link(&mut line, album.title(), font(13.5, medium()), P.muted) {
+                        shell.act(Action::Go(Page::Album(album.id())));
                     }
                     if let Some(number) = membership.2 {
                         let disc = membership.1.filter(|d| *d > 1).map(|d| format!("{d}-")).unwrap_or_default();
@@ -198,17 +198,17 @@ impl TrackPage {
             }
             // Facts: the release date as written, length, status, genres.
             let mut facts = Vec::new();
-            if let Some(date) = track.and_then(|t| t.release_date.clone()).or_else(|| detail.as_ref().and_then(|d| d.release_date.clone())) {
+            if let Some(date) = track.and_then(|t| t.release_date().map(str::to_string)).or_else(|| detail.as_ref().and_then(|d| d.release_date.clone())) {
                 facts.push(date);
             }
-            facts.push(widgets::length(track.and_then(|t| t.duration_ms)));
-            if let Some(status) = track.map(|t| t.status.as_str()).filter(|s| *s != "released") {
+            facts.push(widgets::length(track.and_then(|t| t.duration_ms())));
+            if let Some(status) = track.map(|t| t.status()).filter(|s| *s != "released") {
                 facts.push(status.to_string());
             }
-            if track.is_some_and(|t| t.is_restricted) {
+            if track.is_some_and(|t| t.is_restricted()) {
                 facts.push("restricted".into());
             }
-            if let Some(genres) = track.map(|t| t.genres.join(", ")).filter(|g| !g.is_empty()) {
+            if let Some(genres) = track.map(|t| t.genres().collect::<Vec<_>>().join(", ")).filter(|g| !g.is_empty()) {
                 facts.push(genres);
             }
             painter.text(Pos2::new(left, cover_rect.top() + 146.0), Align2::LEFT_TOP, facts.join("  ·  "), font(13.5, medium()), P.muted);
@@ -239,7 +239,7 @@ impl TrackPage {
                 ui.add_space(10.0);
             }
             if let Some(t) = track {
-                let groupings = t.groupings.clone();
+                let groupings = t.groupings().to_vec();
                 self.part_of.show(ui, shell, catalog, crate::ui::edit::part_of::Member::Track(id), &groupings);
             }
             ui.add_space(10.0);
@@ -352,7 +352,7 @@ impl TrackPage {
             }
             Act::Watch(video, name) => shell.watch(video, &name),
             Act::Cover => {
-                let track = catalog.track_index(id).map(|i| &catalog.tracks[i as usize]);
+                let track = catalog.track(id);
                 if let Some(cover) = track.and_then(|t| t.cover()).or_else(|| d.and_then(|d| d.covers.first()?.cover())) {
                     shell.open_original(ctx, cover);
                 }
@@ -501,7 +501,7 @@ impl TrackPage {
         }
         if crate::ui::edit::extras::ExtrasView::worth_showing(shell, &d.extras) {
             let count = d.extras.iter().filter(|e| !e.hidden).count();
-            let restricted = catalog.track_index(d.id).is_some_and(|i| catalog.tracks[i as usize].is_restricted);
+            let restricted = catalog.track_index(d.id).is_some_and(|i| catalog.track_at(i).is_restricted());
             let set = self.set(Reveal::Extras);
             let shown = section_set(ui, &format!("Extras ({count})"), true, set, |ui| {
                 self.extras.show(ui, shell, crate::ui::edit::extras::Owner::Track(d.id), &d.extras, restricted, true)
@@ -958,7 +958,7 @@ fn sections(shell: &Shell, d: &TrackDetail) -> Vec<Reveal> {
 /// Plays it, then the rest of its album (or just it).
 fn play(shell: &mut Shell, catalog: &Catalog, id: Uuid) {
     let Some(index) = catalog.track_index(id) else { return };
-    match catalog.tracks[index as usize].albums.first() {
+    match catalog.track_at(index).albums().first() {
         Some(album) => {
             let tracks = catalog.album_tracks(album.0).to_vec();
             let start = tracks.iter().position(|&t| t == index).unwrap_or(0);

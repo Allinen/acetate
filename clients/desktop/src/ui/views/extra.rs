@@ -399,8 +399,8 @@ impl ExtraPage {
             let hit = search.show(ui, shell, catalog.as_deref(), egui::Id::new("extra-link"), "type its name", &[]);
             if let (Some((Choice::Hit(i), _)), Some(c)) = (hit, catalog.as_deref()) {
                 let (kind, target) = match part {
-                    Part::Tracks => ("track", c.tracks.get(i as usize).map(|t| t.id)),
-                    Part::Albums => ("album", c.albums.get(i as usize).map(|a| a.id)),
+                    Part::Tracks => ("track", c.get_track(i).map(|t| t.id())),
+                    Part::Albums => ("album", c.get_album(i).map(|a| a.id())),
                     _ => ("artist", c.artists.get(i as usize).map(|a| a.id)),
                 };
                 if let Some(target) = target {

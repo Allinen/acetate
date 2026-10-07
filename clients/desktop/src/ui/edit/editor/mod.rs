@@ -1864,12 +1864,12 @@ impl TrackEditor {
             q(&name)
         };
         let album = |names: &mut Names, id: Uuid| -> String {
-            let title = catalog.album(id).map(|a| a.title.clone()).or_else(|| names.stand_ins().get(&id).cloned()).unwrap_or_default();
+            let title = catalog.album(id).map(|a| a.title().to_string()).or_else(|| names.stand_ins().get(&id).cloned()).unwrap_or_default();
             names.pin(PinKind::Album, &title, id);
             q(&title)
         };
         let track = |names: &mut Names, id: Uuid| -> String {
-            let title = catalog.track_index(id).map(|i| catalog.tracks[i as usize].title.clone()).unwrap_or_default();
+            let title = catalog.track_index(id).map(|i| catalog.track_at(i).title().to_string()).unwrap_or_default();
             names.pin(PinKind::Track, &title, id);
             q(&title)
         };
@@ -2398,8 +2398,8 @@ fn state(ui: &mut egui::Ui, engine: &Engine, catalog: &Catalog, names: &Names) {
     }
     let new_names = names.stand_ins();
     let artist = |id: Uuid| catalog.artist(id).map(|a| a.name.clone()).or_else(|| new_names.get(&id).cloned()).unwrap_or_else(|| "(an artist)".into());
-    let album = |id: Uuid| catalog.album(id).map(|a| a.title.clone()).or_else(|| new_names.get(&id).cloned()).unwrap_or_else(|| "(an album)".into());
-    let track = |id: Uuid| catalog.track_index(id).map(|i| catalog.tracks[i as usize].title.clone()).unwrap_or_else(|| "(a track)".into());
+    let album = |id: Uuid| catalog.album(id).map(|a| a.title().to_string()).or_else(|| new_names.get(&id).cloned()).unwrap_or_else(|| "(an album)".into());
+    let track = |id: Uuid| catalog.track_index(id).map(|i| catalog.track_at(i).title().to_string()).unwrap_or_else(|| "(a track)".into());
     let grouping = |id: Uuid| catalog.grouping(id).map(|g| g.name.clone()).or_else(|| new_names.get(&id).map(|n| format!("{n} (new)"))).unwrap_or_else(|| "(a grouping)".into());
     type Field<'a> = (&'static str, Box<dyn Fn(&model::Meta, &model::Facts, &model::Attached) -> String + 'a>);
     let fields: Vec<Field> = vec![

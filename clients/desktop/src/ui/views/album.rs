@@ -97,7 +97,7 @@ impl AlbumPage {
             self.filtered = Some(id);
             self.filters.words.clear();
         }
-        let og_count = tracks.iter().filter(|&&t| catalog.tracks[t as usize].original_filename.is_some()).count();
+        let og_count = tracks.iter().filter(|&&t| catalog.track_at(t).original_filename().is_some()).count();
         if og_count == 0 {
             self.filters.og_only = false;
         }
@@ -142,12 +142,12 @@ impl AlbumPage {
             edit_mode: shell.edit_mode,
             may_edit,
             may_metadata: shell.account.can("edit_metadata"),
-            title: &album.title,
-            kind: &album.kind,
-            release_date: album.release_date.as_deref().unwrap_or(""),
+            title: album.title(),
+            kind: album.kind(),
+            release_date: album.release_date().unwrap_or(""),
             credits,
             aliases: &aliases,
-            groupings: &album.groupings,
+            groupings: album.groupings(),
             covers: details.as_ref().map_or(&[][..], |d| &d.covers[..]),
             sources: details.as_ref().map_or(&[][..], |d| &d.sources[..]),
             may_source: shell.edit_mode && shell.account.can("edit_sources"),
@@ -168,7 +168,7 @@ impl AlbumPage {
             // Header: a big cover, and what the album is.
             let header = ui.allocate_exact_size(Vec2::new(ui.available_width(), 232.0), Sense::hover()).0;
             let cover_rect = Rect::from_min_size(header.min, Vec2::splat(220.0));
-            shell.cover_with_original(ui, album.cover(), album.id, cover_rect, 12, 0.6);
+            shell.cover_with_original(ui, album.cover(), album.id(), cover_rect, 12, 0.6);
             // Every track an original file (an og file): it says so, with an amber edge.
             let all_og = og_count > 0 && og_count == tracks.len();
             if all_og {
@@ -177,26 +177,26 @@ impl AlbumPage {
             let left = cover_rect.right() + 28.0;
             let painter = ui.painter();
             let kind = match (all_og, tracks.len()) {
-                (false, _) => album.kind.to_uppercase(),
-                (true, 1) => format!("{}  ·  ORIGINAL FILE", album.kind.to_uppercase()),
-                (true, _) => format!("{}  ·  ORIGINAL FILES", album.kind.to_uppercase()),
+                (false, _) => album.kind().to_uppercase(),
+                (true, 1) => format!("{}  ·  ORIGINAL FILE", album.kind().to_uppercase()),
+                (true, _) => format!("{}  ·  ORIGINAL FILES", album.kind().to_uppercase()),
             };
             painter.text(Pos2::new(left, cover_rect.top() + 70.0), Align2::LEFT_BOTTOM, kind, font(11.0, semibold()), P.accent);
-            widgets::text_in(painter, Rect::from_min_size(Pos2::new(left, cover_rect.top() + 76.0), Vec2::new(header.right() - left, 44.0)), &album.title, font(36.0, bold()), P.text);
+            widgets::text_in(painter, Rect::from_min_size(Pos2::new(left, cover_rect.top() + 76.0), Vec2::new(header.right() - left, 44.0)), album.title(), font(36.0, bold()), P.text);
             let mut facts = Vec::new();
-            if let Some(date) = &album.release_date {
-                facts.push(date.clone());
+            if let Some(date) = album.release_date() {
+                facts.push(date.to_string());
             }
             let count = tracks.len();
             facts.push(format!("{count} track{}", if count == 1 { "" } else { "s" }));
-            let total: i64 = tracks.iter().filter_map(|&t| catalog.tracks[t as usize].duration_ms).sum();
+            let total: i64 = tracks.iter().filter_map(|&t| catalog.track_at(t).duration_ms()).sum();
             facts.push(widgets::clock(Duration::from_millis(total.max(0) as u64)));
             painter.text(Pos2::new(left, cover_rect.top() + 150.0), Align2::LEFT_TOP, facts.join("  ·  "), font(14.0, medium()), P.muted);
 
             // The album's artists, each a link.
             let artists_rect = Rect::from_min_size(Pos2::new(left, cover_rect.top() + 126.0), Vec2::new(header.right() - left, 20.0));
             let mut artists_ui = ui.new_child(egui::UiBuilder::new().max_rect(artists_rect).layout(egui::Layout::left_to_right(egui::Align::Center)));
-            super::artist_links(&mut artists_ui, shell, catalog, &album.credits, &album.artist_display, font(15.0, medium()), P.text);
+            super::artist_links(&mut artists_ui, shell, catalog, album.credits(), album.artist_display(), font(15.0, medium()), P.text);
 
             let play_rect = Rect::from_min_size(Pos2::new(left, cover_rect.bottom() - 44.0), Vec2::new(116.0, 42.0));
             if play_button(ui, "album-play", play_rect) && !tracks.is_empty() {
@@ -228,7 +228,7 @@ impl AlbumPage {
                 self.act(shell, catalog, id, tracks, act);
             }
             ui.add_space(10.0);
-            let groupings = album.groupings.clone();
+            let groupings = album.groupings().to_vec();
             self.part_of.show(ui, shell, catalog, crate::ui::edit::part_of::Member::Album(id), &groupings);
             ui.add_space(12.0);
 
@@ -355,7 +355,7 @@ impl AlbumPage {
                 ui.add_space(10.0);
             }
             self.order.bar(ui, shell, id, self.list.has_marks());
-            let options = Options { key: "album", columns: ALBUM_COLUMNS, added: None, filter_hint: None, album: Some((id, &album.artist_display)), places: self.order.places(shell, id), keys: true, scroll: false };
+            let options = Options { key: "album", columns: ALBUM_COLUMNS, added: None, filter_hint: None, album: Some((id, album.artist_display())), places: self.order.places(shell, id), keys: true, scroll: false };
             let shown = self.list.show(ui, shell, catalog, &rows, version(shell.generation, tracks), player, &options);
 
             // Alt+↑/↓ or Alt+K/J: the selected track a place earlier or later (edit mode).
@@ -412,7 +412,7 @@ impl AlbumPage {
             // A folded part that's open is closed; anything else opened and scrolled to.
             Act::Reveal(section) => self.reveal = Some((section, !self.folds.contains(&(section, true)))),
             Act::EditTracks(places) => {
-                let ids: Vec<Uuid> = places.iter().filter_map(|&n| tracks.get(n)).map(|&t| catalog.tracks[t as usize].id).collect();
+                let ids: Vec<Uuid> = places.iter().filter_map(|&n| tracks.get(n)).map(|&t| catalog.track_at(t).id()).collect();
                 self.list.edit_tracks(ids);
             }
             Act::Move(from, to) => {
@@ -431,7 +431,7 @@ impl AlbumPage {
                 // Selected where it's shown (once the list has the new order).
                 let order = self.order.tracks(shell, catalog, id, catalog.album_tracks(id)).unwrap_or_else(|| catalog.album_tracks(id).to_vec());
                 if let Some(&t) = order.get(row) {
-                    self.list.select_track(catalog.tracks[t as usize].id);
+                    self.list.select_track(catalog.track_at(t).id());
                 }
             }
             Act::Merge => {

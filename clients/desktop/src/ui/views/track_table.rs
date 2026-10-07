@@ -310,7 +310,7 @@ impl TrackTable {
             self.remake(catalog, rows, version, options);
         }
         if let Some(id) = self.select_id.take()
-            && let Some(n) = self.order.iter().position(|&r| catalog.tracks[rows.track(r) as usize].id == id)
+            && let Some(n) = self.order.iter().position(|&r| catalog.track_at(rows.track(r)).id() == id)
         {
             self.selected = n;
             self.scroll_to = Some(n);
@@ -319,7 +319,7 @@ impl TrackTable {
         // ---- Marking (edit mode only) ----
         let marking = shell.edit_mode;
         let order = &self.order;
-        let id_at = |n: usize| order.get(n).map(|&row| catalog.tracks[rows.track(row) as usize].id);
+        let id_at = |n: usize| order.get(n).map(|&row| catalog.track_at(rows.track(row)).id());
         if !marking {
             self.marking.close_popups();
         }
@@ -355,11 +355,11 @@ impl TrackTable {
             // Shift+↑/↓ (edit mode): the rows passed over take the starting row's state.
             if marking && ctx.input(|i| i.modifiers.shift) {
                 let order = &self.order;
-                self.marking.range_to(before, self.selected, |n| order.get(n).map(|&row| catalog.tracks[rows.track(row) as usize].id));
+                self.marking.range_to(before, self.selected, |n| order.get(n).map(|&row| catalog.track_at(rows.track(row)).id()));
             }
         }
         if let Some(&row) = self.order.get(self.selected) {
-            let id = catalog.tracks[rows.track(row) as usize].id;
+            let id = catalog.track_at(rows.track(row)).id();
             if moved.star {
                 shell.act(Action::ToggleStar(Kind::Track, id));
             }
@@ -476,10 +476,10 @@ impl TrackTable {
                         }
                     };
                     let at = self.order[n];
-                    let t = &catalog.tracks[rows.track(at) as usize];
+                    let t = catalog.track_at(rows.track(at));
                     row.set_selected(n == self.selected);
-                    let marked = self.marking.contains(&t.id);
-                    let color = if playing == Some(t.id) { P.accent } else { P.text };
+                    let marked = self.marking.contains(&t.id());
+                    let color = if playing == Some(t.id()) { P.accent } else { P.text };
                     // The mark's box (edit mode): a click (un)marks the row.
                     if marking {
                         row.col(|ui| {
@@ -507,66 +507,66 @@ impl TrackTable {
                                 let cell = ui.max_rect();
                                 ui.allocate_rect(cell, Sense::hover());
                                 let rect = egui::Rect::from_center_size(cell.center(), Vec2::splat(28.0));
-                                shell.cover(ui, t.cover(), t.id, rect, 4, 0.0);
+                                shell.cover(ui, t.cover(), t.id(), rect, 4, 0.0);
                                 // An original file's track: an amber edge (inside the cover,
                                 // so nothing clips it).
-                                if t.original_filename.is_some() {
+                                if t.original_filename().is_some() {
                                     widgets::og_edge(ui.painter(), rect, 4, 1.5);
                                 }
                             }
                             Column::Title => {
                                 // The star on the title's line, not above it.
                                 ui.horizontal(|ui| {
-                                    if shell.mark(t.id).starred {
+                                    if shell.mark(t.id()).starred {
                                         let (rect, _) = ui.allocate_exact_size(Vec2::new(14.0, 14.0), Sense::hover());
                                         widgets::draw_star(ui.painter(), rect.center(), 5.5, P.accent);
                                     }
-                                    let clicked = match &t.original_filename {
-                                        Some(name) => widgets::og_link(ui, &t.title, font(13.5, medium()), name),
-                                        None => widgets::link(ui, &t.title, font(13.5, medium()), color),
+                                    let clicked = match &t.original_filename() {
+                                        Some(name) => widgets::og_link(ui, t.title(), font(13.5, medium()), name),
+                                        None => widgets::link(ui, t.title(), font(13.5, medium()), color),
                                     };
                                     if clicked {
-                                        shell.act(Action::Go(crate::ui::Page::Track(t.id)));
+                                        shell.act(Action::Go(crate::ui::Page::Track(t.id())));
                                     }
                                 });
                             }
                             Column::Artist => {
                                 // On an album: only artists other than the album's.
-                                let same = options.album.is_some_and(|(_, artist)| artist == t.artist_display);
+                                let same = options.album.is_some_and(|(_, artist)| artist == t.artist_display());
                                 if !same {
                                     ui.horizontal(|ui| {
-                                        super::artist_links(ui, shell, catalog, &t.credits, &t.artist_display, font(13.0, medium()), P.muted);
+                                        super::artist_links(ui, shell, catalog, t.credits(), t.artist_display(), font(13.0, medium()), P.muted);
                                     });
                                 }
                             }
                             Column::Album => {
                                 if let Some(album) = catalog.main_album(t)
-                                    && widgets::link(ui, &album.title, font(13.0, medium()), P.muted)
+                                    && widgets::link(ui, album.title(), font(13.0, medium()), P.muted)
                                 {
-                                    shell.act(Action::Go(crate::ui::Page::Album(album.id)));
+                                    shell.act(Action::Go(crate::ui::Page::Album(album.id())));
                                 }
                             }
                             Column::Released => {
-                                ui.label(RichText::new(t.release_date.as_deref().unwrap_or("")).color(P.faint));
+                                ui.label(RichText::new(t.release_date().unwrap_or("")).color(P.faint));
                             }
                             Column::Plays => {
-                                let plays = shell.mark(t.id).play_count;
+                                let plays = shell.mark(t.id()).play_count;
                                 let text = if plays > 0 { thousands(plays as usize) } else { String::new() };
                                 ui.label(RichText::new(text).color(P.faint));
                             }
                             Column::Format => {
-                                ui.label(RichText::new(t.codec.as_deref().unwrap_or("")).color(P.faint).small());
+                                ui.label(RichText::new(t.codec().unwrap_or("")).color(P.faint).small());
                             }
                             Column::Og => {
                                 let cell = ui.max_rect();
                                 let response = ui.allocate_rect(cell, Sense::hover());
-                                if let Some(name) = &t.original_filename {
+                                if let Some(name) = &t.original_filename() {
                                     widgets::og_badge(ui.painter(), cell.left_center() + Vec2::new(4.0, 0.0), 15.0);
                                     response.on_hover_text(format!("Original file · {name}"));
                                 }
                             }
                             Column::Length => {
-                                ui.label(RichText::new(widgets::length(t.duration_ms)).color(P.muted));
+                                ui.label(RichText::new(widgets::length(t.duration_ms())).color(P.muted));
                             }
                             Column::Added => {
                                 let added = rows.added.and_then(|a| a.get(at)).map(|a| a.get(..10).unwrap_or(a)).unwrap_or("");
@@ -575,7 +575,7 @@ impl TrackTable {
                         });
                     }
                     let response = row.response();
-                    widgets::share_menu(&response, shell, crate::links::Target::Track(catalog.tracks[rows.track(self.order[n]) as usize].id));
+                    widgets::share_menu(&response, shell, crate::links::Target::Track(catalog.track_at(rows.track(self.order[n])).id()));
                     if response.double_clicked() {
                         double = Some(n);
                     } else if response.clicked() {
@@ -603,7 +603,7 @@ impl TrackTable {
         }
         let modifiers = ctx.input(|i| i.modifiers);
         let order = &self.order;
-        let id_at = |n: usize| order.get(n).map(|&row| catalog.tracks[rows.track(row) as usize].id);
+        let id_at = |n: usize| order.get(n).map(|&row| catalog.track_at(rows.track(row)).id());
         if let Some(n) = boxed {
             self.marking.toggle(n, id_at);
             self.selected = n;
@@ -625,7 +625,7 @@ impl TrackTable {
         if options.keys
             && let Some(&row) = self.order.get(self.selected)
         {
-            shell.list_target = Some(crate::links::Target::Track(catalog.tracks[rows.track(row) as usize].id));
+            shell.list_target = Some(crate::links::Target::Track(catalog.track_at(rows.track(row)).id()));
         }
         Shown {
             selected: self.order.get(self.selected).copied(),
@@ -642,7 +642,7 @@ impl TrackTable {
         let own_order = self.sort == TrackSort::Natural && !self.descending;
         let discs = options.album.filter(|_| own_order).map(|(album, _)| AlbumNumbers::new(catalog, rows, album, options.places));
         self.lines = match discs.filter(|d| d.several_discs) {
-            Some(numbers) => lines_with_discs(&self.order.iter().map(|&r| numbers.disc(&catalog.tracks[rows.track(r) as usize])).collect::<Vec<_>>()),
+            Some(numbers) => lines_with_discs(&self.order.iter().map(|&r| numbers.disc(catalog.track_at(rows.track(r)))).collect::<Vec<_>>()),
             None => (0..self.order.len()).map(Line::Track).collect(),
         };
     }
@@ -679,27 +679,27 @@ struct AlbumNumbers<'a> {
 impl<'a> AlbumNumbers<'a> {
     fn new(catalog: &Catalog, rows: &TrackRows, album: Uuid, places: Option<&'a HashMap<Uuid, Place>>) -> AlbumNumbers<'a> {
         let numbers = AlbumNumbers { album, several_discs: false, places };
-        let several_discs = (0..rows.len(catalog)).any(|r| numbers.place(&catalog.tracks[rows.track(r) as usize]).is_some_and(|p| p.0.is_some_and(|d| d != 1)));
+        let several_discs = (0..rows.len(catalog)).any(|r| numbers.place(catalog.track_at(rows.track(r))).is_some_and(|p| p.0.is_some_and(|d| d != 1)));
         AlbumNumbers { several_discs, ..numbers }
     }
 
     /// The track's disc and number on the album (None: it isn't on it).
-    fn place(&self, t: &crate::catalog::model::Track) -> Option<Place> {
-        self.places.and_then(|p| p.get(&t.id).copied()).or_else(|| t.albums.iter().find(|m| m.0 == self.album).map(|m| (m.1, m.2)))
+    fn place(&self, t: crate::catalog::Track<'_>) -> Option<Place> {
+        self.places.and_then(|p| p.get(&t.id()).copied()).or_else(|| t.albums().iter().find(|m| m.0 == self.album).map(|m| (m.1, m.2)))
     }
 
     /// The track was moved (its place isn't the library's yet).
-    fn moved(&self, t: &crate::catalog::model::Track) -> bool {
-        self.places.is_some_and(|p| p.contains_key(&t.id))
+    fn moved(&self, t: crate::catalog::Track<'_>) -> bool {
+        self.places.is_some_and(|p| p.contains_key(&t.id()))
     }
 
     /// The track's disc on the album (1 when it has none).
-    fn disc(&self, t: &crate::catalog::model::Track) -> i16 {
+    fn disc(&self, t: crate::catalog::Track<'_>) -> i16 {
         self.place(t).and_then(|p| p.0).unwrap_or(1)
     }
 
     /// "5", or "2-5" on an album with several discs; "·" without a number.
-    fn label(&self, t: &crate::catalog::model::Track) -> String {
+    fn label(&self, t: crate::catalog::Track<'_>) -> String {
         let Some((disc, number)) = self.place(t) else { return String::new() };
         match (number, self.several_discs) {
             (Some(n), true) => format!("{}-{n}", disc.unwrap_or(1)),
@@ -714,7 +714,7 @@ pub fn count_and_length(catalog: &Catalog, tracks: impl Iterator<Item = u32>) ->
     let (mut n, mut total) = (0usize, 0i64);
     for t in tracks {
         n += 1;
-        total += catalog.tracks[t as usize].duration_ms.unwrap_or(0);
+        total += catalog.track_at(t).duration_ms().unwrap_or(0);
     }
     let count = if n == 1 { "1 track".to_string() } else { format!("{} tracks", thousands(n)) };
     format!("{count} · {}", widgets::clock(Duration::from_millis(total.max(0) as u64)))

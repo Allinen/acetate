@@ -148,7 +148,7 @@ pub fn artist_links(
             let joiner = if credit.1 == Role::Featured && shown[i - 1].1 != Role::Featured { " feat. " } else { ", " };
             ui.label(RichText::new(joiner).font(font.clone()).color(P.faint));
         }
-        let name = credit.2.clone().or_else(|| catalog.artist(credit.0).map(|a| a.name.clone())).unwrap_or_default();
+        let name = credit.2.as_deref().map(str::to_string).or_else(|| catalog.artist(credit.0).map(|a| a.name.clone())).unwrap_or_default();
         if super::widgets::link(ui, &name, font.clone(), color) {
             shell.act(super::Action::Go(Page::Artist(credit.0)));
         }
@@ -158,7 +158,7 @@ pub fn artist_links(
 /// The original filename of a track's file, if it's an original file (an og file).
 pub fn original_filename(shell: &Shell, track: uuid::Uuid) -> Option<String> {
     let catalog = shell.catalog.value.as_ref()?;
-    catalog.track_index(track).and_then(|i| catalog.tracks[i as usize].original_filename.clone())
+    catalog.track_index(track).and_then(|i| catalog.track_at(i).original_filename().map(str::to_string))
 }
 
 /// What plays, as links: the title to its page, the artists to theirs (from the
@@ -176,18 +176,18 @@ pub fn playing_links(
     artist_font: egui::FontId,
 ) {
     let catalog = shell.catalog.value.clone();
-    let t = catalog.as_deref().and_then(|c| c.track_index(track).map(|i| &c.tracks[i as usize]));
+    let t = catalog.as_deref().and_then(|c| c.track(track));
     let layout = egui::Layout::left_to_right(egui::Align::Center);
     let mut title_ui = ui.new_child(egui::UiBuilder::new().max_rect(title_rect).layout(layout));
     match t {
         Some(t) => {
             // An original file's track: its title as in track lists (amber, a wave on hover).
-            let clicked = match &t.original_filename {
+            let clicked = match &t.original_filename() {
                 Some(name) => super::widgets::og_link(&mut title_ui, title, title_font, name),
                 None => super::widgets::link(&mut title_ui, title, title_font, P.text),
             };
             if clicked {
-                shell.act(super::Action::Go(Page::Track(t.id)));
+                shell.act(super::Action::Go(Page::Track(t.id())));
             }
         }
         None => {
@@ -196,7 +196,7 @@ pub fn playing_links(
     }
     let mut artist_ui = ui.new_child(egui::UiBuilder::new().max_rect(artist_rect).layout(layout));
     match (t, catalog.as_deref()) {
-        (Some(t), Some(c)) => artist_links(&mut artist_ui, shell, c, &t.credits, artist, artist_font, P.muted),
+        (Some(t), Some(c)) => artist_links(&mut artist_ui, shell, c, t.credits(), artist, artist_font, P.muted),
         _ => {
             artist_ui.add(egui::Label::new(RichText::new(artist).font(artist_font).color(P.muted)).truncate());
         }

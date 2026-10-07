@@ -39,7 +39,8 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::catalog::search::Part;
-use crate::catalog::model::{Role, Track};
+use crate::catalog::model::Role;
+use crate::catalog::Track;
 use crate::catalog::Catalog;
 use crate::playback::{AudioSource, QueueItem};
 use crate::ui::edit::editor::{DraftOf, Imported, TrackEditor};
@@ -569,7 +570,7 @@ impl NotImported {
             }
         }
         let Some(i) = self.target else { return };
-        let t = &catalog.tracks[i as usize];
+        let t = catalog.track_at(i);
         ui.add_space(6.0);
         egui::Frame::NONE.fill(P.surface).corner_radius(8).inner_margin(egui::Margin::same(10)).show(ui, |ui| {
             ui.horizontal(|ui| {
@@ -577,12 +578,12 @@ impl NotImported {
                     shell.act(Action::Play { tracks: vec![i], start: 0 });
                 }
                 ui.vertical(|ui| {
-                    if widgets::link(ui, &t.title, font(15.0, semibold()), P.text) {
-                        shell.act(Action::Go(Page::Track(t.id)));
+                    if widgets::link(ui, t.title(), font(15.0, semibold()), P.text) {
+                        shell.act(Action::Go(Page::Track(t.id())));
                     }
-                    let album = catalog.main_album(t).map(|a| format!(" · {}", a.title)).unwrap_or_default();
-                    let codec = t.codec.as_deref().map(|c| format!(" · {c}")).unwrap_or_default();
-                    ui.label(RichText::new(format!("{}{album}{codec}", t.artist_display)).color(P.muted));
+                    let album = catalog.main_album(t).map(|a| format!(" · {}", a.title())).unwrap_or_default();
+                    let codec = t.codec().map(|c| format!(" · {c}")).unwrap_or_default();
+                    ui.label(RichText::new(format!("{}{album}{codec}", t.artist_display())).color(P.muted));
                 });
             });
             ui.add_space(6.0);
@@ -598,9 +599,9 @@ impl NotImported {
                     .clicked();
                 if current || older {
                     let add_as = if current { "current_file" } else { "previous_file" };
-                    let body = serde_json::json!({ "track_id": t.id, "add_as": add_as, "reason": self.reason.trim(), "original_filename": self.og() });
-                    let text = if current { format!("“{}” plays this file now (its old file is kept as an older one).", t.title) } else { format!("Kept as an older file of “{}”.", t.title) };
-                    self.send(shell, p.id, format!("/api/ingest-problems/{}/add-to-track", p.id), body, Some(t.id), text);
+                    let body = serde_json::json!({ "track_id": t.id(), "add_as": add_as, "reason": self.reason.trim(), "original_filename": self.og() });
+                    let text = if current { format!("“{}” plays this file now (its old file is kept as an older one).", t.title()) } else { format!("Kept as an older file of “{}”.", t.title()) };
+                    self.send(shell, p.id, format!("/api/ingest-problems/{}/add-to-track", p.id), body, Some(t.id()), text);
                 }
             });
         });
@@ -732,10 +733,10 @@ impl NotImported {
             {
                 let hint = format!("the track it's a version of ({}): type its title or artist", version_label(&kind));
                 if let Some((Choice::Hit(i), _)) = search.show(ui, shell, Some(catalog), egui::Id::new("not-imported-version-of"), &hint, &[]) {
-                    let t = &catalog.tracks[i as usize];
+                    let t = catalog.track_at(i);
                     let now = draft.editor.credits_after(track).unwrap_or_default();
                     let (lines, tracks, artists) = version_of(&kind, t, &now, catalog);
-                    let mut words = format!("Staged as a version ({}) of “{}”.", version_label(&kind), t.title);
+                    let mut words = format!("Staged as a version ({}) of “{}”.", version_label(&kind), t.title());
                     if artists.iter().all(|(_, _, added)| !added) {
                         let whose = if kind == INSTRUMENTAL { "It has no producer credited" } else { "It has no artists" };
                         words.push_str(&format!(" {whose}: type its artist (artist:…)."));
@@ -804,7 +805,7 @@ impl NotImported {
                 if let Some((Choice::Hit(i), _)) = search.show(ui, shell, Some(catalog), egui::Id::new("not-imported-track"), "the track: type its title or artist", &[]) {
                     self.target = Some(i);
                 }
-                self.target.and_then(|i| catalog.tracks.get(i as usize)).map(|t| (t.id, format!("the track “{}” ({})", t.title, t.artist_display)))
+                self.target.and_then(|i| catalog.get_track(i)).map(|t| (t.id(), format!("the track “{}” ({})", t.title(), t.artist_display())))
             }
             Of::Album | Of::Artist => {
                 let album = self.of == Of::Album;
@@ -812,7 +813,7 @@ impl NotImported {
                     let hint = if album { "the album: type its title" } else { "the artist: type their name" };
                     if let Some((Choice::Hit(i), _)) = search.show(ui, shell, Some(catalog), egui::Id::new("not-imported-of"), hint, &[]) {
                         self.of_target = if album {
-                            catalog.albums.get(i as usize).map(|a| (a.id, format!("the album “{}” ({})", a.title, a.artist_display)))
+                            catalog.get_album(i).map(|a| (a.id(), format!("the album “{}” ({})", a.title(), a.artist_display())))
                         } else {
                             catalog.artists.get(i as usize).map(|a| (a.id, format!("the artist “{}”", a.name)))
                         };
@@ -1099,7 +1100,7 @@ fn version_label(kind: &str) -> String {
 /// producer (`t`'s other primary artists taken off where `credits`, the draft's as staged,
 /// has them); any other version's are `t`'s, in their roles. With the tracks and artists
 /// the lines name: (name, id), and for artists whether it's one credited.
-fn version_of(kind: &str, t: &Track, credits: &[crate::ui::edit::editor::model::Credit], catalog: &Catalog) -> (Vec<String>, Vec<(String, Uuid)>, Vec<(String, Uuid, bool)>) {
+fn version_of(kind: &str, t: Track<'_>, credits: &[crate::ui::edit::editor::model::Credit], catalog: &Catalog) -> (Vec<String>, Vec<(String, Uuid)>, Vec<(String, Uuid, bool)>) {
     use crate::ui::edit::editor::quoted;
     let title = match kind.strip_suffix("_of") {
         Some(word) => {
@@ -1110,11 +1111,11 @@ fn version_of(kind: &str, t: &Track, credits: &[crate::ui::edit::editor::model::
                     c.next().map(|f| f.to_uppercase().chain(c).collect()).unwrap_or_default()
                 })
                 .collect();
-            format!("{} ({})", t.title, word.join(" "))
+            format!("{} ({})", t.title(), word.join(" "))
         }
-        None => t.title.clone(),
+        None => t.title().to_string(),
     };
-    let mut lines = vec![format!("title:{}", quoted(&title)), format!("related:{} kind:{kind}", quoted(&t.title)), format!("status:{}", t.status)];
+    let mut lines = vec![format!("title:{}", quoted(&title)), format!("related:{} kind:{kind}", quoted(t.title())), format!("status:{}", t.status())];
     let name = |id: Uuid| catalog.artist(id).map(|a| a.name.clone());
     let role = |r: &Role| match r {
         Role::Primary => Some("primary"),
@@ -1124,8 +1125,8 @@ fn version_of(kind: &str, t: &Track, credits: &[crate::ui::edit::editor::model::
     };
     let mut artists = Vec::new();
     if kind == INSTRUMENTAL {
-        let producers: Vec<Uuid> = t.credits.iter().filter(|c| c.1 == Role::Producer).map(|c| c.0).collect();
-        for c in t.credits.iter().filter(|c| c.1 == Role::Primary && !producers.contains(&c.0)) {
+        let producers: Vec<Uuid> = t.credits().iter().filter(|c| c.1 == Role::Producer).map(|c| c.0).collect();
+        for c in t.credits().iter().filter(|c| c.1 == Role::Primary && !producers.contains(&c.0)) {
             if credits.iter().any(|d| d.artist_id == c.0)
                 && let Some(n) = name(c.0)
             {
@@ -1141,14 +1142,14 @@ fn version_of(kind: &str, t: &Track, credits: &[crate::ui::edit::editor::model::
             }
         }
     } else {
-        for c in &t.credits {
+        for c in t.credits() {
             if let (Some(n), Some(r)) = (name(c.0), role(&c.1)) {
                 lines.push(format!("artist:{} role:{r}", quoted(&n)));
                 artists.push((n, c.0, true));
             }
         }
     }
-    (lines, vec![(t.title.clone(), t.id)], artists)
+    (lines, vec![(t.title().to_string(), t.id())], artists)
 }
 
 /// A round play button, `size` across, in the layout.
@@ -1278,7 +1279,7 @@ mod tests {
             "playlists": []
         });
         let catalog = Catalog::build(crate::catalog::model::parse(body.to_string().as_bytes()).unwrap());
-        let t = &catalog.tracks[0];
+        let t = catalog.track_at(0);
         // The tags credited the song's artists.
         let tags = [ann, cy].map(|a| Credit { artist_id: a.parse().unwrap(), role: "primary".into(), alias_id: None });
         let (lines, tracks, artists) = version_of("instrumental_of", t, &tags, &catalog);

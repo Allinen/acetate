@@ -582,7 +582,7 @@ impl Shell {
 
     /// A line about the library for the sidebar.
     pub fn library_status(&self) -> String {
-        let count = self.catalog.value.as_ref().map(|c| format!("{} tracks", thousands(c.tracks.len())));
+        let count = self.catalog.value.as_ref().map(|c| format!("{} tracks", thousands(c.track_count())));
         let state = if self.catalog.refreshing {
             "checking for changes…".to_string()
         } else if let Some(err) = &self.catalog.error {
@@ -1352,15 +1352,15 @@ fn window_handle(cc: &eframe::CreationContext) -> Option<*mut std::ffi::c_void> 
 
 /// A track (a position in the catalog) as the queue keeps it.
 pub fn queue_item(catalog: &Catalog, i: u32) -> QueueItem {
-    let t = &catalog.tracks[i as usize];
+    let t = catalog.track_at(i);
     QueueItem {
-        track_id: t.id,
-        file_id: t.file_id,
+        track_id: t.id(),
+        file_id: t.file_id(),
         source: Default::default(),
-        title: t.title.clone(),
-        artist: t.artist_display.clone(),
-        album: catalog.main_album(t).map(|a| a.title.clone()),
-        duration_ms: t.duration_ms,
+        title: t.title().to_string(),
+        artist: t.artist_display().to_string(),
+        album: catalog.main_album(t).map(|a| a.title().to_string()),
+        duration_ms: t.duration_ms(),
         cover: t.cover(),
     }
 }

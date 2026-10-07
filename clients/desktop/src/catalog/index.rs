@@ -4,19 +4,30 @@
 //! Things are referred to by their position in the catalog's lists (`u32`, small and
 //! quick to sort), not by id; positions are only valid for the catalog they came from,
 //! which is replaced as a whole when the server's copy changes.
+//!
+//! Tracks and albums are kept compactly (see `rows`), and so is the index: lists of
+//! positions in one buffer each (`Lists`), lowercase text in one buffer each (`Texts`),
+//! and sort orders as ranks (a number per track), not as lowercase copies of the text.
 
 use std::cmp::Ordering;
 use std::collections::HashMap;
 
+use anyhow::Context;
+use serde_json::value::RawValue;
 use uuid::Uuid;
 
-use super::model::{self, Album, Annotation, Artist, Grouping, Playlist, Track};
+use super::model::{self, Annotation, Artist, Grouping, Playlist};
+use super::rows::{self, AlbumRow, Pools, TrackRow};
+use super::text::Texts;
+
+pub use super::rows::{Album, Track};
 
 pub struct Catalog {
     /// Its version, for asking the server what changed since (None: an older server).
     pub version: Option<String>,
-    pub tracks: Vec<Track>,
-    pub albums: Vec<Album>,
+    pub(super) pools: Pools,
+    tracks: Vec<TrackRow>,
+    albums: Vec<AlbumRow>,
     pub artists: Vec<Artist>,
     pub playlists: Vec<Playlist>,
     pub annotations: HashMap<Uuid, Annotation>,
@@ -28,223 +39,298 @@ pub struct Catalog {
     /// Extras (vocals, stems…: not tracks), not taken off.
     pub extras: Vec<model::Extra>,
     /// Lowercase text to search them by: name, kind, what they belong to.
-    extra_text: Vec<String>,
+    extra_text: Texts,
 
     track_by_id: HashMap<Uuid, u32>,
-    grouping_by_id: HashMap<Uuid, u32>,
-    /// Each grouping's tracks (newest release first) and albums (newest first).
-    grouping_tracks: HashMap<Uuid, Vec<u32>>,
-    grouping_albums: HashMap<Uuid, Vec<u32>>,
     album_by_id: HashMap<Uuid, u32>,
     artist_by_id: HashMap<Uuid, u32>,
-    /// Each album's tracks, by disc and track number.
-    album_tracks: HashMap<Uuid, Vec<u32>>,
+    grouping_by_id: HashMap<Uuid, u32>,
+    /// Each album's tracks (by album position), by disc and track number.
+    album_tracks: Lists,
     /// Each artist's tracks (any role), newest release first.
-    artist_tracks: HashMap<Uuid, Vec<u32>>,
+    artist_tracks: Lists,
     /// Each artist's albums (credited on the album), newest first.
-    artist_albums: HashMap<Uuid, Vec<u32>>,
+    artist_albums: Lists,
+    /// Each grouping's tracks (newest release first) and albums (newest first).
+    grouping_tracks: Lists,
+    grouping_albums: Lists,
 
     /// Lowercase text to filter by: title, artists and album (tracks); title and artists
     /// (albums); name and aliases (artists).
-    track_text: Vec<String>,
-    album_text: Vec<String>,
-    artist_text: Vec<String>,
-    /// Lowercase sort keys.
-    track_title_key: Vec<String>,
-    track_artist_key: Vec<String>,
-    album_title_key: Vec<String>,
-    album_artist_key: Vec<String>,
-    artist_name_key: Vec<String>,
+    track_text: Texts,
+    album_text: Texts,
+    artist_text: Texts,
+    /// Places in sort order (by lowercase text, "the " left out; ties by position).
+    track_title_rank: Vec<u32>,
+    track_artist_rank: Vec<u32>,
+    album_title_rank: Vec<u32>,
+    album_artist_rank: Vec<u32>,
+    artist_name_rank: Vec<u32>,
+    /// Each track's place newest release first (see `newest_first`).
+    track_newest_rank: Vec<u32>,
     /// Each track's main album's place in title order (`u32::MAX`: on none), so sorting
     /// tracks by album compares numbers.
     track_album_rank: Vec<u32>,
 }
 
+/// Lists of positions, one per key (an album's tracks, an artist's…), in one buffer.
+#[derive(Default)]
+struct Lists {
+    /// Where each key's list starts in `items` (and, one more, where the last ends).
+    starts: Vec<u32>,
+    items: Vec<u32>,
+}
+
+impl Lists {
+    /// From (key, item) pairs, keys under `keys`; each item once per key.
+    fn build(keys: usize, mut pairs: Vec<(u32, u32)>) -> Lists {
+        pairs.sort_unstable();
+        pairs.dedup();
+        let mut starts = Vec::with_capacity(keys + 1);
+        let mut at = 0;
+        for key in 0..=keys as u32 {
+            starts.push(at as u32);
+            while at < pairs.len() && pairs[at].0 == key {
+                at += 1;
+            }
+        }
+        Lists { starts, items: pairs.into_iter().map(|p| p.1).collect() }
+    }
+
+    fn get(&self, key: u32) -> &[u32] {
+        match (self.starts.get(key as usize), self.starts.get(key as usize + 1)) {
+            (Some(&start), Some(&end)) => &self.items[start as usize..end as usize],
+            _ => &[],
+        }
+    }
+
+    /// Sorts each list.
+    fn sort_each(&mut self, mut by: impl FnMut(&u32, &u32) -> Ordering) {
+        for w in self.starts.windows(2) {
+            self.items[w[0] as usize..w[1] as usize].sort_by(&mut by);
+        }
+    }
+
+    #[cfg(test)]
+    fn bytes(&self) -> usize {
+        (self.starts.capacity() + self.items.capacity()) * 4
+    }
+}
+
+/// Each of `n` things' place in order of `key` (ties by position).
+fn ranks(n: usize, key: impl Fn(u32) -> String) -> Vec<u32> {
+    let mut keys = Texts::with_capacity(n);
+    for i in 0..n as u32 {
+        keys.push_lowercase(&[key(i).as_str()]);
+    }
+    let mut order: Vec<u32> = (0..n as u32).collect();
+    order.sort_by(|a, b| keys.get(*a).cmp(keys.get(*b)).then(a.cmp(b)));
+    let mut rank = vec![0u32; n];
+    for (place, i) in order.into_iter().enumerate() {
+        rank[i as usize] = place as u32;
+    }
+    rank
+}
+
 impl Catalog {
+    /// A catalog from all its rows (a test's, or the server's parsed whole).
+    #[cfg(test)]
     pub fn build(raw: model::Raw) -> Catalog {
-        let tracks = raw.tracks.rows;
-        let albums = raw.albums.rows;
-        let artists = raw.artists.rows;
-        let by_id = |ids: &mut dyn Iterator<Item = Uuid>| -> HashMap<Uuid, u32> {
-            ids.enumerate().map(|(i, id)| (id, i as u32)).collect()
-        };
-        let track_by_id = by_id(&mut tracks.iter().map(|t| t.id));
-        let album_by_id = by_id(&mut albums.iter().map(|a| a.id));
-        let artist_by_id = by_id(&mut artists.iter().map(|a| a.id));
-
-        let mut album_tracks: HashMap<Uuid, Vec<(Option<i16>, Option<i16>, u32)>> = HashMap::new();
-        let mut artist_tracks: HashMap<Uuid, Vec<u32>> = HashMap::new();
-        for (i, track) in tracks.iter().enumerate() {
-            for model::Membership(album, disc, number) in &track.albums {
-                album_tracks.entry(*album).or_default().push((*disc, *number, i as u32));
-            }
-            for credit in &track.credits {
-                let list = artist_tracks.entry(credit.0).or_default();
-                // An artist credited twice on a track (say, primary and producer) lists
-                // it once.
-                if list.last() != Some(&(i as u32)) {
-                    list.push(i as u32);
-                }
-            }
-        }
-        let album_tracks = album_tracks
-            .into_iter()
-            .map(|(album, mut list)| {
-                list.sort_by(|a, b| album_order((a.0, a.1), &tracks[a.2 as usize].title, (b.0, b.1), &tracks[b.2 as usize].title));
-                (album, list.into_iter().map(|x| x.2).collect())
-            })
-            .collect();
-        for list in artist_tracks.values_mut() {
-            list.sort_by(|a, b| newest_first(&tracks[*a as usize], &tracks[*b as usize]));
-        }
-        let mut artist_albums: HashMap<Uuid, Vec<u32>> = HashMap::new();
-        for (i, album) in albums.iter().enumerate() {
-            for credit in &album.credits {
-                let list = artist_albums.entry(credit.0).or_default();
-                if list.last() != Some(&(i as u32)) {
-                    list.push(i as u32);
-                }
-            }
-        }
-        for list in artist_albums.values_mut() {
-            list.sort_by(|a, b| {
-                let (a, b) = (&albums[*a as usize], &albums[*b as usize]);
-                b.year.cmp(&a.year).then_with(|| b.id.cmp(&a.id))
-            });
-        }
-        // Each grouping's tracks and albums, in the same orders as an artist's.
-        let mut grouping_tracks: HashMap<Uuid, Vec<u32>> = HashMap::new();
-        for (i, track) in tracks.iter().enumerate() {
-            for grouping in &track.groupings {
-                grouping_tracks.entry(*grouping).or_default().push(i as u32);
-            }
-        }
-        for list in grouping_tracks.values_mut() {
-            list.sort_by(|a, b| newest_first(&tracks[*a as usize], &tracks[*b as usize]));
-        }
-        let mut grouping_albums: HashMap<Uuid, Vec<u32>> = HashMap::new();
-        for (i, album) in albums.iter().enumerate() {
-            for grouping in &album.groupings {
-                grouping_albums.entry(*grouping).or_default().push(i as u32);
-            }
-        }
-        for list in grouping_albums.values_mut() {
-            list.sort_by(|a, b| {
-                let (a, b) = (&albums[*a as usize], &albums[*b as usize]);
-                b.year.cmp(&a.year).then_with(|| b.id.cmp(&a.id))
-            });
-        }
-
-        let album_title = |id: Uuid| album_by_id.get(&id).map(|&i| albums[i as usize].title.as_str()).unwrap_or("");
-        let track_text = tracks
-            .iter()
-            .map(|t| {
-                let album = t.albums.first().map(|m| album_title(m.0)).unwrap_or("");
-                format!("{}\0{}\0{}", t.title, t.artist_display, album).to_lowercase()
-            })
-            .collect();
-        let album_text = albums.iter().map(|a| format!("{}\0{}", a.title, a.artist_display).to_lowercase()).collect();
-        let artist_text = artists
-            .iter()
-            .map(|a| format!("{}\0{}", a.name, a.aliases.join("\0")).to_lowercase())
-            .collect();
-
-        let album_title_key: Vec<String> = albums.iter().map(|a| sort_key(&a.title)).collect();
-        let mut by_title: Vec<u32> = (0..albums.len() as u32).collect();
-        by_title.sort_by(|a, b| by_key(&album_title_key, *a, *b));
-        let mut album_rank = vec![0u32; albums.len()];
-        for (rank, album) in by_title.into_iter().enumerate() {
-            album_rank[album as usize] = rank as u32;
-        }
-        let track_album_rank = tracks
-            .iter()
-            .map(|t| t.albums.first().and_then(|m| album_by_id.get(&m.0)).map(|&a| album_rank[a as usize]).unwrap_or(u32::MAX))
-            .collect();
-
-        // Extras (not those taken off), found by their name, kind and what they belong to.
-        let extras: Vec<model::Extra> = raw.extras.rows.into_iter().filter(|e| !e.hidden).collect();
-        let extra_text = extras
-            .iter()
-            .map(|e| {
-                let linked: Vec<&str> = e
-                    .links
-                    .iter()
-                    .filter_map(|(kind, id)| match kind.as_str() {
-                        "track" => track_by_id.get(id).map(|&i| tracks[i as usize].title.as_str()),
-                        "album" => album_by_id.get(id).map(|&i| albums[i as usize].title.as_str()),
-                        "grouping" => raw.groupings.rows.iter().find(|g| g.id == *id).map(|g| g.name.as_str()),
-                        _ => artist_by_id.get(id).map(|&i| artists[i as usize].name.as_str()),
-                    })
-                    .collect();
-                format!("{}\0{}\0{}", e.name, e.kind, linked.join("\0")).to_lowercase()
-            })
-            .collect();
-
-        Catalog {
-            version: raw.version,
-            track_album_rank,
-            album_title_key,
-            track_title_key: tracks.iter().map(|t| sort_key(&t.title)).collect(),
-            track_artist_key: tracks.iter().map(|t| sort_key(&t.artist_display)).collect(),
-            album_artist_key: albums.iter().map(|a| sort_key(&a.artist_display)).collect(),
-            artist_name_key: artists.iter().map(|a| sort_key(&a.name)).collect(),
-            annotations: raw.annotations.rows.into_iter().map(|a| (a.id, a)).collect(),
-            issues: raw.issues.rows.into_iter().filter(|i| !i.1.is_empty()).map(|i| (i.0, i.1)).collect(),
-            grouping_by_id: raw.groupings.rows.iter().enumerate().map(|(i, g)| (g.id, i as u32)).collect(),
-            grouping_tracks,
-            grouping_albums,
-            groupings: raw.groupings.rows,
-            extra_text,
-            extras,
-            playlists: raw.playlists,
-            tracks,
-            albums,
-            artists,
-            track_by_id,
-            album_by_id,
-            artist_by_id,
-            album_tracks,
-            artist_tracks,
-            artist_albums,
-            track_text,
-            album_text,
-            artist_text,
-        }
+        Merger::from_raw(raw).build(None).expect("rows parsed already")
     }
 
     /// This catalog with a delta applied (`Raw::delta`): changed rows replaced by id,
     /// new ones added, removed ones dropped; then indexed again (a fraction of a second
     /// at 185k tracks: call it off the UI thread).
     pub fn apply(&self, delta: model::Raw) -> Catalog {
-        Catalog::build(merge_raw(self.to_raw(), delta))
+        let mut merger = Merger::from_catalog(self);
+        merger.add(delta);
+        merger.build(Some(self)).expect("rows parsed already")
     }
 
-    /// The rows it was built from (for merging a delta into).
-    fn to_raw(&self) -> model::Raw {
-        let part = |rows| model::Part { columns: Vec::new(), rows };
-        model::Raw {
-            format: model::FORMAT,
-            version: self.version.clone(),
-            delta: false,
-            removed: model::Removed::default(),
-            tracks: part(self.tracks.clone()),
-            albums: model::Part { columns: Vec::new(), rows: self.albums.clone() },
-            artists: model::Part { columns: Vec::new(), rows: self.artists.clone() },
-            annotations: model::Part { columns: Vec::new(), rows: self.annotations.values().cloned().collect() },
-            issues: model::Part { columns: Vec::new(), rows: self.issues.iter().map(|(t, f)| model::Issues(*t, f.clone())).collect() },
-            groupings: model::Part { columns: Vec::new(), rows: self.groupings.clone() },
-            extras: model::Part { columns: Vec::new(), rows: self.extras.clone() },
-            playlists: self.playlists.clone(),
+    fn index(&mut self) {
+        let track = |i: u32| Track::new(&self.pools, &self.tracks[i as usize]);
+        let album = |i: u32| Album::new(&self.pools, &self.albums[i as usize]);
+        let (n_tracks, n_albums, n_artists) = (self.tracks.len(), self.albums.len(), self.artists.len());
+        let by_id = |ids: &mut dyn Iterator<Item = Uuid>| -> HashMap<Uuid, u32> { ids.enumerate().map(|(i, id)| (id, i as u32)).collect() };
+        let track_by_id = by_id(&mut self.tracks.iter().map(|t| t.id));
+        let album_by_id = by_id(&mut self.albums.iter().map(|a| a.id));
+        let artist_by_id = by_id(&mut self.artists.iter().map(|a| a.id));
+        let grouping_by_id = by_id(&mut self.groupings.iter().map(|g| g.id));
+
+        let (mut on_album, mut by_artist, mut in_grouping) = (Vec::new(), Vec::new(), Vec::new());
+        for i in 0..n_tracks as u32 {
+            let t = track(i);
+            on_album.extend(t.albums().iter().filter_map(|m| album_by_id.get(&m.0)).map(|&a| (a, i)));
+            by_artist.extend(t.credits().iter().filter_map(|c| artist_by_id.get(&c.0)).map(|&a| (a, i)));
+            in_grouping.extend(t.groupings().iter().filter_map(|g| grouping_by_id.get(g)).map(|&g| (g, i)));
         }
+        let mut album_tracks = Lists::build(n_albums, on_album);
+        // By disc and number on that album.
+        for a in 0..n_albums as u32 {
+            let id = self.albums[a as usize].id;
+            let place = |t: u32| track(t).albums().iter().find(|m| m.0 == id).map(|m| (m.1, m.2)).unwrap_or((None, None));
+            let (start, end) = (album_tracks.starts[a as usize] as usize, album_tracks.starts[a as usize + 1] as usize);
+            album_tracks.items[start..end].sort_by(|x, y| album_order(place(*x), track(*x).title(), place(*y), track(*y).title()));
+        }
+        let mut newest: Vec<u32> = (0..n_tracks as u32).collect();
+        newest.sort_by(|a, b| newest_first(track(*a), track(*b)));
+        let mut track_newest_rank = vec![0u32; n_tracks];
+        for (place, i) in newest.into_iter().enumerate() {
+            track_newest_rank[i as usize] = place as u32;
+        }
+        let by_newest = |a: &u32, b: &u32| track_newest_rank[*a as usize].cmp(&track_newest_rank[*b as usize]);
+        let mut artist_tracks = Lists::build(n_artists, by_artist);
+        artist_tracks.sort_each(by_newest);
+        let mut grouping_tracks = Lists::build(self.groupings.len(), in_grouping);
+        grouping_tracks.sort_each(by_newest);
+
+        let (mut by_artist, mut in_grouping) = (Vec::new(), Vec::new());
+        for i in 0..n_albums as u32 {
+            let a = album(i);
+            by_artist.extend(a.credits().iter().filter_map(|c| artist_by_id.get(&c.0)).map(|&x| (x, i)));
+            in_grouping.extend(a.groupings().iter().filter_map(|g| grouping_by_id.get(g)).map(|&g| (g, i)));
+        }
+        let newest_album = |x: &u32, y: &u32| {
+            let (x, y) = (album(*x), album(*y));
+            y.year().cmp(&x.year()).then_with(|| y.id().cmp(&x.id()))
+        };
+        let mut artist_albums = Lists::build(n_artists, by_artist);
+        artist_albums.sort_each(newest_album);
+        let mut grouping_albums = Lists::build(self.groupings.len(), in_grouping);
+        grouping_albums.sort_each(newest_album);
+
+        let album_title = |id: &Uuid| album_by_id.get(id).map(|&i| album(i).title()).unwrap_or("");
+        let mut track_text = Texts::with_capacity(n_tracks);
+        for i in 0..n_tracks as u32 {
+            let t = track(i);
+            track_text.push_lowercase(&[t.title(), t.artist_display(), t.albums().first().map(|m| album_title(&m.0)).unwrap_or("")]);
+        }
+        let mut album_text = Texts::with_capacity(n_albums);
+        for i in 0..n_albums as u32 {
+            album_text.push_lowercase(&[album(i).title(), album(i).artist_display()]);
+        }
+        let mut artist_text = Texts::with_capacity(n_artists);
+        for a in &self.artists {
+            let mut parts = vec![a.name.as_str()];
+            parts.extend(a.aliases.iter().map(String::as_str));
+            artist_text.push_lowercase(&parts);
+        }
+
+        let album_title_rank = ranks(n_albums, |i| sort_key(album(i).title()));
+        let track_album_rank = (0..n_tracks as u32)
+            .map(|i| track(i).albums().first().and_then(|m| album_by_id.get(&m.0)).map(|&a| album_title_rank[a as usize]).unwrap_or(u32::MAX))
+            .collect();
+
+        // Extras (not those taken off), found by their name, kind and what they belong to.
+        let mut extra_text = Texts::with_capacity(self.extras.len());
+        for e in &self.extras {
+            let mut parts = vec![e.name.as_str(), e.kind.as_str()];
+            parts.extend(e.links.iter().filter_map(|(kind, id)| match kind.as_str() {
+                "track" => track_by_id.get(id).map(|&i| track(i).title()),
+                "album" => album_by_id.get(id).map(|&i| album(i).title()),
+                "grouping" => grouping_by_id.get(id).map(|&i| self.groupings[i as usize].name.as_str()),
+                _ => artist_by_id.get(id).map(|&i| self.artists[i as usize].name.as_str()),
+            }));
+            extra_text.push_lowercase(&parts);
+        }
+
+        let track_title_rank = ranks(n_tracks, |i| sort_key(track(i).title()));
+        let track_artist_rank = ranks(n_tracks, |i| sort_key(track(i).artist_display()));
+        let album_artist_rank = ranks(n_albums, |i| sort_key(album(i).artist_display()));
+        let artist_name_rank = ranks(n_artists, |i| sort_key(&self.artists[i as usize].name));
+
+        self.track_by_id = track_by_id;
+        self.album_by_id = album_by_id;
+        self.artist_by_id = artist_by_id;
+        self.grouping_by_id = grouping_by_id;
+        self.album_tracks = album_tracks;
+        self.artist_tracks = artist_tracks;
+        self.artist_albums = artist_albums;
+        self.grouping_tracks = grouping_tracks;
+        self.grouping_albums = grouping_albums;
+        self.track_text = track_text.finish();
+        self.album_text = album_text.finish();
+        self.artist_text = artist_text.finish();
+        self.extra_text = extra_text.finish();
+        self.track_title_rank = track_title_rank;
+        self.track_artist_rank = track_artist_rank;
+        self.album_title_rank = album_title_rank;
+        self.album_artist_rank = album_artist_rank;
+        self.artist_name_rank = artist_name_rank;
+        self.track_album_rank = track_album_rank;
+        self.track_newest_rank = track_newest_rank;
     }
 
-    /// A track's position in `tracks`.
+    #[cfg(test)]
+    /// Roughly what it takes in memory, by part (for measuring; not exact).
+    pub fn bytes(&self) -> Vec<(&'static str, usize)> {
+        use std::mem::size_of;
+        let map = |m: &HashMap<Uuid, u32>| m.capacity() * (size_of::<(Uuid, u32)>() + 1);
+        let ranks = [&self.track_title_rank, &self.track_artist_rank, &self.album_title_rank, &self.album_artist_rank, &self.artist_name_rank, &self.track_album_rank, &self.track_newest_rank];
+        let mut parts = vec![
+            ("track rows", self.tracks.capacity() * size_of::<TrackRow>()),
+            ("album rows", self.albums.capacity() * size_of::<AlbumRow>()),
+
+            ("search text", self.track_text.bytes() + self.album_text.bytes() + self.artist_text.bytes() + self.extra_text.bytes()),
+            ("by id", map(&self.track_by_id) + map(&self.album_by_id) + map(&self.artist_by_id)),
+            ("lists", self.album_tracks.bytes() + self.artist_tracks.bytes() + self.artist_albums.bytes() + self.grouping_tracks.bytes() + self.grouping_albums.bytes()),
+            ("sort ranks", ranks.iter().map(|r| r.capacity() * 4).sum()),
+        ];
+        parts.extend(self.pools.bytes());
+        parts
+    }
+
+    pub fn track_count(&self) -> usize {
+        self.tracks.len()
+    }
+
+    pub fn album_count(&self) -> usize {
+        self.albums.len()
+    }
+
+    /// The track at a position in the catalog.
+    pub fn track_at(&self, i: u32) -> Track<'_> {
+        Track::new(&self.pools, &self.tracks[i as usize])
+    }
+
+    pub fn album_at(&self, i: u32) -> Album<'_> {
+        Album::new(&self.pools, &self.albums[i as usize])
+    }
+
+    /// The track at a position, if there's one there.
+    pub fn get_track(&self, i: u32) -> Option<Track<'_>> {
+        self.tracks.get(i as usize).map(|row| Track::new(&self.pools, row))
+    }
+
+    pub fn get_album(&self, i: u32) -> Option<Album<'_>> {
+        self.albums.get(i as usize).map(|row| Album::new(&self.pools, row))
+    }
+
+    #[cfg(test)]
+    pub fn tracks(&self) -> impl ExactSizeIterator<Item = Track<'_>> + '_ {
+        self.tracks.iter().map(|row| Track::new(&self.pools, row))
+    }
+
+    pub fn albums(&self) -> impl ExactSizeIterator<Item = Album<'_>> + '_ {
+        self.albums.iter().map(|row| Album::new(&self.pools, row))
+    }
+
+    /// A track's position in the catalog.
     pub fn track_index(&self, id: Uuid) -> Option<u32> {
         self.track_by_id.get(&id).copied()
     }
 
-    pub fn album(&self, id: Uuid) -> Option<&Album> {
-        self.album_by_id.get(&id).map(|&i| &self.albums[i as usize])
+    pub fn album_index(&self, id: Uuid) -> Option<u32> {
+        self.album_by_id.get(&id).copied()
+    }
+
+    pub fn track(&self, id: Uuid) -> Option<Track<'_>> {
+        self.track_index(id).map(|i| self.track_at(i))
+    }
+
+    pub fn album(&self, id: Uuid) -> Option<Album<'_>> {
+        self.album_index(id).map(|i| self.album_at(i))
     }
 
     pub fn artist(&self, id: Uuid) -> Option<&Artist> {
@@ -256,17 +342,17 @@ impl Catalog {
         self.artist(id).map(Artist::label)
     }
 
-    /// The album's tracks in order (positions in `tracks`).
+    /// The album's tracks in order (positions in the catalog).
     pub fn album_tracks(&self, album: Uuid) -> &[u32] {
-        self.album_tracks.get(&album).map(Vec::as_slice).unwrap_or(&[])
+        self.album_by_id.get(&album).map(|&a| self.album_tracks.get(a)).unwrap_or(&[])
     }
 
     pub fn artist_tracks(&self, artist: Uuid) -> &[u32] {
-        self.artist_tracks.get(&artist).map(Vec::as_slice).unwrap_or(&[])
+        self.artist_by_id.get(&artist).map(|&a| self.artist_tracks.get(a)).unwrap_or(&[])
     }
 
     pub fn artist_albums(&self, artist: Uuid) -> &[u32] {
-        self.artist_albums.get(&artist).map(Vec::as_slice).unwrap_or(&[])
+        self.artist_by_id.get(&artist).map(|&a| self.artist_albums.get(a)).unwrap_or(&[])
     }
 
     pub fn grouping(&self, id: Uuid) -> Option<&Grouping> {
@@ -275,33 +361,32 @@ impl Catalog {
 
     /// A grouping's tracks (newest release first) and albums (newest first).
     pub fn grouping_tracks(&self, grouping: Uuid) -> &[u32] {
-        self.grouping_tracks.get(&grouping).map(Vec::as_slice).unwrap_or(&[])
+        self.grouping_by_id.get(&grouping).map(|&g| self.grouping_tracks.get(g)).unwrap_or(&[])
     }
 
     pub fn grouping_albums(&self, grouping: Uuid) -> &[u32] {
-        self.grouping_albums.get(&grouping).map(Vec::as_slice).unwrap_or(&[])
+        self.grouping_by_id.get(&grouping).map(|&g| self.grouping_albums.get(g)).unwrap_or(&[])
     }
 
     /// The track's main album, if it's on one.
-    pub fn main_album(&self, track: &Track) -> Option<&Album> {
-        track.albums.first().and_then(|m| self.album(m.0))
+    pub fn main_album(&self, track: Track) -> Option<Album<'_>> {
+        track.albums().first().and_then(|m| self.album(m.0))
+    }
+
+    /// A track's text to find it by: title, artists and album, lowercase.
+    pub fn track_text(&self, i: u32) -> &str {
+        self.track_text.get(i)
     }
 
     /// The lowercase text of every track, album and artist, for searching.
-    /// A track's text to find it by: title, artists and album, lowercase.
-    pub fn track_text(&self, i: u32) -> &str {
-        &self.track_text[i as usize]
-    }
-
-    pub fn texts(&self) -> (&[String], &[String], &[String]) {
+    pub fn texts(&self) -> (&Texts, &Texts, &Texts) {
         (&self.track_text, &self.album_text, &self.artist_text)
     }
 
     /// The extras' search text (by place in `extras`).
-    pub fn extra_texts(&self) -> &[String] {
+    pub fn extra_texts(&self) -> &Texts {
         &self.extra_text
     }
-
 
     // ---- Lists: filtered and sorted ----
 
@@ -319,27 +404,24 @@ impl Catalog {
         let query = super::query::Query::parse(filter);
         let track = |row: usize| rows.track(row);
         let mut list: Vec<usize> = (0..rows.len(self)).filter(|&row| query.matches_track(self, track(row), "")).collect();
-        let t = &self.tracks;
-        let plays = |i: u32| self.annotations.get(&t[i as usize].id).map(|a| a.play_count).unwrap_or(0);
+        let t = |row: usize| self.track_at(track(row));
+        let plays = |row: usize| self.annotations.get(&t(row).id()).map(|a| a.play_count).unwrap_or(0);
+        let rank = |ranks: &[u32], row: usize| ranks[track(row) as usize];
         match sort {
             TrackSort::Natural => {}
             // Newest first: when it was added to the playlist, or to the library.
             TrackSort::Added => match rows.added {
                 Some(added) => list.sort_by(|a, b| added[*b].cmp(&added[*a]).then(a.cmp(b))),
-                None => list.sort_by(|a, b| t[track(*b) as usize].id.cmp(&t[track(*a) as usize].id)),
+                None => list.sort_by_key(|r| std::cmp::Reverse(t(*r).id())),
             },
-            TrackSort::Title => list.sort_by(|a, b| by_key(&self.track_title_key, track(*a), track(*b))),
-            TrackSort::Artist => list.sort_by(|a, b| {
-                by_key(&self.track_artist_key, track(*a), track(*b)).then_with(|| newest_first(&t[track(*a) as usize], &t[track(*b) as usize]))
-            }),
-            TrackSort::Album => list.sort_by(|a, b| {
-                let rank = &self.track_album_rank;
-                rank[track(*a) as usize].cmp(&rank[track(*b) as usize]).then_with(|| by_key(&self.track_title_key, track(*a), track(*b)))
-            }),
-            TrackSort::Year => list.sort_by(|a, b| newest_first(&t[track(*a) as usize], &t[track(*b) as usize])),
-            TrackSort::Length => list.sort_by(|a, b| t[track(*b) as usize].duration_ms.cmp(&t[track(*a) as usize].duration_ms)),
-            TrackSort::Plays => list.sort_by(|a, b| plays(track(*b)).cmp(&plays(track(*a))).then(a.cmp(b))),
-            TrackSort::Og => list.sort_by_key(|r| t[track(*r) as usize].original_filename.is_none()),
+            // Ranks are unique (ties are by position), so these are whole orders.
+            TrackSort::Title => list.sort_by_key(|r| rank(&self.track_title_rank, *r)),
+            TrackSort::Artist => list.sort_by_key(|r| rank(&self.track_artist_rank, *r)),
+            TrackSort::Album => list.sort_by_key(|r| (rank(&self.track_album_rank, *r), rank(&self.track_title_rank, *r))),
+            TrackSort::Year => list.sort_by_key(|r| rank(&self.track_newest_rank, *r)),
+            TrackSort::Length => list.sort_by_key(|r| std::cmp::Reverse(t(*r).duration_ms())),
+            TrackSort::Plays => list.sort_by(|a, b| plays(*b).cmp(&plays(*a)).then(a.cmp(b))),
+            TrackSort::Og => list.sort_by_key(|r| t(*r).original_filename().is_none()),
         }
         if descending {
             list.reverse();
@@ -353,20 +435,20 @@ impl Catalog {
         let mut list: Vec<u32> = matching(&self.album_text, &query.words.join(" "))
             .into_iter()
             .filter(|&i| {
-                let a = &self.albums[i as usize];
+                let a = self.album_at(i);
                 query.fields.iter().filter(|(k, v)| !v.is_empty() || *k == Key::Og).all(|(key, value)| {
                     let value = value.to_lowercase();
                     match key {
-                        Key::Artist => a.artist_display.to_lowercase().contains(&value),
-                        Key::Title | Key::Album => a.title.to_lowercase().contains(&value),
-                        Key::Year => a.release_date.as_deref().is_some_and(|d| d.starts_with(&value)) || a.year.is_some_and(|y| y.to_string() == value),
-                        Key::Kind => a.kind.starts_with(&value),
+                        Key::Artist => a.artist_display().to_lowercase().contains(&value),
+                        Key::Title | Key::Album => a.title().to_lowercase().contains(&value),
+                        Key::Year => a.release_date().is_some_and(|d| d.starts_with(&value)) || a.year().is_some_and(|y| y.to_string() == value),
+                        Key::Kind => a.kind().starts_with(&value),
                         // Albums with an original file on them (or, `og:no`, without any).
                         Key::Og => {
-                            let tracks = self.album_tracks(a.id);
+                            let tracks = self.album_tracks.get(i);
                             match value.as_str() {
-                                "no" | "n" | "false" | "0" => tracks.iter().all(|&t| self.tracks[t as usize].original_filename.is_none()),
-                                _ => tracks.iter().any(|&t| super::query::og_matches(self.tracks[t as usize].original_filename.as_deref(), &value)),
+                                "no" | "n" | "false" | "0" => tracks.iter().all(|&t| self.track_at(t).original_filename().is_none()),
+                                _ => tracks.iter().any(|&t| super::query::og_matches(self.track_at(t).original_filename(), &value)),
                             }
                         }
                         // Keys about tracks don't apply to albums.
@@ -375,16 +457,14 @@ impl Catalog {
                 })
             })
             .collect();
-        let a = &self.albums;
+        let a = |i: u32| self.album_at(i);
         match sort {
-            AlbumSort::Added => list.sort_by(|x, y| a[*y as usize].id.cmp(&a[*x as usize].id)),
-            AlbumSort::Title => list.sort_by(|x, y| by_key(&self.album_title_key, *x, *y)),
-            AlbumSort::Artist => list.sort_by(|x, y| {
-                by_key(&self.album_artist_key, *x, *y).then_with(|| a[*x as usize].year.cmp(&a[*y as usize].year))
-            }),
+            AlbumSort::Added => list.sort_by_key(|x| std::cmp::Reverse(a(*x).id())),
+            AlbumSort::Title => list.sort_by_key(|x| self.album_title_rank[*x as usize]),
+            AlbumSort::Artist => list.sort_by_key(|x| self.album_artist_rank[*x as usize]),
             AlbumSort::Year => list.sort_by(|x, y| {
-                let (x, y) = (&a[*x as usize], &a[*y as usize]);
-                y.year.cmp(&x.year).then_with(|| y.id.cmp(&x.id))
+                let (x, y) = (a(*x), a(*y));
+                y.year().cmp(&x.year()).then_with(|| y.id().cmp(&x.id()))
             }),
         }
         list
@@ -401,10 +481,10 @@ impl Catalog {
         }
         let mut list = matching(&self.artist_text, &words.join(" "));
         match sort {
-            ArtistSort::Name => list.sort_by(|x, y| by_key(&self.artist_name_key, *x, *y)),
+            ArtistSort::Name => list.sort_by_key(|x| self.artist_name_rank[*x as usize]),
             ArtistSort::Tracks => list.sort_by(|x, y| {
                 let (x, y) = (*x as usize, *y as usize);
-                self.artists[y].track_count.cmp(&self.artists[x].track_count).then_with(|| self.artist_name_key[x].cmp(&self.artist_name_key[y]))
+                self.artists[y].track_count.cmp(&self.artists[x].track_count).then_with(|| self.artist_name_rank[x].cmp(&self.artist_name_rank[y]))
             }),
         }
         list
@@ -441,7 +521,7 @@ pub struct TrackRows<'a> {
 
 impl TrackRows<'_> {
     pub fn len(&self, catalog: &Catalog) -> usize {
-        self.tracks.map(<[u32]>::len).unwrap_or(catalog.tracks.len())
+        self.tracks.map(<[u32]>::len).unwrap_or(catalog.track_count())
     }
 
     /// The track (a position in the catalog) of row `row`.
@@ -468,7 +548,7 @@ pub enum ArtistSort {
 }
 
 /// Positions whose text contains every word of `filter` (all of them if it's empty).
-fn matching(text: &[String], filter: &str) -> Vec<u32> {
+fn matching(text: &Texts, filter: &str) -> Vec<u32> {
     let words: Vec<String> = filter.to_lowercase().split_whitespace().map(str::to_string).collect();
     if words.is_empty() {
         return (0..text.len() as u32).collect();
@@ -487,19 +567,6 @@ fn sort_key(text: &str) -> String {
         Some(rest) => rest.to_string(),
         None => lower,
     }
-}
-
-fn by_key(keys: &[String], a: u32, b: u32) -> Ordering {
-    keys[a as usize].cmp(&keys[b as usize]).then(a.cmp(&b))
-}
-
-/// A whole catalog's rows with a delta merged in (rows replaced by id, new ones added,
-/// removed ones dropped), without building the index: several deltas are merged first
-/// and the index built once (building it takes a moment at 185k tracks).
-pub fn merge_raw(base: model::Raw, delta: model::Raw) -> model::Raw {
-    let mut merger = Merger::new(base);
-    merger.add(delta);
-    merger.finish()
 }
 
 /// Rows kept by id, in their order: a change replaces a row where it is, a removal
@@ -537,40 +604,92 @@ impl<T> Rows<T> {
     }
 }
 
-/// A base catalog with deltas merged in one after another.
-pub struct Merger {
-    format: u32,
+/// A track or album row on its way into a catalog: still the server's text (a whole
+/// catalog's), parsed (a delta's), or a row of the catalog a delta is applied to.
+enum Pending<'a, T> {
+    Text(&'a RawValue),
+    /// Boxed: a pending row is as small as the others until it's built.
+    Row(Box<T>),
+    Kept(u32),
+}
+
+/// A row's id with the row.
+type Keyed<'a, T> = (Uuid, Pending<'a, T>);
+
+fn keyed<T>(id: impl Fn(&T) -> Uuid) -> impl Fn(T) -> (Uuid, Pending<'static, T>) {
+    move |row| (id(&row), Pending::Row(Box::new(row)))
+}
+
+/// A whole catalog with deltas merged in one after another, then built into a `Catalog`
+/// once (indexing takes a moment at 185k tracks, and there can be thousands of deltas).
+pub struct Merger<'a> {
     version: Option<String>,
-    tracks: Rows<model::Track>,
-    albums: Rows<model::Album>,
+    tracks: Rows<Keyed<'a, model::Track>>,
+    albums: Rows<Keyed<'a, model::Album>>,
     artists: Rows<model::Artist>,
     extras: Rows<model::Extra>,
     annotations: HashMap<Uuid, model::Annotation>,
     issues: HashMap<Uuid, Vec<(Uuid, String)>>,
-    groupings: model::Part<model::Grouping>,
+    groupings: Vec<model::Grouping>,
     playlists: Vec<model::Playlist>,
 }
 
-impl Merger {
-    pub fn new(base: model::Raw) -> Merger {
-        Merger {
-            format: base.format,
+impl<'a> Merger<'a> {
+    /// From a whole catalog, its tracks and albums still text (`model::parse_base`).
+    pub fn from_base(base: model::Base<'a>) -> anyhow::Result<Merger<'a>> {
+        fn text<'a, T>(rows: Vec<&'a RawValue>) -> anyhow::Result<Vec<Keyed<'a, T>>> {
+            rows.into_iter().map(|r| Ok((super::compact::first_id(r)?.0, Pending::Text(r)))).collect()
+        }
+        Ok(Merger {
             version: base.version,
-            tracks: Rows::new(base.tracks.rows, |t| t.id),
-            albums: Rows::new(base.albums.rows, |a| a.id),
+            tracks: Rows::new(text(base.tracks.rows)?, |r| r.0),
+            albums: Rows::new(text(base.albums.rows)?, |r| r.0),
             artists: Rows::new(base.artists.rows, |a| a.id),
             extras: Rows::new(base.extras.rows, |e| e.id),
             annotations: base.annotations.rows.into_iter().map(|a| (a.id, a)).collect(),
             issues: base.issues.rows.into_iter().map(|i| (i.0, i.1)).collect(),
-            groupings: base.groupings,
+            groupings: base.groupings.rows,
             playlists: base.playlists,
+        })
+    }
+
+    #[cfg(test)]
+    fn from_raw(raw: model::Raw) -> Merger<'static> {
+        Merger {
+            version: raw.version,
+            tracks: Rows::new(raw.tracks.rows.into_iter().map(keyed(|t: &model::Track| t.id)).collect(), |r| r.0),
+            albums: Rows::new(raw.albums.rows.into_iter().map(keyed(|a: &model::Album| a.id)).collect(), |r| r.0),
+            artists: Rows::new(raw.artists.rows, |a| a.id),
+            extras: Rows::new(raw.extras.rows, |e| e.id),
+            annotations: raw.annotations.rows.into_iter().map(|a| (a.id, a)).collect(),
+            issues: raw.issues.rows.into_iter().map(|i| (i.0, i.1)).collect(),
+            groupings: raw.groupings.rows,
+            playlists: raw.playlists,
+        }
+    }
+
+    /// From a catalog, to apply a delta to (its rows aren't copied until built).
+    fn from_catalog(c: &Catalog) -> Merger<'static> {
+        fn kept<T>(ids: impl Iterator<Item = Uuid>) -> Vec<Keyed<'static, T>> {
+            ids.enumerate().map(|(i, id)| (id, Pending::Kept(i as u32))).collect()
+        }
+        Merger {
+            version: c.version.clone(),
+            tracks: Rows::new(kept(c.tracks.iter().map(|t| t.id)), |r| r.0),
+            albums: Rows::new(kept(c.albums.iter().map(|a| a.id)), |r| r.0),
+            artists: Rows::new(c.artists.clone(), |a| a.id),
+            extras: Rows::new(c.extras.clone(), |e| e.id),
+            annotations: c.annotations.clone(),
+            issues: c.issues.clone(),
+            groupings: c.groupings.clone(),
+            playlists: c.playlists.clone(),
         }
     }
 
     pub fn add(&mut self, delta: model::Raw) {
         let removed = &delta.removed;
-        self.tracks.apply(delta.tracks.rows, &removed.tracks, |t| t.id);
-        self.albums.apply(delta.albums.rows, &removed.albums, |a| a.id);
+        self.tracks.apply(delta.tracks.rows.into_iter().map(keyed(|t: &model::Track| t.id)).collect(), &removed.tracks, |r| r.0);
+        self.albums.apply(delta.albums.rows.into_iter().map(keyed(|a: &model::Album| a.id)).collect(), &removed.albums, |r| r.0);
         self.artists.apply(delta.artists.rows, &removed.artists, |a| a.id);
         // A changed extra replaces its row (one taken off comes flagged, and is left out
         // when indexed).
@@ -592,41 +711,82 @@ impl Merger {
                 self.issues.insert(track, flags);
             }
         }
-        self.format = delta.format;
         if delta.version.is_some() {
             self.version = delta.version;
         }
         // Sent whole with every delta.
-        self.groupings = delta.groupings;
+        self.groupings = delta.groupings.rows;
         self.playlists = delta.playlists;
     }
 
-    pub fn finish(self) -> model::Raw {
-        fn part<T>(rows: Vec<T>) -> model::Part<T> {
-            model::Part { columns: Vec::new(), rows }
+    /// The catalog. `old`: the one `Pending::Kept` rows are from. A row that doesn't read
+    /// is an error (the copy on disk is then fetched again).
+    pub fn build(self, old: Option<&Catalog>) -> anyhow::Result<Catalog> {
+        let mut builder = rows::Builder::default();
+        let pending = self.tracks.finish();
+        let mut tracks = Vec::with_capacity(pending.len());
+        for (_, row) in pending {
+            tracks.push(builder.track(match row {
+                Pending::Text(text) => serde_json::from_str(text.get()).with_context(|| format!("a track: {}", short(text)))?,
+                Pending::Row(t) => *t,
+                Pending::Kept(i) => old.context("no catalog to keep rows from")?.track_at(i).to_model(),
+            }));
         }
-        model::Raw {
-            format: self.format,
+        let pending = self.albums.finish();
+        let mut albums = Vec::with_capacity(pending.len());
+        for (_, row) in pending {
+            albums.push(builder.album(match row {
+                Pending::Text(text) => serde_json::from_str(text.get()).with_context(|| format!("an album: {}", short(text)))?,
+                Pending::Row(a) => *a,
+                Pending::Kept(i) => old.context("no catalog to keep rows from")?.album_at(i).to_model(),
+            }));
+        }
+        let mut catalog = Catalog {
             version: self.version,
-            delta: false,
-            removed: model::Removed::default(),
-            tracks: part(self.tracks.finish()),
-            albums: part(self.albums.finish()),
-            artists: part(self.artists.finish()),
-            annotations: part(self.annotations.into_values().collect()),
-            issues: part(self.issues.into_iter().map(|(t, f)| model::Issues(t, f)).collect()),
-            extras: part(self.extras.finish()),
-            groupings: self.groupings,
+            pools: builder.finish(),
+            tracks,
+            albums,
+            artists: self.artists.finish(),
             playlists: self.playlists,
-        }
+            annotations: self.annotations,
+            issues: self.issues.into_iter().filter(|i| !i.1.is_empty()).collect(),
+            groupings: self.groupings,
+            extras: self.extras.finish().into_iter().filter(|e| !e.hidden).collect(),
+            extra_text: Texts::default(),
+            track_by_id: HashMap::new(),
+            album_by_id: HashMap::new(),
+            artist_by_id: HashMap::new(),
+            grouping_by_id: HashMap::new(),
+            album_tracks: Lists::default(),
+            artist_tracks: Lists::default(),
+            artist_albums: Lists::default(),
+            grouping_tracks: Lists::default(),
+            grouping_albums: Lists::default(),
+            track_text: Texts::default(),
+            album_text: Texts::default(),
+            artist_text: Texts::default(),
+            track_title_rank: Vec::new(),
+            track_artist_rank: Vec::new(),
+            album_title_rank: Vec::new(),
+            album_artist_rank: Vec::new(),
+            artist_name_rank: Vec::new(),
+            track_album_rank: Vec::new(),
+            track_newest_rank: Vec::new(),
+        };
+        catalog.index();
+        Ok(catalog)
     }
 }
+
+/// The start of a row's text, for an error.
+fn short(text: &RawValue) -> &str {
+    let text = text.get();
+    &text[..text.floor_char_boundary(60)]
+}
+
 /// Newest release first (no date last), then newest added.
-fn newest_first(a: &Track, b: &Track) -> Ordering {
-    fn date(t: &Track) -> &str {
-        t.release_date.as_deref().unwrap_or("")
-    }
-    date(b).cmp(date(a)).then_with(|| b.id.cmp(&a.id))
+fn newest_first(a: Track, b: Track) -> Ordering {
+    b.release_date().unwrap_or("").cmp(a.release_date().unwrap_or("")).then_with(|| b.id().cmp(&a.id()))
 }
 
 #[cfg(test)]
@@ -671,7 +831,7 @@ mod tests {
     }
 
     fn titles(c: &Catalog, list: &[u32]) -> Vec<String> {
-        list.iter().map(|i| c.tracks[*i as usize].title.clone()).collect()
+        list.iter().map(|i| c.track_at(*i).title().to_string()).collect()
     }
 
     #[test]
@@ -734,7 +894,7 @@ mod tests {
         });
         let delta: model::Raw = serde_json::from_value(delta).unwrap();
         let c = c.apply(delta);
-        let mut titles: Vec<String> = c.tracks.iter().map(|t| t.title.clone()).collect();
+        let mut titles: Vec<String> = c.tracks().map(|t| t.title().to_string()).collect();
         titles.sort();
         assert_eq!(titles, ["First", "Fourth", "Second (edited)"]);
         assert_eq!(c.version.as_deref(), Some("10:20:"));
@@ -772,11 +932,11 @@ mod bench {
         let Ok(path) = std::env::var("ACETATE_BENCH_CATALOG") else { return };
         let body = std::fs::read(path).unwrap();
         let t = Instant::now();
-        let raw = model::parse(&body).unwrap();
+        let base = model::parse_base(&body).unwrap();
         println!("parse: {:?}", t.elapsed());
         let t = Instant::now();
-        let c = Catalog::build(raw);
-        println!("index: {:?} ({} tracks)", t.elapsed(), c.tracks.len());
+        let c = Merger::from_base(base).unwrap().build(None).unwrap();
+        println!("rows read and indexed: {:?} ({} tracks)", t.elapsed(), c.track_count());
         for (name, sort) in [("added", TrackSort::Added), ("title", TrackSort::Title), ("artist", TrackSort::Artist), ("album", TrackSort::Album), ("year", TrackSort::Year)] {
             let t = Instant::now();
             let list = c.track_list("", sort, false);
@@ -794,7 +954,7 @@ mod bench {
             println!("search {query:?}: {:?} ({} tracks)", t.elapsed(), hits.tracks.len());
         }
         // A one-track delta, applied (index rebuilt).
-        let mut changed = c.tracks[5000].clone();
+        let mut changed = c.track_at(5000).to_model();
         changed.title.push_str(" (edited)");
         let delta = model::Raw {
             format: model::FORMAT,

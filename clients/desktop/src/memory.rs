@@ -1,11 +1,11 @@
 //! How much memory the app holds, and giving freed memory back.
 //!
-//! Measured on a real library (168k tracks, 2026-09-30): the catalog takes about 375 MB,
-//! and a refresh builds the new one while the old is still shown (about 740 MB for a
-//! moment). The system allocator (glibc) keeps what's freed for later instead of giving it
-//! back, so each refresh left about 250 MB more held by the app, and it added up. `trim`
-//! gives it back; it's called after the catalog is replaced, when covers are let go, and
-//! once a minute.
+//! Measured on a real library (161k tracks, 2026-10-07, `catalog::measure`): the catalog
+//! takes about 130 MB, and a refresh builds the new one while the old is still shown (about
+//! 140 MB more for a moment). The system allocator (glibc) keeps what's freed for later
+//! instead of giving it back, so each refresh would leave that much more held by the app,
+//! adding up. `trim` gives it back; it's called after the catalog is replaced, when covers
+//! are let go, and once a minute.
 
 /// The app's resident memory now and at its highest, in bytes (Linux and Windows; None
 /// elsewhere).

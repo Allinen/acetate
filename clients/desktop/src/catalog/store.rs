@@ -66,10 +66,10 @@ impl Store {
         let _files = self.files.lock().unwrap_or_else(|e| e.into_inner());
         let body = std::fs::read(&self.body).ok()?;
         // An old format after an update: the server's copy replaces it.
-        let raw = model::parse(&body).ok()?;
-        // Every delta merged into the rows first, the index built once: building it takes
+        let base = model::parse_base(&body).ok()?;
+        // Every delta merged into the rows first, the catalog built once: building it takes
         // a moment at 185k tracks, and there can be thousands of deltas.
-        let mut merger = super::index::Merger::new(raw);
+        let mut merger = super::index::Merger::from_base(base).ok()?;
         if let Ok(deltas) = std::fs::read(&self.deltas) {
             for line in deltas.split(|b| *b == b'\n').filter(|l| !l.is_empty()) {
                 match model::parse(line) {
@@ -79,7 +79,7 @@ impl Store {
                 }
             }
         }
-        Some(Arc::new(Catalog::build(merger.finish())))
+        merger.build(None).ok().map(Arc::new)
     }
 
     /// Asks the server what changed since `current` (all of it without one); a new copy
@@ -93,11 +93,10 @@ impl Store {
             CatalogResponse::Changed { body, etag } => {
                 // Parsing and indexing is CPU work: off the async threads.
                 let (catalog, body, delta) = tokio::task::spawn_blocking(move || {
-                    let raw = model::parse(&body)?;
-                    let delta = raw.delta;
+                    let delta = model::is_delta(&body)?;
                     let catalog = match (delta, current) {
-                        (true, Some(current)) => current.apply(raw),
-                        _ => Catalog::build(raw),
+                        (true, Some(current)) => current.apply(model::parse(&body)?),
+                        _ => super::index::Merger::from_base(model::parse_base(&body)?)?.build(None)?,
                     };
                     anyhow::Ok((Arc::new(catalog), body, delta))
                 })
@@ -198,9 +197,9 @@ mod kept_copy {
         let Ok(prefix) = std::env::var("ACETATE_TEST_STORE") else { return };
         let body = std::fs::read(format!("{prefix}.json")).unwrap();
         let t = std::time::Instant::now();
-        let raw = model::parse(&body).unwrap_or_else(|e| panic!("the copy doesn't read: {e:#}"));
-        println!("copy: {} tracks, version {:?}, parsed in {:?}", raw.tracks.rows.len(), raw.version, t.elapsed());
-        let mut merger = crate::catalog::index::Merger::new(raw);
+        let base = model::parse_base(&body).unwrap_or_else(|e| panic!("the copy doesn't read: {e:#}"));
+        println!("copy: {} tracks, version {:?}, parsed in {:?}", base.tracks.rows.len(), base.version, t.elapsed());
+        let mut merger = crate::catalog::index::Merger::from_base(base).unwrap();
         let deltas = std::fs::read(format!("{prefix}.deltas")).unwrap_or_default();
         let lines: Vec<&[u8]> = deltas.split(|b| *b == b'\n').filter(|l| !l.is_empty()).collect();
         for (n, line) in lines.iter().enumerate() {
@@ -210,11 +209,9 @@ mod kept_copy {
             }
         }
         let t = std::time::Instant::now();
-        let raw = merger.finish();
-        println!("deltas merged in {:?}", t.elapsed());
-        let catalog = Catalog::build(raw);
+        let catalog = merger.build(None).unwrap_or_else(|e| panic!("building: {e:#}"));
         println!("built in {:?}", t.elapsed());
-        println!("with {} deltas: {} tracks, version {:?}, in {:?} in all", lines.len(), catalog.tracks.len(), catalog.version, t.elapsed());
+        println!("with {} deltas: {} tracks, version {:?}, in {:?} in all", lines.len(), catalog.track_count(), catalog.version, t.elapsed());
         // Folded into one body (in memory only: nothing on disk is touched), the same
         // catalog has to come out, and load faster.
         let body = std::fs::read(format!("{prefix}.json")).unwrap();
@@ -223,11 +220,11 @@ mod kept_copy {
         let folded = super::super::compact::fold(&body, &deltas).unwrap_or_else(|e| panic!("folding: {e:#}"));
         println!("folded in {:?}: {} MB", t.elapsed(), folded.len() / 1_000_000);
         let t = std::time::Instant::now();
-        let again = Catalog::build(model::parse(&folded).unwrap());
-        println!("the folded copy loads in {:?}: {} tracks, version {:?}", t.elapsed(), again.tracks.len(), again.version);
-        assert_eq!(again.tracks.len(), catalog.tracks.len());
+        let again = crate::catalog::index::Merger::from_base(model::parse_base(&folded).unwrap()).unwrap().build(None).unwrap();
+        println!("the folded copy loads in {:?}: {} tracks, version {:?}", t.elapsed(), again.track_count(), again.version);
+        assert_eq!(again.track_count(), catalog.track_count());
         assert_eq!(again.version, catalog.version);
-        let (mut a, mut b): (Vec<_>, Vec<_>) = (again.tracks.iter().map(|t| (t.id, t.title.clone())).collect(), catalog.tracks.iter().map(|t| (t.id, t.title.clone())).collect());
+        let (mut a, mut b): (Vec<_>, Vec<_>) = (again.tracks().map(|t| (t.id(), t.title().to_string())).collect(), catalog.tracks().map(|t| (t.id(), t.title().to_string())).collect());
         a.sort();
         b.sort();
         assert!(a == b, "the folded copy's tracks differ");

@@ -7,6 +7,7 @@
 use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config, Matcher, Utf32Str};
 
+use super::text::Texts;
 use super::Catalog;
 
 /// The best matches of each kind, best first: (position in the catalog, score).
@@ -65,7 +66,7 @@ impl Search {
         self.best(&pattern, texts, limit)
     }
 
-    fn best(&mut self, pattern: &Pattern, texts: &[String], limit: usize) -> Vec<(u32, u32)> {
+    fn best(&mut self, pattern: &Pattern, texts: &Texts, limit: usize) -> Vec<(u32, u32)> {
         if pattern.atoms.is_empty() {
             return Vec::new();
         }

@@ -192,8 +192,8 @@ impl MergeView {
             ui.label(RichText::new("Loading both tracks…").color(P.faint));
             return None;
         };
-        let lt = catalog.track_index(self.left).map(|i| &catalog.tracks[i as usize]);
-        let rt = catalog.track_index(self.right).map(|i| &catalog.tracks[i as usize]);
+        let lt = catalog.track(self.left);
+        let rt = catalog.track(self.right);
         if self.kept_by.is_none() {
             if let (Some(a), Some(b)) = (catalog.track_index(self.left), catalog.track_index(self.right)) {
                 shell.act(Action::Warm { a, b, at: middle(catalog, self.left, self.right) });
@@ -265,7 +265,7 @@ impl MergeView {
         });
         // Who may see them: with `manage_access`, which groups (asked once); else only
         // whether each is restricted.
-        let any_restricted = lt.is_some_and(|t| t.is_restricted) || rt.is_some_and(|t| t.is_restricted);
+        let any_restricted = lt.is_some_and(|t| t.is_restricted()) || rt.is_some_and(|t| t.is_restricted());
         if any_restricted && shell.account.can("manage_access") && !self.access_asked {
             self.access_asked = true;
             let (api, access, ctx, left, right) = (shell.api.clone(), self.access.clone(), shell.ctx.clone(), self.left, self.right);
@@ -291,7 +291,7 @@ impl MergeView {
             }
             Some(_) => {}
             None => {
-                if lt.map(|t| t.is_restricted) != rt.map(|t| t.is_restricted) {
+                if lt.map(|t| t.is_restricted()) != rt.map(|t| t.is_restricted()) {
                     ui.label(RichText::new("Who may see them differs: the kept track keeps its own access.").color(P.danger));
                 }
             }
@@ -360,7 +360,7 @@ impl MergeView {
             ui.label(RichText::new(format!("Combined: {}.", listed.join(", "))).color(P.muted));
         }
         if let Some((from, into)) = singles {
-            let title = |id: Uuid| catalog.album(id).map(|a| a.title.clone()).unwrap_or_default();
+            let title = |id: Uuid| catalog.album(id).map(|a| a.title().to_string()).unwrap_or_default();
             let text = format!("Merge their singles too: “{}” into “{}” (each has only this track)  (a)", title(from), title(into));
             if ui.checkbox(&mut shell.settings.merge_along, text).changed() {
                 shell.settings.save(&shell.data_dir);
@@ -464,9 +464,9 @@ impl MergeView {
 /// the server checks again, tracks the user can't see counted.
 pub fn lone_singles(catalog: &Catalog, left: Uuid, right: Uuid) -> Option<(Uuid, Uuid)> {
     let alone_on = |track: Uuid| -> Option<Uuid> {
-        let t = &catalog.tracks[catalog.track_index(track)? as usize];
-        let mut singles = t.albums.iter().map(|m| m.0).filter(|&album| {
-            catalog.album(album).is_some_and(|a| a.kind == "single") && catalog.album_tracks(album).len() == 1
+        let t = catalog.track_at(catalog.track_index(track)?);
+        let mut singles = t.albums().iter().map(|m| m.0).filter(|&album| {
+            catalog.album(album).is_some_and(|a| a.kind() == "single") && catalog.album_tracks(album).len() == 1
         });
         match (singles.next(), singles.next()) {
             (Some(album), None) => Some(album),
@@ -484,7 +484,7 @@ fn can_share(shell: &Shell) -> bool {
 /// Where comparing starts (when the other side isn't playing): the middle of the
 /// shorter, the same for both sides (see `Action::Warm`).
 fn middle(catalog: &Catalog, a: Uuid, b: Uuid) -> Duration {
-    let length = |id: Uuid| catalog.track_index(id).and_then(|i| catalog.tracks[i as usize].duration_ms).map(|ms| Duration::from_millis(ms.max(0) as u64));
+    let length = |id: Uuid| catalog.track_index(id).and_then(|i| catalog.track_at(i).duration_ms()).map(|ms| Duration::from_millis(ms.max(0) as u64));
     let shorter = match (length(a), length(b)) {
         (Some(x), Some(y)) => x.min(y),
         (Some(x), None) | (None, Some(x)) => x,
@@ -504,7 +504,7 @@ fn play(shell: &mut Shell, catalog: &Catalog, player: &PlayerView, track: Uuid, 
         shell.act(Action::TogglePause);
         return;
     }
-    let length = catalog.tracks[index as usize].duration_ms.map(|ms| Duration::from_millis(ms.max(0) as u64));
+    let length = catalog.track_at(index).duration_ms().map(|ms| Duration::from_millis(ms.max(0) as u64));
     let follow = playing == Some(other);
     let at = if follow { player.position_now() } else { middle(catalog, track, other) };
     // Not past the end (the other one may be longer).
@@ -523,7 +523,7 @@ fn same(l: &TrackDetail, r: &TrackDetail, catalog: &Catalog, field: &str) -> boo
 
 /// A field as the row shows it.
 fn value(d: &TrackDetail, catalog: &Catalog, field: &str) -> String {
-    let track = catalog.track_index(d.id).map(|i| &catalog.tracks[i as usize]);
+    let track = catalog.track(d.id);
     let variant = d.primary_variant_id.and_then(|id| d.variants.iter().find(|v| v.id == id)).map(|v| &v.data);
     let data = |key: &str| variant.and_then(|v| v.get(key)).and_then(|v| v.as_str()).unwrap_or("").to_string();
     match field {
@@ -540,7 +540,7 @@ fn value(d: &TrackDetail, catalog: &Catalog, field: &str) -> String {
             credits.join(", ")
         }
         "release_date" => d.release_date.clone().unwrap_or_default(),
-        "genres" => track.map(|t| t.genres.join(", ")).unwrap_or_default(),
+        "genres" => track.map(|t| t.genres().collect::<Vec<_>>().join(", ")).unwrap_or_default(),
         "comment" => data("comment"),
         "status" => d.status.clone(),
         "file" => {
@@ -555,7 +555,7 @@ fn value(d: &TrackDetail, catalog: &Catalog, field: &str) -> String {
             if let Some(b) = f.bit_depth {
                 parts.push(format!("{b}-bit"));
             }
-            parts.push(widgets::length(track.and_then(|t| t.duration_ms)));
+            parts.push(widgets::length(track.and_then(|t| t.duration_ms())));
             parts.push(format!("{:.1} MB", f.size_bytes as f64 / 1_000_000.0));
             format!("{}\n{}", parts.join(" · "), f.original_filename.clone().unwrap_or_else(|| f.uploaded_filename.clone()))
         }

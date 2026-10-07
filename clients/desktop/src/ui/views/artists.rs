@@ -79,7 +79,7 @@ impl Artists {
                 shell.act(Action::Enqueue { tracks: catalog.artist_tracks(id).to_vec(), next });
             }
             if moved.add {
-                let tracks = catalog.artist_tracks(id).iter().map(|&t| catalog.tracks[t as usize].id).collect();
+                let tracks = catalog.artist_tracks(id).iter().map(|&t| catalog.track_at(t).id()).collect();
                 shell.act(Action::AddToPlaylist(tracks));
             }
         }

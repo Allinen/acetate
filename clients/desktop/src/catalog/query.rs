@@ -15,7 +15,7 @@
 //! What a key does depends on where it's typed: a track list filters by it, the palette
 //! searches only artists for `artist:`, the track editor sets it (see `edit::editor`).
 
-use super::model::Track;
+use super::Track;
 use super::Catalog;
 
 /// A key, as understood.
@@ -143,42 +143,42 @@ impl Query {
         if !self.words.iter().all(|w| text.contains(w.as_str()) || extra.contains(w.as_str())) {
             return false;
         }
-        let t = &catalog.tracks[i as usize];
+        let t = catalog.track_at(i);
         self.fields.iter().filter(|(k, v)| !v.is_empty() || *k == Key::Og).all(|(key, value)| track_has(catalog, t, *key, &value.to_lowercase()))
     }
 }
 
 /// Whether the track has `value` (lowercase) for `key`.
-fn track_has(catalog: &Catalog, t: &Track, key: Key, value: &str) -> bool {
+fn track_has(catalog: &Catalog, t: Track, key: Key, value: &str) -> bool {
     let has = |text: &str| text.to_lowercase().contains(value);
     match key {
         Key::Artist | Key::Featured => {
-            has(&t.artist_display)
-                || t.credits.iter().any(|c| c.2.as_deref().is_some_and(has) || catalog.artist(c.0).is_some_and(|a| has(&a.name) || a.aliases.iter().any(|x| has(x))))
+            has(t.artist_display())
+                || t.credits().iter().any(|c| c.2.as_deref().is_some_and(has) || catalog.artist(c.0).is_some_and(|a| has(&a.name) || a.aliases.iter().any(|x| has(x))))
         }
-        Key::Album => t.albums.iter().any(|m| catalog.album(m.0).is_some_and(|a| has(&a.title))),
-        Key::Title => has(&t.title),
-        Key::Year => t.release_date.as_deref().is_some_and(|d| d.starts_with(value)) || t.year.is_some_and(|y| y.to_string() == value),
-        Key::Genre => t.genres.iter().any(|g| has(g)),
-        Key::Status => t.status.to_lowercase().starts_with(value),
-        Key::Format => t.codec.as_deref().is_some_and(|codec| format_matches(codec, value)),
+        Key::Album => t.albums().iter().any(|m| catalog.album(m.0).is_some_and(|a| has(a.title()))),
+        Key::Title => has(t.title()),
+        Key::Year => t.release_date().is_some_and(|d| d.starts_with(value)) || t.year().is_some_and(|y| y.to_string() == value),
+        Key::Genre => t.genres().any(has),
+        Key::Status => t.status().to_lowercase().starts_with(value),
+        Key::Format => t.codec().is_some_and(|codec| format_matches(codec, value)),
         // A flag's kind ("missing_cover"): typed with spaces or underscores alike.
         Key::Flag => {
             let value = value.replace(' ', "_");
-            catalog.issues.get(&t.id).is_some_and(|flags| flags.iter().any(|(_, kind)| kind.contains(&value)))
+            catalog.issues.get(&t.id()).is_some_and(|flags| flags.iter().any(|(_, kind)| kind.contains(&value)))
         }
-        Key::Kind => t.albums.iter().any(|m| catalog.album(m.0).is_some_and(|a| a.kind.starts_with(value))),
-        Key::Disc => value.parse::<i16>().is_ok_and(|d| t.albums.iter().any(|m| m.1 == Some(d))),
-        Key::Number => value.parse::<i16>().is_ok_and(|n| t.albums.iter().any(|m| m.2 == Some(n))),
+        Key::Kind => t.albums().iter().any(|m| catalog.album(m.0).is_some_and(|a| a.kind().starts_with(value))),
+        Key::Disc => value.parse::<i16>().is_ok_and(|d| t.albums().iter().any(|m| m.1 == Some(d))),
+        Key::Number => value.parse::<i16>().is_ok_and(|n| t.albums().iter().any(|m| m.2 == Some(n))),
         // Its own groupings, or its albums'.
         Key::Group => {
             let named = |id: &uuid::Uuid| catalog.grouping(*id).is_some_and(|g| has(&g.name));
-            t.groupings.iter().any(named) || t.albums.iter().any(|m| catalog.album(m.0).is_some_and(|a| a.groupings.iter().any(named)))
+            t.groupings().iter().any(named) || t.albums().iter().any(|m| catalog.album(m.0).is_some_and(|a| a.groupings().iter().any(named)))
         }
-        Key::Source => t.platforms.iter().any(|p| p.starts_with(value)),
-        Key::Og => og_matches(t.original_filename.as_deref(), value),
-        Key::Bitrate => t.bitrate.is_some_and(|b| compare(b as f64, value, 1.0, true)),
-        Key::SampleRate => t.sample_rate.is_some_and(|r| compare(r as f64, value, 1000.0, false)),
+        Key::Source => t.platforms().any(|p| p.starts_with(value)),
+        Key::Og => og_matches(t.original_filename(), value),
+        Key::Bitrate => t.bitrate().is_some_and(|b| compare(b as f64, value, 1.0, true)),
+        Key::SampleRate => t.sample_rate().is_some_and(|r| compare(r as f64, value, 1000.0, false)),
     }
 }
 

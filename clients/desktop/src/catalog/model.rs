@@ -6,6 +6,7 @@
 //! server's columns are what this client expects.
 
 use serde::Deserialize;
+use serde_json::value::RawValue;
 use uuid::Uuid;
 
 /// The catalog format this client reads (the server's `FORMAT`).
@@ -24,7 +25,7 @@ pub enum Role {
 
 /// A credit: the artist, their role, and the alias they're credited under (if any).
 #[derive(Debug, Clone, Deserialize)]
-pub struct Credit(pub Uuid, pub Role, pub Option<String>);
+pub struct Credit(pub Uuid, pub Role, pub Option<Box<str>>);
 
 /// A cover to show: its id (to download it) and its key, which is the same for the same
 /// image under different covers (so each image is loaded and kept once).
@@ -53,7 +54,7 @@ impl<'de> Deserialize<'de> for CoverKey {
 }
 
 /// An album a track is on, with its disc and track number there.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Copy, Deserialize)]
 pub struct Membership(pub Uuid, pub Option<i16>, pub Option<i16>);
 
 // Every column is read (rows are arrays in column order); not all are shown yet.
@@ -273,18 +274,6 @@ pub struct Raw {
     pub playlists: Vec<Playlist>,
 }
 
-impl Track {
-    pub fn cover(&self) -> Option<Cover> {
-        Some(Cover { id: self.cover_id?, key: self.cover_key? })
-    }
-}
-
-impl Album {
-    pub fn cover(&self) -> Option<Cover> {
-        Some(Cover { id: self.cover_id?, key: self.cover_key? })
-    }
-}
-
 /// What a delta drops: tracks, albums and artists merged into another; tracks, albums and
 /// extras the user can't see anymore (restricted, turned into extras); and annotations that
 /// say nothing anymore.
@@ -299,18 +288,64 @@ pub struct Removed {
     pub extras: Vec<Uuid>,
 }
 
-/// Reads a catalog body. A format or columns this client doesn't know is an error that
-/// says to update the app (rather than showing things in the wrong places).
-pub fn parse(body: &[u8]) -> anyhow::Result<Raw> {
+/// A whole catalog with its tracks and albums left as text, a row each: they're read one at
+/// a time into the catalog (`index::Merger`), so the server's rows are never all in memory
+/// at once (at 160k tracks they'd take some 300 MB).
+#[derive(Deserialize)]
+pub struct Base<'a> {
+    #[serde(default)]
+    pub version: Option<String>,
+    #[serde(borrow)]
+    pub tracks: Part<&'a RawValue>,
+    #[serde(borrow)]
+    pub albums: Part<&'a RawValue>,
+    pub artists: Part<Artist>,
+    pub annotations: Part<Annotation>,
+    pub issues: Part<Issues>,
+    pub groupings: Part<Grouping>,
+    #[serde(default)]
+    pub extras: Part<Extra>,
+    pub playlists: Vec<Playlist>,
+}
+
+/// Whether a catalog body is a delta, after checking its format: a format this client
+/// doesn't know is an error that says to update the app.
+pub fn is_delta(body: &[u8]) -> anyhow::Result<bool> {
     #[derive(Deserialize)]
     struct Format {
         format: u32,
+        #[serde(default)]
+        delta: bool,
     }
     // The format first, so a newer server gets a clear message rather than a parse error.
     let format: Format = serde_json::from_slice(body)?;
     if format.format != FORMAT {
         anyhow::bail!("the server's library format is {} and this app reads {FORMAT}: update the app", format.format);
     }
+    Ok(format.delta)
+}
+
+/// Reads a whole catalog body (not a delta), its tracks and albums left as text.
+pub fn parse_base(body: &[u8]) -> anyhow::Result<Base<'_>> {
+    is_delta(body)?;
+    let base: Base = serde_json::from_str(std::str::from_utf8(body)?)?;
+    check_columns("tracks", &base.tracks.columns, TRACK_COLUMNS)?;
+    check_columns("albums", &base.albums.columns, ALBUM_COLUMNS)?;
+    check_columns("artists", &base.artists.columns, ARTIST_COLUMNS)?;
+    check_columns("annotations", &base.annotations.columns, ANNOTATION_COLUMNS)?;
+    check_columns("issues", &base.issues.columns, ISSUE_COLUMNS)?;
+    check_columns("groupings", &base.groupings.columns, GROUPING_COLUMNS)?;
+    if !base.extras.columns.is_empty() {
+        check_columns("extras", &base.extras.columns, EXTRA_COLUMNS)?;
+    }
+    Ok(base)
+}
+
+/// Reads a catalog body, every row (for deltas, which are small). A format or columns this
+/// client doesn't know is an error that says to update the app (rather than showing things
+/// in the wrong places).
+pub fn parse(body: &[u8]) -> anyhow::Result<Raw> {
+    is_delta(body)?;
     let raw: Raw = serde_json::from_slice(body)?;
     check_columns("tracks", &raw.tracks.columns, TRACK_COLUMNS)?;
     check_columns("albums", &raw.albums.columns, ALBUM_COLUMNS)?;

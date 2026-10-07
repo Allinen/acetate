@@ -351,8 +351,8 @@ impl GroupingPage {
             for c in &detail.changes {
                 let what = c
                     .track_id
-                    .and_then(|t| catalog.as_ref()?.track_index(t).map(|i| format!("“{}”", catalog.as_ref().unwrap().tracks[i as usize].title)))
-                    .or_else(|| c.album_id.and_then(|a| catalog.as_ref()?.album(a).map(|a| format!("“{}” (album)", a.title))))
+                    .and_then(|t| catalog.as_ref()?.track_index(t).map(|i| format!("“{}”", catalog.as_ref().unwrap().track_at(i).title())))
+                    .or_else(|| c.album_id.and_then(|a| catalog.as_ref()?.album(a).map(|a| format!("“{}” (album)", a.title()))))
                     .unwrap_or_default();
                 let action = match c.action.as_str() {
                     "created" => "made".to_string(),

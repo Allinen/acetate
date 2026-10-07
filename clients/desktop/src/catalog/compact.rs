@@ -66,7 +66,7 @@ fn read(body: &[u8]) -> anyhow::Result<Doc<'_>> {
 type Row<'a> = (Uuid, &'a str);
 
 /// A row whose first element is its id (rows are compact arrays).
-fn first_id(row: &RawValue) -> anyhow::Result<Row<'_>> {
+pub(super) fn first_id(row: &RawValue) -> anyhow::Result<Row<'_>> {
     let text = row.get();
     let id = text
         .strip_prefix("[\"")
@@ -208,19 +208,27 @@ mod tests {
         let folded = fold(&base, &deltas).unwrap();
         let a = Catalog::build(model::parse(&folded).unwrap());
 
-        let mut raw = model::parse(&base).unwrap();
+        // As a start loads it: the whole catalog's rows read as they're built, the deltas on top.
+        let mut merger = super::super::index::Merger::from_base(model::parse_base(&base).unwrap()).unwrap();
         for delta in [&first, &second] {
-            raw = super::super::index::merge_raw(raw, model::parse(delta).unwrap());
+            merger.add(model::parse(delta).unwrap());
         }
-        let b = Catalog::build(raw);
+        let b = merger.build(None).unwrap();
+        // As a refresh does it: each delta applied to the catalog shown.
+        let mut c = Catalog::build(model::parse(&base).unwrap());
+        for delta in [&first, &second] {
+            c = c.apply(model::parse(delta).unwrap());
+        }
 
         let titles = |c: &Catalog| {
-            let mut titles: Vec<String> = c.tracks.iter().map(|t| t.title.clone()).collect();
+            let mut titles: Vec<String> = c.tracks().map(|t| t.title().to_string()).collect();
             titles.sort();
             titles
         };
         assert_eq!(titles(&a), ["Four", "One (edited)", "Two (edited)"]);
         assert_eq!(titles(&a), titles(&b));
+        assert_eq!(titles(&a), titles(&c));
+        assert_eq!(c.version.as_deref(), Some("3:3:"));
         assert_eq!(a.version.as_deref(), Some("3:3:"));
         assert!(!a.issues.contains_key(&t(1).parse().unwrap()), "track 1's flags were all settled");
         // Folding what's folded changes nothing.

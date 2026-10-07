@@ -6,14 +6,18 @@
 //! brings it up to date.
 
 mod compact;
+#[cfg(test)]
+mod measure;
 pub mod index;
 pub mod marks;
 pub mod model;
 pub mod query;
+mod rows;
 pub mod search;
 pub mod store;
+mod text;
 
-pub use index::Catalog;
+pub use index::{Album, Catalog, Track};
 
 use std::sync::Arc;
 use std::time::SystemTime;

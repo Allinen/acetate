@@ -63,7 +63,7 @@ impl AlbumMergeView {
         };
 
         // The tracks, if they merge along (only with the permission to change their files).
-        let pairs = if shell.account.can("replace_file") { matching_tracks(catalog, from.id, into.id) } else { Vec::new() };
+        let pairs = if shell.account.can("replace_file") { matching_tracks(catalog, from.id(), into.id()) } else { Vec::new() };
 
         // ---- Keys ----
         if !shell.palette_open {
@@ -102,15 +102,15 @@ impl AlbumMergeView {
                     ui.label(RichText::new(label).font(font(12.0, semibold())).color(color));
                     ui.horizontal(|ui| {
                         let (rect, _) = ui.allocate_exact_size(Vec2::splat(72.0), Sense::hover());
-                        shell.cover(ui, album.cover(), album.id, rect, 6, 0.1);
+                        shell.cover(ui, album.cover(), album.id(), rect, 6, 0.1);
                         ui.vertical(|ui| {
-                            ui.label(RichText::new(&album.title).font(font(16.0, semibold())));
-                            ui.label(RichText::new(&album.artist_display).color(P.muted));
-                            let mut facts = vec![album.kind.clone()];
-                            if let Some(date) = &album.release_date {
-                                facts.push(date.clone());
+                            ui.label(RichText::new(album.title()).font(font(16.0, semibold())));
+                            ui.label(RichText::new(album.artist_display()).color(P.muted));
+                            let mut facts = vec![album.kind().to_string()];
+                            if let Some(date) = album.release_date() {
+                                facts.push(date.to_string());
                             }
-                            let n = catalog.album_tracks(album.id).len();
+                            let n = catalog.album_tracks(album.id()).len();
                             facts.push(if n == 1 { "1 track".into() } else { format!("{n} tracks") });
                             ui.label(RichText::new(facts.join(" · ")).color(P.faint));
                         });
@@ -121,29 +121,29 @@ impl AlbumMergeView {
 
         // ---- What happens ----
         ui.add_space(8.0);
-        let moving = catalog.album_tracks(from.id).len();
+        let moving = catalog.album_tracks(from.id()).len();
         ui.label(
             RichText::new(format!(
                 "“{}”'s {} (each with a revision, their disc and track numbers kept), covers, sources and share links move to “{}”, which keeps its own title, kind, date and credits. “{}” then only leads to it. Undo is on “{}”'s page.",
-                from.title,
+                from.title(),
                 if moving == 1 { "track".to_string() } else { format!("{moving} tracks") },
-                into.title,
-                from.title,
-                into.title
+                into.title(),
+                from.title(),
+                into.title()
             ))
             .color(P.text),
         );
         if !pairs.is_empty() {
             let text = format!(
                 "Merge the tracks too: the tracklists are the same (numbers and titles), so each of “{}”'s tracks merges into the one in its place on “{}”  (a)",
-                from.title, into.title
+                from.title(), into.title()
             );
             if ui.checkbox(&mut shell.settings.merge_along, text).changed() {
                 shell.settings.save(&shell.data_dir);
             }
             if shell.settings.merge_along {
                 let number = |i: u32, album: Uuid| {
-                    let m = catalog.tracks[i as usize].albums.iter().find(|m| m.0 == album);
+                    let m = catalog.track_at(i).albums().iter().find(|m| m.0 == album);
                     match m.map(|m| (m.1, m.2)) {
                         Some((Some(disc), Some(n))) if disc > 1 => format!("{disc}-{n}"),
                         Some((_, Some(n))) => n.to_string(),
@@ -151,14 +151,14 @@ impl AlbumMergeView {
                     }
                 };
                 for &(a, b) in &pairs {
-                    let (ta, tb) = (&catalog.tracks[a as usize], &catalog.tracks[b as usize]);
-                    let codec = |t: &crate::catalog::model::Track| t.codec.clone().unwrap_or_else(|| "?".into());
-                    ui.label(RichText::new(format!("  {}. {} — {} + {}", number(b, into.id), tb.title, codec(tb), codec(ta))).color(P.muted));
+                    let (ta, tb) = (catalog.track_at(a), catalog.track_at(b));
+                    let codec = |t: crate::catalog::Track<'_>| t.codec().map(str::to_string).unwrap_or_else(|| "?".into());
+                    ui.label(RichText::new(format!("  {}. {} — {} + {}", number(b, into.id()), tb.title(), codec(tb), codec(ta))).color(P.muted));
                 }
                 ui.label(
                     RichText::new(format!(
                         "Each kept track is “{}”'s, with its title, artists and the rest; the better file of the two is kept (lossless first, then sample rate, bit depth, bitrate, size), the other stays a previous file. Each is a track merge of its own, undone on the kept track's page (after undoing the album merge).",
-                        into.title
+                        into.title()
                     ))
                     .color(P.faint)
                     .small(),
@@ -169,11 +169,11 @@ impl AlbumMergeView {
             return self.buttons(ui, shell, true);
         }
         // Same titles on both: those will be possible duplicates, to merge afterwards.
-        let staying: Vec<String> = catalog.album_tracks(into.id).iter().map(|&i| catalog.tracks[i as usize].title.to_lowercase()).collect();
+        let staying: Vec<String> = catalog.album_tracks(into.id()).iter().map(|&i| catalog.track_at(i).title().to_lowercase()).collect();
         let doubled: Vec<&str> = catalog
-            .album_tracks(from.id)
+            .album_tracks(from.id())
             .iter()
-            .map(|&i| catalog.tracks[i as usize].title.as_str())
+            .map(|&i| catalog.track_at(i).title())
             .filter(|t| staying.contains(&t.to_lowercase()))
             .collect();
         if !doubled.is_empty() {
@@ -245,7 +245,7 @@ pub fn matching_tracks(catalog: &Catalog, from: Uuid, into: Uuid) -> Vec<(u32, u
         let tracks = catalog.album_tracks(album);
         let mut places = BTreeMap::new();
         for &i in tracks {
-            let m = catalog.tracks[i as usize].albums.iter().find(|m| m.0 == album)?;
+            let m = catalog.track_at(i).albums().iter().find(|m| m.0 == album)?;
             let number = match (m.2, tracks.len()) {
                 (Some(n), _) => n,
                 (None, 1) => 1,
@@ -261,7 +261,7 @@ pub fn matching_tracks(catalog: &Catalog, from: Uuid, into: Uuid) -> Vec<(u32, u
     if a.is_empty() || a.len() != b.len() {
         return Vec::new();
     }
-    let title = |i: u32| catalog.tracks[i as usize].title.trim().to_lowercase();
+    let title = |i: u32| catalog.track_at(i).title().trim().to_lowercase();
     let mut pairs = Vec::new();
     for (place, &ta) in &a {
         let Some(&tb) = b.get(place) else { return Vec::new() };
@@ -525,7 +525,7 @@ mod tests {
     fn same_tracklists_pair_up_by_place() {
         let c = catalog();
         let id = |s: &str| s.parse::<Uuid>().unwrap();
-        let title = |i: u32| c.tracks[i as usize].title.clone();
+        let title = |i: u32| c.track_at(i).title().to_string();
         let pairs = matching_tracks(&c, id("00000000-0000-7000-8000-0000000000a1"), id("00000000-0000-7000-8000-0000000000a2"));
         let named: Vec<(String, String)> = pairs.iter().map(|&(x, y)| (title(x), title(y))).collect();
         assert_eq!(named, [("One".to_string(), "ONE".to_string()), ("Two".to_string(), "two ".to_string())]);

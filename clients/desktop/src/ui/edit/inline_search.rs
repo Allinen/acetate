@@ -154,23 +154,23 @@ pub fn describe(catalog: &Catalog, part: Part, i: u32) -> (String, String) {
             (e.name.clone(), format!("{} · {files}", e.kind))
         }
         Part::Tracks => {
-            let t = &catalog.tracks[i as usize];
-            let mut sub = vec![t.artist_display.clone()];
+            let t = catalog.track_at(i);
+            let mut sub = vec![t.artist_display().to_string()];
             if let Some(album) = catalog.main_album(t) {
-                sub.push(album.title.clone());
+                sub.push(album.title().to_string());
             }
-            if let Some(codec) = &t.codec {
-                sub.push(codec.clone());
+            if let Some(codec) = t.codec() {
+                sub.push(codec.to_string());
             }
-            (t.title.clone(), sub.join(" · "))
+            (t.title().to_string(), sub.join(" · "))
         }
         Part::Albums => {
-            let a = &catalog.albums[i as usize];
-            let mut sub = vec![a.artist_display.clone(), a.kind.clone()];
-            if let Some(year) = a.year {
+            let a = catalog.album_at(i);
+            let mut sub = vec![a.artist_display().to_string(), a.kind().to_string()];
+            if let Some(year) = a.year() {
                 sub.push(year.to_string());
             }
-            (a.title.clone(), sub.join(" · "))
+            (a.title().to_string(), sub.join(" · "))
         }
     }
 }

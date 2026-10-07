@@ -174,7 +174,7 @@ impl Review {
         }
         // The marked tracks' popups, before the keys too.
         let entries = &self.entries;
-        let id_at = |n: usize| entries.get(n).map(|e| catalog.tracks[e.track as usize].id);
+        let id_at = |n: usize| entries.get(n).map(|e| catalog.track_at(e.track).id());
         self.marking.popups(&ui.ctx().clone(), shell, player, entries.len(), id_at, None);
         // (Files that didn't import have their own keys.)
         if !self.showing_not_imported && !self.showing_unlinked && !self.showing_unused {
@@ -289,7 +289,7 @@ impl Review {
         });
         ui.add_space(6.0);
         let entries = &self.entries;
-        let id_at = |n: usize| entries.get(n).map(|e| catalog.tracks[e.track as usize].id);
+        let id_at = |n: usize| entries.get(n).map(|e| catalog.track_at(e.track).id());
         self.marking.bar(ui, shell, catalog, entries.len(), id_at, "review");
 
         // ---- The list, and the selected track ----
@@ -304,7 +304,7 @@ impl Review {
             self.editor(&mut editor_ui, shell, catalog, player, &vocab);
         } else {
             let entries = &self.entries;
-            self.marking.change(&mut editor_ui, shell, entries.len(), |n| entries.get(n).map(|e| catalog.tracks[e.track as usize].id), None);
+            self.marking.change(&mut editor_ui, shell, entries.len(), |n| entries.get(n).map(|e| catalog.track_at(e.track).id()), None);
         }
         ui.allocate_rect(rest, Sense::hover());
     }
@@ -360,8 +360,8 @@ impl Review {
         self.counts.clear();
         let mut entries = Vec::new();
         for (_, i, kinds) in flagged {
-            let track = &catalog.tracks[i as usize];
-            let path = file_of.get(&track.id).copied().unwrap_or("");
+            let track = catalog.track_at(i);
+            let path = file_of.get(&track.id()).copied().unwrap_or("");
             if !query.matches_track(catalog, i, path) {
                 continue;
             }
@@ -374,9 +374,9 @@ impl Review {
             let group = match self.group {
                 Group::Folder if path.is_empty() => "(folder not known)".to_string(),
                 Group::Folder => folder(path).to_string(),
-                Group::Note => note_of.get(&track.id).copied().unwrap_or("(no note)").to_string(),
-                Group::Artist if track.artist_display.is_empty() => "(no artist)".to_string(),
-                Group::Artist => track.artist_display.clone(),
+                Group::Note => note_of.get(&track.id()).copied().unwrap_or("(no note)").to_string(),
+                Group::Artist if track.artist_display().is_empty() => "(no artist)".to_string(),
+                Group::Artist => track.artist_display().to_string(),
                 Group::Kind => kinds.first().map(|k| vocab.review_kind_name(k).to_string()).unwrap_or_default(),
                 Group::None => String::new(),
             };
@@ -413,7 +413,7 @@ impl Review {
 
     fn select(&mut self, catalog: &Catalog, at: usize) {
         let Some(entry) = self.entries.get(at) else { return };
-        self.selected = Some(catalog.tracks[entry.track as usize].id);
+        self.selected = Some(catalog.track_at(entry.track).id());
         self.selected_at = at;
         self.scroll_to_selected = true;
         self.focus_first = true;
@@ -431,7 +431,7 @@ impl Review {
         self.select(catalog, next);
         ctx_stop_text(&shell.ctx);
         if let Some(after) = self.entries.get(next + 1) {
-            shell.track_details.get(catalog.tracks[after.track as usize].id);
+            shell.track_details.get(catalog.track_at(after.track).id());
         }
     }
 
@@ -548,7 +548,7 @@ impl Review {
         // The marks' keys first (Ctrl+M is theirs while tracks are marked).
         let at = self.selected.and_then(|id| self.position(catalog, id)).unwrap_or(self.selected_at);
         let entries = &self.entries;
-        let id_at = |n: usize| entries.get(n).map(|e| catalog.tracks[e.track as usize].id);
+        let id_at = |n: usize| entries.get(n).map(|e| catalog.track_at(e.track).id());
         self.marking.keys(ctx, shell, at, entries.len(), id_at);
         let (next, previous, merge) = ctx.input_mut(|i| {
             (
@@ -611,7 +611,7 @@ impl Review {
             self.focus_first = false;
             let to = self.selected.and_then(|id| self.position(catalog, id)).unwrap_or(at);
             let entries = &self.entries;
-            self.marking.range_to(at, to, |n| entries.get(n).map(|e| catalog.tracks[e.track as usize].id));
+            self.marking.range_to(at, to, |n| entries.get(n).map(|e| catalog.track_at(e.track).id()));
         } else if key(Key::J) || key(Key::ArrowDown) {
             self.step(shell, catalog, 1);
         } else if key(Key::K) || key(Key::ArrowUp) {
@@ -680,7 +680,7 @@ impl Review {
                     }
                     Row::Track(n) => {
                         let e = &self.entries[*n];
-                        let t = &catalog.tracks[e.track as usize];
+                        let t = catalog.track_at(e.track);
                         if Some(r) == selected_row {
                             painter.rect_filled(rect, 8, P.surface_hi);
                         } else if response.hovered() {
@@ -689,16 +689,16 @@ impl Review {
                         // The mark's box, in front.
                         let mark = egui::Rect::from_min_size(rect.min + Vec2::new(8.0, (ROW - 18.0) / 2.0), Vec2::splat(18.0));
                         let on_box = |pos: Option<egui::Pos2>| pos.is_some_and(|p| mark.expand(4.0).contains(p));
-                        super::marking::paint_box(painter, mark, self.marking.contains(&t.id), on_box(response.hover_pos()));
+                        super::marking::paint_box(painter, mark, self.marking.contains(&t.id()), on_box(response.hover_pos()));
                         let text_left = mark.right() + 10.0 - rect.left();
-                        let title = if t.title.trim().is_empty() { "(no title)" } else { &t.title };
-                        let color = if playing == Some(t.id) { P.accent } else { P.text };
-                        let unsaved = shell.track_editors.get(&t.id).is_some_and(|e| e.has_changes());
+                        let title = if t.title().trim().is_empty() { "(no title)" } else { t.title() };
+                        let color = if playing == Some(t.id()) { P.accent } else { P.text };
+                        let unsaved = shell.track_editors.get(&t.id()).is_some_and(|e| e.has_changes());
                         let title = if unsaved { format!("● {title}") } else { title.to_string() };
-                        widgets::text_in_og(painter, egui::Rect::from_min_size(rect.min + Vec2::new(text_left, 6.0), Vec2::new(rect.width() - text_left - 10.0, 18.0)), &title, font(13.5, medium()), color, t.original_filename.is_some());
+                        widgets::text_in_og(painter, egui::Rect::from_min_size(rect.min + Vec2::new(text_left, 6.0), Vec2::new(rect.width() - text_left - 10.0, 18.0)), &title, font(13.5, medium()), color, t.original_filename().is_some());
                         let mut sub: Vec<String> = Vec::new();
-                        if !t.artist_display.is_empty() {
-                            sub.push(t.artist_display.clone());
+                        if !t.artist_display().is_empty() {
+                            sub.push(t.artist_display().to_string());
                         }
                         // Its flags, but not the chip's own kind (every row has that).
                         let issues: Vec<String> =
@@ -723,7 +723,7 @@ impl Review {
         let modifiers = ui.input(|i| i.modifiers);
         let from = self.selected.and_then(|id| self.position(catalog, id)).unwrap_or(self.selected_at);
         let entries = &self.entries;
-        let id_at = |n: usize| entries.get(n).map(|e| catalog.tracks[e.track as usize].id);
+        let id_at = |n: usize| entries.get(n).map(|e| catalog.track_at(e.track).id());
         if let Some(n) = boxed {
             self.marking.toggle(n, id_at);
         } else if let Some(n) = clicked {
@@ -738,7 +738,7 @@ impl Review {
     fn editor(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: &Arc<Catalog>, player: &PlayerView, vocab: &Vocab) {
         let Some(id) = self.selected else { return };
         let Some(index) = catalog.track_index(id) else { return };
-        let track = &catalog.tracks[index as usize];
+        let track = catalog.track_at(index);
         let flags: Vec<Flag> = shell.flags.list.iter().filter(|f| f.track_id == id).cloned().collect();
         let path = flags.iter().find_map(|f| f.imported_from.clone());
         let cached = shell.track_details.get(id);
@@ -754,9 +754,9 @@ impl Review {
                 let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
                 shell.cover(ui, track.cover(), id, rect, 6, 0.2);
                 ui.vertical(|ui| {
-                    let title = if track.title.trim().is_empty() { "(no title)" } else { &track.title };
+                    let title = if track.title().trim().is_empty() { "(no title)" } else { track.title() };
                     ui.label(RichText::new(title).font(font(22.0, bold())));
-                    ui.label(RichText::new(if track.artist_display.is_empty() { "(no artists)" } else { &track.artist_display }).color(P.muted));
+                    ui.label(RichText::new(if track.artist_display().is_empty() { "(no artists)" } else { track.artist_display() }).color(P.muted));
                     let playing = playing_track(player) == Some(id) && !player.paused;
                     let text = if playing { "Pause  (Space)" } else { "Play  (Space)" };
                     if ui.small_button(text).clicked() {
@@ -962,7 +962,7 @@ fn tag_field(name: &str) -> Option<&'static str> {
 /// Something nobody uses: an artist or an album.
 enum Unused<'a> {
     Artist(&'a crate::catalog::model::Artist),
-    Album(&'a crate::catalog::model::Album),
+    Album(crate::catalog::Album<'a>),
 }
 
 /// Artists credited on nothing (no track, no album, in no grouping) and albums without
@@ -972,7 +972,7 @@ enum Unused<'a> {
 fn unused(catalog: &Catalog) -> Vec<Unused<'_>> {
     let members: std::collections::HashSet<uuid::Uuid> = catalog.groupings.iter().flat_map(|g| g.artists.iter().copied()).collect();
     let artists = catalog.artists.iter().filter(|a| a.track_count == 0 && a.album_count == 0 && !members.contains(&a.id)).map(Unused::Artist);
-    let albums = catalog.albums.iter().filter(|a| a.track_count == 0).map(Unused::Album);
+    let albums = catalog.albums().filter(|a| a.track_count() == 0).map(Unused::Album);
     artists.chain(albums).collect()
 }
 
@@ -982,7 +982,7 @@ fn unused_list(ui: &mut egui::Ui, shell: &mut Shell, catalog: &Catalog, filter: 
     let words: Vec<String> = filter.to_lowercase().split_whitespace().map(str::to_string).collect();
     let name = |u: &Unused| match u {
         Unused::Artist(a) => a.label(),
-        Unused::Album(a) => a.title.clone(),
+        Unused::Album(a) => a.title().to_string(),
     };
     let mut shown: Vec<Unused> = unused(catalog).into_iter().filter(|u| {
         let text = name(u).to_lowercase();
@@ -1003,7 +1003,7 @@ fn unused_list(ui: &mut egui::Ui, shell: &mut Shell, catalog: &Catalog, filter: 
             }
             let (what, page) = match u {
                 Unused::Artist(a) => ("artist", crate::ui::Page::Artist(a.id)),
-                Unused::Album(a) => ("album", crate::ui::Page::Album(a.id)),
+                Unused::Album(a) => ("album", crate::ui::Page::Album(a.id())),
             };
             ui.painter().text(egui::pos2(rect.left() + 10.0, rect.center().y), egui::Align2::LEFT_CENTER, name(u), font(14.0, semibold()), P.text);
             ui.painter().text(egui::pos2(rect.right() - 10.0, rect.center().y), egui::Align2::RIGHT_CENTER, what, font(12.0, medium()), P.faint);
