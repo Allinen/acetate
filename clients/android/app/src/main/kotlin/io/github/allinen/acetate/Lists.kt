@@ -1,16 +1,17 @@
 package io.github.allinen.acetate
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -29,12 +30,16 @@ import coil3.network.httpHeaders
 import coil3.request.ImageRequest
 import uniffi.acetate_ffi.AlbumRow
 import uniffi.acetate_ffi.AlbumView
+import uniffi.acetate_ffi.ArtistRow
+import uniffi.acetate_ffi.ArtistView
 import uniffi.acetate_ffi.ImageSize
+import uniffi.acetate_ffi.TrackRow
+import uniffi.acetate_ffi.TrackView
 
 private const val PAGE = 64
 
 /** Rows of a view, read a page at a time as the list scrolls to them. */
-private class Rows<T>(val count: Int, private val read: (start: Int, n: Int) -> List<T>) {
+class Rows<T>(val count: Int, private val read: (start: Int, n: Int) -> List<T>) {
     private val pages = HashMap<Int, List<T>>()
 
     operator fun get(index: Int): T? =
@@ -43,35 +48,87 @@ private class Rows<T>(val count: Int, private val read: (start: Int, n: Int) -> 
 
 @Composable
 fun AlbumList(model: Model, view: AlbumView) {
-    val rows = remember(view) { Rows(view.count().toInt()) { start, n -> view.rows(start.toULong(), n.toULong()) } }
-    LazyColumn(state = rememberLazyListState(), modifier = Modifier.fillMaxWidth()) {
+    val rows = remember(view) { Rows(view.count().toInt()) { s, n -> view.rows(s.toULong(), n.toULong()) } }
+    LazyColumn(Modifier.fillMaxWidth()) {
         items(rows.count, key = { it }) { i -> rows[i]?.let { AlbumItem(model, it) } }
     }
 }
 
 @Composable
-private fun AlbumItem(model: Model, row: AlbumRow) {
-    Row(Modifier.fillMaxWidth().padding(16.dp, 6.dp), verticalAlignment = Alignment.CenterVertically) {
-        Cover(model, row.cover, 56)
-        Spacer(Modifier.width(12.dp))
-        Column {
-            Text(row.title, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyLarge)
-            Text(
-                listOfNotNull(row.artist, row.year?.toString()).joinToString(" · "),
-                maxLines = 1, overflow = TextOverflow.Ellipsis,
-                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
+fun ArtistList(model: Model, view: ArtistView) {
+    val rows = remember(view) { Rows(view.count().toInt()) { s, n -> view.rows(s.toULong(), n.toULong()) } }
+    LazyColumn(Modifier.fillMaxWidth()) {
+        items(rows.count, key = { it }) { i -> rows[i]?.let { ArtistItem(model, it) } }
     }
 }
 
 @Composable
-fun Cover(model: Model, key: String?, size: Int) {
-    val shape = RoundedCornerShape(4.dp)
-    val modifier = Modifier.size(size.dp).clip(shape)
-    val request = key?.let { model.core.imageRequest(it, ImageSize.SMALL) }
+fun TrackList(model: Model, view: TrackView) {
+    val rows = remember(view) { Rows(view.count().toInt()) { s, n -> view.rows(s.toULong(), n.toULong()) } }
+    LazyColumn(Modifier.fillMaxWidth()) {
+        items(rows.count, key = { it }) { i -> rows[i]?.let { TrackItem(model, it) } }
+    }
+}
+
+@Composable
+fun AlbumItem(model: Model, row: AlbumRow) {
+    Item(
+        model, row.cover, row.title,
+        listOfNotNull(row.artist, row.year?.toString()).joinToString(" · "),
+        Modifier.clickable { model.pages.add(Page.Album(row.id)) },
+    )
+}
+
+@Composable
+fun ArtistItem(model: Model, row: ArtistRow) {
+    Item(
+        model, null, row.name, "${row.albumCount} albums · ${row.trackCount} tracks",
+        Modifier.clickable { model.pages.add(Page.Artist(row.id)) },
+    )
+}
+
+@Composable
+fun TrackItem(model: Model, row: TrackRow, modifier: Modifier = Modifier) {
+    Item(
+        model, row.cover, row.title,
+        listOfNotNull(row.artist, row.album).joinToString(" · "),
+        modifier, trailing = row.durationMs?.let(::duration),
+    )
+}
+
+@Composable
+private fun Item(
+    model: Model, cover: String?, title: String, subtitle: String, modifier: Modifier,
+    trailing: String? = null,
+) {
+    Row(modifier.fillMaxWidth().padding(16.dp, 6.dp), verticalAlignment = Alignment.CenterVertically) {
+        Cover(model, cover, 56)
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(title, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyLarge)
+            Text(
+                subtitle, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        trailing?.let {
+            Spacer(Modifier.width(12.dp))
+            Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
+fun duration(ms: Long): String {
+    val s = ms / 1000
+    return "%d:%02d".format(s / 60, s % 60)
+}
+
+@Composable
+fun Cover(model: Model, key: String?, size: Int, modifier: Modifier = Modifier) {
+    val shaped = modifier.size(size.dp).clip(RoundedCornerShape(4.dp))
+    val request = key?.let { model.core.imageRequest(it, if (size > 100) ImageSize.STANDARD else ImageSize.SMALL) }
     if (request == null) {
-        Box(modifier.background(MaterialTheme.colorScheme.surfaceVariant))
+        Box(shaped.background(MaterialTheme.colorScheme.surfaceVariant))
         return
     }
     AsyncImage(
@@ -79,6 +136,6 @@ fun Cover(model: Model, key: String?, size: Int) {
             .data(request.url)
             .httpHeaders(NetworkHeaders.Builder().set("Authorization", request.authorization).build())
             .build(),
-        contentDescription = null, modifier = modifier, contentScale = ContentScale.Crop,
+        contentDescription = null, modifier = shaped, contentScale = ContentScale.Crop,
     )
 }

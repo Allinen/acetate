@@ -6,6 +6,7 @@ import android.os.Looper
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.setValue
 import uniffi.acetate_ffi.Change
 import uniffi.acetate_ffi.Core
@@ -34,6 +35,9 @@ class Model(dataDir: String) : Listener {
     var sync by mutableStateOf(core.syncState())
         private set
 
+    /** Pages opened from the library, the last on top (back pops it). */
+    val pages = mutableStateListOf<Page>()
+
     /** Bumped when a new catalog arrived: views built before are of the old one. */
     var catalogVersion by mutableIntStateOf(0)
         private set
@@ -58,4 +62,9 @@ class Model(dataDir: String) : Listener {
     }
 
     fun logout() = core.logout()
+}
+
+sealed interface Page {
+    data class Album(val id: String) : Page
+    data class Artist(val id: String) : Page
 }
