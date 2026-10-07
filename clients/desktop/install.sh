@@ -19,7 +19,7 @@ if [ -f acetate-desktop ]; then
     built=acetate-desktop
 else
     cargo build --release
-    built=target/release/acetate-desktop
+    built=../target/release/acetate-desktop
 fi
 bin="$HOME/.local/bin/acetate-desktop"
 icon="$HOME/.local/share/icons/hicolor/512x512/apps/acetate.jpg"

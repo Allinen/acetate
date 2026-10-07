@@ -1,0 +1,6 @@
+[workspace]
+members = ["core", "desktop"]
+resolver = "3"
+
+[profile.release]
+opt-level = 3

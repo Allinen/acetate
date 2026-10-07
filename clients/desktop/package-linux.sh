@@ -1,5 +1,5 @@
 #!/bin/sh
-# Builds the Linux app and packs it: target/linux/Acetate-linux-x86_64.tar.gz, a folder
+# Builds the Linux app and packs it: clients/target/linux/Acetate-linux-x86_64.tar.gz, a folder
 # with the program, its icon and menu entry, and install.sh (which installs the program
 # that's there instead of building it). Music videos use the system's libmpv, as when
 # built from the sources (README).
@@ -9,14 +9,14 @@
 set -eu
 cd "$(dirname "$0")"
 
-out=target/linux
+out=../target/linux
 app=$out/Acetate
 
 cargo build --release
 
 rm -rf "$app" "$out/Acetate-linux-x86_64.tar.gz"
 mkdir -p "$app/assets"
-install -m 755 target/release/acetate-desktop "$app/"
+install -m 755 ../target/release/acetate-desktop "$app/"
 # Without the symbols (smaller).
 strip "$app/acetate-desktop"
 install -m 755 install.sh "$app/"

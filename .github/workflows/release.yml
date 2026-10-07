@@ -41,13 +41,13 @@ jobs:
           rustup toolchain install stable --profile minimal
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: clients/desktop
+          workspaces: clients
       - name: Build and pack
         run: clients/desktop/package-linux.sh
       - uses: actions/upload-artifact@v4
         with:
           name: linux
-          path: clients/desktop/target/linux/Acetate-linux-x86_64.tar.gz
+          path: clients/target/linux/Acetate-linux-x86_64.tar.gz
 
   windows:
     needs: check
@@ -61,13 +61,13 @@ jobs:
           rustup toolchain install stable --profile minimal --target x86_64-pc-windows-gnu
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: clients/desktop
+          workspaces: clients
       - name: Build and pack
         run: clients/desktop/package-windows.sh
       - uses: actions/upload-artifact@v4
         with:
           name: windows
-          path: clients/desktop/target/windows/Acetate-windows-x86_64.zip
+          path: clients/target/windows/Acetate-windows-x86_64.zip
 
   release:
     if: github.ref_type == 'tag'
