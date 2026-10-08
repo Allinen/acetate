@@ -20,6 +20,7 @@
 
 pub mod account;
 pub mod api;
+pub mod blobs;
 pub mod catalog;
 pub mod commandline;
 pub mod details;

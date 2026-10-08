@@ -28,8 +28,6 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
 use std::sync::{Arc, Mutex};
 
 use anyhow::Context;
-use sha2::{Digest, Sha256};
-use tokio::io::AsyncWriteExt;
 use tokio::sync::Notify;
 
 use crate::api::Api;
@@ -163,17 +161,7 @@ impl StopToken {
     }
 }
 
-/// Why something stopped: asked to (not a problem to show).
-#[derive(Debug)]
-pub struct Stopped;
-
-impl std::fmt::Display for Stopped {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("stopped")
-    }
-}
-
-impl std::error::Error for Stopped {}
+pub use acetate_core::blobs::Stopped;
 
 /// The server lists a blob it doesn't have (its file is missing there).
 #[derive(Debug)]
@@ -577,61 +565,20 @@ struct Download {
 
 impl Download {
     async fn run(&self, sha256: &str, size: Option<u64>) -> anyhow::Result<()> {
-        let part = self.store.part_path(sha256);
         self.status.lock().unwrap().current = Some(sha256.to_string());
-        // What an earlier download got: hashed first, then gone on from.
-        let earlier = part.clone();
-        let (mut hasher, mut got) = tokio::task::spawn_blocking(move || -> std::io::Result<(Sha256, u64)> {
-            let mut hasher = Sha256::new();
-            let got = match std::fs::File::open(&earlier) {
-                Ok(mut file) => store::hash_into(&mut hasher, &mut file, &|| false)?.unwrap_or(0),
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => 0,
-                Err(err) => return Err(err),
-            };
-            Ok((hasher, got))
-        })
-        .await??;
-        if size.is_some_and(|size| got > size) {
-            (hasher, got) = (Sha256::new(), 0);
-            let _ = tokio::fs::remove_file(&part).await;
-        }
-        if Some(got) != size {
-            match self.api.stream_from(&format!("/api/mirror/blobs/{sha256}"), got).await {
-                Ok(mut response) => {
-                    let mut file = tokio::fs::OpenOptions::new().create(true).append(true).open(&part).await?;
-                    if response.status() != reqwest::StatusCode::PARTIAL_CONTENT && got > 0 {
-                        // The whole file, not the rest: start over.
-                        file.set_len(0).await?;
-                        (hasher, got) = (Sha256::new(), 0);
-                    }
-                    while let Some(chunk) = response.chunk().await.context("downloading")? {
-                        if self.stop.stopped() {
-                            file.flush().await?;
-                            return Err(Stopped.into());
-                        }
-                        hasher.update(&chunk);
-                        file.write_all(&chunk).await?;
-                        got += chunk.len() as u64;
-                        self.status.lock().unwrap().bytes += chunk.len() as u64;
-                    }
-                    file.flush().await?;
-                }
-                // Asked from its end: it was all here.
-                Err(err) if err.status == Some(416) && got > 0 => {}
-                Err(err) if err.status == Some(404) => return Err(NotOnServer.into()),
-                Err(err) => return Err(err.into()),
-            }
-        }
-        // Nothing was fetched for an empty file (size 0): it's made here, empty.
-        tokio::fs::OpenOptions::new().create(true).append(true).open(&part).await?;
-        let hashed = hex::encode(hasher.finalize());
-        if hashed != sha256 {
-            let _ = tokio::fs::remove_file(&part).await;
-            anyhow::bail!("what came hashes to {hashed}, not its name: thrown away (it's fetched again next time)");
-        }
-        let store = self.store.clone();
-        let sha = sha256.to_string();
-        tokio::task::spawn_blocking(move || store.commit(&part, &sha, true)).await??;
+        let status = self.status.clone();
+        let (_, got) = acetate_core::blobs::fetch(
+            &self.api,
+            &self.store,
+            &format!("/api/mirror/blobs/{sha256}"),
+            sha256,
+            Some(sha256),
+            size,
+            &|bytes| status.lock().unwrap().bytes += bytes,
+            &|| self.stop.stopped(),
+        )
+        .await
+        .map_err(|err| if err.is::<acetate_core::blobs::NotOnServer>() { NotOnServer.into() } else { err })?;
         self.index.lock().unwrap().add(sha256, got, "downloaded", true)
     }
 }
@@ -755,7 +702,7 @@ impl Blocking {
                 stopped = Some(Stopped);
                 break;
             }
-            match self.store.take_in(&path, sha256, config.check_hashes, &stop) {
+            match store::take_in(&self.store, &path, sha256, config.check_hashes, &stop) {
                 Ok(how) => {
                     let how = match how {
                         store::TakenIn::Reflinked => "reflinked",

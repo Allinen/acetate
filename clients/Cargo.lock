@@ -136,11 +136,14 @@ name = "acetate-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "hex",
+ "libc",
  "memmap2",
  "nucleo-matcher",
  "reqwest",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "tokio",
  "uuid",
