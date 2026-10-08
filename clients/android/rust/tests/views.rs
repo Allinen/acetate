@@ -298,3 +298,18 @@ fn liked_songs_are_the_starred_tracks_and_a_new_star_joins_at_once() {
     // Without a server there is no playlist, and asking for one doesn't fail.
     assert!(core.playlists().is_empty());
 }
+
+#[test]
+fn search_finds_by_words_and_keys_and_suggests() {
+    let (_dir, core, _events) = core(true);
+    synced(&core);
+    let found = rt().block_on(core.search("first".into(), 5));
+    assert_eq!(found.tracks.len(), 1);
+    assert_eq!(found.tracks[0].title, "First");
+    let keyed = rt().block_on(core.search("artist:bo".into(), 5));
+    assert_eq!(keyed.artists.len(), 1);
+    assert!(!keyed.tracks.is_empty());
+    let chips = rt().block_on(core.suggest("artist:a".into()));
+    assert_eq!(chips[0].line, "artist:Ann ");
+    assert!(rt().block_on(core.search("".into(), 5)).tracks.is_empty());
+}

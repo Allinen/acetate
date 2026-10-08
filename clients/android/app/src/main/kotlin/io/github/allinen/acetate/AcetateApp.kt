@@ -56,6 +56,9 @@ class Model(dataDir: String) : Listener {
     /** Which library tab is shown: Albums, Artists, Tracks, Playlists. */
     var tab by mutableIntStateOf(0)
 
+    /** What's typed on the Search tab (kept when going to another tab). */
+    var searchText by mutableStateOf("")
+
     /** Bumped when the playlists (or one's entries) changed. */
     var playlistsVersion by mutableIntStateOf(0)
         private set

@@ -318,7 +318,6 @@ impl Catalog {
         self.albums.get(i as usize).map(|row| Album::new(&self.pools, row))
     }
 
-    #[cfg(test)]
     pub fn tracks(&self) -> impl ExactSizeIterator<Item = Track<'_>> + '_ {
         self.tracks.iter().map(|row| Track::new(&self.pools, row))
     }

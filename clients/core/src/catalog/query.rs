@@ -85,6 +85,11 @@ impl Key {
         KEYS.iter().find(|(_, names)| names.iter().any(|n| n.starts_with(&name))).map(|(key, _)| *key)
     }
 
+    /// Every key with its names (its own first).
+    pub fn all() -> impl Iterator<Item = (Key, &'static [&'static str])> {
+        KEYS.iter().copied()
+    }
+
     /// Its own name.
     pub fn name(self) -> &'static str {
         KEYS.iter().find(|(k, _)| *k == self).map(|(_, names)| names[0]).unwrap_or("")

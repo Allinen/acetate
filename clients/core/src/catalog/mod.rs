@@ -7,6 +7,7 @@
 
 #[cfg(test)]
 mod fixture;
+pub mod suggest;
 mod flat;
 #[cfg(test)]
 mod measure;

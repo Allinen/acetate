@@ -48,12 +48,14 @@ fun LibraryScreen(model: Model) {
     // One filter line per tab, in the library's query language (`artist:… year:…`).
     var filters by rememberSaveable { mutableStateOf(listOf("", "", "")) }
     Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal))) {
-        SyncLine(model)
-        if (tab < 3) OutlinedTextField(
-            filters[tab], { text -> filters = filters.toMutableList().also { it[tab] = text } },
-            Modifier.fillMaxWidth().padding(16.dp, 8.dp),
-            placeholder = { Text("Filter") }, singleLine = true,
-        )
+        if (tab != 4) SyncLine(model)
+        if (tab < 3) {
+            LineField(
+                filters[tab], { text -> filters = filters.toMutableList().also { it[tab] = text } }, "Filter",
+                Modifier.fillMaxWidth().padding(16.dp, 8.dp),
+            )
+            Suggestions(model, filters[tab]) { line -> filters = filters.toMutableList().also { it[tab] = line } }
+        }
         val filter = filters.getOrElse(tab) { "" }
         when (tab) {
             0 -> {
@@ -72,7 +74,8 @@ fun LibraryScreen(model: Model) {
                 LaunchedEffect(model.catalogVersion, filter) { view = model.core.tracks(filter, TrackOrder.TITLE, false) }
                 view?.let { TrackList(model, it) }
             }
-            else -> PlaylistList(model)
+            3 -> PlaylistList(model)
+            else -> SearchScreen(model)
         }
     }
 }

@@ -53,6 +53,35 @@ impl Search {
         }
     }
 
+    /// What a search line finds: plain words are matched fuzzily against everything; with
+    /// `key:value` parts, `artist:` searches artists by that name, `album:` albums by
+    /// title (both fuzzy), albums also by the keys that apply to albums (artist, year,
+    /// kind), and the tracks matching all of it, newest first. Up to `limit` of each.
+    pub fn run_query(&mut self, catalog: &Catalog, text: &str, limit: usize) -> Hits {
+        use super::index::{AlbumSort, TrackRows, TrackSort};
+        use super::query::{Key, Query};
+        let query = Query::parse(text);
+        if query.fields.is_empty() {
+            return self.run(catalog, text, limit);
+        }
+        let artists = match query.get(Key::Artist).filter(|v| !v.is_empty()) {
+            Some(name) => self.run_part(catalog, name, Part::Artists, limit),
+            None => Vec::new(),
+        };
+        let albums = match query.get(Key::Album).filter(|v| !v.is_empty()) {
+            Some(title) => self.run_part(catalog, title, Part::Albums, limit),
+            // Only with a key albums have (a key only tracks have would list every album).
+            None if query.fields.iter().any(|(k, _)| matches!(k, Key::Artist | Key::Year | Key::Kind | Key::Title)) => {
+                catalog.album_list(text, AlbumSort::Added).into_iter().take(limit).map(|i| (i, 0)).collect()
+            }
+            None => Vec::new(),
+        };
+        let rows = TrackRows { tracks: None, added: None };
+        let tracks = catalog.order_tracks(&rows, text, TrackSort::Added, false).into_iter().take(limit).map(|i| (i as u32, 0)).collect();
+        // (Keys are about tracks, albums and artists: no extras.)
+        Hits { artists, albums, tracks, extras: Vec::new() }
+    }
+
     /// Up to `limit` of one kind only (a form's artist or album field).
     pub fn run_part(&mut self, catalog: &Catalog, query: &str, part: Part, limit: usize) -> Vec<(u32, u32)> {
         let pattern = Pattern::parse(query, CaseMatching::Ignore, Normalization::Smart);

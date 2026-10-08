@@ -12,6 +12,8 @@ import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.ui.Modifier
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.LaunchedEffect
@@ -31,6 +33,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.runtime.Composable
 
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 fun Root(model: Model) {
     if (model.session == null) {
@@ -41,7 +44,7 @@ fun Root(model: Model) {
     // The bottom bar's inset is taken here once, so the screens above the mini player
     // don't leave a gap of it.
     Box(Modifier.fillMaxSize()) {
-        Column(Modifier.fillMaxSize()) {
+        Column(Modifier.fillMaxSize().imePadding()) {
             Box(Modifier.weight(1f)) {
                 when (val page = model.pages.lastOrNull()) {
                     null -> LibraryScreen(model)
@@ -51,8 +54,11 @@ fun Root(model: Model) {
                     Page.Liked -> LikedScreen(model)
                 }
             }
-            if (model.player.current != null) MiniPlayer(model)
-            BottomBar(model)
+            // The keyboard takes the place of the bars while typing.
+            if (!WindowInsets.isImeVisible) {
+                if (model.player.current != null) MiniPlayer(model)
+                BottomBar(model)
+            }
         }
         val snacks = remember { SnackbarHostState() }
         LaunchedEffect(model.notice) {
@@ -68,7 +74,7 @@ fun Root(model: Model) {
     }
 }
 
-private val tabs = listOf("Albums", "Artists", "Tracks", "Playlists")
+private val tabs = listOf("Albums", "Artists", "Tracks", "Playlists", "Search")
 
 /** Where to go in the library; tapping the one you're on goes back to its top. */
 @Composable
@@ -112,6 +118,10 @@ private fun TabIcon(tab: Int, color: Color) {
                 drawCircle(color, w * 0.16f, Offset(w * 0.35f, w * 0.75f))
                 drawLine(color, Offset(w * 0.5f, w * 0.75f), Offset(w * 0.5f, w * 0.15f), line.width, StrokeCap.Round)
                 drawLine(color, Offset(w * 0.5f, w * 0.15f), Offset(w * 0.8f, w * 0.3f), line.width, StrokeCap.Round)
+            }
+            4 -> {
+                drawCircle(color, w * 0.28f, Offset(w * 0.43f, w * 0.43f), style = line)
+                drawLine(color, Offset(w * 0.63f, w * 0.63f), Offset(w * 0.87f, w * 0.87f), line.width, StrokeCap.Round)
             }
             else -> for (i in 0..2) {
                 drawLine(color, Offset(w * 0.15f, w * (0.25f + i * 0.25f)), Offset(w * 0.85f, w * (0.25f + i * 0.25f)), line.width, StrokeCap.Round)

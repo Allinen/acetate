@@ -122,6 +122,21 @@ pub struct MarkInfo {
     pub starred: bool,
 }
 
+#[derive(Debug, Clone, Default, uniffi::Record)]
+pub struct SearchResult {
+    pub artists: Vec<ArtistRow>,
+    pub albums: Vec<AlbumRow>,
+    pub tracks: Vec<TrackRow>,
+    pub playlists: Vec<PlaylistRow>,
+}
+
+/// A suggestion: what it says, and the whole search line once it's chosen.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct Chip {
+    pub label: String,
+    pub line: String,
+}
+
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
 pub struct PlaylistRow {
     pub id: String,
@@ -655,6 +670,50 @@ impl Core {
                 .map(|catalog| catalog.order_tracks(&rows, &filter, sort, descending).into_iter().map(|i| i as u32).collect())
                 .unwrap_or_default();
             Arc::new(TrackView { catalog, list })
+        })
+        .await
+    }
+
+    // ---- Search ----
+
+    /// What fits the search line (the query language; plain words match fuzzily): the best
+    /// `limit` of each kind, best first.
+    pub async fn search(&self, text: String, limit: u64) -> SearchResult {
+        let Some(catalog) = self.shared.catalog() else { return SearchResult::default() };
+        let playlists = self.playlists();
+        blocking(move || {
+            let hits = acetate_core::catalog::search::Search::default().run_query(&catalog, &text, limit as usize);
+            let words: Vec<String> = acetate_core::catalog::query::Query::parse(&text).words;
+            SearchResult {
+                artists: hits
+                    .artists
+                    .iter()
+                    .map(|&(i, _)| {
+                        let a = &catalog.artists[i as usize];
+                        ArtistRow { id: a.id.to_string(), name: a.label(), track_count: a.track_count, album_count: a.album_count }
+                    })
+                    .collect(),
+                albums: hits.albums.iter().map(|&(i, _)| album_row(catalog.album_at(i))).collect(),
+                tracks: hits.tracks.iter().map(|&(i, _)| track_row(&catalog, catalog.track_at(i))).collect(),
+                // Playlists by their names (every word in it), when words were typed.
+                playlists: playlists
+                    .into_iter()
+                    .filter(|p| !words.is_empty() && words.iter().all(|w| p.name.to_lowercase().contains(w)))
+                    .take(limit as usize)
+                    .collect(),
+            }
+        })
+        .await
+    }
+
+    /// Chips to complete the search line (the keys, or values from the library).
+    pub async fn suggest(&self, text: String) -> Vec<Chip> {
+        let Some(catalog) = self.shared.catalog() else { return vec![] };
+        blocking(move || {
+            acetate_core::catalog::suggest::suggest(&catalog, &text)
+                .into_iter()
+                .map(|s| Chip { label: s.label, line: s.line })
+                .collect()
         })
         .await
     }

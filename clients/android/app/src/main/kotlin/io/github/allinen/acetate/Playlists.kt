@@ -55,7 +55,7 @@ fun PlaylistList(model: Model) {
 }
 
 @Composable
-private fun ListLine(title: String, subtitle: String, modifier: Modifier) {
+fun ListLine(title: String, subtitle: String, modifier: Modifier) {
     Column(modifier.fillMaxWidth().padding(16.dp, 10.dp)) {
         Text(title, style = MaterialTheme.typography.bodyLarge, maxLines = 1)
         Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
