@@ -8,11 +8,13 @@
 
 use uuid::Uuid;
 
+use super::flat::{Col, Flat};
 use super::model::{self, Cover, CoverKey, Credit, Membership};
 use super::text::{Str, Text, TextBuilder};
 
 /// A run of items in one of the pools.
 #[derive(Debug, Clone, Copy)]
+#[repr(C)]
 pub(super) struct Span {
     start: u32,
     len: u32,
@@ -27,6 +29,10 @@ impl Span {
 const RESTRICTED: u8 = 1;
 const HAS_COVER_KEY: u8 = 2;
 
+// The rows are written to a snapshot as they are in memory: `repr(C)`, with the padding
+// spelled out so there's none left (a test checks the sizes).
+#[derive(Clone, Copy)]
+#[repr(C)]
 pub(super) struct TrackRow {
     pub(super) id: Uuid,
     file_id: Uuid,
@@ -52,8 +58,11 @@ pub(super) struct TrackRow {
     /// `i16::MIN`: none.
     year: i16,
     flags: u8,
+    _pad: u8,
 }
 
+#[derive(Clone, Copy)]
+#[repr(C)]
 pub(super) struct AlbumRow {
     pub(super) id: Uuid,
     cover_id: Uuid,
@@ -69,18 +78,25 @@ pub(super) struct AlbumRow {
     /// `i32::MIN`: none.
     year: i32,
     flags: u8,
+    _pad: [u8; 7],
 }
+
+// SAFETY: `repr(C)` of integers, `Uuid`s, `Str`s and `Span`s, no padding (sizes checked
+// in the tests); any bytes are valid.
+unsafe impl Flat for Span {}
+unsafe impl Flat for TrackRow {}
+unsafe impl Flat for AlbumRow {}
 
 /// The pools rows' lists are kept in.
 #[derive(Default)]
 pub(super) struct Pools {
     pub(super) text: Text,
-    credits: Vec<Credit>,
-    memberships: Vec<Membership>,
+    pub(super) credits: Vec<Credit>,
+    pub(super) memberships: Vec<Membership>,
     /// Groupings.
-    ids: Vec<Uuid>,
+    pub(super) ids: Col<Uuid>,
     /// Genres and platforms.
-    strs: Vec<Str>,
+    pub(super) strs: Col<Str>,
 }
 
 impl Pools {
@@ -91,7 +107,7 @@ impl Pools {
             ("text", self.text.bytes()),
             ("credits", self.credits.capacity() * size_of::<Credit>() + self.credits.iter().filter_map(|c| c.2.as_ref()).map(|a| (a.len() + 8).div_ceil(16) * 16).sum::<usize>()),
             ("albums tracks are on", self.memberships.capacity() * size_of::<Membership>()),
-            ("groupings, genres, platforms", self.ids.capacity() * 16 + self.strs.capacity() * size_of::<Str>()),
+            ("groupings, genres, platforms", self.ids.len() * 16 + self.strs.len() * size_of::<Str>()),
         ]
     }
 }
@@ -138,6 +154,7 @@ impl Builder {
             sample_rate: t.sample_rate.unwrap_or(i32::MIN),
             year: t.year.unwrap_or(i16::MIN),
             flags: if t.is_restricted { RESTRICTED } else { 0 } | if t.cover_key.is_some() { HAS_COVER_KEY } else { 0 },
+            _pad: 0,
         }
     }
 
@@ -156,6 +173,7 @@ impl Builder {
             track_count: a.track_count.clamp(0, u32::MAX as i64) as u32,
             year: a.year.unwrap_or(i32::MIN),
             flags: if a.cover_key.is_some() { HAS_COVER_KEY } else { 0 },
+            _pad: [0; 7],
         }
     }
 
@@ -164,7 +182,7 @@ impl Builder {
         self.memberships.shrink_to_fit();
         self.ids.shrink_to_fit();
         self.strs.shrink_to_fit();
-        Pools { text: self.text.finish(), credits: self.credits, memberships: self.memberships, ids: self.ids, strs: self.strs }
+        Pools { text: self.text.finish(), credits: self.credits, memberships: self.memberships, ids: self.ids.into(), strs: self.strs.into() }
     }
 }
 

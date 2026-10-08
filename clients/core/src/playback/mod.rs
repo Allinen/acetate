@@ -1,6 +1,7 @@
 //! What plays, as the clients see it: the queue (`queue`), play counting (`scrobble`) and
 //! the view of the player a UI draws from. The audio itself is each platform's.
 
+pub mod player;
 pub mod queue;
 pub mod scrobble;
 
@@ -24,7 +25,7 @@ pub enum AudioSource {
 }
 
 /// One queued track, with what the UI shows about it.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct QueueItem {
     pub track_id: Uuid,
     pub file_id: Uuid,
@@ -45,6 +46,21 @@ impl QueueItem {
             AudioSource::NotImported => format!("/api/ingest-problems/{}/audio", self.file_id),
             AudioSource::Extra => format!("/api/extra-files/{}/stream", self.file_id),
         }
+    }
+}
+
+/// A track (a position in the catalog) as the queue keeps it.
+pub fn queue_item(catalog: &crate::catalog::Catalog, i: u32) -> QueueItem {
+    let t = catalog.track_at(i);
+    QueueItem {
+        track_id: t.id(),
+        file_id: t.file_id(),
+        source: Default::default(),
+        title: t.title().to_string(),
+        artist: t.artist_display().to_string(),
+        album: catalog.main_album(t).map(|a| a.title().to_string()),
+        duration_ms: t.duration_ms(),
+        cover: t.cover(),
     }
 }
 

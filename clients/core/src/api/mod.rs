@@ -100,6 +100,24 @@ impl Api {
         }
     }
 
+    /// Whether a server answers at `address` (no login): the HTTP status it gave, or why
+    /// the connection failed (a certificate the phone doesn't trust, say), with the whole
+    /// chain of causes. For finding out what's wrong with an address.
+    pub async fn reach(&self, address: &str) -> Result<u16, String> {
+        match self.client.get(address.trim()).send().await {
+            Ok(response) => Ok(response.status().as_u16()),
+            Err(err) => {
+                let mut text = err.to_string();
+                let mut cause = std::error::Error::source(&err);
+                while let Some(c) = cause {
+                    text.push_str(&format!(": {c}"));
+                    cause = c.source();
+                }
+                Err(text)
+            }
+        }
+    }
+
     pub fn session(&self) -> Option<Session> {
         self.session.read().unwrap().clone()
     }

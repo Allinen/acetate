@@ -5,7 +5,7 @@
 //! lists its fields in the server's column order, and `check_columns` makes sure the
 //! server's columns are what this client expects.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 use uuid::Uuid;
 
@@ -130,7 +130,7 @@ pub(super) const ALBUM_COLUMNS: &[&str] = &[
 
 /// A grouping: a collective (an account several artists post under), an era, a
 /// project… `track_count`/`album_count`: of those the user can see.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Grouping {
     pub id: Uuid,
     pub kind: String,
@@ -144,7 +144,7 @@ pub struct Grouping {
 pub(super) const GROUPING_COLUMNS: &[&str] = &["id", "kind", "name", "track_count", "album_count", "artists"];
 
 /// An extra (vocals, stems, a sample…: not a track), to search and play.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Extra {
     pub id: Uuid,
     pub name: String,
@@ -176,7 +176,7 @@ impl Extra {
 
 pub(super) const EXTRA_COLUMNS: &[&str] = &["id", "name", "kind", "is_restricted", "hidden", "links", "files", "first_file", "duration_ms", "video", "thumb_key"];
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Artist {
     pub id: Uuid,
     pub name: String,
@@ -198,7 +198,7 @@ pub(super) const ARTIST_COLUMNS: &[&str] = &["id", "name", "disambiguation", "al
 /// The user's own plays, rating and star on a track, album or artist.
 // Every column is read (rows are arrays in column order); not all are shown yet.
 #[allow(dead_code)]
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Annotation {
     pub kind: String,
     pub id: Uuid,
@@ -215,14 +215,14 @@ pub(super) const ANNOTATION_COLUMNS: &[&str] = &["kind", "id", "play_count", "la
 /// A track's open review flags: the track, and each flag's id and kind (a kind from
 /// `/api/vocab`'s `review_kinds`), in the order to show them. In a delta, a track with
 /// none left has an empty list.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Issues(pub Uuid, pub Vec<(Uuid, String)>);
 
 pub(super) const ISSUE_COLUMNS: &[&str] = &["track_id", "flags"];
 
 // Every column is read (rows are arrays in column order); not all are shown yet.
 #[allow(dead_code)]
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Playlist {
     pub id: Uuid,
     pub name: String,

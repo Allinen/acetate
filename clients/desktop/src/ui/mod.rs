@@ -1356,17 +1356,7 @@ fn window_handle(cc: &eframe::CreationContext) -> Option<*mut std::ffi::c_void> 
 
 /// A track (a position in the catalog) as the queue keeps it.
 pub fn queue_item(catalog: &Catalog, i: u32) -> QueueItem {
-    let t = catalog.track_at(i);
-    QueueItem {
-        track_id: t.id(),
-        file_id: t.file_id(),
-        source: Default::default(),
-        title: t.title().to_string(),
-        artist: t.artist_display().to_string(),
-        album: catalog.main_album(t).map(|a| a.title().to_string()),
-        duration_ms: t.duration_ms(),
-        cover: t.cover(),
-    }
+    crate::playback::queue_item(catalog, i)
 }
 
 /// 185000 → "185,000".

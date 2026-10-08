@@ -20,6 +20,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
@@ -66,7 +67,9 @@ fun ArtistList(model: Model, view: ArtistView) {
 fun TrackList(model: Model, view: TrackView) {
     val rows = remember(view) { Rows(view.count().toInt()) { s, n -> view.rows(s.toULong(), n.toULong()) } }
     LazyColumn(Modifier.fillMaxWidth()) {
-        items(rows.count, key = { it }) { i -> rows[i]?.let { TrackItem(model, it) } }
+        items(rows.count, key = { it }) { i ->
+            rows[i]?.let { row -> TrackItem(model, row, Modifier.clickable { model.playback.playView(view, i.toULong()) }) }
+        }
     }
 }
 
@@ -92,20 +95,23 @@ fun TrackItem(model: Model, row: TrackRow, modifier: Modifier = Modifier) {
     Item(
         model, row.cover, row.title,
         listOfNotNull(row.artist, row.album).joinToString(" · "),
-        modifier, trailing = row.durationMs?.let(::duration),
+        modifier, trailing = row.durationMs?.let(::duration), highlight = model.player.current?.id == row.id,
     )
 }
 
 @Composable
 private fun Item(
     model: Model, cover: String?, title: String, subtitle: String, modifier: Modifier,
-    trailing: String? = null,
+    trailing: String? = null, highlight: Boolean = false,
 ) {
     Row(modifier.fillMaxWidth().padding(16.dp, 6.dp), verticalAlignment = Alignment.CenterVertically) {
         Cover(model, cover, 56)
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
-            Text(title, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyLarge)
+            Text(
+                title, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyLarge,
+                color = if (highlight) MaterialTheme.colorScheme.primary else Color.Unspecified,
+            )
             Text(
                 subtitle, maxLines = 1, overflow = TextOverflow.Ellipsis,
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,

@@ -47,6 +47,19 @@ class Model(dataDir: String) : Listener {
     var catalogVersion by mutableIntStateOf(0)
         private set
 
+    /** Bumped when what plays or the queue changed (read `playback.state()` again). */
+    var playerVersion by mutableIntStateOf(0)
+        private set
+
+    val playback = core.playback()
+
+    /** What plays and the queue, as of the last [Change.PLAYER]. */
+    var player by mutableStateOf(playback.state())
+        private set
+
+    /** The Now playing screen is open. */
+    var nowPlaying by mutableStateOf(false)
+
     init {
         if (session != null) core.startSync()
     }
@@ -58,6 +71,10 @@ class Model(dataDir: String) : Listener {
                 Change.SESSION -> {
                     session = core.session()
                     if (session != null) core.startSync()
+                }
+                Change.PLAYER -> {
+                    player = playback.state()
+                    playerVersion++
                 }
                 Change.CATALOG -> {
                     catalogVersion++

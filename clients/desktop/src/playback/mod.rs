@@ -4,7 +4,7 @@
 pub mod engine;
 pub mod opus;
 pub mod media_keys;
-pub use acetate_core::playback::{AudioSource, PlayerView, QueueItem, queue, scrobble};
+pub use acetate_core::playback::{AudioSource, PlayerView, QueueItem, queue, queue_item, scrobble};
 pub mod spectrum;
 pub mod stream;
 

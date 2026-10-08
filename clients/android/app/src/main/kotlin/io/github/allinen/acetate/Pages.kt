@@ -1,5 +1,7 @@
 package io.github.allinen.acetate
 
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -12,7 +14,9 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -22,6 +26,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -61,14 +66,26 @@ fun AlbumScreen(model: Model, id: String) {
                         "${album.trackCount} tracks · ${duration(album.durationMs)}",
                         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    Spacer(Modifier.height(8.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button({
+                            if (model.player.shuffle) model.playback.toggleShuffle()
+                            model.playback.playAlbum(id, 0uL)
+                        }) { Text("Play") }
+                        OutlinedButton({
+                            if (!model.player.shuffle) model.playback.toggleShuffle()
+                            model.playback.playAlbum(id, 0uL)
+                        }) { Text("Shuffle") }
+                        OutlinedButton({ model.playback.enqueueAlbum(id, false) }) { Text("Queue") }
+                    }
                 }
             }
             items(tracks.size, key = { it }) { i ->
                 val t = tracks[i]
-                Row(Modifier.fillMaxWidth().padding(16.dp, 8.dp)) {
+                Row(Modifier.fillMaxWidth().clickable { model.playback.playAlbum(id, i.toULong()) }.padding(16.dp, 8.dp)) {
                     Text("${i + 1}", Modifier.width(32.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Column(Modifier.weight(1f)) {
-                        Text(t.title, maxLines = 1)
+                        Text(t.title, maxLines = 1, color = if (model.player.current?.id == t.id) MaterialTheme.colorScheme.primary else Color.Unspecified)
                         Text(
                             t.artist, maxLines = 1,
                             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,

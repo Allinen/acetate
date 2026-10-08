@@ -22,6 +22,22 @@ class MainActivity : ComponentActivity() {
                 Log.i("Acetate", "probe $address: $answer (${android.os.SystemClock.elapsedRealtime() - start} ms)")
             }
         }
+        // The player's service starts with the app, so the core's queue (brought back
+        // paused) has a player to go to before anything is played.
+        androidx.media3.session.MediaController.Builder(this, PlaybackService.token(this)).buildAsync()
+        // Debug builds: `--es play <album id>` plays an album from adb.
+        if (BuildConfig.DEBUG) intent.getStringExtra("play")?.let { album ->
+            lifecycleScope.launch {
+                while (!model.sync.haveCatalog) kotlinx.coroutines.delay(200)
+                // `first`: the first album of the library.
+                val id = if (album == "first") model.core.albums("", uniffi.acetate_ffi.AlbumOrder.TITLE).rows(0uL, 1uL)[0].id else album
+                Log.i("Acetate", "playing album $id")
+                model.playback.playAlbum(id, 0uL)
+            }
+        }
+        if (android.os.Build.VERSION.SDK_INT >= 33) {
+            requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 1)
+        }
         setContent { AcetateTheme { Root(model) } }
     }
 }

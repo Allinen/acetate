@@ -9,6 +9,9 @@
 use std::sync::{Arc, Mutex};
 
 use acetate_core::api::{Api, ApiError};
+use acetate_core::playback::player::{Engine, Load, Player};
+use acetate_core::playback::{QueueItem, queue, queue_item};
+use acetate_core::resume::Resume;
 use acetate_core::catalog::index::{AlbumSort, ArtistSort, TrackRows, TrackSort};
 use acetate_core::catalog::store::{self, Store, Update};
 use acetate_core::catalog::{Album, Catalog, Track};
@@ -64,6 +67,8 @@ pub enum Change {
     Catalog,
     /// `sync_state` changed (refreshing, failed, done).
     Sync,
+    /// What plays, or the queue, changed (not the position: that's the player's).
+    Player,
 }
 
 /// Kotlin code the core calls, from any thread.
@@ -158,7 +163,7 @@ pub enum ImageSize {
 }
 
 /// What an image loader (Coil) needs to fetch a cover: the address and the login header.
-#[derive(Debug, Clone, uniffi::Record)]
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
 pub struct ImageRequest {
     pub url: String,
     pub authorization: String,
@@ -271,6 +276,9 @@ fn window(list: &[u32], start: u64, n: u64) -> &[u32] {
 
 struct Shared {
     api: Api,
+    player: Arc<Player>,
+    /// Whose queue is being kept (the key of the server and user).
+    keeping: Mutex<Option<String>>,
     store: Mutex<Option<Arc<Store>>>,
     catalog: Mutex<Option<Arc<Catalog>>>,
     sync: Mutex<SyncState>,
@@ -303,8 +311,12 @@ impl Core {
             .thread_name("acetate-core")
             .build()
             .expect("a tokio runtime");
+        let api = Api::new(data_dir.clone());
+        let player = Arc::new(Player::new(Some(api.clone()), runtime.handle().clone(), Arc::new(ChangeWake(listener.clone()))));
         let shared = Arc::new(Shared {
-            api: Api::new(data_dir.clone()),
+            api,
+            player,
+            keeping: Mutex::new(None),
             store: Mutex::new(None),
             catalog: Mutex::new(None),
             sync: Mutex::new(SyncState::default()),
@@ -349,6 +361,8 @@ impl Core {
 
     /// Logs out; the kept catalog stays on disk for the next login of the same user.
     pub fn logout(&self) {
+        self.shared.player.stop();
+        *self.shared.keeping.lock().unwrap() = None;
         self.shared.api.logout();
         *self.shared.catalog.lock().unwrap() = None;
         *self.shared.store.lock().unwrap() = None;
@@ -362,6 +376,14 @@ impl Core {
         let Some(session) = self.shared.api.session() else { return };
         let store = Arc::new(Store::new(&self.data_dir, &session));
         *self.shared.store.lock().unwrap() = Some(store.clone());
+        // The queue is kept per server and user, and brought back once the catalog is there.
+        let key = acetate_core::catalog::store::key(&session);
+        let mut keeping = self.shared.keeping.lock().unwrap();
+        if keeping.as_deref() != Some(&key) {
+            self.shared.player.keep_with(Resume::new(&self.data_dir, &key));
+            *keeping = Some(key);
+        }
+        drop(keeping);
         let shared = self.shared.clone();
         set_sync(&shared, |s| {
             s.refreshing = true;
@@ -461,6 +483,11 @@ impl Core {
         catalog.artist_albums(id).iter().map(|&i| album_row(catalog.album_at(i))).collect()
     }
 
+    /// The player: what plays and the queue.
+    pub fn playback(&self) -> Arc<Playback> {
+        Arc::new(Playback { shared: self.shared.clone() })
+    }
+
     // ---- Covers ----
 
     /// How to fetch a cover (its key from a row): None when logged out.
@@ -496,6 +523,310 @@ fn set_catalog(shared: &Shared, catalog: Arc<Catalog>) {
         sync.albums = catalog.album_count() as u64;
         sync.artists = catalog.artists.len() as u64;
     }
+    // The queue from the last run, loaded (paused) if nothing else is.
+    shared.player.restore_saved(&catalog);
     shared.listener.changed(Change::Catalog);
     acetate_core::memory::trim();
+}
+
+// ---- Playing ----
+
+/// Tells Kotlin that what plays, or the queue, changed.
+struct ChangeWake(Arc<dyn Listener>);
+
+impl acetate_core::Wake for ChangeWake {
+    fn changed(&self) {
+        self.0.changed(Change::Player);
+    }
+}
+
+/// A track to hand to the platform's player: where to fetch it (with the login header) and
+/// what to show about it.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct MediaRequest {
+    pub url: String,
+    pub authorization: String,
+    pub track_id: String,
+    pub title: String,
+    pub artist: String,
+    pub album: Option<String>,
+    pub duration_ms: Option<i64>,
+    pub cover: Option<ImageRequest>,
+}
+
+/// The platform's player (Media3's, in a service). The core calls it from any thread: it
+/// has to hand each call over to the thread its player lives on.
+#[uniffi::export(with_foreign)]
+pub trait PlayerEngine: Send + Sync {
+    /// Plays this now from `at_ms`, in place of what plays; its next slot is emptied.
+    fn play(&self, media: MediaRequest, at_ms: u64, paused: bool);
+    /// What plays after the current track, gaplessly (none: nothing).
+    fn set_next(&self, media: Option<MediaRequest>);
+    fn set_paused(&self, paused: bool);
+    fn seek(&self, to_ms: u64);
+    /// Goes on to what's in the next slot, now.
+    fn skip(&self);
+    fn stop(&self);
+}
+
+/// Turns the core's calls into the engine's, with addresses and login.
+struct EngineAdapter {
+    engine: Arc<dyn PlayerEngine>,
+    api: Api,
+}
+
+impl EngineAdapter {
+    fn media(&self, load: &Load) -> Option<MediaRequest> {
+        let session = self.api.session()?;
+        let item = &load.item;
+        Some(MediaRequest {
+            url: format!("{}{}", session.server, load.path),
+            authorization: format!("Bearer {}", session.token),
+            track_id: item.track_id.to_string(),
+            title: item.title.clone(),
+            artist: item.artist.clone(),
+            album: item.album.clone(),
+            duration_ms: item.duration_ms,
+            cover: item.cover.map(|c| ImageRequest {
+                url: format!("{}/api/images/{}?size=standard", session.server, cover_key(c.key.0)),
+                authorization: format!("Bearer {}", session.token),
+            }),
+        })
+    }
+}
+
+impl Engine for EngineAdapter {
+    fn play(&self, load: &Load, at: std::time::Duration, paused: bool) {
+        if let Some(media) = self.media(load) {
+            self.engine.play(media, at.as_millis() as u64, paused);
+        }
+    }
+
+    fn set_next(&self, load: Option<&Load>) {
+        self.engine.set_next(load.and_then(|l| self.media(l)));
+    }
+
+    fn set_paused(&self, paused: bool) {
+        self.engine.set_paused(paused);
+    }
+
+    fn seek(&self, to: std::time::Duration) {
+        self.engine.seek(to.as_millis() as u64);
+    }
+
+    fn skip(&self) {
+        self.engine.skip();
+    }
+
+    fn stop(&self) {
+        self.engine.stop();
+    }
+}
+
+/// What the player shows.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct PlayerState {
+    /// What plays (or last played, or waits, restored).
+    pub current: Option<TrackRow>,
+    /// It came from the hand-made queue (else from the list).
+    pub current_queued: bool,
+    pub playing: bool,
+    pub paused: bool,
+    pub repeat: bool,
+    pub shuffle: bool,
+    /// Where it was last told to be (the progress bar reads the platform player instead).
+    pub position_ms: u64,
+    /// The list played from, and where in it playback is.
+    pub list_len: u64,
+    pub list_index: u64,
+    /// Tracks queued by hand.
+    pub queued_len: u64,
+}
+
+fn queue_row(item: &QueueItem) -> TrackRow {
+    TrackRow {
+        id: item.track_id.to_string(),
+        title: item.title.clone(),
+        artist: item.artist.clone(),
+        album: item.album.clone(),
+        year: None,
+        duration_ms: item.duration_ms,
+        cover: item.cover.map(|c| cover_key(c.key.0)),
+    }
+}
+
+/// A place in the queue.
+#[derive(Debug, Clone, Copy, uniffi::Enum)]
+pub enum QueuePart {
+    /// The list played from.
+    List,
+    /// The hand-made queue.
+    Queued,
+}
+
+fn place(part: QueuePart, index: u64) -> queue::Place {
+    match part {
+        QueuePart::List => queue::Place::List(index as usize),
+        QueuePart::Queued => queue::Place::Queued(index as usize),
+    }
+}
+
+/// What plays and the queue: commands, and what the platform's player tells.
+#[derive(uniffi::Object)]
+pub struct Playback {
+    shared: Arc<Shared>,
+}
+
+impl Playback {
+    fn player(&self) -> &Player {
+        &self.shared.player
+    }
+
+    fn items(&self, positions: impl Iterator<Item = u32>) -> Vec<QueueItem> {
+        let Some(catalog) = self.shared.catalog() else { return vec![] };
+        positions.map(|i| queue_item(&catalog, i)).collect()
+    }
+
+    fn items_of(&self, ids: &[String]) -> Vec<QueueItem> {
+        let Some(catalog) = self.shared.catalog() else { return vec![] };
+        ids.iter().filter_map(|id| catalog.track_index(parse_id(id)?)).map(|i| queue_item(&catalog, i)).collect()
+    }
+
+    fn album_items(&self, id: &str) -> Vec<QueueItem> {
+        let Some(catalog) = self.shared.catalog() else { return vec![] };
+        let Some(id) = parse_id(id) else { return vec![] };
+        catalog.album_tracks(id).iter().map(|&i| queue_item(&catalog, i)).collect()
+    }
+}
+
+#[uniffi::export]
+impl Playback {
+    /// The platform's player is there: the core drives it from now on. Hand over what's
+    /// loaded already (a queue brought back at start), paused.
+    pub fn attach(&self, engine: Arc<dyn PlayerEngine>) {
+        self.player().attach(Arc::new(EngineAdapter { engine, api: self.shared.api.clone() }));
+    }
+
+    pub fn state(&self) -> PlayerState {
+        let v = self.player().view();
+        PlayerState {
+            current: v.current.as_ref().map(queue_row),
+            current_queued: v.current_queued,
+            playing: v.playing,
+            paused: v.paused,
+            repeat: v.repeat,
+            shuffle: v.shuffle,
+            position_ms: v.position_now().as_millis() as u64,
+            list_len: v.list.len() as u64,
+            list_index: v.list_index as u64,
+            queued_len: v.queued.len() as u64,
+        }
+    }
+
+    /// `n` rows of the list played from, from `start`.
+    pub fn list_rows(&self, start: u64, n: u64) -> Vec<TrackRow> {
+        let v = self.player().view();
+        let start = (start as usize).min(v.list.len());
+        let end = start.saturating_add(n as usize).min(v.list.len());
+        v.list[start..end].iter().map(queue_row).collect()
+    }
+
+    /// The hand-made queue.
+    pub fn queued_rows(&self) -> Vec<TrackRow> {
+        self.player().view().queued.iter().map(queue_row).collect()
+    }
+
+    // ---- What to play ----
+
+    /// Plays a list of tracks from `start` (a table, a search result, as it's shown).
+    pub fn play_view(&self, view: Arc<TrackView>, start: u64) {
+        let items = self.items(view.list.iter().copied());
+        self.player().play_list(items, start as usize);
+    }
+
+    /// Plays an album from its `start`th track.
+    pub fn play_album(&self, album: String, start: u64) {
+        self.player().play_list(self.album_items(&album), start as usize);
+    }
+
+    /// Plays tracks by id (an artist's, a playlist's) from `start`.
+    pub fn play_tracks(&self, ids: Vec<String>, start: u64) {
+        self.player().play_list(self.items_of(&ids), start as usize);
+    }
+
+    pub fn enqueue_tracks(&self, ids: Vec<String>, first: bool) {
+        self.player().enqueue(self.items_of(&ids), first);
+    }
+
+    pub fn enqueue_album(&self, album: String, first: bool) {
+        self.player().enqueue(self.album_items(&album), first);
+    }
+
+    pub fn play_place(&self, part: QueuePart, index: u64) {
+        self.player().play_place(place(part, index));
+    }
+
+    pub fn remove(&self, part: QueuePart, index: u64) {
+        self.player().remove(place(part, index));
+    }
+
+    pub fn clear_queued(&self) {
+        self.player().clear_queued();
+    }
+
+    pub fn move_queued(&self, from: u64, to: u64) {
+        self.player().move_queued(from as usize, to as usize);
+    }
+
+    // ---- The player ----
+
+    pub fn next(&self) {
+        self.player().next();
+    }
+
+    pub fn previous(&self) {
+        self.player().previous();
+    }
+
+    pub fn set_paused(&self, paused: bool) {
+        self.player().set_paused(paused);
+    }
+
+    pub fn seek(&self, to_ms: u64) {
+        self.player().seek(std::time::Duration::from_millis(to_ms));
+    }
+
+    pub fn toggle_repeat(&self) {
+        self.player().toggle_repeat();
+    }
+
+    pub fn toggle_shuffle(&self) {
+        self.player().toggle_shuffle();
+    }
+
+    pub fn stop(&self) {
+        self.player().stop();
+    }
+
+    /// Streams copies at this quality (kbps; none: what the server gives), from the next track.
+    pub fn set_quality(&self, kbps: Option<u32>) {
+        self.player().set_quality(kbps);
+    }
+
+    // ---- What the platform's player tells ----
+
+    /// It went on to the next item by itself (not by a skip or a replace the core asked for).
+    pub fn on_transition(&self) {
+        self.player().on_transition();
+    }
+
+    /// Called about twice a second while it plays, and when play/pause changes.
+    pub fn on_position(&self, position_ms: u64, playing: bool, paused: bool) {
+        self.player().on_position(std::time::Duration::from_millis(position_ms), playing, paused);
+    }
+
+    /// Playback ran out (the last track ended).
+    pub fn on_ended(&self) {
+        self.player().on_ended();
+    }
 }

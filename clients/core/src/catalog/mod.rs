@@ -5,7 +5,9 @@
 //! up quickly (by id, an album's tracks, an artist's...); `store` keeps it on disk and
 //! brings it up to date.
 
-mod compact;
+#[cfg(test)]
+mod fixture;
+mod flat;
 #[cfg(test)]
 mod measure;
 pub mod index;
@@ -14,6 +16,7 @@ pub mod model;
 pub mod query;
 mod rows;
 pub mod search;
+mod snapshot;
 pub mod store;
 mod text;
 

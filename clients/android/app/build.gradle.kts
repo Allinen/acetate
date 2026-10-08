@@ -117,6 +117,9 @@ dependencies {
     implementation(libs.compose.foundation)
     implementation(libs.compose.material3)
     implementation(libs.compose.icons.core)
+    implementation(libs.media3.exoplayer)
+    implementation(libs.media3.session)
+    implementation(libs.media3.okhttp)
     implementation(libs.coil.compose)
     implementation(libs.coil.network.okhttp)
     // UniFFI's Kotlin calls the library through JNA (the aar carries its native part).

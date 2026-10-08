@@ -157,3 +157,110 @@ fn covers_are_fetched_with_the_login() {
     assert!(core.image_request("0011223344556677".into(), ImageSize::Small).is_none());
     assert!(core.session().is_none());
 }
+
+// ---- Playing ----
+
+#[derive(Default)]
+struct Engine(Mutex<Vec<String>>);
+
+impl Engine {
+    fn took(&self) -> Vec<String> {
+        std::mem::take(&mut *self.0.lock().unwrap())
+    }
+}
+
+impl PlayerEngine for Engine {
+    fn play(&self, media: MediaRequest, at_ms: u64, paused: bool) {
+        self.0.lock().unwrap().push(format!("play {} {} @{at_ms}{} [{}]", media.title, media.url, if paused { " paused" } else { "" }, media.authorization));
+    }
+    fn set_next(&self, media: Option<MediaRequest>) {
+        self.0.lock().unwrap().push(format!("next {}", media.map_or("-".to_string(), |m| m.title)));
+    }
+    fn set_paused(&self, paused: bool) {
+        self.0.lock().unwrap().push(format!("paused {paused}"));
+    }
+    fn seek(&self, to_ms: u64) {
+        self.0.lock().unwrap().push(format!("seek {to_ms}"));
+    }
+    fn skip(&self) {
+        self.0.lock().unwrap().push("skip".into());
+    }
+    fn stop(&self) {
+        self.0.lock().unwrap().push("stop".into());
+    }
+}
+
+const ALBUM: &str = "00000000-0000-7000-8000-0000000000b1";
+
+#[test]
+fn an_album_plays_through_the_engine_with_the_login() {
+    let (_dir, core, events) = core(true);
+    synced(&core);
+    let playback = core.playback();
+    let engine = Arc::new(Engine::default());
+    playback.attach(engine.clone());
+    playback.play_album(ALBUM.into(), 0);
+    let took = engine.took();
+    assert_eq!(took[0], format!("play First {SERVER}/api/files/00000000-0000-7000-8000-0000000000f2/stream @0 [Bearer tok]"));
+    assert_eq!(took[1], "next Second");
+    assert!(events.0.lock().unwrap().contains(&Change::Player));
+
+    let state = playback.state();
+    assert_eq!(state.current.unwrap().title, "First");
+    assert_eq!((state.list_len, state.list_index, state.queued_len, state.playing), (3, 0, 0, true));
+
+    playback.on_transition();
+    assert_eq!(playback.state().current.unwrap().title, "Second");
+    assert_eq!(engine.took(), ["next The Third"]);
+    assert_eq!(playback.list_rows(1, 5).iter().map(|r| r.title.as_str()).collect::<Vec<_>>(), ["Second", "The Third"]);
+
+    playback.enqueue_tracks(vec!["00000000-0000-7000-8000-000000000001".into(), "nonsense".into()], false);
+    assert_eq!(playback.queued_rows().len(), 1, "an id that isn't there is left out");
+    playback.set_quality(Some(128));
+    playback.seek(5000);
+    playback.stop();
+    assert!(playback.state().current.is_none());
+}
+
+#[test]
+fn a_view_plays_as_it_is_shown() {
+    let (_dir, core, _) = core(true);
+    synced(&core);
+    let playback = core.playback();
+    let engine = Arc::new(Engine::default());
+    playback.attach(engine.clone());
+    let view = rt().block_on(core.tracks(String::new(), TrackOrder::Title, false));
+    playback.play_view(view, 1);
+    assert_eq!(playback.state().current.unwrap().title, "Second");
+    assert_eq!(playback.state().list_len, 3);
+}
+
+#[test]
+fn the_queue_comes_back_after_a_restart_paused() {
+    let (dir, core1, _) = core(true);
+    synced(&core1);
+    let playback = core1.playback();
+    playback.attach(Arc::new(Engine::default()));
+    playback.play_album(ALBUM.into(), 1);
+    playback.on_position(12_000, true, false);
+    // Written by tasks of their own: wait for both files.
+    let written = |prefix: &str| std::fs::read_dir(dir.path()).unwrap().flatten().any(|e| e.file_name().to_string_lossy().starts_with(prefix));
+    let start = Instant::now();
+    while !(written("queue-") && written("list-")) {
+        assert!(start.elapsed() < Duration::from_secs(5), "the queue was never kept");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    drop(playback);
+    drop(core1);
+
+    let events = Arc::new(Events(Mutex::new(vec![])));
+    let core2 = Core::new(dir.path().to_string_lossy().into_owned(), events);
+    synced(&core2);
+    let playback = core2.playback();
+    assert_eq!(playback.state().current.unwrap().title, "Second", "the second track of the album");
+    let engine = Arc::new(Engine::default());
+    playback.attach(engine.clone());
+    let took = engine.took();
+    assert!(took[0].starts_with("play Second ") && took[0].contains("paused"), "{took:?}");
+    assert_eq!(took[1], "next The Third");
+}

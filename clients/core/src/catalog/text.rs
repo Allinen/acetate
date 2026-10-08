@@ -8,6 +8,34 @@
 use std::collections::HashMap;
 use std::hash::{BuildHasher, RandomState};
 
+use super::flat::Col;
+
+/// A column of bytes that is always valid UTF-8: built from `&str`s, or checked once when
+/// a snapshot is opened.
+#[derive(Default)]
+pub(super) struct Utf8(pub(super) Col<u8>);
+
+impl Utf8 {
+    pub(super) fn as_str(&self) -> &str {
+        // SAFETY: only ever built from strings, or from bytes `checked` validated.
+        unsafe { std::str::from_utf8_unchecked(&self.0) }
+    }
+
+    /// Bytes from a file, if they are text.
+    pub(super) fn checked(col: Col<u8>) -> Option<Utf8> {
+        std::str::from_utf8(&col).ok()?;
+        Some(Utf8(col))
+    }
+
+    fn push(&mut self, s: &str) {
+        self.0.make_mut().extend_from_slice(s.as_bytes());
+    }
+
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+}
+
 /// A string in a `Text`, or none (`NONE`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Str {
@@ -21,7 +49,7 @@ impl Str {
 
 #[derive(Default)]
 pub struct Text {
-    buffer: String,
+    pub(super) buffer: Utf8,
 }
 
 impl Text {
@@ -34,12 +62,12 @@ impl Text {
         if s == Str::NONE {
             return None;
         }
-        Some(&self.buffer[s.start as usize..s.start as usize + s.len as usize])
+        Some(&self.buffer.as_str()[s.start as usize..s.start as usize + s.len as usize])
     }
 
     #[cfg(test)]
     pub fn bytes(&self) -> usize {
-        self.buffer.capacity()
+        self.buffer.0.len()
     }
 }
 
@@ -56,7 +84,7 @@ pub struct TextBuilder {
 impl TextBuilder {
     pub fn push(&mut self, s: &str) -> Str {
         let start = u32::try_from(self.text.buffer.len()).expect("a catalog's text under 4 GB");
-        self.text.buffer.push_str(s);
+        self.text.buffer.push(s);
         Str { start, len: s.len() as u32 }
     }
 
@@ -81,7 +109,7 @@ impl TextBuilder {
     }
 
     pub fn finish(mut self) -> Text {
-        self.text.buffer.shrink_to_fit();
+        self.text.buffer.0.make_mut().shrink_to_fit();
         self.text
     }
 }
@@ -89,30 +117,31 @@ impl TextBuilder {
 /// A list of strings, one after another in one buffer.
 #[derive(Default)]
 pub struct Texts {
-    buffer: String,
+    pub(super) buffer: Utf8,
     /// Where each one ends.
-    ends: Vec<u32>,
+    pub(super) ends: Col<u32>,
 }
 
 impl Texts {
     pub fn with_capacity(n: usize) -> Texts {
-        Texts { buffer: String::new(), ends: Vec::with_capacity(n) }
+        Texts { buffer: Utf8::default(), ends: Col::Owned(Vec::with_capacity(n)) }
     }
 
     /// The next one: `parts` lowercase, each after a `\0` (so a word can't match across two).
     pub fn push_lowercase(&mut self, parts: &[&str]) {
         for (i, part) in parts.iter().enumerate() {
             if i > 0 {
-                self.buffer.push('\0');
+                self.buffer.push("\0");
             }
-            self.buffer.push_str(&part.to_lowercase());
+            self.buffer.push(&part.to_lowercase());
         }
-        self.ends.push(u32::try_from(self.buffer.len()).expect("search text under 4 GB"));
+        let end = u32::try_from(self.buffer.len()).expect("search text under 4 GB");
+        self.ends.make_mut().push(end);
     }
 
     pub fn get(&self, i: u32) -> &str {
         let start = if i == 0 { 0 } else { self.ends[i as usize - 1] as usize };
-        &self.buffer[start..self.ends[i as usize] as usize]
+        &self.buffer.as_str()[start..self.ends[i as usize] as usize]
     }
 
     pub fn len(&self) -> usize {
@@ -124,14 +153,14 @@ impl Texts {
     }
 
     pub fn finish(mut self) -> Texts {
-        self.buffer.shrink_to_fit();
-        self.ends.shrink_to_fit();
+        self.buffer.0.make_mut().shrink_to_fit();
+        self.ends.make_mut().shrink_to_fit();
         self
     }
 
     #[cfg(test)]
     pub fn bytes(&self) -> usize {
-        self.buffer.capacity() + self.ends.capacity() * 4
+        self.buffer.len() + self.ends.len() * 4
     }
 }
 
@@ -150,7 +179,7 @@ mod tests {
         let text = b.finish();
         assert_eq!(a, a2);
         assert_eq!((text.get(a), text.get(t), text.opt(none), text.opt(empty)), ("Ann", "Title", None, Some("")));
-        assert_eq!(text.buffer, "AnnTitle");
+        assert_eq!(text.buffer.as_str(), "AnnTitle");
     }
 
     #[test]
