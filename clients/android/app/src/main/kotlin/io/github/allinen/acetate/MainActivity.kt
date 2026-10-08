@@ -11,7 +11,10 @@ import kotlinx.coroutines.launch
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
+        enableEdgeToEdge(
+            statusBarStyle = androidx.activity.SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
+            navigationBarStyle = androidx.activity.SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
+        )
         val model = (application as AcetateApp).model
         // Debug builds: `adb shell am start -n …/.MainActivity --es probe https://…` asks
         // that address (no login) and logs what came back (`adb logcat -s Acetate`).

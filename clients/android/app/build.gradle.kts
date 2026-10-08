@@ -73,6 +73,15 @@ android {
         versionName = "0.1.0"
     }
 
+    buildTypes {
+        release {
+            // Not shrunk yet; signed with the debug key so it can be installed for testing
+            // (a real signing key comes with the release docs).
+            isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("debug")
+        }
+    }
+
     buildFeatures {
         compose = true
         buildConfig = true

@@ -117,6 +117,53 @@ private fun RoundButton(onClick: () -> Unit, size: Int, content: @Composable () 
     ) { content() }
 }
 
+/** Shuffle or repeat-one: lit (accent on its soft color) when on. */
+@Composable
+private fun ModeButton(on: Boolean, onClick: () -> Unit, icon: @Composable (Color) -> Unit) {
+    val color = if (on) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+    Box(
+        Modifier.size(44.dp).clip(CircleShape)
+            .background(if (on) MaterialTheme.colorScheme.primaryContainer else Color.Transparent)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) { icon(color) }
+}
+
+/** The desktop's shuffle (two crossing arrows) and repeat-one (a loop with a "1"). */
+@Composable
+private fun ModeIcon(repeat: Boolean, color: Color) {
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    Canvas(Modifier.size(24.dp)) {
+        val s = size.width / 2.6f
+        val c = Offset(size.width / 2, size.height / 2)
+        val stroke = androidx.compose.ui.graphics.drawscope.Stroke(width = s * 0.2f, cap = androidx.compose.ui.graphics.StrokeCap.Round)
+        fun arrowHead(tip: Offset) = drawPath(Path().apply {
+            moveTo(tip.x + s * 0.45f, tip.y)
+            lineTo(tip.x - s * 0.05f, tip.y - s * 0.35f)
+            lineTo(tip.x - s * 0.05f, tip.y + s * 0.35f)
+            close()
+        }, color)
+        if (!repeat) {
+            for ((from, to) in listOf(-0.6f to 0.6f, 0.6f to -0.6f)) {
+                val a = Offset(c.x - s, c.y + from * s)
+                val b = Offset(c.x + s * 0.7f, c.y + to * s)
+                drawLine(color, a, b, stroke.width, stroke.cap)
+                arrowHead(b)
+            }
+        } else {
+            val tl = Offset(c.x - s, c.y - s * 0.65f)
+            drawRoundRect(
+                color, tl, androidx.compose.ui.geometry.Size(s * 2f, s * 1.3f),
+                androidx.compose.ui.geometry.CornerRadius(s * 0.4f), style = stroke,
+            )
+            arrowHead(Offset(c.x + s * 0.35f, tl.y))
+            // The "1": a stem with a flag.
+            drawLine(color, Offset(c.x, c.y - s * 0.3f), Offset(c.x, c.y + s * 0.3f), stroke.width, stroke.cap)
+            drawLine(color, Offset(c.x - s * 0.2f, c.y - s * 0.15f), Offset(c.x, c.y - s * 0.3f), stroke.width, stroke.cap)
+        }
+    }
+}
+
 // ---- The mini player ----
 
 @Composable
@@ -124,7 +171,7 @@ fun MiniPlayer(model: Model) {
     val state = model.player
     val current = state.current ?: return
     val position = rememberPosition(model)
-    Surface(tonalElevation = 3.dp, modifier = Modifier.fillMaxWidth().clickable { model.nowPlaying = true }) {
+    Surface(color = Palette.surface, modifier = Modifier.fillMaxWidth().clickable { model.nowPlaying = true }) {
         Column {
             val length = current.durationMs ?: 0L
             LinearProgressIndicator(
@@ -142,7 +189,7 @@ fun MiniPlayer(model: Model) {
                     )
                 }
                 val ink = MaterialTheme.colorScheme.onSurface
-                RoundButton({ model.playback.setPaused(isPlaying(state)) }, 48) { PlayPauseIcon(!isPlaying(state), ink) }
+                RoundButton({ model.playback.setPaused(isPlaying(state)) }, 48) { PlayPauseIcon(isPlaying(state), ink) }
                 RoundButton({ model.playback.next() }, 48) { SkipIcon(true, ink) }
             }
         }
@@ -184,7 +231,8 @@ fun NowPlaying(model: Model) {
                         listOfNotNull(current.artist, current.album).joinToString(" · "), maxLines = 2,
                         overflow = TextOverflow.Ellipsis, color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+                    Spacer(Modifier.height(14.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                         RatingBar(model, MarkOn.TRACK, current.id)
                         StarToggle(model, MarkOn.TRACK, current.id)
                     }
@@ -204,15 +252,15 @@ fun NowPlaying(model: Model) {
                     }
                     val ink = MaterialTheme.colorScheme.onSurface
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        FilterChip(state.shuffle, { model.playback.toggleShuffle() }, { Text("Shuffle") })
+                        ModeButton(state.shuffle, { model.playback.toggleShuffle() }) { ModeIcon(false, it) }
                         RoundButton({ model.playback.previous() }, 56) { SkipIcon(false, ink, 32) }
                         Box(Modifier.size(64.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary).clickable {
                             model.playback.setPaused(isPlaying(state))
                         }, contentAlignment = Alignment.Center) {
-                            PlayPauseIcon(!isPlaying(state), MaterialTheme.colorScheme.onPrimary, 32)
+                            PlayPauseIcon(isPlaying(state), MaterialTheme.colorScheme.onPrimary, 32)
                         }
                         RoundButton({ model.playback.next() }, 56) { SkipIcon(true, ink, 32) }
-                        FilterChip(state.repeat, { model.playback.toggleRepeat() }, { Text("Repeat") })
+                        ModeButton(state.repeat, { model.playback.toggleRepeat() }) { ModeIcon(true, it) }
                     }
                     Spacer(Modifier.height(12.dp))
                 }

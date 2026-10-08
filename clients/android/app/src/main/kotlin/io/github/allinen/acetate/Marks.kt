@@ -3,7 +3,12 @@ package io.github.allinen.acetate
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.Box
+import androidx.compose.material3.Text
+import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -47,29 +52,42 @@ private fun DrawScope.starPath(): Path {
     }
 }
 
-/** A star, `fill` of it (0, 0.5 or 1) coloured from the left. */
+/** A star, `fill` of it (0, 0.5 or 1) in `color` from the left, over a faint full one. */
 @Composable
-private fun StarIcon(fill: Float, color: Color, size: Int) {
+private fun StarIcon(fill: Float, color: Color, size: Int, faint: Color = Palette.faint) {
     Canvas(Modifier.size(size.dp)) {
         val path = starPath()
-        drawPath(path, color.copy(alpha = 0.5f), style = Stroke(width = this.size.minDimension * 0.07f))
+        drawPath(path, faint)
         if (fill > 0f) clipRect(right = this.size.width * fill) { drawPath(path, color) }
     }
 }
 
-/** Starred or not: tap to change. */
+/** A pill saying what a tap does: "Star" outlined, or "Starred" filled in the accent. */
 @Composable
-fun StarToggle(model: Model, on: MarkOn, id: String, size: Int = 28) {
+fun StarToggle(model: Model, on: MarkOn, id: String) {
     val starred = rememberMark(model, id).starred
-    val color = MaterialTheme.colorScheme.primary
-    Box(Modifier.clickable { model.core.setStarred(on, id, !starred) }.padding(8.dp)) {
-        StarIcon(if (starred) 1f else 0f, color, size)
+    val shape = androidx.compose.foundation.shape.RoundedCornerShape(50)
+    val color = if (starred) Palette.accent else Palette.muted
+    Row(
+        Modifier.clip(shape)
+            .background(if (starred) Palette.accentSoft else Color.Transparent, shape)
+            .border(1.dp, if (starred) Palette.accent else Palette.line, shape)
+            .clickable { model.core.setStarred(on, id, !starred) }
+            .padding(12.dp, 6.dp),
+        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+    ) {
+        Canvas(Modifier.size(20.dp)) {
+            val path = starPath()
+            if (starred) drawPath(path, color) else drawPath(path, color, style = Stroke(width = 1.6.dp.toPx()))
+        }
+        Spacer(Modifier.width(6.dp))
+        Text(if (starred) "Starred" else "Star", color = color, style = MaterialTheme.typography.labelLarge)
     }
 }
 
 /** Five stars in halves: tap the left half of one for a half star; tap the rating again to clear it. */
 @Composable
-fun RatingBar(model: Model, on: MarkOn, id: String, size: Int = 32) {
+fun RatingBar(model: Model, on: MarkOn, id: String, size: Int = 28) {
     val rating = rememberMark(model, id).rating.toInt()
     val color = MaterialTheme.colorScheme.primary
     Row(
