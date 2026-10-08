@@ -1,6 +1,6 @@
 package io.github.allinen.acetate
 
-import android.view.SurfaceView
+import android.view.TextureView
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -153,7 +153,7 @@ fun VideoScreen(model: Model, video: VideoRef) {
             }
             Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
                 AndroidView(
-                    { SurfaceView(it).also { view -> player.setVideoSurfaceView(view) } },
+                    { TextureView(it).also { view -> player.setVideoTextureView(view) } },
                     Modifier.fillMaxWidth().aspectRatio(ratio),
                 )
             }

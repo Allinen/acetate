@@ -66,24 +66,23 @@ fun AlbumScreen(model: Model, id: String) {
     PageScaffold(model, album?.title ?: "Album") { modifier ->
         LazyColumn(modifier) {
             if (album != null) item {
-                Column(Modifier.fillMaxWidth().padding(16.dp)) {
+                Column(Modifier.fillMaxWidth().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                     Cover(model, album.cover, 240)
                     Spacer(Modifier.height(12.dp))
-                    Text(album.title, style = MaterialTheme.typography.headlineSmall)
+                    Text(album.title, style = MaterialTheme.typography.headlineSmall, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
                     Text(
                         listOfNotNull(album.artist, album.year?.toString(), album.kind).joinToString(" · "),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                     )
                     Text(
                         "${album.trackCount} tracks · ${duration(album.durationMs)}",
                         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                         RatingBar(model, MarkOn.ALBUM, id)
-                        Spacer(Modifier.weight(1f))
                         StarToggle(model, MarkOn.ALBUM, id)
                     }
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally), modifier = Modifier.fillMaxWidth()) {
                         Button({
                             if (model.player.shuffle) model.playback.toggleShuffle()
                             model.playback.playAlbum(id, 0uL)
@@ -95,7 +94,7 @@ fun AlbumScreen(model: Model, id: String) {
                         OutlinedButton({ model.playback.enqueueAlbum(id, false) }) { Text("Queue") }
                     }
                     var sharing by remember { mutableStateOf(false) }
-                    Row {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
                         TextButton({ sharing = true }) { Text("Share…") }
                         ExtrasButton(model, MarkOn.ALBUM, id, album.title)
                     }
@@ -135,20 +134,19 @@ fun ArtistScreen(model: Model, id: String) {
     PageScaffold(model, artist?.name ?: "Artist") { modifier ->
         LazyColumn(modifier) {
             if (artist != null) item {
-                Column(Modifier.padding(16.dp)) {
-                    Text(artist.name, style = MaterialTheme.typography.headlineSmall)
+                Column(Modifier.fillMaxWidth().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(artist.name, style = MaterialTheme.typography.headlineSmall, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
                     Text(
                         "${artist.albumCount} albums · ${artist.trackCount} tracks",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                         RatingBar(model, MarkOn.ARTIST, id)
-                        Spacer(Modifier.weight(1f))
                         StarToggle(model, MarkOn.ARTIST, id)
                     }
                     // Every track of the artist's albums, in album order.
                     val ids = { albums.flatMap { a -> model.core.albumTracks(a.id).map { it.id } } }
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally), modifier = Modifier.fillMaxWidth()) {
                         Button({
                             if (model.player.shuffle) model.playback.toggleShuffle()
                             model.playback.playTracks(ids(), 0uL)
@@ -159,7 +157,7 @@ fun ArtistScreen(model: Model, id: String) {
                         }) { Text("Shuffle") }
                     }
                     var sharing by remember { mutableStateOf(false) }
-                    Row {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
                         TextButton({ sharing = true }) { Text("Share…") }
                         ExtrasButton(model, MarkOn.ARTIST, id, artist.name)
                     }

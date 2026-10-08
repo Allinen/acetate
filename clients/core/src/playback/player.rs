@@ -352,8 +352,9 @@ impl Player {
     /// Called regularly (about twice a second) while it plays, and when something about
     /// it changes: how far into the current track, and whether it plays or waits.
     pub fn on_position(&self, position: Duration, playing: bool, paused: bool) {
-        let (heard, view) = {
+        let (heard, view, flipped) = {
             let mut s = self.state.lock().unwrap();
+            let flipped = (s.playing, s.paused) != (playing, paused);
             s.position = position;
             s.at = Instant::now();
             s.playing = playing;
@@ -363,8 +364,12 @@ impl Player {
             // A file that didn't import, or an extra, isn't a track: nothing to count.
             let track = current.filter(|c| c.source == AudioSource::File).map(|c| c.track_id);
             let heard = s.listen.update(track.filter(|_| playing), length, position, paused);
-            (heard, s.view())
+            (heard, s.view(), flipped)
         };
+        // Starting, pausing and stopping show in the UI as they happen.
+        if flipped {
+            self.waker.changed();
+        }
         if let Some(track) = heard {
             self.report_listen(track);
         }
@@ -682,6 +687,26 @@ mod tests {
         assert_eq!(r.engine.took(), [format!("next 11 {}", path(11))]);
         r.player.clear_queued();
         assert_eq!(r.engine.took(), [format!("next 2 {}", path(2))]);
+    }
+
+    #[test]
+    fn the_ui_is_woken_when_playing_starts_or_pauses_but_not_for_every_position() {
+        struct Count(std::sync::atomic::AtomicUsize);
+        impl crate::Wake for Count {
+            fn changed(&self) {
+                self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        let count = Arc::new(Count(Default::default()));
+        let player = Player::new(None, runtime.handle().clone(), count.clone());
+        let woken = || count.0.load(std::sync::atomic::Ordering::SeqCst);
+        player.on_position(Duration::from_secs(1), false, true);
+        let before = woken();
+        player.on_position(Duration::from_secs(2), true, false);
+        assert_eq!(woken(), before + 1, "it began playing");
+        player.on_position(Duration::from_secs(3), true, false);
+        assert_eq!(woken(), before + 1, "a position alone is not news");
     }
 
     #[test]

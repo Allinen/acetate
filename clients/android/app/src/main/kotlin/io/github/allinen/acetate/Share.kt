@@ -3,7 +3,7 @@ package io.github.allinen.acetate
 import android.content.Context
 import android.content.Intent
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -37,6 +37,7 @@ fun shareText(context: Context, text: String) {
  * What to share: a link for someone with an account on this server (it opens in their app),
  * or, for a track or album, a link anyone can listen with (it expires after the chosen time).
  */
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 fun ShareDialog(model: Model, on: MarkOn, id: String, what: String, close: () -> Unit) {
     val context = LocalContext.current
@@ -56,7 +57,7 @@ fun ShareDialog(model: Model, on: MarkOn, id: String, what: String, close: () ->
                 if (on != MarkOn.ARTIST) {
                     Spacer(Modifier.height(8.dp))
                     Text("A link anyone can listen with, until:", style = MaterialTheme.typography.bodySmall)
-                    Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    FlowRow(Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         listOf(1 to "1 day", 7 to "7 days", 30 to "30 days", null to "Never").forEach { (d, name) ->
                             FilterChip(days == d, { days = d }, { Text(name) })
                         }

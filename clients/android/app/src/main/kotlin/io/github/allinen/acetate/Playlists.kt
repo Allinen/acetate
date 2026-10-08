@@ -141,12 +141,13 @@ private fun TracksPage(
     PageScaffold(model, title) { modifier ->
         LazyColumn(modifier) {
             item {
-                Column(Modifier.fillMaxWidth().padding(16.dp)) {
-                    Text(title, style = MaterialTheme.typography.headlineSmall)
-                    if (playlist?.description?.isNotEmpty() == true) Text(playlist.description, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Text(facts, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Column(Modifier.fillMaxWidth().padding(16.dp), horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally) {
+                    val center = androidx.compose.ui.text.style.TextAlign.Center
+                    Text(title, style = MaterialTheme.typography.headlineSmall, textAlign = center)
+                    if (playlist?.description?.isNotEmpty() == true) Text(playlist.description, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = center)
+                    Text(facts, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = center)
                     Spacer(Modifier.height(8.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp, androidx.compose.ui.Alignment.CenterHorizontally), modifier = Modifier.fillMaxWidth()) {
                         Button({
                             if (model.player.shuffle) model.playback.toggleShuffle()
                             model.playback.playTracks(ids, 0uL)
