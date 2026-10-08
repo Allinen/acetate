@@ -68,10 +68,11 @@ fun Root(model: Model) {
             }
         }
         SnackbarHost(snacks, Modifier.align(Alignment.BottomCenter).windowInsetsPadding(WindowInsets.navigationBars).padding(bottom = 140.dp))
-        model.video?.let { VideoScreen(model, it) }
         AnimatedVisibility(model.nowPlaying, enter = slideInVertically { it }, exit = slideOutVertically { it }) {
             NowPlaying(model)
         }
+        // Last, so it's above everything (Now playing included).
+        model.video?.let { VideoScreen(model, it) }
     }
 }
 
