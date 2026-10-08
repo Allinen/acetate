@@ -1,5 +1,8 @@
 package io.github.allinen.acetate
 
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -249,7 +252,25 @@ private fun QueueRow(model: Model, row: TrackRow, part: QueuePart, index: Int) {
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        // Only what's been queued by hand can be taken out here.
+        // Only what's been queued by hand can be moved or taken out here.
+        if (part == QueuePart.QUEUED) {
+            // Drag the handle: a row's height of travel moves it one place.
+            var at by remember { mutableIntStateOf(index) }
+            var travel by remember { mutableStateOf(0f) }
+            val step = with(androidx.compose.ui.platform.LocalDensity.current) { 56.dp.toPx() }
+            val last = remember(model.playerVersion) { model.playback.queuedRows().size - 1 }
+            Text(
+                "≡", Modifier.padding(12.dp).pointerInput(Unit) {
+                    detectDragGestures(onDragStart = { at = index; travel = 0f }) { change, drag ->
+                        change.consume()
+                        travel += drag.y
+                        while (travel > step && at < last) { model.playback.moveQueued(at.toULong(), (at + 1).toULong()); at++; travel -= step }
+                        while (travel < -step && at > 0) { model.playback.moveQueued(at.toULong(), (at - 1).toULong()); at--; travel += step }
+                    }
+                },
+                style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
         if (part == QueuePart.QUEUED) TextButton({ model.playback.remove(part, index.toULong()) }) { Text("Remove") }
     }
 }

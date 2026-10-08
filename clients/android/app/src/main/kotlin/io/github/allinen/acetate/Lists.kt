@@ -1,5 +1,14 @@
 package io.github.allinen.acetate
 
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.layout.Box
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import uniffi.acetate_ffi.MarkOn
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
@@ -68,7 +77,7 @@ fun TrackList(model: Model, view: TrackView) {
     val rows = remember(view) { Rows(view.count().toInt()) { s, n -> view.rows(s.toULong(), n.toULong()) } }
     LazyColumn(Modifier.fillMaxWidth()) {
         items(rows.count, key = { it }) { i ->
-            rows[i]?.let { row -> TrackItem(model, row, Modifier.clickable { model.playback.playView(view, i.toULong()) }) }
+            rows[i]?.let { row -> TrackItem(model, row) { model.playback.playView(view, i.toULong()) } }
         }
     }
 }
@@ -90,13 +99,30 @@ fun ArtistItem(model: Model, row: ArtistRow) {
     )
 }
 
+/** A track: tap plays, long press opens a menu (play next, add to queue, star). */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun TrackItem(model: Model, row: TrackRow, modifier: Modifier = Modifier) {
-    Item(
-        model, row.cover, row.title,
-        listOfNotNull(row.artist, row.album).joinToString(" · "),
-        modifier, trailing = row.durationMs?.let(::duration), highlight = model.player.current?.id == row.id,
-    )
+fun TrackItem(model: Model, row: TrackRow, onClick: () -> Unit) {
+    var menu by remember { mutableStateOf(false) }
+    val starred = rememberMark(model, row.id).starred
+    Box {
+        Item(
+            model, row.cover, (if (starred) "★ " else "") + row.title,
+            listOfNotNull(row.artist, row.album).joinToString(" · "),
+            Modifier.combinedClickable(onClick = onClick, onLongClick = { menu = true }),
+            trailing = row.durationMs?.let(::duration), highlight = model.player.current?.id == row.id,
+        )
+        TrackMenu(model, row.id, starred, menu) { menu = false }
+    }
+}
+
+@Composable
+fun TrackMenu(model: Model, id: String, starred: Boolean, open: Boolean, close: () -> Unit) {
+    DropdownMenu(open, close) {
+        DropdownMenuItem({ Text("Play next") }, { model.playback.enqueueTracks(listOf(id), true); close() })
+        DropdownMenuItem({ Text("Add to queue") }, { model.playback.enqueueTracks(listOf(id), false); close() })
+        DropdownMenuItem({ Text(if (starred) "Unstar" else "Star") }, { model.core.setStarred(MarkOn.TRACK, id, !starred); close() })
+    }
 }
 
 @Composable

@@ -1,5 +1,11 @@
 package io.github.allinen.acetate
 
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.layout.Box
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -48,6 +54,7 @@ private fun PageScaffold(model: Model, title: String, content: @Composable (Modi
     ) { padding -> content(Modifier.padding(padding).fillMaxSize()) }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun AlbumScreen(model: Model, id: String) {
     // Read again when a new catalog arrives.
@@ -88,7 +95,11 @@ fun AlbumScreen(model: Model, id: String) {
             }
             items(tracks.size, key = { it }) { i ->
                 val t = tracks[i]
-                Row(Modifier.fillMaxWidth().clickable { model.playback.playAlbum(id, i.toULong()) }.padding(16.dp, 8.dp)) {
+                var menu by remember { mutableStateOf(false) }
+                val starred = rememberMark(model, t.id).starred
+                Box {
+                TrackMenu(model, t.id, starred, menu) { menu = false }
+                Row(Modifier.fillMaxWidth().combinedClickable(onClick = { model.playback.playAlbum(id, i.toULong()) }, onLongClick = { menu = true }).padding(16.dp, 8.dp)) {
                     Text("${i + 1}", Modifier.width(32.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Column(Modifier.weight(1f)) {
                         Text(t.title, maxLines = 1, color = if (model.player.current?.id == t.id) MaterialTheme.colorScheme.primary else Color.Unspecified)
@@ -97,10 +108,11 @@ fun AlbumScreen(model: Model, id: String) {
                             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
-                    if (rememberMark(model, t.id).starred) Text("★", color = MaterialTheme.colorScheme.primary)
+                    if (starred) Text("★", color = MaterialTheme.colorScheme.primary)
                     t.durationMs?.let {
                         Text(duration(it), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
+                }
                 }
             }
         }
@@ -124,6 +136,18 @@ fun ArtistScreen(model: Model, id: String) {
                         RatingBar(model, MarkOn.ARTIST, id)
                         Spacer(Modifier.weight(1f))
                         StarToggle(model, MarkOn.ARTIST, id)
+                    }
+                    // Every track of the artist's albums, in album order.
+                    val ids = { albums.flatMap { a -> model.core.albumTracks(a.id).map { it.id } } }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button({
+                            if (model.player.shuffle) model.playback.toggleShuffle()
+                            model.playback.playTracks(ids(), 0uL)
+                        }) { Text("Play") }
+                        OutlinedButton({
+                            if (!model.player.shuffle) model.playback.toggleShuffle()
+                            model.playback.playTracks(ids(), 0uL)
+                        }) { Text("Shuffle") }
                     }
                 }
             }
