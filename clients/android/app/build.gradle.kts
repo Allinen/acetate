@@ -74,6 +74,10 @@ android {
     }
 
     buildTypes {
+        debug {
+            // Installs next to the release build (own login, own downloads), for testing against a dev server.
+            applicationIdSuffix = ".debug"
+        }
         release {
             // Not shrunk yet; signed with the debug key so it can be installed for testing
             // (a real signing key comes with the release docs).
