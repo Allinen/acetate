@@ -242,6 +242,8 @@ pub struct DownloadsInfo {
     pub asked: u64,
     pub done: u64,
     pub failed: u64,
+    /// Stopped by the user.
+    pub paused: bool,
 }
 
 /// An artist as credited somewhere, to go to their page.
@@ -924,6 +926,7 @@ impl Core {
             asked: status.asked as u64,
             done: status.done as u64,
             failed: status.failed as u64,
+            paused: status.paused,
         }
     }
 
@@ -940,6 +943,19 @@ impl Core {
         self.shared.downloads_allowed.store(allowed, std::sync::atomic::Ordering::SeqCst);
         if let Some(offline) = self.shared.offline.lock().unwrap().clone() {
             offline.set_allowed(allowed);
+        }
+    }
+
+    /// Stops the downloads (what's here stays, what's coming waits).
+    pub fn pause_downloads(&self) {
+        if let Some(offline) = self.shared.offline.lock().unwrap().as_ref() {
+            offline.pause();
+        }
+    }
+
+    pub fn resume_downloads(&self) {
+        if let Some(offline) = self.shared.offline.lock().unwrap().clone() {
+            offline.resume();
         }
     }
 
@@ -1098,6 +1114,20 @@ impl Core {
     }
 
     // ---- Pages ----
+
+    /// Which of these tracks (by id, in this order) fit a filter in the query language: their
+    /// places in the list, in order. For filtering a playlist's tracks without losing their order.
+    pub async fn filter_list(&self, ids: Vec<String>, filter: String) -> Vec<u64> {
+        let Some(catalog) = self.shared.catalog() else { return vec![] };
+        blocking(move || {
+            // Places in the catalog of the ones that are there (a track gone is left out).
+            let (places, at): (Vec<u32>, Vec<u64>) =
+                ids.iter().enumerate().filter_map(|(n, id)| Some((catalog.track_index(parse_id(id)?)?, n as u64))).unzip();
+            let rows = TrackRows { tracks: Some(&places), added: None };
+            catalog.order_tracks(&rows, &filter, TrackSort::Natural, false).into_iter().map(|row| at[row]).collect()
+        })
+        .await
+    }
 
     /// The artists credited on a track or album (to go to their pages), as credited.
     pub fn artists_of(&self, on: MarkOn, id: String) -> Vec<ArtistLink> {

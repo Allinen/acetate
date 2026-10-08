@@ -21,7 +21,8 @@ class DownloadService : Service() {
         override fun run() {
             val model = (application as AcetateApp).model
             val d = model.downloads
-            if (d.queued == 0uL) {
+            // Nothing left, or the user stopped them: nothing keeps the app.
+            if (d.queued == 0uL || d.paused) {
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
                 return

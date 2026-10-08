@@ -19,6 +19,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -141,7 +142,16 @@ private fun TracksPage(
     model: Model, title: String, facts: String, rows: List<Pair<TrackRow, String?>>, mine: Boolean,
     playlist: uniffi.acetate_ffi.PlaylistPage?,
 ) {
-    val ids = rows.map { it.first.id }
+    // What the filter leaves (its places in `rows`, in order): playing starts from, and goes
+    // through, only those.
+    var filter by remember { mutableStateOf("") }
+    val all = remember(rows) { rows.map { it.first.id } }
+    var visible by remember { mutableStateOf<List<Int>?>(null) }
+    LaunchedEffect(filter, all, model.catalogVersion) {
+        visible = if (filter.isBlank()) null else model.core.filterList(all, filter).map { it.toInt() }
+    }
+    val shown = visible?.map { it to rows[it] } ?: rows.mapIndexed { i, r -> i to r }
+    val ids = shown.map { it.second.first.id }
     PageScaffold(model, title) { modifier ->
         LazyColumn(modifier) {
             item {
@@ -164,15 +174,23 @@ private fun TracksPage(
                     if (playlist != null) DownloadButton(model, PinKind.PLAYLIST, playlist.id) else if (title == "Liked songs") DownloadButton(model, PinKind.LIKED, "")
                 }
             }
-            items(rows.size, key = { rows[it].second ?: rows[it].first.id }) { i ->
-                val (row, entry) = rows[i]
+            if (rows.size > 5 || filter.isNotEmpty()) item {
+                Column {
+                    LineField(filter, { filter = it }, "Filter", Modifier.fillMaxWidth().padding(16.dp, 4.dp))
+                    Suggestions(model, filter) { filter = it }
+                }
+            }
+            items(shown.size, key = { shown[it].second.second ?: shown[it].second.first.id }) { n ->
+                val (i, pair) = shown[n]
+                val (row, entry) = pair
                 TrackItem(model, row, extra = { close ->
+                    // Moving makes sense in the whole playlist, not in what a filter leaves.
                     if (mine && entry != null && playlist != null) {
-                        if (i > 0) DropdownMenuItem({ Text("Move up") }, { model.core.moveInPlaylist(playlist.id, entry, -1); close() })
-                        if (i < rows.size - 1) DropdownMenuItem({ Text("Move down") }, { model.core.moveInPlaylist(playlist.id, entry, 1); close() })
+                        if (filter.isBlank() && i > 0) DropdownMenuItem({ Text("Move up") }, { model.core.moveInPlaylist(playlist.id, entry, -1); close() })
+                        if (filter.isBlank() && i < rows.size - 1) DropdownMenuItem({ Text("Move down") }, { model.core.moveInPlaylist(playlist.id, entry, 1); close() })
                         DropdownMenuItem({ Text("Remove from playlist") }, { model.core.removeFromPlaylist(playlist.id, listOf(entry)); close() })
                     }
-                }) { model.playback.playTracks(ids, i.toULong()) }
+                }) { model.playback.playTracks(ids, n.toULong()) }
             }
         }
     }

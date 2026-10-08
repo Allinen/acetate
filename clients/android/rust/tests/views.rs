@@ -377,3 +377,16 @@ fn a_track_page_has_its_artists_and_albums() {
     assert_eq!(on_album, ["Ann"]);
     assert!(core.track_page("nonsense".into()).is_none());
 }
+
+#[test]
+fn a_list_of_tracks_can_be_filtered_in_its_own_order() {
+    let (_dir, core, _events) = core(true);
+    synced(&core);
+    let ids: Vec<String> = ["3", "1", "2"].iter().map(|n| format!("00000000-0000-7000-8000-00000000000{n}")).collect();
+    let all = rt().block_on(core.filter_list(ids.clone(), "".into()));
+    assert_eq!(all, [0, 1, 2]);
+    let some = rt().block_on(core.filter_list(ids.clone(), "first".into()));
+    assert_eq!(some, [2], "the place in the list it was given");
+    let by_artist = rt().block_on(core.filter_list(ids, "artist:bo".into()));
+    assert_eq!(by_artist, [0, 2], "Bo is on the third track and (featured) the first");
+}

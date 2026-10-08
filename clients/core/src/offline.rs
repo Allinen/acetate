@@ -80,6 +80,8 @@ pub struct Status {
     pub asked: usize,
     pub done: usize,
     pub failed: usize,
+    /// Stopped by the user: nothing comes until `resume`.
+    pub paused: bool,
     /// Bytes of the file coming now.
     pub current_bytes: u64,
 }
@@ -94,6 +96,8 @@ pub struct Offline {
     /// 0: the server's own choice.
     kbps: AtomicU32,
     allowed: AtomicBool,
+    /// The user stopped them (kept to go on from).
+    paused: AtomicBool,
     working: AtomicBool,
     stop: AtomicBool,
     current_bytes: AtomicU64,
@@ -115,6 +119,7 @@ impl Offline {
             inner: Mutex::new(Inner { index, ..Inner::default() }),
             kbps: AtomicU32::new(0),
             allowed: AtomicBool::new(true),
+            paused: AtomicBool::new(false),
             working: AtomicBool::new(false),
             stop: AtomicBool::new(false),
             current_bytes: AtomicU64::new(0),
@@ -138,6 +143,21 @@ impl Offline {
             // What's coming stops (kept to go on from).
             self.stop.store(true, Ordering::SeqCst);
         }
+    }
+
+    /// Stops fetching (what's here stays, what's coming waits).
+    pub fn pause(&self) {
+        self.paused.store(true, Ordering::SeqCst);
+        self.stop.store(true, Ordering::SeqCst);
+        self.waker.changed();
+    }
+
+    /// Goes on with what's coming.
+    pub fn resume(self: &Arc<Self>) {
+        self.paused.store(false, Ordering::SeqCst);
+        self.stop.store(false, Ordering::SeqCst);
+        self.waker.changed();
+        self.kick();
     }
 
     pub fn pins(&self) -> Vec<Pin> {
@@ -220,6 +240,7 @@ impl Offline {
             asked: inner.done + inner.queue.len() + usize::from(inner.current.is_some()) + inner.failed.len(),
             done: inner.done,
             failed: inner.failed.len(),
+            paused: self.paused.load(Ordering::SeqCst),
             current_bytes: self.current_bytes.load(Ordering::SeqCst),
         }
     }
@@ -246,7 +267,7 @@ impl Offline {
 
     /// Starts fetching if there's something to fetch and nothing is.
     pub fn kick(self: &Arc<Self>) {
-        if !self.allowed.load(Ordering::SeqCst) || self.working.swap(true, Ordering::SeqCst) {
+        if !self.allowed.load(Ordering::SeqCst) || self.paused.load(Ordering::SeqCst) || self.working.swap(true, Ordering::SeqCst) {
             return;
         }
         self.stop.store(false, Ordering::SeqCst);
@@ -264,7 +285,7 @@ impl Offline {
 
     async fn work(&self) {
         loop {
-            if self.stop.load(Ordering::SeqCst) || !self.allowed.load(Ordering::SeqCst) {
+            if self.stop.load(Ordering::SeqCst) || !self.allowed.load(Ordering::SeqCst) || self.paused.load(Ordering::SeqCst) {
                 return;
             }
             let want = {
@@ -386,6 +407,19 @@ mod tests {
         until("the copy", || offline.local_path(&source).is_some());
         assert!(offline.local_path(&source).unwrap().ends_with(format!("2c/f2/{HELLO}")));
         assert!(!offline.inner.lock().unwrap().index.files[&source].original);
+    }
+
+    #[test]
+    fn nothing_comes_while_stopped_and_it_goes_on_when_resumed() {
+        let (_root, offline, _runtime) = setup(b"hello");
+        offline.pause();
+        offline.set_wanted(vec![Want { source: HELLO.to_string(), file_id: Uuid::from_u128(1) }], true);
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert!(offline.local_path(HELLO).is_none());
+        let status = offline.status();
+        assert!(status.paused && status.queued == 1);
+        offline.resume();
+        until("the file once resumed", || offline.local_path(HELLO).is_some());
     }
 
     #[test]

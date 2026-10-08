@@ -23,18 +23,40 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import uniffi.acetate_ffi.PinKind
 
-/** Keeps something on the device (or stops): "Download", then "Downloading…", then "Downloaded". */
+/**
+ * Keeps something on the device: "Download", then "Stop" while files come (what came stays;
+ * "Resume" goes on), then "Downloaded ✓", which asks before taking the files away.
+ */
 @Composable
 fun DownloadButton(model: Model, kind: PinKind, id: String) {
     val pinned = remember(kind, id, model.downloadsVersion) { model.core.isDownloading(kind, id) }
-    val busy = model.downloads.queued > 0uL
-    TextButton({ model.core.download(kind, id, !pinned) }) {
+    val d = model.downloads
+    var confirm by remember { mutableStateOf(false) }
+    val coming = d.queued > 0uL
+    TextButton({
+        when {
+            !pinned -> model.core.download(kind, id, true)
+            coming && !d.paused -> model.core.pauseDownloads()
+            coming -> model.core.resumeDownloads()
+            else -> confirm = true
+        }
+    }) {
         Text(
             when {
                 !pinned -> "Download"
-                busy -> "Downloading…"
+                coming && d.paused -> "Resume"
+                coming -> "Stop"
                 else -> "Downloaded ✓"
             },
+        )
+    }
+    if (confirm) {
+        AlertDialog(
+            onDismissRequest = { confirm = false },
+            title = { Text("Remove this download?") },
+            text = { Text("Its files are deleted from the phone (anything kept for something else stays). The music on the server isn't touched.") },
+            confirmButton = { TextButton({ model.core.download(kind, id, false); confirm = false }) { Text("Remove") } },
+            dismissButton = { TextButton({ confirm = false }) { Text("Cancel") } },
         )
     }
 }

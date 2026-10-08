@@ -135,7 +135,7 @@ class Model(dataDir: String) : Listener {
                 Change.DOWNLOADS -> {
                     downloadsVersion++
                     downloads = core.downloads()
-                    if (downloads.queued > 0uL) DownloadService.start(context)
+                    if (downloads.queued > 0uL && !downloads.paused) DownloadService.start(context)
                 }
                 Change.DETAILS -> detailsVersion++
                 Change.CATALOG -> {
