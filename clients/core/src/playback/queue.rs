@@ -231,6 +231,7 @@ mod tests {
             album: None,
             duration_ms: None,
             cover: None,
+            codec: None,
         }
     }
 

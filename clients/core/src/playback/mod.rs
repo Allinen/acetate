@@ -37,6 +37,8 @@ pub struct QueueItem {
     pub album: Option<String>,
     pub duration_ms: Option<i64>,
     pub cover: Option<crate::catalog::model::Cover>,
+    /// The file's codec ("flac", "mp3"…), if known.
+    pub codec: Option<String>,
 }
 
 impl QueueItem {
@@ -62,6 +64,7 @@ pub fn queue_item(catalog: &crate::catalog::Catalog, i: u32) -> QueueItem {
         album: catalog.main_album(t).map(|a| a.title().to_string()),
         duration_ms: t.duration_ms(),
         cover: t.cover(),
+        codec: t.codec().map(str::to_string),
     }
 }
 

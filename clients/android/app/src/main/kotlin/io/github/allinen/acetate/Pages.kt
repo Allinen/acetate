@@ -89,7 +89,7 @@ fun AlbumScreen(model: Model, id: String) {
                         }) { Text("Play") }
                         OutlinedButton({
                             if (!model.player.shuffle) model.playback.toggleShuffle()
-                            model.playback.playAlbum(id, 0uL)
+                            model.playback.playAlbum(id, randomStart(tracks.size))
                         }) { Text("Shuffle") }
                         OutlinedButton({ model.playback.enqueueAlbum(id, false) }) { Text("Queue") }
                     }
@@ -148,7 +148,7 @@ fun ArtistScreen(model: Model, id: String) {
                         }) { Text("Play") }
                         OutlinedButton({
                             if (!model.player.shuffle) model.playback.toggleShuffle()
-                            model.playback.playTracks(ids(), 0uL)
+                            ids().let { model.playback.playTracks(it, randomStart(it.size)) }
                         }) { Text("Shuffle") }
                     }
                 }
@@ -157,3 +157,6 @@ fun ArtistScreen(model: Model, id: String) {
         }
     }
 }
+
+/** Shuffle starts anywhere in the list, not at its first track. */
+fun randomStart(size: Int): ULong = if (size > 0) kotlin.random.Random.nextInt(size).toULong() else 0uL

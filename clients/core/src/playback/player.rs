@@ -437,11 +437,19 @@ impl Player {
     }
 }
 
+/// Whether the platform's player (Media3) decodes this codec (by the name the library
+/// keeps it under).
+fn platform_plays(codec: &str) -> bool {
+    matches!(codec, "flac" | "mp3" | "aac" | "opus" | "vorbis") || (codec.starts_with("pcm_") && codec.ends_with("le"))
+}
+
 impl State {
     fn path_of(&self, item: &QueueItem) -> String {
         let path = item.stream_path();
         match (item.source, self.quality) {
             (AudioSource::File, Some(kbps)) => format!("{path}?kbps={kbps}"),
+            // What the platform can't decode comes as a copy it can.
+            (AudioSource::File, None) if !item.codec.as_deref().is_none_or(platform_plays) => format!("{path}?transcode=true"),
             _ => path,
         }
     }
@@ -569,6 +577,7 @@ mod tests {
             artist: String::new(),
             album: None,
             duration_ms: Some(100_000),
+            codec: None,
             cover: None,
         }
     }
@@ -673,6 +682,40 @@ mod tests {
         assert_eq!(r.engine.took(), [format!("next 11 {}", path(11))]);
         r.player.clear_queued();
         assert_eq!(r.engine.took(), [format!("next 2 {}", path(2))]);
+    }
+
+    #[test]
+    fn what_the_platform_cannot_decode_is_asked_for_as_a_copy() {
+        assert!(platform_plays("flac") && platform_plays("pcm_s16le"));
+        assert!(!platform_plays("alac") && !platform_plays("pcm_s16be") && !platform_plays("wavpack"));
+        let mut item = QueueItem {
+            track_id: Uuid::from_u128(1),
+            file_id: Uuid::from_u128(2),
+            source: AudioSource::File,
+            title: String::new(),
+            artist: String::new(),
+            album: None,
+            duration_ms: None,
+            cover: None,
+            codec: Some("alac".into()),
+        };
+        let state = State {
+            queue: Queue::default(),
+            slot: None,
+            repeat: false,
+            shuffle: false,
+            quality: None,
+            position: Duration::ZERO,
+            at: Instant::now(),
+            playing: false,
+            paused: false,
+            listen: Listen::default(),
+        };
+        assert!(state.path_of(&item).ends_with("?transcode=true"));
+        item.codec = Some("flac".into());
+        assert!(!state.path_of(&item).contains('?'));
+        item.codec = None;
+        assert!(!state.path_of(&item).contains('?'));
     }
 
     #[test]

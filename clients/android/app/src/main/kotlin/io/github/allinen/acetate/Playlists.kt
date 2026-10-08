@@ -153,7 +153,7 @@ private fun TracksPage(
                         }, enabled = ids.isNotEmpty()) { Text("Play") }
                         OutlinedButton({
                             if (!model.player.shuffle) model.playback.toggleShuffle()
-                            model.playback.playTracks(ids, 0uL)
+                            model.playback.playTracks(ids, randomStart(ids.size))
                         }, enabled = ids.isNotEmpty()) { Text("Shuffle") }
                     }
                 }
