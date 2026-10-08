@@ -95,9 +95,8 @@ fun SyncLine(model: Model) {
             },
             Modifier.weight(1f), style = MaterialTheme.typography.labelLarge,
         )
-        var open by remember { mutableStateOf(false) }
-        TextButton({ open = true }) { Text("Settings") }
-        if (open) SettingsDialog(model) { open = false }
+        TextButton({ model.settingsOpen = true }) { Text("Settings") }
+        if (model.settingsOpen) SettingsDialog(model) { model.settingsOpen = false }
     }
 }
 

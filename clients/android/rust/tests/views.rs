@@ -27,7 +27,7 @@ fn catalog_json() -> String {
              [["00000000-0000-7000-8000-0000000000b1", 1, 2]], 1000, "00000000-0000-7000-8000-0000000000f1", null, null, "2020", 2020, "released", [], "", false, "flac"],
             ["00000000-0000-7000-8000-000000000002", "First", "Ann feat. Bo",
              [["00000000-0000-7000-8000-0000000000a1", "primary", null], ["00000000-0000-7000-8000-0000000000a2", "featured", "B.O."]],
-             [["00000000-0000-7000-8000-0000000000b1", 1, 1]], 2000, "00000000-0000-7000-8000-0000000000f2", null, null, "2021", 2021, "released", [], "", false, "flac",
+             [["00000000-0000-7000-8000-0000000000b1", 1, 1]], 2000, "00000000-0000-7000-8000-0000000000f2", "00000000-0000-7000-8000-0000000000c1", "00112233445566778899", "2021", 2021, "released", [], "", false, "flac",
              [], [], null, null, null, "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"],
             ["00000000-0000-7000-8000-000000000003", "The Third", "Bo", [["00000000-0000-7000-8000-0000000000a2", "primary", null]],
              [["00000000-0000-7000-8000-0000000000b2", null, 1], ["00000000-0000-7000-8000-0000000000b1", 1, 3]], 500, "00000000-0000-7000-8000-0000000000f3", null, null, null, null, "released", [], "", false, "mp3"]
@@ -389,4 +389,30 @@ fn a_list_of_tracks_can_be_filtered_in_its_own_order() {
     assert_eq!(some, [2], "the place in the list it was given");
     let by_artist = rt().block_on(core.filter_list(ids, "artist:bo".into()));
     assert_eq!(by_artist, [0, 2], "Bo is on the third track and (featured) the first");
+}
+
+#[test]
+fn a_kept_cover_is_read_from_the_device_and_the_downloads_list_counts_what_is_here() {
+    const HELLO: &str = "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824";
+    let (dir, core, _events) = core(true);
+    let key = acetate_core::catalog::store::key(&acetate_core::api::Session { server: SERVER.into(), token: String::new(), username: "ann".into() });
+    let root = dir.path().join(format!("offline-{key}"));
+    std::fs::create_dir_all(root.join("covers")).unwrap();
+    std::fs::write(root.join("covers/0011223344556677-small"), b"png").unwrap();
+    let blob = root.join("blobs/2c/f2").join(HELLO);
+    std::fs::create_dir_all(blob.parent().unwrap()).unwrap();
+    std::fs::write(&blob, b"hello").unwrap();
+    let mut files = serde_json::Map::new();
+    files.insert(HELLO.into(), serde_json::json!({ "blob": HELLO, "size": 5, "kbps": null, "original": true }));
+    let pin = serde_json::json!({ "kind": "album", "id": ALBUM, "name": "A" });
+    std::fs::write(root.join("offline.json"), serde_json::json!({ "files": files, "pins": [pin] }).to_string()).unwrap();
+    synced(&core);
+
+    let request = core.image_request("0011223344556677".into(), ImageSize::Small).unwrap();
+    assert_eq!(request.local.as_deref(), Some(root.join("covers/0011223344556677-small").to_str().unwrap()));
+    assert!(core.image_request("0011223344556677".into(), ImageSize::Standard).unwrap().local.is_none(), "only what's kept");
+    let pins = core.download_pins();
+    assert_eq!(pins.len(), 1);
+    // The album has three tracks; one of them (First) has its file here.
+    assert_eq!((pins[0].name.as_str(), pins[0].have, pins[0].total, pins[0].bytes), ("A", 1, 1, 5));
 }

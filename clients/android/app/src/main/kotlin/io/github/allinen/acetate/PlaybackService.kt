@@ -116,7 +116,7 @@ class PlaybackService : MediaLibraryService() {
         this.playback = playback
 
         session = MediaLibrarySession.Builder(this, CorePlayer(player, playback), object : MediaLibrarySession.Callback {})
-            .setBitmapLoader(androidx.media3.datasource.DataSourceBitmapLoader.Builder(this).setDataSourceFactory(upstream).build())
+            .setBitmapLoader(androidx.media3.datasource.DataSourceBitmapLoader.Builder(this).setDataSourceFactory(androidx.media3.datasource.DefaultDataSource.Factory(this, upstream)).build())
             .build()
     }
 

@@ -53,6 +53,7 @@ fun Root(model: Model) {
                     is Page.Track -> TrackScreen(model, page.id)
                     is Page.Playlist -> PlaylistScreen(model, page.id)
                     Page.Liked -> LikedScreen(model)
+                    Page.Downloads -> DownloadsScreen(model)
                 }
             }
             // The keyboard takes the place of the bars while typing.

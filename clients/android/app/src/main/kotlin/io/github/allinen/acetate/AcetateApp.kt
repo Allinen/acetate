@@ -104,6 +104,9 @@ class Model(dataDir: String) : Listener {
     var player by mutableStateOf(playback.state())
         private set
 
+    /** The Settings dialog is open. */
+    var settingsOpen by mutableStateOf(false)
+
     /** The Now playing screen is open. */
     var nowPlaying by mutableStateOf(false)
 
@@ -183,4 +186,5 @@ sealed interface Page {
     data class Track(val id: String) : Page
     data class Playlist(val id: String) : Page
     data object Liked : Page
+    data object Downloads : Page
 }

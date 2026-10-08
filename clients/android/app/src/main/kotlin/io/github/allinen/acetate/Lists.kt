@@ -179,7 +179,8 @@ fun Cover(model: Model, key: String?, size: Int, modifier: Modifier = Modifier) 
     }
     AsyncImage(
         model = ImageRequest.Builder(LocalContext.current)
-            .data(request.url)
+            // A cover kept by a download is read from the phone, else fetched (and cached).
+            .data(request.local?.let { java.io.File(it) } ?: request.url)
             .httpHeaders(NetworkHeaders.Builder().set("Authorization", request.authorization).build())
             .build(),
         contentDescription = null, modifier = shaped, contentScale = ContentScale.Crop,

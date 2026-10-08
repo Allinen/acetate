@@ -230,6 +230,20 @@ pub struct PinRow {
     pub name: String,
 }
 
+/// One thing kept on the device, and how much of it is here.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct PinInfo {
+    pub kind: PinKind,
+    pub id: String,
+    pub name: String,
+    /// Files here, of `total`, and their size.
+    pub have: u64,
+    pub total: u64,
+    pub bytes: u64,
+    /// Whether what it covers is known (a playlist still being fetched isn't).
+    pub known: bool,
+}
+
 #[derive(Debug, Clone, Default, uniffi::Record)]
 pub struct DownloadsInfo {
     pub pins: Vec<PinRow>,
@@ -406,6 +420,9 @@ pub enum ImageSize {
 pub struct ImageRequest {
     pub url: String,
     pub authorization: String,
+    /// The same image kept on the device (downloads keep the covers of what they keep): a
+    /// file to read instead.
+    pub local: Option<String>,
 }
 
 fn album_row(a: Album) -> AlbumRow {
@@ -930,6 +947,40 @@ impl Core {
         }
     }
 
+    /// What's kept, each with how much of it is here: for the downloads list.
+    pub fn download_pins(&self) -> Vec<PinInfo> {
+        let (Some(offline), Some(catalog)) = (self.shared.offline.lock().unwrap().clone(), self.shared.catalog()) else { return vec![] };
+        let shared = &self.shared;
+        offline
+            .pins()
+            .into_iter()
+            .map(|pin| {
+                let tracks = acetate_core::offline::pin_tracks(
+                    &pin,
+                    &catalog,
+                    &mut |id| shared.playlists.lock().unwrap().detail(id).value.as_ref().map(|d| d.entries.iter().map(|e| e.track_id).collect()),
+                    &|| shared.marks.lock().unwrap().liked(&catalog),
+                );
+                let sources: Vec<String> = tracks.iter().flatten().filter_map(|&t| catalog.track_at(t).sha256()).collect();
+                let sizes: Vec<u64> = sources.iter().filter_map(|s| offline.kept_size(s)).collect();
+                PinInfo {
+                    kind: match pin.kind.as_str() {
+                        "track" => PinKind::Track,
+                        "album" => PinKind::Album,
+                        "playlist" => PinKind::Playlist,
+                        _ => PinKind::Liked,
+                    },
+                    id: pin.id,
+                    name: pin.name,
+                    have: sizes.len() as u64,
+                    total: sources.len() as u64,
+                    bytes: sizes.iter().sum(),
+                    known: tracks.is_some(),
+                }
+            })
+            .collect()
+    }
+
     /// The quality to download at (None: the original if the server allows it).
     pub fn set_download_quality(&self, kbps: Option<u32>) {
         if let Some(offline) = self.shared.offline.lock().unwrap().as_ref() {
@@ -1047,6 +1098,7 @@ impl Core {
         Some(ImageRequest {
             url: format!("{}/api/extra-files/{file}/stream", session.server),
             authorization: format!("Bearer {}", session.token),
+            local: None,
         })
     }
 
@@ -1196,9 +1248,18 @@ impl Core {
             ImageSize::Standard => "?size=standard",
             ImageSize::Original => "",
         };
+        let local = self.shared.offline.lock().unwrap().as_ref().and_then(|o| {
+            let size = match size {
+                ImageSize::Small => "small",
+                ImageSize::Standard => "standard",
+                ImageSize::Original => return None,
+            };
+            o.cover_path(&key, size).map(|p| p.to_string_lossy().into_owned())
+        });
         Some(ImageRequest {
             url: format!("{}/api/images/{key}{query}", session.server),
             authorization: format!("Bearer {}", session.token),
+            local,
         })
     }
 }
@@ -1377,6 +1438,8 @@ pub trait PlayerEngine: Send + Sync {
 struct EngineAdapter {
     engine: Arc<dyn PlayerEngine>,
     api: Api,
+    /// Where the cover of a key is kept on the device (the standard size), if it is.
+    kept_cover: Arc<dyn Fn(&str) -> Option<String> + Send + Sync>,
 }
 
 impl EngineAdapter {
@@ -1396,9 +1459,17 @@ impl EngineAdapter {
             artist: item.artist.clone(),
             album: item.album.clone(),
             duration_ms: item.duration_ms,
-            cover: item.cover.map(|c| ImageRequest {
-                url: format!("{}/api/images/{}?size=standard", session.server, cover_key(c.key.0)),
-                authorization: format!("Bearer {}", session.token),
+            cover: item.cover.map(|c| {
+                let local = (self.kept_cover)(&cover_key(c.key.0));
+                ImageRequest {
+                    // A kept cover is read from the device (the player can open files).
+                    url: match &local {
+                        Some(path) => format!("file://{path}"),
+                        None => format!("{}/api/images/{}?size=standard", session.server, cover_key(c.key.0)),
+                    },
+                    authorization: format!("Bearer {}", session.token),
+                    local,
+                }
             }),
         })
     }
@@ -1513,7 +1584,13 @@ impl Playback {
     /// The platform's player is there: the core drives it from now on. Hand over what's
     /// loaded already (a queue brought back at start), paused.
     pub fn attach(&self, engine: Arc<dyn PlayerEngine>) {
-        self.player().attach(Arc::new(EngineAdapter { engine, api: self.shared.api.clone() }));
+        let weak = Arc::downgrade(&self.shared);
+        let kept_cover: Arc<dyn Fn(&str) -> Option<String> + Send + Sync> = Arc::new(move |key| {
+            let shared = weak.upgrade()?;
+            let offline = shared.offline.lock().unwrap().clone()?;
+            offline.cover_path(key, "standard").map(|p| p.to_string_lossy().into_owned())
+        });
+        self.player().attach(Arc::new(EngineAdapter { engine, api: self.shared.api.clone(), kept_cover }));
     }
 
     pub fn state(&self) -> PlayerState {

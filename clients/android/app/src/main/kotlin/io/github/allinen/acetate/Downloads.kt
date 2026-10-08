@@ -1,5 +1,8 @@
 package io.github.allinen.acetate
 
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -86,7 +89,10 @@ fun DownloadSettings(model: Model) {
         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
     if (d.failed > 0uL) Text("${d.failed} couldn't be fetched", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
-    if (d.files > 0uL || d.pins.isNotEmpty()) TextButton({ confirm = true }) { Text("Remove all downloads") }
+    Row {
+        TextButton({ model.settingsOpen = false; model.pages.add(Page.Downloads) }) { Text("Manage…") }
+        if (d.files > 0uL || d.pins.isNotEmpty()) TextButton({ confirm = true }) { Text("Remove all") }
+    }
     Spacer(Modifier.height(4.dp))
     if (confirm) {
         AlertDialog(
@@ -101,3 +107,72 @@ fun DownloadSettings(model: Model) {
 
 private fun megabytes(bytes: Long): String =
     if (bytes >= 1_000_000_000) "%.1f GB".format(bytes / 1e9) else "%d MB".format(bytes / 1_000_000)
+
+/** What's kept on the device: each pin with how much of it is here and its size, to open or
+ *  take away; and the downloads' state (stop, go on). */
+@Composable
+fun DownloadsScreen(model: Model) {
+    val pins = remember(model.downloadsVersion, model.catalogVersion, model.playlistsVersion) { model.core.downloadPins() }
+    val d = model.downloads
+    var removing by remember { mutableStateOf<uniffi.acetate_ffi.PinInfo?>(null) }
+    PageScaffold(model, "Downloads") { modifier ->
+        androidx.compose.foundation.lazy.LazyColumn(modifier) {
+            item {
+                Column(Modifier.padding(16.dp)) {
+                    Text(
+                        "${d.files} files · ${megabytes(d.bytes.toLong())}" + if (d.queued > 0uL) " · ${d.queued} coming" else "",
+                        style = MaterialTheme.typography.titleMedium,
+                    )
+                    if (d.failed > 0uL) Text("${d.failed} couldn't be fetched", color = MaterialTheme.colorScheme.error)
+                    if (d.queued > 0uL) TextButton({ if (d.paused) model.core.resumeDownloads() else model.core.pauseDownloads() }) {
+                        Text(if (d.paused) "Resume" else "Stop")
+                    }
+                    if (pins.isEmpty()) {
+                        Text(
+                            "Nothing is kept yet. Use Download on an album, a playlist, a track or Liked songs.",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+            items(pins.size, key = { pins[it].kind.name + pins[it].id }) { i ->
+                val p = pins[i]
+                Row(
+                    Modifier.fillMaxWidth().clickable {
+                        when (p.kind) {
+                            PinKind.TRACK -> model.pages.add(Page.Track(p.id))
+                            PinKind.ALBUM -> model.pages.add(Page.Album(p.id))
+                            PinKind.PLAYLIST -> model.pages.add(Page.Playlist(p.id))
+                            PinKind.LIKED -> model.pages.add(Page.Liked)
+                        }
+                    }.padding(16.dp, 8.dp, 4.dp, 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(p.name.ifEmpty { p.kind.name.lowercase() }, maxLines = 1)
+                        val kind = when (p.kind) {
+                            PinKind.TRACK -> "Track"
+                            PinKind.ALBUM -> "Album"
+                            PinKind.PLAYLIST -> "Playlist"
+                            PinKind.LIKED -> "Liked songs"
+                        }
+                        Text(
+                            if (p.known) "$kind · ${p.have} of ${p.total} · ${megabytes(p.bytes.toLong())}" else "$kind · waiting for the playlist",
+                            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    TextButton({ removing = p }) { Text("Remove") }
+                }
+            }
+        }
+    }
+    removing?.let { p ->
+        AlertDialog(
+            onDismissRequest = { removing = null },
+            title = { Text("Remove ${p.name.ifEmpty { "this" }}?") },
+            text = { Text("Its files are deleted from the phone (anything kept for something else stays). The music on the server isn't touched.") },
+            confirmButton = { TextButton({ model.core.download(p.kind, p.id, false); removing = null }) { Text("Remove") } },
+            dismissButton = { TextButton({ removing = null }) { Text("Cancel") } },
+        )
+    }
+}
