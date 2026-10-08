@@ -108,6 +108,7 @@ fun TrackMenu(
     var picking by remember { mutableStateOf(false) }
     var sharing by remember { mutableStateOf(false) }
     DropdownMenu(open, close) {
+        DropdownMenuItem({ Text("Go to track") }, { openTrack(model, id); close() })
         DropdownMenuItem({ Text("Play next") }, { model.playback.enqueueTracks(listOf(id), true); close() })
         DropdownMenuItem({ Text("Add to queue") }, { model.playback.enqueueTracks(listOf(id), false); close() })
         DropdownMenuItem({ Text("Add to playlist…") }, { picking = true; close() })

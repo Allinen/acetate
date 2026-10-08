@@ -239,11 +239,20 @@ fun NowPlaying(model: Model) {
                 Column(Modifier.padding(24.dp, 0.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                     Cover(model, current.cover, 280)
                     Spacer(Modifier.height(20.dp))
-                    Text(current.title, style = MaterialTheme.typography.titleLarge, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    // The title opens the track's page, the artists theirs, the album its own.
                     Text(
-                        listOfNotNull(current.artist, current.album).joinToString(" · "), maxLines = 2,
-                        overflow = TextOverflow.Ellipsis, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        current.title, style = MaterialTheme.typography.titleLarge, maxLines = 2, overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.clickable { openTrack(model, current.id) },
                     )
+                    ArtistLine(model, MarkOn.TRACK, current.id, current.artist)
+                    current.album?.let { album ->
+                        Text(
+                            album, maxLines = 1, overflow = TextOverflow.Ellipsis, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.clickable {
+                                model.core.trackPage(current.id)?.albums?.firstOrNull()?.let { openAlbum(model, it.id) }
+                            },
+                        )
+                    }
                     Spacer(Modifier.height(14.dp))
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                         RatingBar(model, MarkOn.TRACK, current.id)

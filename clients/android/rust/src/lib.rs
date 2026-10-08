@@ -244,6 +244,49 @@ pub struct DownloadsInfo {
     pub failed: u64,
 }
 
+/// An artist as credited somewhere, to go to their page.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct ArtistLink {
+    pub id: String,
+    /// The name credited (an alias, if that's what's credited).
+    pub name: String,
+    /// "primary", "featured", "producer"…
+    pub role: String,
+}
+
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct TrackPage {
+    pub row: TrackRow,
+    pub artists: Vec<ArtistLink>,
+    /// Every album it's on, its main one first.
+    pub albums: Vec<AlbumRow>,
+    pub genres: Vec<String>,
+    pub release_date: Option<String>,
+    pub status: String,
+    pub codec: Option<String>,
+    pub bitrate: Option<i32>,
+    pub sample_rate: Option<i32>,
+}
+
+fn artist_links(catalog: &Catalog, credits: &[acetate_core::catalog::model::Credit]) -> Vec<ArtistLink> {
+    use acetate_core::catalog::model::Role;
+    let mut seen = std::collections::HashSet::new();
+    credits
+        .iter()
+        .filter(|c| seen.insert((c.0, std::mem::discriminant(&c.1))))
+        .filter_map(|c| {
+            let artist = catalog.artist(c.0)?;
+            let role = match c.1 {
+                Role::Primary => "primary",
+                Role::Featured => "featured",
+                Role::Producer => "producer",
+                Role::Other => "other",
+            };
+            Some(ArtistLink { id: c.0.to_string(), name: c.2.as_deref().map(str::to_string).unwrap_or_else(|| artist.name.clone()), role: role.into() })
+        })
+        .collect()
+}
+
 #[derive(Debug, Clone, Default, uniffi::Record)]
 pub struct SearchResult {
     pub artists: Vec<ArtistRow>,
@@ -1055,6 +1098,35 @@ impl Core {
     }
 
     // ---- Pages ----
+
+    /// The artists credited on a track or album (to go to their pages), as credited.
+    pub fn artists_of(&self, on: MarkOn, id: String) -> Vec<ArtistLink> {
+        let (Some(catalog), Some(id)) = (self.shared.catalog(), parse_id(&id)) else { return vec![] };
+        let credits: Vec<_> = match on {
+            MarkOn::Track => catalog.track(id).map(|t| t.credits().to_vec()),
+            MarkOn::Album => catalog.album(id).map(|a| a.credits().to_vec()),
+            MarkOn::Artist => None,
+        }
+        .unwrap_or_default();
+        artist_links(&catalog, &credits)
+    }
+
+    /// Everything about one track that its page shows.
+    pub fn track_page(&self, id: String) -> Option<TrackPage> {
+        let catalog = self.shared.catalog()?;
+        let t = catalog.track(parse_id(&id)?)?;
+        Some(TrackPage {
+            row: track_row(&catalog, t),
+            artists: artist_links(&catalog, t.credits()),
+            albums: t.albums().iter().filter_map(|m| catalog.album(m.0)).map(album_row).collect(),
+            genres: t.genres().map(str::to_string).collect(),
+            release_date: t.release_date().map(str::to_string),
+            status: t.status().to_string(),
+            codec: t.codec().map(str::to_string),
+            bitrate: t.bitrate(),
+            sample_rate: t.sample_rate(),
+        })
+    }
 
     pub fn album(&self, id: String) -> Option<AlbumRow> {
         let catalog = self.shared.catalog()?;

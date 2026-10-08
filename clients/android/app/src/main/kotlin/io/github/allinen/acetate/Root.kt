@@ -50,6 +50,7 @@ fun Root(model: Model) {
                     null -> LibraryScreen(model)
                     is Page.Album -> AlbumScreen(model, page.id)
                     is Page.Artist -> ArtistScreen(model, page.id)
+                    is Page.Track -> TrackScreen(model, page.id)
                     is Page.Playlist -> PlaylistScreen(model, page.id)
                     Page.Liked -> LikedScreen(model)
                 }

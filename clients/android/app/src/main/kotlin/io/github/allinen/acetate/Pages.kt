@@ -70,8 +70,9 @@ fun AlbumScreen(model: Model, id: String) {
                     Cover(model, album.cover, 240)
                     Spacer(Modifier.height(12.dp))
                     Text(album.title, style = MaterialTheme.typography.headlineSmall, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                    ArtistLine(model, MarkOn.ALBUM, id, album.artist)
                     Text(
-                        listOfNotNull(album.artist, album.year?.toString(), album.kind).joinToString(" · "),
+                        listOfNotNull(album.year?.toString(), album.kind).joinToString(" · "),
                         color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                     )
                     Text(

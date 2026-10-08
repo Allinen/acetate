@@ -65,8 +65,7 @@ struct Inner {
     /// What's being fetched now.
     current: Option<String>,
     failed: Vec<(String, String)>,
-    /// This run's: files asked for, and fetched (for "3 of 40").
-    asked: usize,
+    /// Fetched in this run (for "3 of 40").
     done: usize,
 }
 
@@ -187,18 +186,15 @@ impl Offline {
             inner.queue.retain(|w| wanted.contains(&w.source));
             let queued: HashSet<String> = inner.queue.iter().map(|w| w.source.clone()).collect();
             let current = inner.current.clone();
-            let mut added = 0;
             for want in wants {
                 if !inner.index.files.contains_key(&want.source) && !queued.contains(&want.source) && current.as_ref() != Some(&want.source) {
                     inner.queue.push_back(want);
-                    added += 1;
                 }
             }
             if inner.queue.is_empty() && inner.current.is_none() {
-                inner.asked = 0;
                 inner.done = 0;
+                inner.failed.clear();
             }
-            inner.asked += added;
             inner.failed.retain(|(s, _)| wanted.contains(s));
             self.save(&inner.index);
         }
@@ -219,7 +215,9 @@ impl Offline {
             bytes: inner.index.files.values().map(|k| k.size).sum(),
             queued: inner.queue.len() + usize::from(inner.current.is_some()),
             downloading: inner.current.is_some(),
-            asked: inner.asked,
+            // Counted from what is, not what was added: stopping and starting again, or a
+            // playlist changing, can't make the same file count twice.
+            asked: inner.done + inner.queue.len() + usize::from(inner.current.is_some()) + inner.failed.len(),
             done: inner.done,
             failed: inner.failed.len(),
             current_bytes: self.current_bytes.load(Ordering::SeqCst),

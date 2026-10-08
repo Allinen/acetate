@@ -179,6 +179,7 @@ class Model(dataDir: String) : Listener {
 sealed interface Page {
     data class Album(val id: String) : Page
     data class Artist(val id: String) : Page
+    data class Track(val id: String) : Page
     data class Playlist(val id: String) : Page
     data object Liked : Page
 }

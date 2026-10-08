@@ -363,3 +363,17 @@ fn a_downloaded_track_plays_from_the_device_without_the_login() {
     // The next one isn't downloaded: it comes from the server.
     assert!(took[1].starts_with("next Second"), "{took:?}");
 }
+
+#[test]
+fn a_track_page_has_its_artists_and_albums() {
+    let (_dir, core, _events) = core(true);
+    synced(&core);
+    let page = core.track_page("00000000-0000-7000-8000-000000000002".into()).unwrap();
+    assert_eq!(page.row.title, "First");
+    let artists: Vec<_> = page.artists.iter().map(|a| (a.name.as_str(), a.role.as_str())).collect();
+    assert_eq!(artists, [("Ann", "primary"), ("B.O.", "featured")], "as credited: the alias");
+    assert_eq!(page.albums.iter().map(|a| a.title.as_str()).collect::<Vec<_>>(), ["A"]);
+    let on_album: Vec<_> = core.artists_of(MarkOn::Album, ALBUM.into()).iter().map(|a| a.name.clone()).collect();
+    assert_eq!(on_album, ["Ann"]);
+    assert!(core.track_page("nonsense".into()).is_none());
+}
