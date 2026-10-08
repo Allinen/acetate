@@ -354,7 +354,18 @@ private fun LyricsScreen(
     val state = model.player
     val list = androidx.compose.foundation.lazy.rememberLazyListState()
     // The last line that has started.
-    val now = if (lyrics.synced) lyrics.lines.indexOfLast { (it.atMs ?: ULong.MAX_VALUE).toLong() <= position } else -1
+    // Read often (a line is on time within a tenth of a second), moved by the timing setting.
+    var heard by remember { mutableStateOf(position) }
+    LaunchedEffect(state.current?.id, state.playing, state.paused) {
+        var offset = LyricsTiming.offsetMs()
+        var asked = 0
+        while (true) {
+            if (asked++ % 10 == 0) offset = LyricsTiming.offsetMs()
+            heard = model.playback.state().positionMs.toLong() + offset
+            delay(100)
+        }
+    }
+    val now = if (lyrics.synced) lyrics.lines.indexOfLast { (it.atMs ?: ULong.MAX_VALUE).toLong() <= heard } else -1
     LaunchedEffect(now) {
         if (now >= 0 && !list.isScrollInProgress) list.animateScrollToItem(now, -250)
     }

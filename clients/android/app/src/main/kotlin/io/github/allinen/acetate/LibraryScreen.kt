@@ -2,6 +2,7 @@ package io.github.allinen.acetate
 
 import androidx.compose.material3.Slider
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Spacer
@@ -46,15 +47,16 @@ import uniffi.acetate_ffi.TrackView
 fun LibraryScreen(model: Model) {
     val tab = model.tab
     // One filter line per tab, in the library's query language (`artist:… year:…`).
-    var filters by rememberSaveable { mutableStateOf(listOf("", "", "")) }
+    var filters by rememberSaveable { mutableStateOf(listOf("", "", "", "")) }
     Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal))) {
         if (tab != 4) SyncLine(model)
-        if (tab < 3) {
+        if (tab < 4) {
             LineField(
                 filters[tab], { text -> filters = filters.toMutableList().also { it[tab] = text } }, "Filter",
                 Modifier.fillMaxWidth().padding(16.dp, 8.dp),
             )
-            Suggestions(model, filters[tab]) { line -> filters = filters.toMutableList().also { it[tab] = line } }
+            // (A playlist's name is plain words: no keys to suggest.)
+            if (tab < 3) Suggestions(model, filters[tab]) { line -> filters = filters.toMutableList().also { it[tab] = line } }
         }
         val filter = filters.getOrElse(tab) { "" }
         when (tab) {
@@ -74,7 +76,7 @@ fun LibraryScreen(model: Model) {
                 LaunchedEffect(model.catalogVersion, filter) { view = model.core.tracks(filter, TrackOrder.TITLE, false) }
                 view?.let { TrackList(model, it) }
             }
-            3 -> PlaylistList(model)
+            3 -> PlaylistList(model, filter)
             else -> SearchScreen(model)
         }
     }
@@ -107,13 +109,20 @@ private fun SettingsDialog(model: Model, close: () -> Unit) {
         dismissButton = { TextButton({ close(); model.logout() }) { Text("Log out") } },
         title = { Text("Settings") },
         text = {
-            Column {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
                 val q = model.quality
                 QualityChoice("Quality on Wi-Fi", q.unmetered, q::chooseUnmetered)
                 Spacer(Modifier.height(12.dp))
                 QualityChoice("Quality on mobile data", q.metered, q::chooseMetered)
                 Spacer(Modifier.height(12.dp))
                 DownloadSettings(model)
+                Spacer(Modifier.height(8.dp))
+                // Lyrics too late: move them sooner (more); too early: later (less).
+                Text("Lyrics timing", style = MaterialTheme.typography.titleSmall)
+                Text("Bluetooth: ${LyricsTiming.bluetoothMs} ms", style = MaterialTheme.typography.labelLarge)
+                Slider(LyricsTiming.bluetoothMs.toFloat(), { LyricsTiming.setBluetooth((it / 50).toInt() * 50) }, valueRange = -500f..2000f)
+                Text("Other: ${LyricsTiming.otherMs} ms", style = MaterialTheme.typography.labelLarge)
+                Slider(LyricsTiming.otherMs.toFloat(), { LyricsTiming.setOther((it / 50).toInt() * 50) }, valueRange = -500f..2000f)
                 Spacer(Modifier.height(8.dp))
                 Text(
                     if (Output.reduction == 0) "Output level: full" else "Output level: −${Output.reduction} dB",

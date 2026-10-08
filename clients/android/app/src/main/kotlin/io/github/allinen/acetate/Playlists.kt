@@ -31,8 +31,11 @@ import uniffi.acetate_ffi.TrackRow
 
 /** The Playlists tab: Liked songs (the starred tracks), then the playlists. */
 @Composable
-fun PlaylistList(model: Model) {
-    val playlists = remember(model.playlistsVersion, model.catalogVersion) { model.core.playlists() }
+fun PlaylistList(model: Model, filter: String) {
+    val words = filter.lowercase().split(' ').filter { it.isNotEmpty() }
+    val playlists = remember(model.playlistsVersion, model.catalogVersion, filter) {
+        model.core.playlists().filter { p -> words.all { it in p.name.lowercase() } }
+    }
     val liked = remember(model.marksVersion, model.catalogVersion) { model.core.liked().size }
     var creating by remember { mutableStateOf(false) }
     LazyColumn(Modifier.fillMaxWidth()) {
@@ -41,7 +44,7 @@ fun PlaylistList(model: Model) {
                 OutlinedButton({ creating = true }) { Text("New playlist") }
             }
         }
-        item {
+        if (words.all { it in "liked songs" }) item {
             ListLine("Liked songs", "$liked tracks", Modifier.clickable { model.pages.add(Page.Liked) })
         }
         items(playlists.size, key = { playlists[it].id }) { i ->
