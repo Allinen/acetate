@@ -67,7 +67,7 @@ impl Annotation {
             (true, true) => self.starred_at.min(other.starred_at).or(self.starred_at).or(other.starred_at),
             (true, false) => self.starred_at,
             (false, true) => other.starred_at,
-            (false, false) => None,
+            (false, false) => self.starred_at.max(other.starred_at),
         };
         Annotation {
             play_count: self.play_count.saturating_add(other.play_count),
@@ -138,7 +138,10 @@ pub async fn set_starred(conn: &mut PgConnection, item: Item, starred: bool) -> 
     let mut a = get(conn, item).await?;
     if a.starred != starred {
         a.starred = starred;
-        a.starred_at = starred.then(Utc::now);
+        // `starred_at` is when it was first starred: unstarring and restarring keep it.
+        if starred && a.starred_at.is_none() {
+            a.starred_at = Some(Utc::now());
+        }
         put(conn, item, &a).await?;
     }
     Ok(a)
