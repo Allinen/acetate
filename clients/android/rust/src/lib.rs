@@ -12,6 +12,7 @@ use std::time::Instant;
 use acetate_core::api::{Api, ApiError};
 use acetate_core::playback::player::{Engine, Load, Player};
 use acetate_core::playback::{QueueItem, queue, queue_item};
+use acetate_core::playlists::Playlists;
 use acetate_core::resume::Resume;
 use acetate_core::catalog::index::{AlbumSort, ArtistSort, TrackRows, TrackSort};
 use acetate_core::catalog::store::{self, Store, Update};
@@ -73,14 +74,16 @@ pub enum Change {
     Player,
     /// A star or rating changed (or its answer came): read the marks again.
     Marks,
+    /// The playlists, or one playlist's entries, changed: read them again.
+    Playlists,
 }
 
 /// Kotlin code the core calls, from any thread.
 #[uniffi::export(with_foreign)]
 pub trait Listener: Send + Sync {
     fn changed(&self, what: Change);
-    /// Something the user asked for failed (a star that didn't reach the server), in words.
-    fn problem(&self, message: String);
+    /// Something to tell the user, in words: a change that failed, or one that went through.
+    fn notice(&self, message: String);
 }
 
 // ---- Plain data ----
@@ -117,6 +120,38 @@ pub struct MarkInfo {
     /// 0 to 10 (half stars); 0: not rated.
     pub rating: i16,
     pub starred: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct PlaylistRow {
+    pub id: String,
+    pub name: String,
+    pub owner: String,
+    pub mine: bool,
+    pub public: bool,
+    pub entries: i64,
+    pub duration_ms: i64,
+}
+
+/// One place in a playlist (`entry` identifies it: the same track can be there twice).
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct EntryRow {
+    pub entry: String,
+    pub track: TrackRow,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, uniffi::Record)]
+pub struct PlaylistPage {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub owner: String,
+    pub mine: bool,
+    pub public: bool,
+    /// Being fetched from the server (what's shown is the kept copy, if any).
+    pub loading: bool,
+    pub error: Option<String>,
+    pub entries: Vec<EntryRow>,
 }
 
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
@@ -306,6 +341,7 @@ struct Shared {
     sync: Mutex<SyncState>,
     /// Stars and ratings changed in this session, shown until the server's catalog has them.
     marks: Mutex<Marks>,
+    playlists: Arc<Mutex<Playlists>>,
     /// When the catalog was last asked of the server.
     asked: Mutex<Option<Instant>>,
     listener: Arc<dyn Listener>,
@@ -339,6 +375,9 @@ impl Core {
             .expect("a tokio runtime");
         let api = Api::new(data_dir.clone());
         let player = Arc::new(Player::new(Some(api.clone()), runtime.handle().clone(), Arc::new(ChangeWake(listener.clone()))));
+        let playlist_wake = Arc::new(PlaylistWake { playlists: std::sync::OnceLock::new(), listener: listener.clone() });
+        let playlists = Arc::new(Mutex::new(Playlists::new(api.clone(), runtime.handle().clone(), playlist_wake.clone())));
+        let _ = playlist_wake.playlists.set(Arc::downgrade(&playlists));
         let shared = Arc::new(Shared {
             api,
             player,
@@ -347,6 +386,7 @@ impl Core {
             catalog: Mutex::new(None),
             sync: Mutex::new(SyncState::default()),
             marks: Mutex::new(Marks::default()),
+            playlists,
             asked: Mutex::new(None),
             listener,
         });
@@ -396,6 +436,7 @@ impl Core {
         *self.shared.store.lock().unwrap() = None;
         *self.shared.sync.lock().unwrap() = SyncState::default();
         self.shared.marks.lock().unwrap().clear();
+        self.shared.playlists.lock().unwrap().reset(None);
         self.shared.listener.changed(Change::Session);
     }
 
@@ -410,6 +451,7 @@ impl Core {
         let mut keeping = self.shared.keeping.lock().unwrap();
         if keeping.as_deref() != Some(&key) {
             self.shared.player.keep_with(Resume::new(&self.data_dir, &key));
+            self.shared.playlists.lock().unwrap().reset(Some(self.data_dir.join(format!("playlists-{key}"))));
             self.shared.player.keep_listens(self.data_dir.join(format!("unsent-{key}.json")));
             *keeping = Some(key);
         } else {
@@ -429,6 +471,7 @@ impl Core {
                     if from_server {
                         if let Some(asked) = *shared.asked.lock().unwrap() {
                             shared.marks.lock().unwrap().catalog_arrived(asked);
+                            shared.playlists.lock().unwrap().catalog_arrived(asked);
                         }
                     }
                     set_catalog(&shared, catalog);
@@ -464,6 +507,104 @@ impl Core {
     /// Rates, 0 (not rated) to 10 (five stars).
     pub fn set_rating(&self, on: MarkOn, id: String, rating: i16) {
         self.change_mark(on, &id, |m| m.rating = rating.clamp(0, 10), false);
+    }
+
+    // ---- Playlists ----
+
+    /// The playlists: the user's own first, then public ones. (Liked songs aren't one: see
+    /// `liked`.)
+    pub fn playlists(&self) -> Vec<PlaylistRow> {
+        let catalog = self.shared.catalog();
+        let playlists = self.shared.playlists.lock().unwrap();
+        playlists
+            .list(catalog.as_deref())
+            .iter()
+            .map(|p| PlaylistRow {
+                id: p.id.to_string(),
+                name: p.name.clone(),
+                owner: p.owner.clone(),
+                mine: p.mine,
+                public: p.public,
+                entries: p.entries,
+                duration_ms: p.duration_ms,
+            })
+            .collect()
+    }
+
+    /// A playlist with its entries, as kept; fetched in the background the first time in a
+    /// run (`Change::Playlists` says when it came).
+    pub fn playlist(&self, id: String) -> Option<PlaylistPage> {
+        let id = parse_id(&id)?;
+        let catalog = self.shared.catalog()?;
+        let mut playlists = self.shared.playlists.lock().unwrap();
+        let cached = playlists.detail(id);
+        let (loading, error) = (cached.refreshing, cached.error.clone());
+        let Some(detail) = cached.value.clone() else {
+            return Some(PlaylistPage { id: id.to_string(), loading, error, ..PlaylistPage::default() });
+        };
+        let entries = detail
+            .entries
+            .iter()
+            .filter_map(|e| {
+                let t = catalog.track_index(e.track_id)?;
+                Some(EntryRow { entry: e.id.to_string(), track: track_row(&catalog, catalog.track_at(t)) })
+            })
+            .collect();
+        Some(PlaylistPage {
+            id: id.to_string(),
+            name: detail.name.clone(),
+            description: detail.description.clone(),
+            owner: detail.owner.clone(),
+            mine: detail.mine,
+            public: detail.public,
+            loading,
+            error,
+            entries,
+        })
+    }
+
+    /// The starred tracks, newest first (what "Liked songs" shows).
+    pub fn liked(&self) -> Vec<TrackRow> {
+        let Some(catalog) = self.shared.catalog() else { return vec![] };
+        let liked = self.shared.marks.lock().unwrap().liked(&catalog);
+        liked.into_iter().map(|t| track_row(&catalog, catalog.track_at(t))).collect()
+    }
+
+    pub fn create_playlist(&self, name: String, tracks: Vec<String>) {
+        let tracks = tracks.iter().filter_map(|t| parse_id(t)).collect();
+        self.shared.playlists.lock().unwrap().create(name, tracks);
+    }
+
+    pub fn add_to_playlist(&self, id: String, name: String, tracks: Vec<String>) {
+        let Some(id) = parse_id(&id) else { return };
+        let tracks = tracks.iter().filter_map(|t| parse_id(t)).collect();
+        self.shared.playlists.lock().unwrap().add(id, name, tracks);
+    }
+
+    pub fn remove_from_playlist(&self, id: String, entries: Vec<String>) {
+        let Some(id) = parse_id(&id) else { return };
+        let entries = entries.iter().filter_map(|e| parse_id(e)).collect();
+        self.shared.playlists.lock().unwrap().remove(id, entries);
+        self.shared.listener.changed(Change::Playlists);
+    }
+
+    /// Moves an entry up (`by` -1) or down (1).
+    pub fn move_in_playlist(&self, id: String, entry: String, by: i32) {
+        let (Some(id), Some(entry)) = (parse_id(&id), parse_id(&entry)) else { return };
+        self.shared.playlists.lock().unwrap().move_entry(id, entry, by as isize);
+        self.shared.listener.changed(Change::Playlists);
+    }
+
+    pub fn rename_playlist(&self, id: String, name: String) {
+        let Some(id) = parse_id(&id) else { return };
+        self.shared.playlists.lock().unwrap().update(id, Some(name), None, None);
+        self.shared.listener.changed(Change::Playlists);
+    }
+
+    /// Moves it to the trash (the server keeps it there).
+    pub fn delete_playlist(&self, id: String, name: String) {
+        let Some(id) = parse_id(&id) else { return };
+        self.shared.playlists.lock().unwrap().trash(id, name);
     }
 
     // ---- Lists ----
@@ -565,6 +706,29 @@ impl Core {
     }
 }
 
+/// What the playlists' background work calls when it has an answer: takes it in, passes
+/// on what to tell the user, and lets Kotlin know.
+struct PlaylistWake {
+    playlists: std::sync::OnceLock<std::sync::Weak<Mutex<Playlists>>>,
+    listener: Arc<dyn Listener>,
+}
+
+impl acetate_core::Wake for PlaylistWake {
+    fn changed(&self) {
+        let Some(playlists) = self.playlists.get().and_then(|p| p.upgrade()) else { return };
+        let notice = {
+            let mut playlists = playlists.lock().unwrap();
+            playlists.poll();
+            playlists.created = None;
+            playlists.notice.take().map(|(text, _)| text)
+        };
+        if let Some(text) = notice {
+            self.listener.notice(text);
+        }
+        self.listener.changed(Change::Playlists);
+    }
+}
+
 impl Core {
     fn change_mark(&self, on: MarkOn, id: &str, change: impl FnOnce(&mut Mark), star: bool) {
         let Some(id) = parse_id(id) else { return };
@@ -601,7 +765,7 @@ impl Core {
                     }
                     marks.set(id, now);
                     drop(marks);
-                    shared.listener.problem(format!("{err:#}"));
+                    shared.listener.notice(format!("{err:#}"));
                 }
             }
             shared.listener.changed(Change::Marks);

@@ -1,5 +1,6 @@
 package io.github.allinen.acetate
 
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Box
@@ -39,8 +40,9 @@ import androidx.compose.ui.unit.dp
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun PageScaffold(model: Model, title: String, content: @Composable (Modifier) -> Unit) {
+fun PageScaffold(model: Model, title: String, content: @Composable (Modifier) -> Unit) {
     Scaffold(
+        contentWindowInsets = WindowInsets(0),
         topBar = {
             TopAppBar(
                 title = { Text(title, maxLines = 1) },
@@ -98,7 +100,7 @@ fun AlbumScreen(model: Model, id: String) {
                 var menu by remember { mutableStateOf(false) }
                 val starred = rememberMark(model, t.id).starred
                 Box {
-                TrackMenu(model, t.id, starred, menu) { menu = false }
+                TrackMenu(model, t.id, starred, menu, { menu = false })
                 Row(Modifier.fillMaxWidth().combinedClickable(onClick = { model.playback.playAlbum(id, i.toULong()) }, onLongClick = { menu = true }).padding(16.dp, 8.dp)) {
                     Text("${i + 1}", Modifier.width(32.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Column(Modifier.weight(1f)) {

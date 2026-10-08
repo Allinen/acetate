@@ -53,6 +53,13 @@ class Model(dataDir: String) : Listener {
     var playerVersion by mutableIntStateOf(0)
         private set
 
+    /** Which library tab is shown: Albums, Artists, Tracks, Playlists. */
+    var tab by mutableIntStateOf(0)
+
+    /** Bumped when the playlists (or one's entries) changed. */
+    var playlistsVersion by mutableIntStateOf(0)
+        private set
+
     /** Bumped when a star or rating changed (read `core.mark(id)` again). */
     var marksVersion by mutableIntStateOf(0)
         private set
@@ -93,6 +100,7 @@ class Model(dataDir: String) : Listener {
                     playerVersion++
                 }
                 Change.MARKS -> marksVersion++
+                Change.PLAYLISTS -> playlistsVersion++
                 Change.CATALOG -> {
                     catalogVersion++
                     // For measuring (adb logcat -s Acetate): how long from the process starting.
@@ -106,7 +114,7 @@ class Model(dataDir: String) : Listener {
         }
     }
 
-    override fun problem(message: String) {
+    override fun notice(message: String) {
         main.post { notice = message }
     }
 
@@ -116,4 +124,6 @@ class Model(dataDir: String) : Listener {
 sealed interface Page {
     data class Album(val id: String) : Page
     data class Artist(val id: String) : Page
+    data class Playlist(val id: String) : Page
+    data object Liked : Page
 }

@@ -99,10 +99,27 @@ fun ArtistItem(model: Model, row: ArtistRow) {
     )
 }
 
-/** A track: tap plays, long press opens a menu (play next, add to queue, star). */
+/** What a long press on a track offers; `extra` adds items of the page's own (given `close`). */
+@Composable
+fun TrackMenu(
+    model: Model, id: String, starred: Boolean, open: Boolean, close: () -> Unit,
+    extra: @Composable (() -> Unit) -> Unit = {},
+) {
+    var picking by remember { mutableStateOf(false) }
+    DropdownMenu(open, close) {
+        DropdownMenuItem({ Text("Play next") }, { model.playback.enqueueTracks(listOf(id), true); close() })
+        DropdownMenuItem({ Text("Add to queue") }, { model.playback.enqueueTracks(listOf(id), false); close() })
+        DropdownMenuItem({ Text("Add to playlist…") }, { picking = true; close() })
+        DropdownMenuItem({ Text(if (starred) "Unstar" else "Star") }, { model.core.setStarred(MarkOn.TRACK, id, !starred); close() })
+        extra(close)
+    }
+    if (picking) PlaylistPicker(model, listOf(id)) { picking = false }
+}
+
+/** A track: tap plays, long press opens a menu (play next, add to queue, star…). */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun TrackItem(model: Model, row: TrackRow, onClick: () -> Unit) {
+fun TrackItem(model: Model, row: TrackRow, extra: @Composable (() -> Unit) -> Unit = {}, onClick: () -> Unit) {
     var menu by remember { mutableStateOf(false) }
     val starred = rememberMark(model, row.id).starred
     Box {
@@ -112,16 +129,7 @@ fun TrackItem(model: Model, row: TrackRow, onClick: () -> Unit) {
             Modifier.combinedClickable(onClick = onClick, onLongClick = { menu = true }),
             trailing = row.durationMs?.let(::duration), highlight = model.player.current?.id == row.id,
         )
-        TrackMenu(model, row.id, starred, menu) { menu = false }
-    }
-}
-
-@Composable
-fun TrackMenu(model: Model, id: String, starred: Boolean, open: Boolean, close: () -> Unit) {
-    DropdownMenu(open, close) {
-        DropdownMenuItem({ Text("Play next") }, { model.playback.enqueueTracks(listOf(id), true); close() })
-        DropdownMenuItem({ Text("Add to queue") }, { model.playback.enqueueTracks(listOf(id), false); close() })
-        DropdownMenuItem({ Text(if (starred) "Unstar" else "Star") }, { model.core.setStarred(MarkOn.TRACK, id, !starred); close() })
+        TrackMenu(model, row.id, starred, menu, { menu = false }, extra)
     }
 }
 

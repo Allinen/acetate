@@ -74,6 +74,29 @@ impl Marks {
         changed.into_iter().map(|(id, starred, _)| (id, starred)).collect()
     }
 
+    /// The starred tracks (as indexes into the catalog), newest first: starred in this
+    /// session, then by when they were starred. Unstarred in this session: left out.
+    pub fn liked(&self, catalog: &Catalog) -> Vec<u32> {
+        let mut changed: Vec<_> = self
+            .local
+            .iter()
+            .filter(|(id, (mark, _))| mark.starred && !catalog.annotations.get(id).is_some_and(|a| a.starred_at.is_some()))
+            .filter_map(|(id, (_, at))| Some((catalog.track_index(*id)?, *at)))
+            .collect();
+        changed.sort_by_key(|c| std::cmp::Reverse(c.1));
+        let mut tracks: Vec<u32> = changed.into_iter().map(|(t, _)| t).collect();
+        let mut earlier: Vec<(&str, u32)> = catalog
+            .annotations
+            .values()
+            .filter(|a| a.kind == "track")
+            .filter_map(|a| Some((a.starred_at.as_deref()?, catalog.track_index(a.id)?)))
+            .filter(|(_, t)| self.get(Some(catalog), catalog.track_at(*t).id()).starred)
+            .collect();
+        earlier.sort_by(|a, b| b.0.cmp(a.0));
+        tracks.extend(earlier.into_iter().map(|(_, t)| t));
+        tracks
+    }
+
     pub fn clear(&mut self) {
         self.local.clear();
     }

@@ -12,7 +12,7 @@ impl Listener for Events {
     fn changed(&self, what: Change) {
         self.0.lock().unwrap().push(what);
     }
-    fn problem(&self, _message: String) {}
+    fn notice(&self, _message: String) {}
 }
 
 const SERVER: &str = "http://127.0.0.1:1";
@@ -283,4 +283,18 @@ fn a_star_shows_at_once_and_goes_back_when_the_server_refuses() {
         std::thread::sleep(Duration::from_millis(20));
     }
     assert!(events.0.lock().unwrap().contains(&Change::Marks));
+}
+
+#[test]
+fn liked_songs_are_the_starred_tracks_and_a_new_star_joins_at_once() {
+    let (_dir, core, _events) = core(true);
+    synced(&core);
+    assert!(core.liked().is_empty());
+    let id = "00000000-0000-7000-8000-000000000001".to_string();
+    core.set_starred(MarkOn::Track, id.clone(), true);
+    let liked = core.liked();
+    assert_eq!(liked.len(), 1);
+    assert_eq!(liked[0].id, id);
+    // Without a server there is no playlist, and asking for one doesn't fail.
+    assert!(core.playlists().is_empty());
 }

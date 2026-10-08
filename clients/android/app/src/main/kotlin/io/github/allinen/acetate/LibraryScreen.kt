@@ -14,11 +14,13 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.PrimaryTabRow
-import androidx.compose.material3.Tab
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -39,24 +41,20 @@ import uniffi.acetate_ffi.ArtistView
 import uniffi.acetate_ffi.TrackOrder
 import uniffi.acetate_ffi.TrackView
 
-private val tabs = listOf("Albums", "Artists", "Tracks")
 
 @Composable
 fun LibraryScreen(model: Model) {
-    var tab by rememberSaveable { mutableIntStateOf(0) }
+    val tab = model.tab
     // One filter line per tab, in the library's query language (`artist:… year:…`).
     var filters by rememberSaveable { mutableStateOf(listOf("", "", "")) }
-    Column(Modifier.fillMaxSize().safeDrawingPadding()) {
+    Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal))) {
         SyncLine(model)
-        PrimaryTabRow(selectedTabIndex = tab) {
-            tabs.forEachIndexed { i, name -> Tab(tab == i, { tab = i }, text = { Text(name) }) }
-        }
-        OutlinedTextField(
+        if (tab < 3) OutlinedTextField(
             filters[tab], { text -> filters = filters.toMutableList().also { it[tab] = text } },
             Modifier.fillMaxWidth().padding(16.dp, 8.dp),
             placeholder = { Text("Filter") }, singleLine = true,
         )
-        val filter = filters[tab]
+        val filter = filters.getOrElse(tab) { "" }
         when (tab) {
             0 -> {
                 var view by remember { mutableStateOf<AlbumView?>(null) }
@@ -69,11 +67,12 @@ fun LibraryScreen(model: Model) {
                 LaunchedEffect(model.catalogVersion, filter) { view = model.core.artists(filter, ArtistOrder.NAME) }
                 view?.let { ArtistList(model, it) }
             }
-            else -> {
+            2 -> {
                 var view by remember { mutableStateOf<TrackView?>(null) }
                 LaunchedEffect(model.catalogVersion, filter) { view = model.core.tracks(filter, TrackOrder.TITLE, false) }
                 view?.let { TrackList(model, it) }
             }
+            else -> PlaylistList(model)
         }
     }
 }
@@ -114,9 +113,9 @@ private fun SettingsDialog(model: Model, close: () -> Unit) {
                     if (Output.reduction == 0) "Output level: full" else "Output level: −${Output.reduction} dB",
                     style = MaterialTheme.typography.labelLarge,
                 )
-                // Below the phone's own volume: for when its lowest step is still too loud.
+                // Right is louder, as on any volume slider; it only goes down from full, below the phone's own volume.
                 Slider(
-                    value = Output.reduction.toFloat(), onValueChange = { Output.set(it.toInt()) },
+                    value = (30 - Output.reduction).toFloat(), onValueChange = { Output.set(30 - it.toInt()) },
                     valueRange = 0f..30f, steps = 29,
                 )
             }
