@@ -3,6 +3,9 @@ package io.github.allinen.acetate
 import android.app.Application
 import android.os.Handler
 import android.os.Looper
+import android.os.Process
+import android.os.SystemClock
+import android.util.Log
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -21,6 +24,8 @@ class AcetateApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        // Before the core: its first request checks a certificate.
+        Tls.init(this)
         model = Model(filesDir.path)
     }
 }
@@ -54,8 +59,14 @@ class Model(dataDir: String) : Listener {
                     session = core.session()
                     if (session != null) core.startSync()
                 }
-                Change.CATALOG -> catalogVersion++
-                Change.SYNC -> {}
+                Change.CATALOG -> {
+                    catalogVersion++
+                    // For measuring (adb logcat -s Acetate): how long from the process starting.
+                    Log.i("Acetate", "catalog ${core.syncState().tracks} tracks at ${SystemClock.elapsedRealtime() - Process.getStartElapsedRealtime()} ms")
+                }
+                Change.SYNC -> core.syncState().let {
+                    Log.i("Acetate", "sync: refreshing=${it.refreshing} have=${it.haveCatalog} error=${it.error}")
+                }
             }
             sync = core.syncState()
         }

@@ -59,7 +59,9 @@ fn core(with_catalog: bool) -> (tempfile::TempDir, Arc<Core>, Arc<Events>) {
             token: String::new(),
             username: "ann".into(),
         });
-        std::fs::write(dir.path().join(format!("catalog-{key}.json")), catalog_json()).unwrap();
+        // Kept the way the store keeps it: a snapshot, generation 1.
+        let catalog = acetate_core::catalog::Catalog::build(acetate_core::catalog::model::parse(catalog_json().as_bytes()).unwrap());
+        catalog.write_snapshot(&dir.path().join(format!("catalog-{key}.0000000000000001.snap"))).unwrap();
     }
     let events = Arc::new(Events(Mutex::new(vec![])));
     let core = Core::new(dir.path().to_string_lossy().into_owned(), events.clone());

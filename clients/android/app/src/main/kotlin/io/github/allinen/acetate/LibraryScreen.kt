@@ -1,6 +1,7 @@
 package io.github.allinen.acetate
 
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -10,6 +11,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -18,6 +20,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import uniffi.acetate_ffi.AlbumOrder
@@ -69,12 +72,15 @@ fun LibraryScreen(model: Model) {
 @Composable
 fun SyncLine(model: Model) {
     val s = model.sync
-    Text(
-        when {
-            s.error != null && !s.haveCatalog -> s.error!!
-            !s.haveCatalog -> "Loading the library…"
-            else -> "${s.albums} albums · ${s.tracks} tracks" + if (s.refreshing) " · updating…" else ""
-        },
-        Modifier.padding(16.dp, 8.dp), style = MaterialTheme.typography.labelLarge,
-    )
+    Row(Modifier.fillMaxWidth().padding(16.dp, 0.dp, 8.dp, 0.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            when {
+                s.error != null && !s.haveCatalog -> s.error!!
+                !s.haveCatalog -> "Loading the library…"
+                else -> "${s.albums} albums · ${s.tracks} tracks" + if (s.refreshing) " · updating…" else ""
+            },
+            Modifier.weight(1f), style = MaterialTheme.typography.labelLarge,
+        )
+        TextButton(model::logout) { Text("Log out") }
+    }
 }

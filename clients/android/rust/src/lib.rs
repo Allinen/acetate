@@ -16,6 +16,24 @@ use uuid::Uuid;
 
 uniffi::setup_scaffolding!();
 
+/// Android's certificate checking (so a server's HTTPS works with the certificates the
+/// phone trusts, including ones the user installed) needs the app's `Context` once, before
+/// the first request: `Tls.init(context)` in Kotlin.
+#[cfg(target_os = "android")]
+mod tls {
+    use jni::EnvUnowned;
+    use jni::errors::ThrowRuntimeExAndDefault;
+    use jni::jni_mangle;
+    use jni::objects::{JClass, JObject};
+
+    #[jni_mangle("io.github.allinen.acetate.Tls")]
+    pub fn init<'caller>(mut env: EnvUnowned<'caller>, _class: JClass<'caller>, context: JObject<'caller>) {
+        // What the Rust side (and the verifier) log goes to logcat, tagged "acetate".
+        android_logger::init_once(android_logger::Config::default().with_tag("acetate").with_max_level(log::LevelFilter::Info));
+        env.with_env(|env| rustls_platform_verifier::android::init_with_env(env, context)).resolve::<ThrowRuntimeExAndDefault>();
+    }
+}
+
 // ---- Errors, events ----
 
 /// A request that failed: `message` is a sentence for a person, `code` is for acting on.
@@ -300,13 +318,31 @@ impl Core {
         self.shared.api.session().map(|s| SessionInfo { server: s.server, username: s.username })
     }
 
+    /// Asks an address (no login) and says what came back: the HTTP status, or why the
+    /// connection failed, causes and all.
+    pub async fn reach(&self, address: String) -> String {
+        let api = self.shared.api.clone();
+        match self.runtime.spawn(async move { api.reach(&address).await }).await {
+            Ok(Ok(status)) => format!("answered {status}"),
+            Ok(Err(why)) => format!("failed: {why}"),
+            Err(e) => format!("failed: {e}"),
+        }
+    }
+
     /// Whether the session ended since last asked (a request was refused as not logged in).
     pub fn take_expired(&self) -> bool {
         self.shared.api.take_expired()
     }
 
     pub async fn login(&self, server: String, username: String, password: String) -> Result<SessionInfo, CoreError> {
-        let session = self.shared.api.login(&server, &username, &password).await?;
+        // On the core's runtime, not the caller's thread: a request may call into Android
+        // (checking a certificate), which it won't allow on the main thread.
+        let api = self.shared.api.clone();
+        let session = self
+            .runtime
+            .spawn(async move { api.login(&server, &username, &password).await })
+            .await
+            .map_err(|e| CoreError::Failed { code: "unexpected".into(), reason: format!("the login stopped: {e}") })??;
         self.shared.listener.changed(Change::Session);
         Ok(SessionInfo { server: session.server, username: session.username })
     }
