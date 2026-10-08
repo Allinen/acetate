@@ -213,6 +213,10 @@ pub struct Shell {
     /// The app holds its lock (see `root::hold_app_lock`): the mirror service has been
     /// told to step aside.
     pub app_lock: Arc<std::sync::atomic::AtomicBool>,
+    /// Music kept on this machine to play without the server (set at login).
+    pub offline: Option<Arc<acetate_core::offline::Offline>>,
+    /// When what the downloads want was last worked out.
+    downloads_checked: Instant,
     /// Stars, ratings and plays as shown (the catalog's, with this session's changes).
     pub marks: Marks,
     /// The queue kept between runs (set at login), and whether it was brought back yet.
@@ -268,6 +272,39 @@ impl Shell {
             answers.lock().unwrap().push((id, answer));
             ctx.request_repaint();
         });
+    }
+
+    /// Whether something is kept on this machine (`kind`: "track", "album", "playlist" or
+    /// "liked", the last with an empty id).
+    pub fn is_pinned(&self, kind: &str, id: &str) -> bool {
+        self.offline.as_ref().is_some_and(|o| o.is_pinned(kind, id))
+    }
+
+    /// Keeps something on this machine (or stops), and fetches what that makes missing.
+    pub fn pin(&mut self, kind: &str, id: &str, name: &str, on: bool) {
+        let Some(offline) = &self.offline else { return };
+        offline.pin(acetate_core::offline::Pin { kind: kind.into(), id: id.into(), name: name.into() }, on);
+        self.refresh_downloads();
+    }
+
+    /// Works out which files the pins want now and tells the downloads (a playlist got a
+    /// track, a star was added…).
+    pub fn refresh_downloads(&mut self) {
+        self.downloads_checked = Instant::now();
+        let (Some(offline), Some(catalog)) = (self.offline.clone(), self.catalog.value.clone()) else { return };
+        let pins = offline.pins();
+        if pins.is_empty() && offline.status().files == 0 {
+            return;
+        }
+        let playlists = &mut self.playlists;
+        let liked = self.marks.liked(&catalog);
+        let (wants, complete) = acetate_core::offline::wanted(
+            &pins,
+            &catalog,
+            &mut |id| playlists.detail(id).value.as_ref().map(|d| d.entries.iter().map(|e| e.track_id).collect()),
+            &|| liked.clone(),
+        );
+        offline.set_wanted(wants, complete);
     }
 
     fn take_mark_answers(&mut self) {
@@ -502,6 +539,23 @@ impl Shell {
         self.playlists.reset(Some(self.data_dir.join(format!("playlists-{}", store::key(&session)))));
         self.resume = Some(crate::resume::Resume::new(&self.data_dir, &store::key(&session)));
         self.resumed = false;
+        // What's downloaded plays from the disk.
+        match acetate_core::offline::Offline::open(&self.data_dir.join(format!("offline-{}", store::key(&session))), self.api.clone(), self.runtime.handle().clone(), self.waker.clone()) {
+            Ok(offline) => {
+                offline.set_quality(self.settings.stream_kbps);
+                // Downloads, and what the mirror (admins) keeps: blobs by their hash, under the root.
+                let finder = offline.clone();
+                let mirror_blobs = self.data_dir.join("blobs");
+                self.controller.set_local(Arc::new(move |sha| {
+                    finder.local_path(sha).or_else(|| {
+                        let path = mirror_blobs.join(sha.get(0..2)?).join(sha.get(2..4)?).join(sha);
+                        (acetate_core::blobs::is_sha256(sha) && path.is_file()).then_some(path)
+                    })
+                }));
+                self.offline = Some(offline);
+            }
+            Err(err) => eprintln!("couldn't open the downloads: {err:#}"),
+        }
         let details = self.data_dir.join(format!("details-{}", store::key(&session)));
         self.track_details.reset(Some(details.clone()));
         self.album_details.reset(Some(details.clone()));
@@ -557,6 +611,7 @@ impl Shell {
             match update {
                 Update::Loaded { catalog, from_server } => {
                     self.catalog.value = Some(catalog);
+                    self.downloads_checked = Instant::now().checked_sub(std::time::Duration::from_secs(3600)).unwrap_or_else(Instant::now);
                     // The old one's memory, back to the system (it held about as much),
                     // once this frame's copies of it are gone too.
                     self.trim_asked = true;
@@ -702,6 +757,8 @@ impl App {
             cache_dir,
             mirror: Default::default(),
             app_lock,
+            offline: None,
+            downloads_checked: Instant::now(),
             marks: Marks::default(),
             cover_slots: Default::default(),
             resume: None,
@@ -990,6 +1047,9 @@ impl App {
                     self.shell.settings.save(&self.shell.data_dir);
                     let c = self.shell.controller.clone();
                     self.shell.runtime.spawn(async move { c.set_quality(kbps).await });
+                    if let Some(offline) = &self.shell.offline {
+                        offline.set_quality(kbps);
+                    }
                 }
                 Action::SetEqualizer(enabled, gains) => {
                     // Heard at once; saved a second after the last change, like the volume.
@@ -1063,6 +1123,7 @@ impl App {
                     self.shell.runtime.spawn(async move { c.stop().await });
                     self.shell.catalog = Cached::default();
                     self.shell.marks.clear();
+                    self.shell.offline = None;
                     self.shell.playlists.reset(None);
                     self.shell.resume = None;
                     self.shell.track_details.reset(None);
@@ -1281,6 +1342,10 @@ impl eframe::App for App {
             self.shell.act(Action::RefreshLibrary);
         }
         ctx.request_repaint_after(std::time::Duration::from_secs(121));
+        // What the pins want changes with the library and the stars: looked at again now and then.
+        if self.shell.downloads_checked.elapsed() > std::time::Duration::from_secs(30) {
+            self.shell.refresh_downloads();
+        }
         self.shell.track_details.poll();
         self.shell.album_details.poll();
         self.shell.artist_details.poll();

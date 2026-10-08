@@ -366,6 +366,33 @@ pub fn share_chip(ui: &mut egui::Ui, shell: &mut crate::ui::Shell, target: crate
     }
 }
 
+/// The "Download" chip on a page: keeps the track, album, playlist or liked songs on this
+/// machine to play without the server. "Download", then "Stop" while files come (Click:
+/// stops, again: goes on), then "Downloaded ✓" (Shift+click takes the files away).
+pub fn download_chip(ui: &mut egui::Ui, shell: &mut crate::ui::Shell, kind: &str, id: &str, name: &str) {
+    let Some(offline) = shell.offline.clone() else { return };
+    let pinned = shell.is_pinned(kind, id);
+    let status = offline.status();
+    let coming = status.queued > 0;
+    let text = match (pinned, coming, status.paused) {
+        (false, _, _) => "Download".to_string(),
+        (true, true, true) => "Resume".to_string(),
+        (true, true, false) => format!("Stop  {} of {}", status.done, status.done + status.queued),
+        (true, false, _) => "Downloaded ✓".to_string(),
+    };
+    let response = ui.scope(|ui| chip(ui, &text, pinned && !coming)).inner;
+    if response {
+        let shift = ui.input(|i| i.modifiers.shift);
+        match (pinned, coming) {
+            (false, _) => shell.pin(kind, id, name, true),
+            (true, true) if status.paused => offline.resume(),
+            (true, true) => offline.pause(),
+            (true, false) if shift => shell.pin(kind, id, name, false),
+            (true, false) => shell.playlists.notice = Some(("Shift+click takes the downloaded files away".into(), std::time::Instant::now())),
+        }
+    }
+}
+
 /// A right-click menu on a track row or an album tile with "Share" in it: a click copies
 /// the link, Shift+click makes a share link (as the pages' "Share").
 pub fn share_menu(response: &egui::Response, shell: &mut crate::ui::Shell, target: crate::links::Target) {

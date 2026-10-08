@@ -14,7 +14,7 @@ use acetate_core::playback::player::{Engine, Load, Player};
 use acetate_core::playback::{QueueItem, queue, queue_item};
 use acetate_core::details::{Details, TrackDetail};
 use acetate_core::links;
-use acetate_core::offline::{Offline, Pin, Want};
+use acetate_core::offline::{Offline, Pin};
 use acetate_core::playlists::Playlists;
 use acetate_core::resume::Resume;
 use acetate_core::catalog::index::{AlbumSort, ArtistSort, TrackRows, TrackSort};
@@ -1324,36 +1324,12 @@ impl acetate_core::Wake for DownloadWake {
 /// ones…) and tells the downloads.
 fn refresh_offline(shared: &Arc<Shared>) {
     let (Some(offline), Some(catalog)) = (shared.offline.lock().unwrap().clone(), shared.catalog()) else { return };
-    let pins = offline.pins();
-    let mut tracks: Vec<u32> = Vec::new();
-    // A pin that can't be worked out yet (a playlist still coming) must not make its files go.
-    let mut complete = true;
-    for pin in &pins {
-        match pin.kind.as_str() {
-            "track" => tracks.extend(parse_id(&pin.id).and_then(|id| catalog.track_index(id))),
-            "album" => tracks.extend(parse_id(&pin.id).map(|id| catalog.album_tracks(id).to_vec()).unwrap_or_default()),
-            "playlist" => {
-                if let Some(id) = parse_id(&pin.id) {
-                    let mut playlists = shared.playlists.lock().unwrap();
-                    match &playlists.detail(id).value {
-                        Some(detail) => tracks.extend(detail.entries.iter().filter_map(|e| catalog.track_index(e.track_id))),
-                        None => complete = false,
-                    }
-                }
-            }
-            "liked" => tracks.extend(shared.marks.lock().unwrap().liked(&catalog)),
-            _ => {}
-        }
-    }
-    let mut seen = std::collections::HashSet::new();
-    let wants = tracks
-        .into_iter()
-        .filter_map(|i| {
-            let t = catalog.track_at(i);
-            let source = t.sha256()?;
-            seen.insert(source.clone()).then(|| Want { source, file_id: t.file_id() })
-        })
-        .collect();
+    let (wants, complete) = acetate_core::offline::wanted(
+        &offline.pins(),
+        &catalog,
+        &mut |id| shared.playlists.lock().unwrap().detail(id).value.as_ref().map(|d| d.entries.iter().map(|e| e.track_id).collect()),
+        &|| shared.marks.lock().unwrap().liked(&catalog),
+    );
     offline.set_wanted(wants, complete);
 }
 

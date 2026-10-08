@@ -161,6 +161,29 @@ impl SettingsPage {
             hint(ui, "Copies are Opus, made by the server (and kept there). A lower quality downloads less; it applies from the next track.");
             hint(ui, "9 and 0 turn it down and up, m mutes, anywhere outside a text field.");
 
+            section(ui, "Downloads");
+            match shell.offline.clone() {
+                None => {
+                    ui.label(RichText::new("Log in to keep music on this computer.").color(P.faint));
+                }
+                Some(offline) => {
+                    let status = offline.status();
+                    let paused = if status.paused { " · stopped" } else { "" };
+                    let coming = if status.queued > 0 { format!(" · {} coming", status.queued) } else { String::new() };
+                    ui.label(format!("{} files · {}{coming}{paused}", status.files, size(status.bytes as i64)));
+                    hint(ui, "Download from an album's, playlist's or track's page. It plays from here, with or without the server, and follows the quality chosen above.");
+                    if status.failed > 0 {
+                        ui.label(RichText::new(format!("{} couldn't be fetched", status.failed)).color(P.danger));
+                    }
+                    if status.files > 0 || !offline.pins().is_empty() {
+                        ui.add_space(6.0);
+                        if widgets::chip(ui, "Remove all downloads (Shift+click)", false) && ui.input(|i| i.modifiers.shift) {
+                            offline.remove_all();
+                        }
+                    }
+                }
+            }
+
             section(ui, "Equalizer");
             self.equalizer(ui, shell);
 

@@ -76,6 +76,10 @@ pub struct Controller {
     /// track looped, or played again right away, is read from memory, not downloaded
     /// again.
     recent: Mutex<Vec<(Uuid, stream::RemoteFile)>>,
+    /// Where downloaded files are (by their hash on the server), and which of the files in
+    /// play are found there (decided in `path_of`).
+    local: Mutex<Option<acetate_core::playback::player::LocalFiles>>,
+    locals: Mutex<std::collections::HashMap<Uuid, std::path::PathBuf>>,
     ctx: egui::Context,
 }
 
@@ -106,6 +110,8 @@ impl Controller {
             quality: Mutex::new(None),
             kept: Mutex::default(),
             recent: Mutex::default(),
+            local: Mutex::new(None),
+            locals: Mutex::default(),
             ctx,
         })
     }
@@ -116,6 +122,12 @@ impl Controller {
 
     /// Where an item's audio is fetched from, at the quality set (library files only).
     fn path_of(&self, item: &QueueItem) -> String {
+        // A downloaded copy is played from the disk (`fetch` finds it by the file's id).
+        let local = item.sha256.as_deref().zip(self.local.lock().unwrap().as_ref()).and_then(|(sha, find)| find(sha));
+        match local {
+            Some(path) if item.source == AudioSource::File => self.locals.lock().unwrap().insert(item.file_id, path),
+            _ => self.locals.lock().unwrap().remove(&item.file_id),
+        };
         let path = item.stream_path();
         match (item.source, *self.quality.lock().unwrap()) {
             (AudioSource::File, Some(kbps)) => format!("{path}?kbps={kbps}"),
@@ -145,13 +157,24 @@ impl Controller {
         self.send(Command::SetNext(None));
     }
 
+    /// Where downloaded files are: what's there plays from the disk.
+    pub fn set_local(&self, find: acetate_core::playback::player::LocalFiles) {
+        *self.local.lock().unwrap() = Some(find);
+    }
+
     /// Starts downloading a file; it can be played as soon as this returns.
     async fn fetch(&self, file_id: Uuid, path: String) -> anyhow::Result<stream::RemoteFile> {
         // Kept (see `prepare`), or just played: another reader of the same download.
         let kept = self.kept.lock().unwrap().iter().chain(self.recent.lock().unwrap().iter()).find(|(id, _)| *id == file_id).map(|(_, f)| f.clone());
-        let file = match kept {
-            Some(file) => file,
-            None => stream::RemoteFile::open(&self.api, path).await?,
+        let local = self.locals.lock().unwrap().get(&file_id).cloned();
+        let file = match (kept, local) {
+            (Some(file), _) => file,
+            // On the disk: no network, and works with the server gone.
+            (None, Some(local)) => match stream::RemoteFile::local(&local) {
+                Ok(file) => file,
+                Err(_) => stream::RemoteFile::open(&self.api, path).await?,
+            },
+            (None, None) => stream::RemoteFile::open(&self.api, path).await?,
         };
         let mut recent = self.recent.lock().unwrap();
         recent.retain(|(id, _)| *id != file_id);

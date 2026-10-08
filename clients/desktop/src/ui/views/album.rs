@@ -207,6 +207,8 @@ impl AlbumPage {
             marks(&mut marks_ui, shell, Kind::Album, id);
             marks_ui.add_space(8.0);
             widgets::share_chip(&mut marks_ui, shell, crate::links::Target::Album(id));
+            marks_ui.add_space(4.0);
+            widgets::download_chip(&mut marks_ui, shell, "album", &id.to_string(), album.title());
             // Its original files (og files): a chip that shows only those (`og:` in the filter).
             if og_count > 0 {
                 marks_ui.add_space(4.0);

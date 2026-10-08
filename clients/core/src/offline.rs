@@ -86,6 +86,43 @@ pub struct Status {
     pub current_bytes: u64,
 }
 
+/// The files the pins want now: an album's tracks, a playlist's, the liked ones…
+/// `playlist_tracks` says a playlist's tracks (None: not known yet, a playlist still being
+/// fetched); `liked`, the starred ones (places in the catalog). The second answer is false
+/// while some pin couldn't be worked out (then nothing should be taken away).
+pub fn wanted(
+    pins: &[Pin],
+    catalog: &crate::catalog::Catalog,
+    playlist_tracks: &mut dyn FnMut(Uuid) -> Option<Vec<Uuid>>,
+    liked: &dyn Fn() -> Vec<u32>,
+) -> (Vec<Want>, bool) {
+    let mut tracks: Vec<u32> = Vec::new();
+    let mut complete = true;
+    for pin in pins {
+        let id = pin.id.parse::<Uuid>().ok();
+        match pin.kind.as_str() {
+            "track" => tracks.extend(id.and_then(|id| catalog.track_index(id))),
+            "album" => tracks.extend(id.map(|id| catalog.album_tracks(id).to_vec()).unwrap_or_default()),
+            "playlist" => match id.and_then(|id| playlist_tracks(id)) {
+                Some(found) => tracks.extend(found.into_iter().filter_map(|t| catalog.track_index(t))),
+                None => complete = false,
+            },
+            "liked" => tracks.extend(liked()),
+            _ => {}
+        }
+    }
+    let mut seen = HashSet::new();
+    let wants = tracks
+        .into_iter()
+        .filter_map(|i| {
+            let t = catalog.track_at(i);
+            let source = t.sha256()?;
+            seen.insert(source.clone()).then(|| Want { source, file_id: t.file_id() })
+        })
+        .collect();
+    (wants, complete)
+}
+
 pub struct Offline {
     store: Store,
     file: PathBuf,

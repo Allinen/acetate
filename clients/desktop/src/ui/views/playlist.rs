@@ -81,6 +81,7 @@ impl PlaylistPage {
         if play_button(ui, "liked-play", play_rect) && !tracks.is_empty() {
             shell.act(Action::Play { tracks: self.table.tracks(&rows), start: 0 });
         }
+        ui.horizontal(|ui| widgets::download_chip(ui, shell, "liked", "", "Liked songs"));
         ui.add_space(16.0);
         let options = Options { key: "liked", columns: PLAYLIST_COLUMNS, added: Some("Starred"), filter_hint: Some("Filter liked songs: words, or artist:… year:…"), album: None, places: None, keys: true, scroll: true };
         self.table.show(ui, shell, catalog, &rows, version(shell.generation, &tracks), player, &options);

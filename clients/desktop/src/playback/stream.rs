@@ -121,6 +121,27 @@ impl RemoteFile {
         Ok(RemoteFile { shared, position: 0 })
     }
 
+    /// A file kept on this machine (a download): read whole, nothing to fetch.
+    pub fn local(path: &std::path::Path) -> io::Result<RemoteFile> {
+        let data = std::fs::read(path)?;
+        let len = data.len() as u64;
+        let shared = Arc::new(Shared {
+            state: Mutex::new(State {
+                have: if len > 0 { vec![0..len] } else { Vec::new() },
+                data,
+                wanted: 0,
+                frontier: len,
+                restart: 0,
+                error: None,
+                readers: 1,
+                dropped: false,
+            }),
+            changed: Condvar::new(),
+        });
+        HELD.fetch_add(len, std::sync::atomic::Ordering::Relaxed);
+        Ok(RemoteFile { shared, position: 0 })
+    }
+
     pub fn len(&self) -> u64 {
         self.shared.state.lock().unwrap().data.len() as u64
     }
@@ -285,6 +306,24 @@ fn total_length(response: &reqwest::Response) -> Option<u64> {
         return range.rsplit('/').next()?.parse().ok();
     }
     response.content_length()
+}
+
+#[cfg(test)]
+mod local_tests {
+    use super::*;
+
+    #[test]
+    fn a_local_file_reads_and_seeks_like_a_downloaded_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a");
+        std::fs::write(&path, b"hello world").unwrap();
+        let mut file = RemoteFile::local(&path).unwrap();
+        assert_eq!(file.len(), 11);
+        file.seek(SeekFrom::Start(6)).unwrap();
+        let mut rest = String::new();
+        file.read_to_string(&mut rest).unwrap();
+        assert_eq!(rest, "world");
+    }
 }
 
 #[cfg(test)]

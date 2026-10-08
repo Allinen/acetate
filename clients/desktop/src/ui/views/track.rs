@@ -222,6 +222,8 @@ impl TrackPage {
             marks(&mut marks_ui, shell, Kind::Track, id);
             marks_ui.add_space(8.0);
             widgets::share_chip(&mut marks_ui, shell, crate::links::Target::Track(id));
+            marks_ui.add_space(4.0);
+            widgets::download_chip(&mut marks_ui, shell, "track", &id.to_string(), "");
             if let Some((video, name)) = videos.first() {
                 marks_ui.add_space(4.0);
                 let text = if videos.len() > 1 { format!("▶ Watch the video ({})", videos.len()) } else { "▶ Watch the video".to_string() };
