@@ -39,6 +39,9 @@ pub struct QueueItem {
     pub cover: Option<crate::catalog::model::Cover>,
     /// The file's codec ("flac", "mp3"…), if known.
     pub codec: Option<String>,
+    /// The file's SHA-256 (hex) as the server keeps it, if the catalog says: what it's kept
+    /// under when downloaded.
+    pub sha256: Option<String>,
 }
 
 impl QueueItem {
@@ -65,6 +68,7 @@ pub fn queue_item(catalog: &crate::catalog::Catalog, i: u32) -> QueueItem {
         duration_ms: t.duration_ms(),
         cover: t.cover(),
         codec: t.codec().map(str::to_string),
+        sha256: t.sha256(),
     }
 }
 

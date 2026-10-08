@@ -14,6 +14,7 @@ use acetate_core::playback::player::{Engine, Load, Player};
 use acetate_core::playback::{QueueItem, queue, queue_item};
 use acetate_core::details::{Details, TrackDetail};
 use acetate_core::links;
+use acetate_core::offline::{Offline, Pin, Want};
 use acetate_core::playlists::Playlists;
 use acetate_core::resume::Resume;
 use acetate_core::catalog::index::{AlbumSort, ArtistSort, TrackRows, TrackSort};
@@ -80,6 +81,8 @@ pub enum Change {
     Playlists,
     /// A track's details (its lyrics…) arrived or were refreshed.
     Details,
+    /// Downloads: something was kept, taken away, or is coming (`offline_status`).
+    Downloads,
 }
 
 /// Kotlin code the core calls, from any thread.
@@ -208,6 +211,37 @@ pub struct ExtraRow {
     pub video_file: Option<String>,
     /// A video's thumbnail (a cover key).
     pub thumb: Option<String>,
+}
+
+/// What can be kept on the device.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum PinKind {
+    Track,
+    Album,
+    Playlist,
+    /// The starred tracks (as they change).
+    Liked,
+}
+
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct PinRow {
+    pub kind: PinKind,
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Default, uniffi::Record)]
+pub struct DownloadsInfo {
+    pub pins: Vec<PinRow>,
+    /// Files here, and their size.
+    pub files: u64,
+    pub bytes: u64,
+    /// Still to come (the one coming now too), of this run's `asked`, of which `done`.
+    pub queued: u64,
+    pub downloading: bool,
+    pub asked: u64,
+    pub done: u64,
+    pub failed: u64,
 }
 
 #[derive(Debug, Clone, Default, uniffi::Record)]
@@ -446,6 +480,11 @@ struct Shared {
     marks: Mutex<Marks>,
     playlists: Arc<Mutex<Playlists>>,
     track_details: Arc<Mutex<Details<TrackDetail>>>,
+    /// The downloads of whoever is logged in (set when their sync starts).
+    offline: Mutex<Option<Arc<Offline>>>,
+    /// What the app said about them, for when they're opened.
+    download_quality: Mutex<Option<u32>>,
+    downloads_allowed: std::sync::atomic::AtomicBool,
     /// When the catalog was last asked of the server.
     asked: Mutex<Option<Instant>>,
     listener: Arc<dyn Listener>,
@@ -495,9 +534,15 @@ impl Core {
             marks: Mutex::new(Marks::default()),
             playlists,
             track_details,
+            offline: Mutex::new(None),
+            download_quality: Mutex::new(None),
+            downloads_allowed: std::sync::atomic::AtomicBool::new(true),
             asked: Mutex::new(None),
             listener,
         });
+        // What's downloaded plays from the device.
+        let weak = Arc::downgrade(&shared);
+        shared.player.set_local(Arc::new(move |sha| weak.upgrade()?.offline.lock().unwrap().as_ref()?.local_path(sha)));
         Arc::new(Core { data_dir, shared, runtime })
     }
 
@@ -546,6 +591,7 @@ impl Core {
         self.shared.marks.lock().unwrap().clear();
         self.shared.playlists.lock().unwrap().reset(None);
         self.shared.track_details.lock().unwrap().reset(None);
+        *self.shared.offline.lock().unwrap() = None;
         self.shared.listener.changed(Change::Session);
     }
 
@@ -562,6 +608,14 @@ impl Core {
             self.shared.player.keep_with(Resume::new(&self.data_dir, &key));
             self.shared.playlists.lock().unwrap().reset(Some(self.data_dir.join(format!("playlists-{key}"))));
             self.shared.track_details.lock().unwrap().reset(Some(self.data_dir.join(format!("details-{key}"))));
+            match Offline::open(&self.data_dir.join(format!("offline-{key}")), self.shared.api.clone(), self.runtime.handle().clone(), Arc::new(DownloadWake(self.shared.listener.clone()))) {
+                Ok(offline) => {
+                    offline.set_quality(*self.shared.download_quality.lock().unwrap());
+                    offline.set_allowed(self.shared.downloads_allowed.load(std::sync::atomic::Ordering::SeqCst));
+                    *self.shared.offline.lock().unwrap() = Some(offline);
+                }
+                Err(err) => log::warn!("couldn't open the downloads: {err:#}"),
+            }
             self.shared.player.keep_listens(self.data_dir.join(format!("unsent-{key}.json")));
             *keeping = Some(key);
         } else {
@@ -767,6 +821,95 @@ impl Core {
             Arc::new(TrackView { catalog, list })
         })
         .await
+    }
+
+    // ---- Downloads ----
+
+    /// Keeps (or stops keeping) a track, album, playlist or the liked songs on the device.
+    pub fn download(&self, what: PinKind, id: String, on: bool) {
+        let Some(offline) = self.shared.offline.lock().unwrap().clone() else { return };
+        let (kind, id, name) = match what {
+            PinKind::Track => ("track", id.clone(), self.shared.catalog().and_then(|c| Some(c.track(parse_id(&id)?)?.title().to_string()))),
+            PinKind::Album => ("album", id.clone(), self.shared.catalog().and_then(|c| Some(c.album(parse_id(&id)?)?.title().to_string()))),
+            PinKind::Playlist => ("playlist", id.clone(), self.playlists().into_iter().find(|p| p.id == id).map(|p| p.name)),
+            PinKind::Liked => ("liked", String::new(), Some("Liked songs".to_string())),
+        };
+        offline.pin(Pin { kind: kind.into(), id, name: name.unwrap_or_default() }, on);
+        refresh_offline(&self.shared);
+    }
+
+    pub fn is_downloading(&self, what: PinKind, id: String) -> bool {
+        let kind = match what {
+            PinKind::Track => "track",
+            PinKind::Album => "album",
+            PinKind::Playlist => "playlist",
+            PinKind::Liked => "liked",
+        };
+        let id = if what == PinKind::Liked { String::new() } else { id };
+        self.shared.offline.lock().unwrap().as_ref().is_some_and(|o| o.is_pinned(kind, &id))
+    }
+
+    /// Whether a track's file is on the device.
+    pub fn is_downloaded(&self, track: String) -> bool {
+        let (Some(offline), Some(catalog)) = (self.shared.offline.lock().unwrap().clone(), self.shared.catalog()) else { return false };
+        parse_id(&track).and_then(|id| catalog.track(id)?.sha256()).is_some_and(|sha| offline.local_path(&sha).is_some())
+    }
+
+    /// What's kept: the pins, and how much of them is here.
+    pub fn downloads(&self) -> DownloadsInfo {
+        let Some(offline) = self.shared.offline.lock().unwrap().clone() else { return DownloadsInfo::default() };
+        let status = offline.status();
+        DownloadsInfo {
+            pins: offline
+                .pins()
+                .into_iter()
+                .map(|p| PinRow {
+                    kind: match p.kind.as_str() {
+                        "track" => PinKind::Track,
+                        "album" => PinKind::Album,
+                        "playlist" => PinKind::Playlist,
+                        _ => PinKind::Liked,
+                    },
+                    id: p.id,
+                    name: p.name,
+                })
+                .collect(),
+            files: status.files as u64,
+            bytes: status.bytes,
+            queued: status.queued as u64,
+            downloading: status.downloading,
+            asked: status.asked as u64,
+            done: status.done as u64,
+            failed: status.failed as u64,
+        }
+    }
+
+    /// The quality to download at (None: the original if the server allows it).
+    pub fn set_download_quality(&self, kbps: Option<u32>) {
+        if let Some(offline) = self.shared.offline.lock().unwrap().as_ref() {
+            offline.set_quality(kbps);
+        }
+        *self.shared.download_quality.lock().unwrap() = kbps;
+    }
+
+    /// Whether downloads may run now (the connection the user allows them on).
+    pub fn set_downloads_allowed(&self, allowed: bool) {
+        self.shared.downloads_allowed.store(allowed, std::sync::atomic::Ordering::SeqCst);
+        if let Some(offline) = self.shared.offline.lock().unwrap().clone() {
+            offline.set_allowed(allowed);
+        }
+    }
+
+    /// Looks at the pins again (a playlist or the liked songs changed).
+    pub fn refresh_downloads(&self) {
+        refresh_offline(&self.shared);
+    }
+
+    /// Forgets every download and takes the files away.
+    pub fn remove_downloads(&self) {
+        if let Some(offline) = self.shared.offline.lock().unwrap().clone() {
+            offline.remove_all();
+        }
     }
 
     // ---- Links and sharing ----
@@ -1048,7 +1191,7 @@ fn set_sync(shared: &Shared, change: impl FnOnce(&mut SyncState)) {
     shared.listener.changed(Change::Sync);
 }
 
-fn set_catalog(shared: &Shared, catalog: Arc<Catalog>) {
+fn set_catalog(shared: &Arc<Shared>, catalog: Arc<Catalog>) {
     *shared.catalog.lock().unwrap() = Some(catalog.clone());
     {
         let mut sync = shared.sync.lock().unwrap();
@@ -1060,7 +1203,56 @@ fn set_catalog(shared: &Shared, catalog: Arc<Catalog>) {
     // The queue from the last run, loaded (paused) if nothing else is.
     shared.player.restore_saved(&catalog);
     shared.listener.changed(Change::Catalog);
+    refresh_offline(shared);
     acetate_core::memory::trim();
+}
+
+// ---- Downloads ----
+
+/// What the downloads' background work calls when something moved.
+struct DownloadWake(Arc<dyn Listener>);
+
+impl acetate_core::Wake for DownloadWake {
+    fn changed(&self) {
+        self.0.changed(Change::Downloads);
+    }
+}
+
+/// Works out which files the pins want now (an album's tracks, a playlist's, the liked
+/// ones…) and tells the downloads.
+fn refresh_offline(shared: &Arc<Shared>) {
+    let (Some(offline), Some(catalog)) = (shared.offline.lock().unwrap().clone(), shared.catalog()) else { return };
+    let pins = offline.pins();
+    let mut tracks: Vec<u32> = Vec::new();
+    // A pin that can't be worked out yet (a playlist still coming) must not make its files go.
+    let mut complete = true;
+    for pin in &pins {
+        match pin.kind.as_str() {
+            "track" => tracks.extend(parse_id(&pin.id).and_then(|id| catalog.track_index(id))),
+            "album" => tracks.extend(parse_id(&pin.id).map(|id| catalog.album_tracks(id).to_vec()).unwrap_or_default()),
+            "playlist" => {
+                if let Some(id) = parse_id(&pin.id) {
+                    let mut playlists = shared.playlists.lock().unwrap();
+                    match &playlists.detail(id).value {
+                        Some(detail) => tracks.extend(detail.entries.iter().filter_map(|e| catalog.track_index(e.track_id))),
+                        None => complete = false,
+                    }
+                }
+            }
+            "liked" => tracks.extend(shared.marks.lock().unwrap().liked(&catalog)),
+            _ => {}
+        }
+    }
+    let mut seen = std::collections::HashSet::new();
+    let wants = tracks
+        .into_iter()
+        .filter_map(|i| {
+            let t = catalog.track_at(i);
+            let source = t.sha256()?;
+            seen.insert(source.clone()).then(|| Want { source, file_id: t.file_id() })
+        })
+        .collect();
+    offline.set_wanted(wants, complete);
 }
 
 // ---- Playing ----
@@ -1113,9 +1305,14 @@ impl EngineAdapter {
     fn media(&self, load: &Load) -> Option<MediaRequest> {
         let session = self.api.session()?;
         let item = &load.item;
+        // A file on this device plays from there (no login needed for it).
+        let (url, authorization) = match &load.local {
+            Some(path) => (format!("file://{}", path.display()), String::new()),
+            None => (format!("{}{}", session.server, load.path), format!("Bearer {}", session.token)),
+        };
         Some(MediaRequest {
-            url: format!("{}{}", session.server, load.path),
-            authorization: format!("Bearer {}", session.token),
+            url,
+            authorization,
             track_id: item.track_id.to_string(),
             title: item.title.clone(),
             artist: item.artist.clone(),
@@ -1296,6 +1493,7 @@ impl Playback {
             duration_ms,
             cover: None,
             codec: None,
+            sha256: None,
         };
         self.player().play_list(vec![item], 0);
     }

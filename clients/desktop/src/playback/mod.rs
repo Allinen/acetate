@@ -660,6 +660,7 @@ mod tests {
             duration_ms: None,
             cover: None,
             codec: None,
+            sha256: None,
         };
         let nil = Uuid::nil();
         assert_eq!(controller.path_of(&item(AudioSource::File)), format!("/api/files/{nil}/stream"));

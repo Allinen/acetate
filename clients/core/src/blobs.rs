@@ -299,10 +299,10 @@ pub async fn fetch(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
-    const HELLO: &str = "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824";
+    pub(crate) const HELLO: &str = "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824";
 
     #[test]
     fn blobs_are_kept_by_hash_read_only() {
@@ -323,7 +323,7 @@ mod tests {
     }
 
     /// A server of one file, `body`, that understands Range, on a thread of its own.
-    fn serve(body: &'static [u8]) -> String {
+    pub(crate) fn serve(body: &'static [u8]) -> String {
         use std::io::{BufRead, BufReader, Write};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let address = format!("http://{}", listener.local_addr().unwrap());

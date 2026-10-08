@@ -232,6 +232,7 @@ mod tests {
             duration_ms: None,
             cover: None,
             codec: None,
+            sha256: None,
         }
     }
 

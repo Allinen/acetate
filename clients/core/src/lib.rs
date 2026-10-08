@@ -25,6 +25,7 @@ pub mod catalog;
 pub mod commandline;
 pub mod details;
 pub mod links;
+pub mod offline;
 pub mod lyrics;
 pub mod memory;
 pub mod playback;

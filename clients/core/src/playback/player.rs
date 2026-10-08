@@ -30,7 +30,12 @@ use crate::resume::Resume;
 pub struct Load {
     pub item: QueueItem,
     pub path: String,
+    /// The file on this device, when it's downloaded (play that, not `path`).
+    pub local: Option<std::path::PathBuf>,
 }
+
+/// Where a downloaded file is, by its hash on the server.
+pub type LocalFiles = Arc<dyn Fn(&str) -> Option<std::path::PathBuf> + Send + Sync>;
 
 /// The platform's player.
 pub trait Engine: Send + Sync {
@@ -74,6 +79,7 @@ struct State {
     playing: bool,
     paused: bool,
     listen: Listen,
+    local: Option<LocalFiles>,
 }
 
 pub struct Player {
@@ -102,6 +108,7 @@ impl Player {
                 playing: false,
                 paused: false,
                 listen: Listen::default(),
+                local: None,
             }),
             engine: Mutex::new(None),
             api,
@@ -132,6 +139,11 @@ impl Player {
     /// Keeps the queue between runs from now on (see `resume`).
     pub fn keep_with(&self, resume: Resume) {
         *self.resume.lock().unwrap() = Some(resume);
+    }
+
+    /// Where downloaded files are: what's there plays from the device.
+    pub fn set_local(&self, find: LocalFiles) {
+        self.state.lock().unwrap().local = Some(find);
     }
 
     /// Keeps listens that couldn't be reported in `file`, and reports the ones kept there
@@ -460,7 +472,8 @@ impl State {
     }
 
     fn load_of(&self, item: &QueueItem) -> Load {
-        Load { item: item.clone(), path: self.path_of(item) }
+        let local = item.sha256.as_deref().zip(self.local.as_ref()).and_then(|(sha, find)| find(sha));
+        Load { item: item.clone(), path: self.path_of(item), local }
     }
 
     /// Starts `item` now: the engine plays it, and its next slot is empty.
@@ -583,6 +596,7 @@ mod tests {
             album: None,
             duration_ms: Some(100_000),
             codec: None,
+            sha256: None,
             cover: None,
         }
     }
@@ -723,6 +737,7 @@ mod tests {
             duration_ms: None,
             cover: None,
             codec: Some("alac".into()),
+            sha256: None,
         };
         let state = State {
             queue: Queue::default(),
@@ -735,6 +750,7 @@ mod tests {
             playing: false,
             paused: false,
             listen: Listen::default(),
+            local: None,
         };
         assert!(state.path_of(&item).ends_with("?transcode=true"));
         item.codec = Some("flac".into());

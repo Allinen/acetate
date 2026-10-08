@@ -27,7 +27,8 @@ fn catalog_json() -> String {
              [["00000000-0000-7000-8000-0000000000b1", 1, 2]], 1000, "00000000-0000-7000-8000-0000000000f1", null, null, "2020", 2020, "released", [], "", false, "flac"],
             ["00000000-0000-7000-8000-000000000002", "First", "Ann feat. Bo",
              [["00000000-0000-7000-8000-0000000000a1", "primary", null], ["00000000-0000-7000-8000-0000000000a2", "featured", "B.O."]],
-             [["00000000-0000-7000-8000-0000000000b1", 1, 1]], 2000, "00000000-0000-7000-8000-0000000000f2", null, null, "2021", 2021, "released", [], "", false, "flac"],
+             [["00000000-0000-7000-8000-0000000000b1", 1, 1]], 2000, "00000000-0000-7000-8000-0000000000f2", null, null, "2021", 2021, "released", [], "", false, "flac",
+             [], [], null, null, null, "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"],
             ["00000000-0000-7000-8000-000000000003", "The Third", "Bo", [["00000000-0000-7000-8000-0000000000a2", "primary", null]],
              [["00000000-0000-7000-8000-0000000000b2", null, 1], ["00000000-0000-7000-8000-0000000000b1", 1, 3]], 500, "00000000-0000-7000-8000-0000000000f3", null, null, null, null, "released", [], "", false, "mp3"]
         ]},
@@ -332,4 +333,33 @@ fn links_lead_to_albums_and_artists_of_this_server() {
     assert_eq!(core.resolve_link("acetate://open/album/00000000-0000-7000-8000-0000000000ff".into()), LinkTarget::NotThere);
     assert_eq!(core.resolve_link("hello".into()), LinkTarget::Invalid);
     assert_eq!(core.open_link(MarkOn::Track, track.into()), Some(format!("http://127.0.0.1:1/open/track/{track}")));
+}
+
+#[test]
+fn a_downloaded_track_plays_from_the_device_without_the_login() {
+    const HELLO: &str = "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824";
+    let (dir, core, _events) = core(true);
+    // What an earlier run kept: the file by its hash, and the list that says so.
+    let key = acetate_core::catalog::store::key(&acetate_core::api::Session { server: SERVER.into(), token: String::new(), username: "ann".into() });
+    let root = dir.path().join(format!("offline-{key}"));
+    let blob = root.join("blobs/2c/f2").join(HELLO);
+    std::fs::create_dir_all(blob.parent().unwrap()).unwrap();
+    std::fs::write(&blob, b"hello").unwrap();
+    let mut files = serde_json::Map::new();
+    files.insert(HELLO.into(), serde_json::json!({ "blob": HELLO, "size": 5, "kbps": null, "original": true }));
+    let pin = serde_json::json!({ "kind": "track", "id": "00000000-0000-7000-8000-000000000002", "name": "First" });
+    let kept = serde_json::json!({ "files": files, "pins": [pin] });
+    std::fs::write(root.join("offline.json"), kept.to_string()).unwrap();
+    synced(&core);
+
+    assert!(core.is_downloaded("00000000-0000-7000-8000-000000000002".into()));
+    assert!(!core.is_downloaded("00000000-0000-7000-8000-000000000001".into()));
+    let playback = core.playback();
+    let engine = Arc::new(Engine::default());
+    playback.attach(engine.clone());
+    playback.play_album(ALBUM.into(), 0);
+    let took = engine.took();
+    assert_eq!(took[0], format!("play First file://{} @0 []", blob.display()));
+    // The next one isn't downloaded: it comes from the server.
+    assert!(took[1].starts_with("next Second"), "{took:?}");
 }

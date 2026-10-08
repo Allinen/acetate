@@ -490,6 +490,7 @@ impl NotImported {
                         duration_ms: None,
                         cover: None,
                         codec: None,
+                        sha256: None,
                     };
                     let controller = shell.controller.clone();
                     shell.runtime.spawn(async move { controller.play(vec![item], 0).await });
