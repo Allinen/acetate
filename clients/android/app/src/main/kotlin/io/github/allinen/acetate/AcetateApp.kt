@@ -63,6 +63,10 @@ class Model(dataDir: String) : Listener {
     var playlistsVersion by mutableIntStateOf(0)
         private set
 
+    /** Bumped when a track's details (lyrics…) arrived. */
+    var detailsVersion by mutableIntStateOf(0)
+        private set
+
     /** Bumped when a star or rating changed (read `core.mark(id)` again). */
     var marksVersion by mutableIntStateOf(0)
         private set
@@ -104,6 +108,7 @@ class Model(dataDir: String) : Listener {
                 }
                 Change.MARKS -> marksVersion++
                 Change.PLAYLISTS -> playlistsVersion++
+                Change.DETAILS -> detailsVersion++
                 Change.CATALOG -> {
                     catalogVersion++
                     // For measuring (adb logcat -s Acetate): how long from the process starting.

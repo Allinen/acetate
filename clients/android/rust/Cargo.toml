@@ -16,12 +16,12 @@ acetate-core = { path = "../../core" }
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "sync", "time"] }
 uniffi = { version = "0.32.2", features = ["tokio", "cli"] }
 uuid = "1.26.1"
+log = "0.4"
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni = { version = "0.22", default-features = false }
 rustls-platform-verifier = "0.7"
 android_logger = "0.15"
-log = "0.4"
 
 [dev-dependencies]
 acetate-core = { path = "../../core", features = ["test-support"] }

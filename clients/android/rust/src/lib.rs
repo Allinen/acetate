@@ -12,6 +12,7 @@ use std::time::Instant;
 use acetate_core::api::{Api, ApiError};
 use acetate_core::playback::player::{Engine, Load, Player};
 use acetate_core::playback::{QueueItem, queue, queue_item};
+use acetate_core::details::{Details, TrackDetail};
 use acetate_core::playlists::Playlists;
 use acetate_core::resume::Resume;
 use acetate_core::catalog::index::{AlbumSort, ArtistSort, TrackRows, TrackSort};
@@ -76,6 +77,8 @@ pub enum Change {
     Marks,
     /// The playlists, or one playlist's entries, changed: read them again.
     Playlists,
+    /// A track's details (its lyrics…) arrived or were refreshed.
+    Details,
 }
 
 /// Kotlin code the core calls, from any thread.
@@ -120,6 +123,54 @@ pub struct MarkInfo {
     /// 0 to 10 (half stars); 0: not rated.
     pub rating: i16,
     pub starred: bool,
+}
+
+/// One line of lyrics: when it's sung (None: the lyrics aren't synced), and the heading of
+/// the part of the song it starts, if any.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct LyricLine {
+    pub at_ms: Option<u64>,
+    pub text: String,
+    pub heading: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct LyricsView {
+    pub synced: bool,
+    pub language: Option<String>,
+    pub lines: Vec<LyricLine>,
+}
+
+fn lyrics_view(lyrics: &acetate_core::details::Lyrics) -> LyricsView {
+    use acetate_core::lyrics::{self, Block};
+    let mut lines = Vec::new();
+    if lyrics.is_synced {
+        let (parsed, sections) = lyrics::parse_with_sections(&lyrics.body);
+        let mut last = None;
+        for line in parsed {
+            let heading = (line.section != last).then_some(line.section).flatten().map(|s| heading_text(&sections[s]));
+            last = line.section;
+            lines.push(LyricLine { at_ms: Some(line.at.as_millis() as u64), text: line.text, heading });
+        }
+    } else {
+        let mut heading = None;
+        for block in lyrics::blocks(&lyrics.body) {
+            match block {
+                Block::Heading(section) => heading = Some(heading_text(&section)),
+                Block::Text(text) => {
+                    for line in text.lines() {
+                        lines.push(LyricLine { at_ms: None, text: line.to_string(), heading: heading.take() });
+                    }
+                }
+            }
+        }
+    }
+    LyricsView { synced: lyrics.is_synced, language: lyrics.language.clone(), lines }
+}
+
+/// "Verse 1" or "Verse 1 · Wrenfield, Someone".
+fn heading_text(section: &acetate_core::lyrics::Section) -> String {
+    if section.artists.is_empty() { section.label.clone() } else { format!("{} · {}", section.label, section.artists.join(", ")) }
 }
 
 #[derive(Debug, Clone, Default, uniffi::Record)]
@@ -357,6 +408,7 @@ struct Shared {
     /// Stars and ratings changed in this session, shown until the server's catalog has them.
     marks: Mutex<Marks>,
     playlists: Arc<Mutex<Playlists>>,
+    track_details: Arc<Mutex<Details<TrackDetail>>>,
     /// When the catalog was last asked of the server.
     asked: Mutex<Option<Instant>>,
     listener: Arc<dyn Listener>,
@@ -393,6 +445,9 @@ impl Core {
         let playlist_wake = Arc::new(PlaylistWake { playlists: std::sync::OnceLock::new(), listener: listener.clone() });
         let playlists = Arc::new(Mutex::new(Playlists::new(api.clone(), runtime.handle().clone(), playlist_wake.clone())));
         let _ = playlist_wake.playlists.set(Arc::downgrade(&playlists));
+        let detail_wake = Arc::new(DetailWake { details: std::sync::OnceLock::new(), listener: listener.clone() });
+        let track_details = Arc::new(Mutex::new(Details::new("tracks", api.clone(), runtime.handle().clone(), detail_wake.clone())));
+        let _ = detail_wake.details.set(Arc::downgrade(&track_details));
         let shared = Arc::new(Shared {
             api,
             player,
@@ -402,6 +457,7 @@ impl Core {
             sync: Mutex::new(SyncState::default()),
             marks: Mutex::new(Marks::default()),
             playlists,
+            track_details,
             asked: Mutex::new(None),
             listener,
         });
@@ -452,6 +508,7 @@ impl Core {
         *self.shared.sync.lock().unwrap() = SyncState::default();
         self.shared.marks.lock().unwrap().clear();
         self.shared.playlists.lock().unwrap().reset(None);
+        self.shared.track_details.lock().unwrap().reset(None);
         self.shared.listener.changed(Change::Session);
     }
 
@@ -467,6 +524,7 @@ impl Core {
         if keeping.as_deref() != Some(&key) {
             self.shared.player.keep_with(Resume::new(&self.data_dir, &key));
             self.shared.playlists.lock().unwrap().reset(Some(self.data_dir.join(format!("playlists-{key}"))));
+            self.shared.track_details.lock().unwrap().reset(Some(self.data_dir.join(format!("details-{key}"))));
             self.shared.player.keep_listens(self.data_dir.join(format!("unsent-{key}.json")));
             *keeping = Some(key);
         } else {
@@ -674,6 +732,25 @@ impl Core {
         .await
     }
 
+    // ---- Lyrics ----
+
+    /// A track's lyrics (the synced ones if it has them): None until they're known or if it
+    /// has none; `Change::Details` says when they came.
+    pub fn lyrics(&self, track: String) -> Option<LyricsView> {
+        let id = parse_id(&track)?;
+        let detail = {
+            let mut details = self.shared.track_details.lock().unwrap();
+            let cached = details.get(id);
+            if cached.value.is_none() {
+                log::info!("details of {id}: not there yet (refreshing {}, error {:?})", cached.refreshing, cached.error);
+            }
+            cached.value.clone()?
+        };
+        log::info!("details of {id}: {} lyrics entries", detail.lyrics.len());
+        let lyrics = detail.lyrics.iter().find(|l| l.is_synced).or(detail.lyrics.first())?;
+        Some(lyrics_view(lyrics))
+    }
+
     // ---- Search ----
 
     /// What fits the search line (the query language; plain words match fuzzily): the best
@@ -762,6 +839,20 @@ impl Core {
             url: format!("{}/api/images/{key}{query}", session.server),
             authorization: format!("Bearer {}", session.token),
         })
+    }
+}
+
+/// What the details' background fetches call when one has come.
+struct DetailWake {
+    details: std::sync::OnceLock<std::sync::Weak<Mutex<Details<TrackDetail>>>>,
+    listener: Arc<dyn Listener>,
+}
+
+impl acetate_core::Wake for DetailWake {
+    fn changed(&self) {
+        let Some(details) = self.details.get().and_then(|d| d.upgrade()) else { return };
+        details.lock().unwrap().poll();
+        self.listener.changed(Change::Details);
     }
 }
 
@@ -1155,5 +1246,33 @@ impl Playback {
     /// Playback ran out (the last track ended).
     pub fn on_ended(&self) {
         self.player().on_ended();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn lyrics(synced: bool, body: &str) -> acetate_core::details::Lyrics {
+        serde_json::from_value(serde_json::json!({
+            "id": Uuid::from_u128(1), "is_official": true, "is_synced": synced, "language": "en",
+            "body": body, "revision_id": Uuid::from_u128(2),
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn synced_lyrics_are_lines_with_times_and_headings_where_a_part_starts() {
+        let view = lyrics_view(&lyrics(true, "[Verse 1: A]\n[00:01.50]one\n[00:03.00]two\n[Chorus]\n[00:05.00]three"));
+        assert!(view.synced);
+        let lines: Vec<_> = view.lines.iter().map(|l| (l.at_ms, l.text.as_str(), l.heading.as_deref())).collect();
+        assert_eq!(lines, [(Some(1500), "one", Some("Verse 1 · A")), (Some(3000), "two", None), (Some(5000), "three", Some("Chorus"))]);
+    }
+
+    #[test]
+    fn plain_lyrics_are_lines_without_times() {
+        let view = lyrics_view(&lyrics(false, "[Intro]\nhello\nthere\n\n[Verse]\nbye"));
+        let lines: Vec<_> = view.lines.iter().map(|l| (l.at_ms, l.text.as_str(), l.heading.as_deref())).collect();
+        assert_eq!(lines, [(None, "hello", Some("Intro")), (None, "there", None), (None, "bye", Some("Verse"))]);
     }
 }

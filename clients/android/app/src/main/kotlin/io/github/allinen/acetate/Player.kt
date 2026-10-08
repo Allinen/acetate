@@ -217,10 +217,20 @@ fun NowPlaying(model: Model) {
         val from = state.listIndex.toLong() + 1
         model.playback.listRows(from.toULong(), 200uL)
     }
+    val lyrics = remember(current?.id, model.detailsVersion) { current?.let { model.core.lyrics(it.id) } }
+    var showLyrics by remember { mutableStateOf(false) }
+    if (showLyrics && lyrics != null && current != null) {
+        BackHandler { showLyrics = false }
+        LyricsScreen(model, lyrics, current.title, current.artist, position, { showLyrics = false })
+        return
+    }
     Surface(Modifier.fillMaxSize()) {
         LazyColumn(Modifier.safeDrawingPadding(), horizontalAlignment = Alignment.CenterHorizontally) {
             item {
-                Row(Modifier.fillMaxWidth()) { TextButton({ model.nowPlaying = false }) { Text("Close") } }
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    TextButton({ model.nowPlaying = false }) { Text("Close") }
+                    if (lyrics != null) TextButton({ showLyrics = true }) { Text("Lyrics") }
+                }
             }
             if (current != null) item {
                 Column(Modifier.padding(24.dp, 0.dp), horizontalAlignment = Alignment.CenterHorizontally) {
@@ -320,5 +330,64 @@ private fun QueueRow(model: Model, row: TrackRow, part: QueuePart, index: Int) {
             )
         }
         if (part == QueuePart.QUEUED) TextButton({ model.playback.remove(part, index.toULong()) }) { Text("Remove") }
+    }
+}
+
+/** The lyrics full screen: the lines (the one sung now lit, following it; tap one to go
+ *  there), and the transport below. */
+@Composable
+private fun LyricsScreen(
+    model: Model, lyrics: uniffi.acetate_ffi.LyricsView, title: String, artist: String, position: Long, back: () -> Unit,
+) {
+    val state = model.player
+    val list = androidx.compose.foundation.lazy.rememberLazyListState()
+    // The last line that has started.
+    val now = if (lyrics.synced) lyrics.lines.indexOfLast { (it.atMs ?: ULong.MAX_VALUE).toLong() <= position } else -1
+    LaunchedEffect(now) {
+        if (now >= 0 && !list.isScrollInProgress) list.animateScrollToItem(now, -250)
+    }
+    Surface(Modifier.fillMaxSize()) {
+        Column(Modifier.safeDrawingPadding()) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TextButton(back) { Text("Back") }
+                Column(Modifier.weight(1f).padding(end = 16.dp)) {
+                    Text(title, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleMedium)
+                    Text(artist, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+            LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = list, contentPadding = androidx.compose.foundation.layout.PaddingValues(24.dp, 8.dp, 24.dp, 200.dp)) {
+                items(lyrics.lines.size, key = { it }) { i ->
+                    val line = lyrics.lines[i]
+                    Column(
+                        Modifier.fillMaxWidth()
+                            .clickable(enabled = line.atMs != null) { line.atMs?.let { model.playback.seek(it) } }
+                            .padding(vertical = 6.dp),
+                    ) {
+                        line.heading?.let {
+                            Spacer(Modifier.height(10.dp))
+                            Text(it, style = MaterialTheme.typography.labelLarge, color = Palette.accent)
+                        }
+                        Text(
+                            line.text.ifEmpty { "♪" }, style = MaterialTheme.typography.titleLarge,
+                            color = when {
+                                !lyrics.synced -> MaterialTheme.colorScheme.onSurface
+                                i == now -> MaterialTheme.colorScheme.onSurface
+                                else -> Palette.faint
+                            },
+                        )
+                    }
+                }
+            }
+            val ink = MaterialTheme.colorScheme.onSurface
+            Row(Modifier.fillMaxWidth().padding(bottom = 12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center) {
+                RoundButton({ model.playback.previous() }, 52) { SkipIcon(false, ink, 30) }
+                Box(Modifier.size(60.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary).clickable {
+                    model.playback.setPaused(isPlaying(state))
+                }, contentAlignment = Alignment.Center) {
+                    PlayPauseIcon(isPlaying(state), MaterialTheme.colorScheme.onPrimary, 30)
+                }
+                RoundButton({ model.playback.next() }, 52) { SkipIcon(true, ink, 30) }
+            }
+        }
     }
 }
