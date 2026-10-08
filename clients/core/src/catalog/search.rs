@@ -46,10 +46,10 @@ impl Search {
         let pattern = Pattern::parse(query, CaseMatching::Ignore, Normalization::Smart);
         let (tracks, albums, artists) = catalog.texts();
         Hits {
-            artists: self.best(&pattern, artists, limit),
-            albums: self.best(&pattern, albums, limit),
-            tracks: self.best(&pattern, tracks, limit),
-            extras: self.best(&pattern, catalog.extra_texts(), limit),
+            artists: self.best(&pattern, query, artists, limit),
+            albums: self.best(&pattern, query, albums, limit),
+            tracks: self.best(&pattern, query, tracks, limit),
+            extras: self.best(&pattern, query, catalog.extra_texts(), limit),
         }
     }
 
@@ -92,27 +92,65 @@ impl Search {
             Part::Tracks => tracks,
             Part::Extras => catalog.extra_texts(),
         };
-        self.best(&pattern, texts, limit)
+        self.best(&pattern, query, texts, limit)
     }
 
-    fn best(&mut self, pattern: &Pattern, texts: &Texts, limit: usize) -> Vec<(u32, u32)> {
+    /// The best `limit`, best first: a name that is exactly what was typed, then ones that
+    /// start with it, then by score (shorter names before longer at the same score, so
+    /// "dead" comes before the hundred "deadsomething"s).
+    fn best(&mut self, pattern: &Pattern, query: &str, texts: &Texts, limit: usize) -> Vec<(u32, u32)> {
         if pattern.atoms.is_empty() {
             return Vec::new();
         }
-        let mut hits: Vec<(u32, u32)> = Vec::new();
+        let typed = query.trim().to_lowercase();
+        // (how well the name itself matches: 0 exact, 1 starts with it, 2 other; score; length)
+        let mut hits: Vec<(u8, u32, u32, u32)> = Vec::new();
         for (i, text) in texts.iter().enumerate() {
             let haystack = Utf32Str::new(text, &mut self.buffer);
             if let Some(score) = pattern.score(haystack, &mut self.matcher) {
-                hits.push((i as u32, score));
+                let name = text.split('\0').next().unwrap_or(text);
+                let near = if text.split('\0').any(|part| part == typed) {
+                    0
+                } else if name.starts_with(&typed) {
+                    1
+                } else {
+                    2
+                };
+                hits.push((near, score, name.len() as u32, i as u32));
             }
         }
         // The best `limit`, without sorting all of them: pick them out first.
-        let by_score = |a: &(u32, u32), b: &(u32, u32)| b.1.cmp(&a.1).then(a.0.cmp(&b.0));
+        let order = |a: &(u8, u32, u32, u32), b: &(u8, u32, u32, u32)| a.0.cmp(&b.0).then(b.1.cmp(&a.1)).then(a.2.cmp(&b.2)).then(a.3.cmp(&b.3));
         if hits.len() > limit {
-            hits.select_nth_unstable_by(limit, by_score);
+            hits.select_nth_unstable_by(limit, order);
             hits.truncate(limit);
         }
-        hits.sort_by(by_score);
-        hits
+        hits.sort_by(order);
+        hits.into_iter().map(|(_, score, _, i)| (i, score)).collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_name_typed_comes_before_longer_names_that_start_with_it() {
+        let mut texts = Texts::with_capacity(5);
+        for name in ["deadwhatever", "deadone", "deadtwo", "dead", "a dead end"] {
+            texts.push_lowercase(&[name]);
+        }
+        let texts = texts.finish();
+        let mut search = Search::default();
+        let pattern = Pattern::parse("dead", CaseMatching::Ignore, Normalization::Smart);
+        let found = search.best(&pattern, "dead", &texts, 2);
+        assert_eq!(found[0].0, 3, "the exact name first");
+        assert_eq!(found.len(), 2);
+        // An alias that is exactly it counts as well.
+        let mut texts = Texts::with_capacity(2);
+        texts.push_lowercase(&["deadwhatever"]);
+        texts.push_lowercase(&["Something Else", "dead"]);
+        let found = search.best(&pattern, "dead", &texts.finish(), 1);
+        assert_eq!(found[0].0, 1);
     }
 }
