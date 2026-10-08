@@ -826,9 +826,9 @@ mod tests {
 
     fn catalog() -> Catalog {
         let body = serde_json::json!({
-            "format": 8,
+            "format": 9,
             "tracks": {"columns": ["id", "title", "artist_display", "credits", "albums", "duration_ms", "file_id", "cover_id", "cover_key",
-                                    "release_date", "year", "status", "genres", "created_at", "is_restricted", "codec", "groupings", "platforms", "original_filename", "bitrate", "sample_rate"],
+                                    "release_date", "year", "status", "genres", "created_at", "is_restricted", "codec", "groupings", "platforms", "original_filename", "bitrate", "sample_rate", "sha256"],
                        "rows": [[TRACK, "Glass Harbor", "Ann", [[ANN, "primary", null]], [[LP, 1, 2]], 1000,
                                  "00000000-0000-7000-8000-0000000000f1", null, null, null, null, "released", [], "", false, "flac"]]},
             "albums": {"columns": ["id", "title", "kind", "artist_display", "credits", "release_date", "year", "cover_id", "cover_key", "created_at", "track_count", "duration_ms", "groupings"],

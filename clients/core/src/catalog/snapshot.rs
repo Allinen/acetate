@@ -30,7 +30,7 @@ use super::text::{Str, Text, Texts, Utf8};
 const MAGIC: &[u8; 8] = b"ACETSNAP";
 
 /// Changes with what's stored and how.
-const FORMAT: u32 = 1;
+const FORMAT: u32 = 2;
 
 /// A credit as stored: its alias (if any) is in the aliases section.
 #[derive(Clone, Copy)]
@@ -495,7 +495,7 @@ mod tests {
         use std::mem::size_of;
         // The sum of the fields, as laid out in `repr(C)`: nothing is left to be written
         // as uninitialized bytes.
-        assert_eq!(size_of::<TrackRow>(), 160);
+        assert_eq!(size_of::<TrackRow>(), 192);
         assert_eq!(size_of::<AlbumRow>(), 112);
         assert_eq!(size_of::<CreditRow>(), 28);
         assert_eq!(size_of::<MembershipRow>(), 20);

@@ -40,6 +40,9 @@ async fn tracks_are_marked_as_original_files_under_their_uploaded_names(_: PgPoo
     let rows: Vec<Vec<serde_json::Value>> = serde_json::from_str(&db::library::tracks_json(&mut tx, Some(&[lib.v])).await?)?;
     let at = db::library::TRACK_COLUMNS.iter().position(|c| *c == "original_filename").unwrap();
     assert_eq!(rows[0][at], "Song V");
+    // And the file's hash, which clients that keep files know it by.
+    let sha = db::library::TRACK_COLUMNS.iter().position(|c| *c == "sha256").unwrap();
+    assert!(rows[0][sha].as_str().is_some_and(|h| !h.is_empty()), "the file's hash");
 
     // Again: they're original files already.
     let again = db::og_files::mark_original(&mut tx, &[lib.v], "").await?;

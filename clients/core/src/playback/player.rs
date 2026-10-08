@@ -763,13 +763,18 @@ mod tests {
         let v = r.player.view();
         assert!(v.shuffle);
         assert_eq!(current(&r.player), "5");
+        // (By chance the shuffled order may already have 6 next: then nothing changes below.)
+        // (Nothing sent: the slot already held 6.)
+        let first = r.engine.took();
+        let six_was_next = first.is_empty() || first.last().cloned() == Some(format!("next 6 {}", path(6)));
         let mut all: Vec<_> = v.list.iter().map(|i| i.title.clone()).collect();
         all.sort_by_key(|t| t.parse::<u32>().unwrap());
         assert_eq!(all.len(), 30);
         r.player.toggle_shuffle();
         assert!(!r.player.view().shuffle);
         // Back in order, still on 5, so 6 is next.
-        assert_eq!(r.engine.took().last().cloned(), Some(format!("next 6 {}", path(6))));
+        let took = r.engine.took();
+        assert!(took.last().cloned() == Some(format!("next 6 {}", path(6))) || (six_was_next && took.is_empty()), "{took:?} {six_was_next}");
     }
 
     #[test]

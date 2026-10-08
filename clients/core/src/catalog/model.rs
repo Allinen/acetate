@@ -10,7 +10,7 @@ use serde_json::value::RawValue;
 use uuid::Uuid;
 
 /// The catalog format this client reads (the server's `FORMAT`).
-pub const FORMAT: u32 = 8;
+pub const FORMAT: u32 = 9;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -94,12 +94,15 @@ pub struct Track {
     pub bitrate: Option<i32>,
     #[serde(default)]
     pub sample_rate: Option<i32>,
+    /// Its file's SHA-256 (hex): the name it's kept under offline.
+    #[serde(default)]
+    pub sha256: Option<String>,
 }
 
 pub(super) const TRACK_COLUMNS: &[&str] = &[
     "id", "title", "artist_display", "credits", "albums", "duration_ms", "file_id", "cover_id",
     "cover_key", "release_date", "year", "status", "genres", "created_at", "is_restricted", "codec",
-    "groupings", "platforms", "original_filename", "bitrate", "sample_rate",
+    "groupings", "platforms", "original_filename", "bitrate", "sample_rate", "sha256",
 ];
 
 // Every column is read (rows are arrays in column order); not all are shown yet.

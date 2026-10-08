@@ -38,6 +38,8 @@ pub(super) struct TrackRow {
     file_id: Uuid,
     /// Nil: none.
     cover_id: Uuid,
+    /// Its file's SHA-256; all zeros: not known.
+    sha256: [u8; 32],
     cover_key: u64,
     title: Str,
     artist_display: Str,
@@ -137,6 +139,7 @@ impl Builder {
             id: t.id,
             file_id: t.file_id,
             cover_id: t.cover_id.unwrap_or(Uuid::nil()),
+            sha256: t.sha256.as_deref().and_then(unhex).unwrap_or([0; 32]),
             cover_key: t.cover_key.map(|k| k.0).unwrap_or(0),
             title: self.text.push(&t.title),
             artist_display: self.text.shared(&t.artist_display),
@@ -184,6 +187,18 @@ impl Builder {
         self.strs.shrink_to_fit();
         Pools { text: self.text.finish(), credits: self.credits, memberships: self.memberships, ids: self.ids.into(), strs: self.strs.into() }
     }
+}
+
+/// 64 hex digits as 32 bytes.
+fn unhex(hex: &str) -> Option<[u8; 32]> {
+    if hex.len() != 64 || !hex.is_ascii() {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    for (i, byte) in out.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).ok()?;
+    }
+    Some(out)
 }
 
 fn cover(id: Uuid, key: u64, flags: u8) -> Option<Cover> {
@@ -287,6 +302,12 @@ impl<'a> Track<'a> {
         (self.row.bitrate != i32::MIN).then_some(self.row.bitrate)
     }
 
+    /// Its file's SHA-256 (hex), where known: what it's kept under offline.
+    pub fn sha256(self) -> Option<String> {
+        let bytes = &self.row.sha256;
+        bytes.iter().any(|b| *b != 0).then(|| bytes.iter().map(|b| format!("{b:02x}")).collect())
+    }
+
     /// Its file's sample rate (Hz), where known.
     pub fn sample_rate(self) -> Option<i32> {
         (self.row.sample_rate != i32::MIN).then_some(self.row.sample_rate)
@@ -317,6 +338,7 @@ impl<'a> Track<'a> {
             original_filename: self.original_filename().map(str::to_string),
             bitrate: self.bitrate(),
             sample_rate: self.sample_rate(),
+            sha256: self.sha256(),
         }
     }
 }

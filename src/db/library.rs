@@ -18,12 +18,13 @@ use uuid::Uuid;
 /// album's. `cover_key`: the start of that image's SHA-256, the same for the same image
 /// under different covers (every track of an album often has its own copy): clients can
 /// keep one copy per image. `platforms`: where its sources are (`["youtube", …]`, sorted,
-/// each once; trashed ones left out). `original_filename`: set only when its file is an
+/// each once; trashed ones left out). `sha256`: its file's SHA-256 (hex), the name a client
+/// that keeps files (offline, a mirror) knows the blob by. `original_filename`: set only when its file is an
 /// original file (an "og file", as the artist named it), and then it's that name.
 pub const TRACK_COLUMNS: &[&str] = &[
     "id", "title", "artist_display", "credits", "albums", "duration_ms",
     "file_id", "cover_id", "cover_key", "release_date", "year", "status", "genres", "created_at",
-    "is_restricted", "codec", "groupings", "platforms", "original_filename", "bitrate", "sample_rate",
+    "is_restricted", "codec", "groupings", "platforms", "original_filename", "bitrate", "sample_rate", "sha256",
 ];
 
 /// `credits` as for tracks; `artist_display` with aliases as credited.
@@ -162,7 +163,7 @@ pub async fn tracks_json(conn: &mut PgConnection, ids: Option<&[Uuid]>) -> sqlx:
                    t.file_id, COALESCE(tc.id, ac.id), CASE WHEN tc.id IS NOT NULL THEN tc.key ELSE ac.key END,
                    t.release_date, t.release_year, t.status,
                    t.genres, t.created_at, t.is_restricted, f.codec, COALESCE(g.groupings, '[]'::json),
-                   COALESCE(p.platforms, '[]'::json), f.original_filename, f.bitrate, f.sample_rate
+                   COALESCE(p.platforms, '[]'::json), f.original_filename, f.bitrate, f.sample_rate, f.sha256
                ) ORDER BY t.id), '[]'::json)::text AS "rows!"
         FROM tracks t
         JOIN files f ON f.id = t.file_id
