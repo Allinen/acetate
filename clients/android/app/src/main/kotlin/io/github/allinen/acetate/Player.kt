@@ -229,7 +229,10 @@ fun NowPlaying(model: Model) {
             item {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                     TextButton({ model.nowPlaying = false }) { Text("Close") }
-                    if (lyrics != null) TextButton({ showLyrics = true }) { Text("Lyrics") }
+                    Row {
+                        if (current != null) ExtrasButton(model, MarkOn.TRACK, current.id, current.title)
+                        if (lyrics != null) TextButton({ showLyrics = true }) { Text("Lyrics") }
+                    }
                 }
             }
             if (current != null) item {

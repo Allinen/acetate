@@ -95,7 +95,10 @@ fun AlbumScreen(model: Model, id: String) {
                         OutlinedButton({ model.playback.enqueueAlbum(id, false) }) { Text("Queue") }
                     }
                     var sharing by remember { mutableStateOf(false) }
-                    TextButton({ sharing = true }) { Text("Share…") }
+                    Row {
+                        TextButton({ sharing = true }) { Text("Share…") }
+                        ExtrasButton(model, MarkOn.ALBUM, id, album.title)
+                    }
                     if (sharing) ShareDialog(model, MarkOn.ALBUM, id, album.title) { sharing = false }
                 }
             }
@@ -156,7 +159,10 @@ fun ArtistScreen(model: Model, id: String) {
                         }) { Text("Shuffle") }
                     }
                     var sharing by remember { mutableStateOf(false) }
-                    TextButton({ sharing = true }) { Text("Share…") }
+                    Row {
+                        TextButton({ sharing = true }) { Text("Share…") }
+                        ExtrasButton(model, MarkOn.ARTIST, id, artist.name)
+                    }
                     if (sharing) ShareDialog(model, MarkOn.ARTIST, id, artist.name) { sharing = false }
                 }
             }

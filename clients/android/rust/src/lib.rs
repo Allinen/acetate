@@ -195,6 +195,21 @@ fn link_target(on: MarkOn, id: Uuid) -> links::Target {
     }
 }
 
+/// An extra: something that isn't a track (a stem, a vocal take, a video…).
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct ExtraRow {
+    pub id: String,
+    pub name: String,
+    pub kind: String,
+    pub duration_ms: Option<i64>,
+    /// The file to play, when it's audio.
+    pub audio_file: Option<String>,
+    /// The file to watch, when it's a video.
+    pub video_file: Option<String>,
+    /// A video's thumbnail (a cover key).
+    pub thumb: Option<String>,
+}
+
 #[derive(Debug, Clone, Default, uniffi::Record)]
 pub struct SearchResult {
     pub artists: Vec<ArtistRow>,
@@ -798,6 +813,41 @@ impl Core {
         }
     }
 
+    // ---- Extras (vocals, stems, videos…) ----
+
+    /// The extras linked to a track, album or artist.
+    pub fn extras_of(&self, on: MarkOn, id: String) -> Vec<ExtraRow> {
+        let (Some(id), Some(catalog)) = (parse_id(&id), self.shared.catalog()) else { return vec![] };
+        let kind = match on {
+            MarkOn::Track => "track",
+            MarkOn::Album => "album",
+            MarkOn::Artist => "artist",
+        };
+        catalog
+            .extras
+            .iter()
+            .filter(|e| e.links.iter().any(|(k, i)| k == kind && *i == id))
+            .map(|e| ExtraRow {
+                id: e.id.to_string(),
+                name: e.name.clone(),
+                kind: e.kind.clone(),
+                duration_ms: e.duration_ms,
+                audio_file: e.first_file.filter(|_| e.video.is_none()).map(|f| f.to_string()),
+                video_file: e.video.map(|v| v.to_string()),
+                thumb: e.thumb_key.clone(),
+            })
+            .collect()
+    }
+
+    /// How to fetch an extra's file (a video's stream): the address and the login header.
+    pub fn extra_stream(&self, file: String) -> Option<ImageRequest> {
+        let session = self.shared.api.session()?;
+        Some(ImageRequest {
+            url: format!("{}/api/extra-files/{file}/stream", session.server),
+            authorization: format!("Bearer {}", session.token),
+        })
+    }
+
     // ---- Lyrics ----
 
     /// A track's lyrics (the synced ones if it has them): None until they're known or if it
@@ -1231,6 +1281,23 @@ impl Playback {
     /// Plays an album from its `start`th track.
     pub fn play_album(&self, album: String, start: u64) {
         self.player().play_list(self.album_items(&album), start as usize);
+    }
+
+    /// Plays one of an extra's audio files (not counted as a listen: it isn't a track).
+    pub fn play_extra(&self, file: String, name: String, kind: String, duration_ms: Option<i64>) {
+        let Some(file) = parse_id(&file) else { return };
+        let item = QueueItem {
+            track_id: file,
+            file_id: file,
+            source: acetate_core::playback::AudioSource::Extra,
+            title: name,
+            artist: kind,
+            album: None,
+            duration_ms,
+            cover: None,
+            codec: None,
+        };
+        self.player().play_list(vec![item], 0);
     }
 
     /// Plays tracks by id (an artist's, a playlist's) from `start`.

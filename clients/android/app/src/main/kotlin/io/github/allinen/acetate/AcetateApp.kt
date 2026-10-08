@@ -68,6 +68,9 @@ class Model(dataDir: String) : Listener {
     var detailsVersion by mutableIntStateOf(0)
         private set
 
+    /** A video being watched (full screen), if any. */
+    var video by mutableStateOf<VideoRef?>(null)
+
     /** Bumped when a star or rating changed (read `core.mark(id)` again). */
     var marksVersion by mutableIntStateOf(0)
         private set
