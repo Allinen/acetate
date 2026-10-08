@@ -35,6 +35,7 @@ files are copied).
 - **Desktop app** (Linux, Windows): download it from the
   [releases page](https://github.com/Allinen/acetate/releases), or build it with
   `clients/desktop/install.sh`. This is the intended way to use Acetate.
+- **Android app:** see [The Android app](android.md). Listening, playlists, search and downloads.
 - **Web UI:** `http://<your-server>:3000`. Simpler, lacks many features - fine for visitors.
 
 Log in with the user you created. Then press `?` to see the keys, and `Ctrl+K` to open the

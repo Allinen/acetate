@@ -6,6 +6,7 @@
 - [Listening](listening.md)
   - [Searching and filtering](searching.md)
   - [Keys](keys.md)
+- [The Android app](android.md)
 - [Editing](editing/README.md)
   - [The track editor](editing/editor.md)
   - [The track page](editing/track-page.md)

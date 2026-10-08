@@ -1,3 +1,4 @@
+import java.util.Properties
 import javax.inject.Inject
 import org.gradle.process.ExecOperations
 
@@ -69,8 +70,33 @@ android {
         applicationId = "io.github.allinen.acetate"
         minSdk = 29
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0"
+        // -Pacetate.versionCode=2 -Pacetate.versionName=0.2.0 for a release.
+        versionCode = (findProperty("acetate.versionCode") as String?)?.toInt() ?: 1
+        versionName = (findProperty("acetate.versionName") as String?) ?: "0.1.0"
+    }
+
+    // The key a release is signed with: `keystore.properties` next to settings.gradle.kts
+    // (git-ignored: storeFile, storePassword, keyAlias, keyPassword), or the environment
+    // (ACETATE_KEYSTORE, ACETATE_KEYSTORE_PASSWORD, ACETATE_KEY_ALIAS, ACETATE_KEY_PASSWORD).
+    // Without one, a release is signed with the debug key: it installs, but it isn't one to
+    // publish (see docs/android.md).
+    val keys = Properties().apply {
+        val file = rootProject.file("keystore.properties")
+        if (file.exists()) file.inputStream().use { load(it) }
+    }
+    fun key(name: String, env: String): String? = keys.getProperty(name) ?: System.getenv(env)
+    val releaseKey = listOf(
+        key("storeFile", "ACETATE_KEYSTORE"), key("storePassword", "ACETATE_KEYSTORE_PASSWORD"),
+        key("keyAlias", "ACETATE_KEY_ALIAS"), key("keyPassword", "ACETATE_KEY_PASSWORD"),
+    )
+    val hasReleaseKey = releaseKey.all { it != null }
+    signingConfigs {
+        if (hasReleaseKey) create("release") {
+            storeFile = rootProject.file(releaseKey[0]!!)
+            storePassword = releaseKey[1]
+            keyAlias = releaseKey[2]
+            keyPassword = releaseKey[3]
+        }
     }
 
     buildTypes {
@@ -79,10 +105,18 @@ android {
             applicationIdSuffix = ".debug"
         }
         release {
-            // Not shrunk yet; signed with the debug key so it can be installed for testing
-            // (a real signing key comes with the release docs).
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            signingConfig = if (hasReleaseKey) signingConfigs.getByName("release") else signingConfigs.getByName("debug")
+        }
+        // The release as built for publishing, but installable next to the others and signed with
+        // the debug key: for trying what shrinking does before a release.
+        create("stage") {
+            initWith(getByName("release"))
+            applicationIdSuffix = ".stage"
             signingConfig = signingConfigs.getByName("debug")
+            matchingFallbacks += "release"
         }
     }
 
