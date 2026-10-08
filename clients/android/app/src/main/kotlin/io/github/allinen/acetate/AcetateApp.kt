@@ -51,6 +51,13 @@ class Model(dataDir: String) : Listener {
     var playerVersion by mutableIntStateOf(0)
         private set
 
+    /** Bumped when a star or rating changed (read `core.mark(id)` again). */
+    var marksVersion by mutableIntStateOf(0)
+        private set
+
+    /** Something to tell the user once (a change that failed); the screen clears it. */
+    var notice by mutableStateOf<String?>(null)
+
     val playback = core.playback()
 
     /** What plays and the queue, as of the last [Change.PLAYER]. */
@@ -76,6 +83,7 @@ class Model(dataDir: String) : Listener {
                     player = playback.state()
                     playerVersion++
                 }
+                Change.MARKS -> marksVersion++
                 Change.CATALOG -> {
                     catalogVersion++
                     // For measuring (adb logcat -s Acetate): how long from the process starting.
@@ -87,6 +95,10 @@ class Model(dataDir: String) : Listener {
             }
             sync = core.syncState()
         }
+    }
+
+    override fun problem(message: String) {
+        main.post { notice = message }
     }
 
     fun logout() = core.logout()

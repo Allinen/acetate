@@ -12,6 +12,7 @@ impl Listener for Events {
     fn changed(&self, what: Change) {
         self.0.lock().unwrap().push(what);
     }
+    fn problem(&self, _message: String) {}
 }
 
 const SERVER: &str = "http://127.0.0.1:1";
@@ -263,4 +264,23 @@ fn the_queue_comes_back_after_a_restart_paused() {
     let took = engine.took();
     assert!(took[0].starts_with("play Second ") && took[0].contains("paused"), "{took:?}");
     assert_eq!(took[1], "next The Third");
+}
+
+#[test]
+fn a_star_shows_at_once_and_goes_back_when_the_server_refuses() {
+    let (_dir, core, events) = core(true);
+    synced(&core);
+    let id = "00000000-0000-7000-8000-000000000001".to_string();
+    assert!(!core.mark(id.clone()).starred);
+    core.set_starred(MarkOn::Track, id.clone(), true);
+    assert!(core.mark(id.clone()).starred, "shown before the server answers");
+    core.set_rating(MarkOn::Track, id.clone(), 7);
+    assert_eq!(core.mark(id.clone()).rating, 7);
+    // The server isn't there: both changes go back.
+    let start = Instant::now();
+    while core.mark(id.clone()).starred || core.mark(id.clone()).rating != 0 {
+        assert!(start.elapsed() < Duration::from_secs(10), "the changes went back");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(events.0.lock().unwrap().contains(&Change::Marks));
 }

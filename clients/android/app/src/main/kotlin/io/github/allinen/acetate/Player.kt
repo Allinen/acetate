@@ -26,6 +26,7 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import uniffi.acetate_ffi.MarkOn
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -180,6 +181,10 @@ fun NowPlaying(model: Model) {
                         listOfNotNull(current.artist, current.album).joinToString(" · "), maxLines = 2,
                         overflow = TextOverflow.Ellipsis, color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        RatingBar(model, MarkOn.TRACK, current.id)
+                        StarToggle(model, MarkOn.TRACK, current.id)
+                    }
                     val length = (current.durationMs ?: 0L).toFloat()
                     Slider(
                         value = dragging ?: position.toFloat().coerceAtMost(length.coerceAtLeast(1f)),

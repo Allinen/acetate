@@ -25,7 +25,9 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import uniffi.acetate_ffi.MarkOn
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 
@@ -66,7 +68,11 @@ fun AlbumScreen(model: Model, id: String) {
                         "${album.trackCount} tracks · ${duration(album.durationMs)}",
                         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    Spacer(Modifier.height(8.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        RatingBar(model, MarkOn.ALBUM, id)
+                        Spacer(Modifier.weight(1f))
+                        StarToggle(model, MarkOn.ALBUM, id)
+                    }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Button({
                             if (model.player.shuffle) model.playback.toggleShuffle()
@@ -91,6 +97,7 @@ fun AlbumScreen(model: Model, id: String) {
                             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
+                    if (rememberMark(model, t.id).starred) Text("★", color = MaterialTheme.colorScheme.primary)
                     t.durationMs?.let {
                         Text(duration(it), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
@@ -113,6 +120,11 @@ fun ArtistScreen(model: Model, id: String) {
                         "${artist.albumCount} albums · ${artist.trackCount} tracks",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        RatingBar(model, MarkOn.ARTIST, id)
+                        Spacer(Modifier.weight(1f))
+                        StarToggle(model, MarkOn.ARTIST, id)
+                    }
                 }
             }
             items(albums.size, key = { it }) { i -> AlbumItem(model, albums[i]) }

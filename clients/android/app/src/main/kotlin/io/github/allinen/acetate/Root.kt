@@ -11,6 +11,13 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.Composable
 
 @Composable
@@ -33,6 +40,14 @@ fun Root(model: Model) {
             }
             if (model.player.current != null) MiniPlayer(model)
         }
+        val snacks = remember { SnackbarHostState() }
+        LaunchedEffect(model.notice) {
+            model.notice?.let {
+                snacks.showSnackbar(it)
+                model.notice = null
+            }
+        }
+        SnackbarHost(snacks, Modifier.align(Alignment.BottomCenter).windowInsetsPadding(WindowInsets.navigationBars).padding(bottom = 72.dp))
         AnimatedVisibility(model.nowPlaying, enter = slideInVertically { it }, exit = slideOutVertically { it }) {
             NowPlaying(model)
         }
