@@ -410,7 +410,11 @@ impl Core {
         let mut keeping = self.shared.keeping.lock().unwrap();
         if keeping.as_deref() != Some(&key) {
             self.shared.player.keep_with(Resume::new(&self.data_dir, &key));
+            self.shared.player.keep_listens(self.data_dir.join(format!("unsent-{key}.json")));
             *keeping = Some(key);
+        } else {
+            // Back to the front: the connection may be back.
+            self.shared.player.send_unsent();
         }
         drop(keeping);
         let shared = self.shared.clone();

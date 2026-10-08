@@ -27,6 +27,7 @@ class AcetateApp : Application() {
         // Before the core: its first request checks a certificate.
         Tls.init(this)
         model = Model(filesDir.path)
+        model.quality = Quality(this, model)
     }
 }
 
@@ -59,6 +60,13 @@ class Model(dataDir: String) : Listener {
     var notice by mutableStateOf<String?>(null)
 
     val playback = core.playback()
+
+    /** Set once the application exists (it needs a context). */
+    lateinit var quality: Quality
+
+    fun post(work: () -> Unit) {
+        main.post(work)
+    }
 
     /** What plays and the queue, as of the last [Change.PLAYER]. */
     var player by mutableStateOf(playback.state())

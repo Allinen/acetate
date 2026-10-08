@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 
 use uuid::Uuid;
 
+use super::unsent::Unsent;
 use super::queue::{self, Queue, Upcoming};
 use super::scrobble::Listen;
 use super::{AudioSource, PlayerView, QueueItem};
@@ -82,6 +83,8 @@ pub struct Player {
     runtime: tokio::runtime::Handle,
     waker: crate::Waker,
     resume: Mutex<Option<Resume>>,
+    /// Listens to report again (see `unsent`).
+    unsent: Arc<Mutex<Option<Unsent>>>,
 }
 
 impl Player {
@@ -105,6 +108,7 @@ impl Player {
             runtime,
             waker,
             resume: Mutex::new(None),
+            unsent: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -128,6 +132,25 @@ impl Player {
     /// Keeps the queue between runs from now on (see `resume`).
     pub fn keep_with(&self, resume: Resume) {
         *self.resume.lock().unwrap() = Some(resume);
+    }
+
+    /// Keeps listens that couldn't be reported in `file`, and reports the ones kept there
+    /// from before now.
+    pub fn keep_listens(&self, file: std::path::PathBuf) {
+        *self.unsent.lock().unwrap() = Some(Unsent::load(file));
+        self.send_unsent();
+    }
+
+    /// Reports the listens kept for later again (call when the connection may be back).
+    pub fn send_unsent(&self) {
+        let Some(api) = self.api.clone() else { return };
+        let tracks = match self.unsent.lock().unwrap().as_mut() {
+            Some(unsent) => unsent.take(),
+            None => return,
+        };
+        for track in tracks {
+            self.report(api.clone(), track);
+        }
     }
 
     // ---- What to play ----
@@ -393,12 +416,24 @@ impl Player {
 
     fn report_listen(&self, track: Uuid) {
         let Some(api) = self.api.clone() else { return };
+        self.report(api, track);
+        self.waker.changed();
+    }
+
+    /// Sends one listen; if the server can't be reached it's kept for later (an answer, even
+    /// a refusal, settles it).
+    fn report(&self, api: Api, track: Uuid) {
+        let unsent = self.unsent.clone();
         self.runtime.spawn(async move {
             if let Err(err) = api.played(track).await {
                 eprintln!("couldn't report a listen of {track}: {err}");
+                if err.status.is_none() {
+                    if let Some(unsent) = unsent.lock().unwrap().as_mut() {
+                        unsent.add(track);
+                    }
+                }
             }
         });
-        self.waker.changed();
     }
 }
 
