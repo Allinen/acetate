@@ -161,6 +161,9 @@ impl SettingsPage {
             hint(ui, "Copies are Opus, made by the server (and kept there). A lower quality downloads less; it applies from the next track.");
             hint(ui, "9 and 0 turn it down and up, m mutes, anywhere outside a text field.");
 
+            section(ui, "Equalizer");
+            self.equalizer(ui, shell);
+
             section(ui, "Account");
             let session = shell.api.session();
             egui::Grid::new("account").num_columns(2).spacing([24.0, 10.0]).show(ui, |ui| {
@@ -311,6 +314,45 @@ impl SettingsPage {
 }
 
 impl SettingsPage {
+    /// Ten bands, an octave apart; heard as they're moved.
+    fn equalizer(&mut self, ui: &mut egui::Ui, shell: &mut Shell) {
+        use crate::playback::eq::{headroom_db, BANDS, RANGE_DB};
+        let (mut enabled, mut gains) = (shell.settings.eq_enabled, shell.settings.eq_gains);
+        let mut changed = false;
+        ui.horizontal(|ui| {
+            changed |= ui.checkbox(&mut enabled, "On").changed();
+            if ui.add_enabled(gains != [0.0; 10], egui::Button::new("Flat")).clicked() {
+                gains = [0.0; 10];
+                changed = true;
+            }
+        });
+        ui.add_space(6.0);
+        ui.add_enabled_ui(enabled, |ui| {
+            ui.horizontal(|ui| {
+                for (gain, &hz) in gains.iter_mut().zip(&BANDS) {
+                    ui.vertical(|ui| {
+                        ui.set_width(52.0);
+                        ui.vertical_centered(|ui| {
+                            ui.label(RichText::new(format!("{:+.0}", *gain)).color(P.muted).small());
+                            let slider = egui::Slider::new(gain, -RANGE_DB..=RANGE_DB).vertical().show_value(false);
+                            if ui.add_sized([20.0, 140.0], slider).double_clicked() {
+                                *gain = 0.0;
+                            }
+                            let name = if hz >= 1000.0 { format!("{}k", hz / 1000.0) } else { format!("{hz}") };
+                            ui.label(RichText::new(name).color(P.faint).small());
+                        });
+                    });
+                }
+            });
+        });
+        if changed || (enabled, gains) != (shell.settings.eq_enabled, shell.settings.eq_gains) {
+            shell.act(Action::SetEqualizer(enabled, gains));
+        }
+        let headroom = headroom_db(&gains);
+        let note = if enabled && headroom < -0.05 { format!(" The sound is lowered by {:.0} dB to make room for the boosts, so they can't clip.", -headroom) } else { String::new() };
+        hint(ui, &format!("Gain in dB per band (Hz); double-click a band to flatten it.{note}"));
+    }
+
     /// What the app holds: in all (measured), and its big parts.
     fn memory(&mut self, ui: &mut egui::Ui, shell: &Shell) {
         let mb = |bytes: u64| format!("{} MB", thousands((bytes / 1_000_000) as usize));

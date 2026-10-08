@@ -2,6 +2,7 @@
 //! gapless playback. Runs on the async side; the audio itself is `engine`'s thread.
 
 pub mod engine;
+pub mod eq;
 pub mod opus;
 pub mod media_keys;
 pub use acetate_core::playback::{AudioSource, PlayerView, QueueItem, queue, queue_item, scrobble};
@@ -458,6 +459,11 @@ impl Controller {
         self.view.lock().unwrap().volume = volume;
         self.view.lock().unwrap().muted = muted;
         self.ctx.request_repaint();
+    }
+
+    /// The equalizer: on or off, and each band's gain (dB, see `eq::BANDS`).
+    pub fn set_equalizer(&self, enabled: bool, gains: eq::Gains) {
+        self.send(Command::Equalizer(enabled, gains));
     }
 
     pub fn volume(&self) -> (f32, bool) {

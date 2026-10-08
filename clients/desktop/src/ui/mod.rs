@@ -104,6 +104,8 @@ pub enum Action {
     SetOutput(Option<String>),
     /// Stream copies at this quality (kbps); None: as the server decides.
     SetStreamQuality(Option<u32>),
+    /// The equalizer: on or off, and each band's gain (dB).
+    SetEqualizer(bool, [f32; 10]),
     /// Loop the current track (or stop looping it).
     ToggleRepeat,
     ToggleShuffle,
@@ -720,6 +722,7 @@ impl App {
         }
         shell.controller.set_volume(shell.settings.volume, shell.settings.muted);
         shell.runtime.block_on(shell.controller.set_quality(shell.settings.stream_kbps));
+        shell.controller.set_equalizer(shell.settings.eq_enabled, shell.settings.eq_gains);
         if let Some(output) = shell.settings.output.clone() {
             let c = shell.controller.clone();
             shell.runtime.spawn(async move { c.set_output(Some(output)).await });
@@ -987,6 +990,13 @@ impl App {
                     self.shell.settings.save(&self.shell.data_dir);
                     let c = self.shell.controller.clone();
                     self.shell.runtime.spawn(async move { c.set_quality(kbps).await });
+                }
+                Action::SetEqualizer(enabled, gains) => {
+                    // Heard at once; saved a second after the last change, like the volume.
+                    self.shell.settings.eq_enabled = enabled;
+                    self.shell.settings.eq_gains = gains;
+                    self.shell.controller.set_equalizer(enabled, gains);
+                    self.settings_changed = Some(Instant::now());
                 }
                 Action::ToggleRepeat => {
                     let c = self.shell.controller.clone();

@@ -27,11 +27,14 @@ pub struct Settings {
     /// Stream copies at this quality (kbps, one the server makes); None: as the server
     /// decides (the original if you may have it).
     pub stream_kbps: Option<u32>,
+    /// The equalizer is on, and each band's gain in dB (`playback::eq::BANDS`).
+    pub eq_enabled: bool,
+    pub eq_gains: [f32; 10],
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { volume: 0.8, muted: false, output: None, table_columns: Default::default(), merge_along: true, show_remaining: false, stream_kbps: None }
+        Settings { volume: 0.8, muted: false, output: None, table_columns: Default::default(), merge_along: true, show_remaining: false, stream_kbps: None, eq_enabled: false, eq_gains: [0.0; 10] }
     }
 }
 

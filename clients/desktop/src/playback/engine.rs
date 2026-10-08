@@ -10,7 +10,7 @@
 //! a sound once it's queued), so turning repeat or shuffle on or off changes what comes
 //! next even in a track's last second.
 //!
-//! Every track goes through a `Tap`, which copies what's played (mixed down to mono)
+//! Every track goes through the equalizer (`eq`) and then a `Tap`, which copies what's played (mixed down to mono)
 //! into a shared `Scope` for the visualizer.
 
 use std::collections::VecDeque;
@@ -24,6 +24,7 @@ use uuid::Uuid;
 use rodio::source::SeekError;
 use rodio::{ChannelCount, Decoder, DeviceSinkBuilder, Player, Sample, SampleRate, Source};
 
+use super::eq::{Equalized, Equalizer, Gains};
 use super::opus::OpusSource;
 use super::stream::RemoteFile;
 
@@ -58,6 +59,8 @@ pub enum Command {
     /// Play through this output device (by its name; None: the system's default). What
     /// played stops: the controller starts it again there.
     Output(Option<String>),
+    /// The equalizer: on or off, and each band's gain (dB). Applies at once, to what plays too.
+    Equalizer(bool, Gains),
 }
 
 /// What the audio thread reports, read by the controller.
@@ -130,7 +133,8 @@ pub fn start(
         let mut pair: Option<Pair_> = None;
         // Two files opened and in place, waiting for `Compare`.
         let mut warm: Option<Warm> = None;
-        let open_track = |file: RemoteFile| -> Result<Track, String> { Ok(Box::new(Tap::new(decode(file)?, tap_scope.clone()))) };
+        let equalizer = Arc::new(Equalizer::default());
+        let open_track = |file: RemoteFile| -> Result<Track, String> { Ok(Box::new(Tap::new(Equalized::new(decode(file)?, equalizer.clone()), tap_scope.clone()))) };
         loop {
             // Short waits while fading in (the volume moves in small steps), else 30 ms.
             let wait = if fading_in.is_some() { Duration::from_millis(5) } else { Duration::from_millis(30) };
@@ -166,7 +170,7 @@ pub fn start(
                                     let opened = match (decode(a.1), decode(b.1)) {
                                         (Ok(x), Ok(y)) => {
                                             let (x, y) = unify(x, y);
-                                            Ok(Box::new(Tap::new(Pair::new(x, y, select.clone()), tap_scope.clone())) as Track)
+                                            Ok(Box::new(Tap::new(Equalized::new(Pair::new(x, y, select.clone()), equalizer.clone()), tap_scope.clone())) as Track)
                                         }
                                         (Err(err), _) | (_, Err(err)) => Err(err),
                                     };
@@ -184,7 +188,7 @@ pub fn start(
                         if let (Ok(x), Ok(y)) = (decode(a.1), decode(b.1)) {
                             let (x, y) = unify(x, y);
                             let select = Arc::new(AtomicBool::new(false));
-                            let mut track: Track = Box::new(Tap::new(Pair::new(x, y, select.clone()), tap_scope.clone()));
+                            let mut track: Track = Box::new(Tap::new(Equalized::new(Pair::new(x, y, select.clone()), equalizer.clone()), tap_scope.clone()));
                             // (Seeking is what takes the time: the download is asked to go there.)
                             if at > Duration::ZERO {
                                 let _ = track.try_seek(at);
@@ -238,6 +242,7 @@ pub fn start(
                         volume = amplitude;
                         player.set_volume(volume);
                     }
+                    Command::Equalizer(enabled, gains) => equalizer.set(enabled, gains),
                     Command::Output(name) => {
                         if let Some(opened) = open_output(name.as_deref(), &errors) {
                             pair = None;
