@@ -1,5 +1,6 @@
 package io.github.allinen.acetate
 
+import androidx.compose.material3.Slider
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
@@ -108,6 +109,16 @@ private fun SettingsDialog(model: Model, close: () -> Unit) {
                 QualityChoice("Quality on Wi-Fi", q.unmetered, q::chooseUnmetered)
                 Spacer(Modifier.height(12.dp))
                 QualityChoice("Quality on mobile data", q.metered, q::chooseMetered)
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    if (Output.reduction == 0) "Output level: full" else "Output level: −${Output.reduction} dB",
+                    style = MaterialTheme.typography.labelLarge,
+                )
+                // Below the phone's own volume: for when its lowest step is still too loud.
+                Slider(
+                    value = Output.reduction.toFloat(), onValueChange = { Output.set(it.toInt()) },
+                    valueRange = 0f..30f, steps = 29,
+                )
             }
         },
     )

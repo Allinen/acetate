@@ -26,6 +26,7 @@ class AcetateApp : Application() {
         super.onCreate()
         // Before the core: its first request checks a certificate.
         Tls.init(this)
+        Output.init(this)
         model = Model(filesDir.path)
         model.quality = Quality(this, model)
     }

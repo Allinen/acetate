@@ -76,6 +76,7 @@ class PlaybackService : MediaLibraryService() {
             .setWakeMode(C.WAKE_MODE_NETWORK)
             .setLoadControl(DefaultLoadControl.Builder().setBufferDurationsMs(30_000, 120_000, 1_500, 3_000).build())
             .build()
+        Output.attach(player)
 
         player.addListener(object : Player.Listener {
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
@@ -140,6 +141,7 @@ class PlaybackService : MediaLibraryService() {
             release()
             session = null
         }
+        Output.attach(null)
         player.release()
         super.onDestroy()
     }
