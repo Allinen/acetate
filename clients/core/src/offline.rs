@@ -88,6 +88,8 @@ pub struct Status {
     pub paused: bool,
     /// Bytes of the file coming now.
     pub current_bytes: u64,
+    /// Every byte fetched since the app started.
+    pub received: u64,
 }
 
 /// The tracks one pin covers (places in the catalog): an album's, a playlist's, the liked
@@ -152,6 +154,8 @@ pub struct Offline {
     working: AtomicBool,
     stop: AtomicBool,
     current_bytes: AtomicU64,
+    /// Every byte fetched since the app started (for a speed).
+    received: AtomicU64,
 }
 
 impl Offline {
@@ -176,6 +180,7 @@ impl Offline {
             working: AtomicBool::new(false),
             stop: AtomicBool::new(false),
             current_bytes: AtomicU64::new(0),
+            received: AtomicU64::new(0),
         }))
     }
 
@@ -345,6 +350,7 @@ impl Offline {
             failed: inner.failed.len(),
             paused: self.paused.load(Ordering::SeqCst),
             current_bytes: self.current_bytes.load(Ordering::SeqCst),
+            received: self.received.load(Ordering::SeqCst),
         }
     }
 
@@ -420,6 +426,7 @@ impl Offline {
                 None,
                 &|n| {
                     self.current_bytes.fetch_add(n, Ordering::SeqCst);
+                    self.received.fetch_add(n, Ordering::SeqCst);
                 },
                 &|| self.stop.load(Ordering::SeqCst),
             )

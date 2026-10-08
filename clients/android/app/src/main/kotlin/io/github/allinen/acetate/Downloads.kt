@@ -123,6 +123,14 @@ fun DownloadsScreen(model: Model) {
                         "${d.files} files · ${megabytes(d.bytes.toLong())}" + if (d.queued > 0uL) " · ${d.queued} coming" else "",
                         style = MaterialTheme.typography.titleMedium,
                     )
+                    if (d.queued > 0uL) Text(
+                        when {
+                            d.paused -> "Stopped"
+                            model.downloadSpeed > 0 -> "${speedText(model.downloadSpeed)} · ${megabytes(d.currentBytes.toLong())} of the file coming now"
+                            else -> "Waiting for the connection"
+                        },
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                     if (d.failed > 0uL) Text("${d.failed} couldn't be fetched", color = MaterialTheme.colorScheme.error)
                     if (d.queued > 0uL) TextButton({ if (d.paused) model.core.resumeDownloads() else model.core.pauseDownloads() }) {
                         Text(if (d.paused) "Resume" else "Stop")

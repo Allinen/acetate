@@ -258,6 +258,9 @@ pub struct DownloadsInfo {
     pub failed: u64,
     /// Stopped by the user.
     pub paused: bool,
+    /// Every byte fetched since the app started, and of the file coming now.
+    pub received: u64,
+    pub current_bytes: u64,
 }
 
 /// An artist as credited somewhere, to go to their page.
@@ -944,6 +947,8 @@ impl Core {
             done: status.done as u64,
             failed: status.failed as u64,
             paused: status.paused,
+            received: status.received,
+            current_bytes: status.current_bytes,
         }
     }
 

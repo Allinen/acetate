@@ -88,7 +88,7 @@ fun SyncLine(model: Model) {
     Row(Modifier.fillMaxWidth().padding(16.dp, 0.dp, 8.dp, 0.dp), verticalAlignment = Alignment.CenterVertically) {
         Text(
             when {
-                model.downloads.queued > 0uL -> "↓ ${model.downloads.done} of ${model.downloads.asked}"
+                model.downloads.queued > 0uL -> "↓ ${model.downloads.done} of ${model.downloads.asked}" + if (model.downloadSpeed > 0) " · ${speedText(model.downloadSpeed)}" else if (model.downloads.paused) " · stopped" else " · waiting"
                 s.error != null && !s.haveCatalog -> s.error!!
                 !s.haveCatalog -> "Loading the library…"
                 else -> "${s.albums} albums · ${s.tracks} tracks" + if (s.refreshing) " · updating…" else ""

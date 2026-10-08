@@ -79,7 +79,9 @@ class Model(dataDir: String) : Listener {
 
     /** What's kept on the device, as of the last [Change.DOWNLOADS]. */
     var downloads by mutableStateOf(core.downloads())
-        private set
+
+    /** How fast downloads are coming now, in bytes per second (read while they run). */
+    var downloadSpeed by mutableStateOf(0L)
 
     /** The app's context, set at start (the download service needs it). */
     lateinit var context: android.content.Context
