@@ -52,6 +52,11 @@ aren't transcoded.
 of the server's copy qualities (for less to download), or Automatic. It applies from the next
 track you play. The queue's next track is fetched again at the new quality.
 
+**Equalizer** (desktop Settings → Equalizer): ten bands, an octave apart (31 Hz to 16 kHz),
+±12 dB each; double-click a band to flatten it. It's heard at once, applies to everything
+played, and is remembered. To keep a boost from clipping, the whole sound is lowered by the
+largest boost (the settings say by how much).
+
 The web UI's **Download** on a track page (needs `download_original`) gives the original
 file with the library's *current* title, artists, album, track and disc number, date, genres,
 lyrics and main cover written into its tags. The stored file is never changed: the tags go
