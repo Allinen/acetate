@@ -252,6 +252,29 @@ impl Api {
         self.send_json(reqwest::Method::PUT, &format!("/api/{kind}/{id}/rating"), Some(serde_json::json!({ "rating": rating }))).await
     }
 
+    /// Makes a link anyone can listen with (`POST /api/shares`) to a track or album, which
+    /// stops working after `days` (None: never). The link's address.
+    pub async fn share(&self, target: crate::links::Target, days: Option<u32>) -> Result<String, ApiError> {
+        use crate::links::Target;
+        let mut body = match target {
+            Target::Track(id) => serde_json::json!({ "track_id": id }),
+            Target::Album(id) => serde_json::json!({ "album_id": id }),
+            Target::Artist(_) => {
+                return Err(ApiError { status: None, code: "unexpected".into(), message: "an artist can't be shared this way".into(), extra_id: None });
+            }
+        };
+        if let Some(days) = days {
+            body["expires_at"] = crate::links::expires_at(days).into();
+        }
+        #[derive(Deserialize)]
+        struct Created {
+            token: String,
+        }
+        let created: Created = self.send_json(reqwest::Method::POST, "/api/shares", Some(body)).await?;
+        let server = self.session().map(|s| s.server).unwrap_or_default();
+        Ok(format!("{}/s/{}", server.trim_end_matches('/'), created.token))
+    }
+
     /// Reports a listen (after half the track or 4 minutes).
     pub async fn played(&self, track: Uuid) -> Result<Annotation, ApiError> {
         self.send_json(reqwest::Method::POST, &format!("/api/tracks/{track}/played"), None).await

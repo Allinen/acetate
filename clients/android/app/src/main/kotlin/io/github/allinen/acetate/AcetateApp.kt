@@ -13,6 +13,7 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.setValue
 import uniffi.acetate_ffi.Change
 import uniffi.acetate_ffi.Core
+import uniffi.acetate_ffi.LinkTarget
 import uniffi.acetate_ffi.Listener
 import uniffi.acetate_ffi.SessionInfo
 import uniffi.acetate_ffi.SyncState
@@ -119,11 +120,30 @@ class Model(dataDir: String) : Listener {
                 }
             }
             sync = core.syncState()
+            if (pendingLink != null) openLink(null)
         }
     }
 
     override fun notice(message: String) {
         main.post { notice = message }
+    }
+
+    /** A link to open once there's a library to open it in. */
+    private var pendingLink: String? = null
+
+    /** Opens an `acetate://open/…` link (now, or when the library is there). */
+    fun openLink(text: String?) {
+        if (text != null) pendingLink = text
+        val link = pendingLink ?: return
+        if (session == null || !sync.haveCatalog) return
+        pendingLink = null
+        when (val target = core.resolveLink(link)) {
+            is LinkTarget.Album -> { pages.clear(); pages.add(Page.Album(target.id)); nowPlaying = false }
+            is LinkTarget.Artist -> { pages.clear(); pages.add(Page.Artist(target.id)); nowPlaying = false }
+            is LinkTarget.OtherServer -> notice = "That link is to another server (${target.server}); you're logged in to ${session?.server}."
+            LinkTarget.NotThere -> notice = "That isn't in your library (yet)."
+            LinkTarget.Invalid -> notice = "That isn't a link this app opens."
+        }
     }
 
     fun logout() = core.logout()

@@ -313,3 +313,23 @@ fn search_finds_by_words_and_keys_and_suggests() {
     assert_eq!(chips[0].line, "artist:Ann ");
     assert!(rt().block_on(core.search("".into(), 5)).tracks.is_empty());
 }
+
+#[test]
+fn links_lead_to_albums_and_artists_of_this_server() {
+    let (_dir, core, _events) = core(true);
+    synced(&core);
+    let album = "00000000-0000-7000-8000-0000000000b1";
+    let artist = "00000000-0000-7000-8000-0000000000a1";
+    let track = "00000000-0000-7000-8000-000000000001";
+    let here = "server=http%3A%2F%2F127.0.0.1%3A1";
+    assert_eq!(core.resolve_link(format!("acetate://open/album/{album}?{here}")), LinkTarget::Album { id: album.into() });
+    assert_eq!(core.resolve_link(format!("acetate://open/artist/{artist}?{here}")), LinkTarget::Artist { id: artist.into() });
+    assert_eq!(core.resolve_link(format!("acetate://open/track/{track}?{here}")), LinkTarget::Album { id: album.into() });
+    assert_eq!(
+        core.resolve_link(format!("acetate://open/album/{album}?server=https%3A%2F%2Felsewhere.example")),
+        LinkTarget::OtherServer { server: "https://elsewhere.example".into() }
+    );
+    assert_eq!(core.resolve_link("acetate://open/album/00000000-0000-7000-8000-0000000000ff".into()), LinkTarget::NotThere);
+    assert_eq!(core.resolve_link("hello".into()), LinkTarget::Invalid);
+    assert_eq!(core.open_link(MarkOn::Track, track.into()), Some(format!("http://127.0.0.1:1/open/track/{track}")));
+}

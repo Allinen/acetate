@@ -15,90 +15,8 @@
 
 use std::sync::mpsc;
 
-use uuid::Uuid;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Target {
-    Track(Uuid),
-    Album(Uuid),
-    Artist(Uuid),
-}
-
-impl Target {
-    fn kind(self) -> &'static str {
-        match self {
-            Target::Track(_) => "track",
-            Target::Album(_) => "album",
-            Target::Artist(_) => "artist",
-        }
-    }
-
-    fn id(self) -> Uuid {
-        match self {
-            Target::Track(id) | Target::Album(id) | Target::Artist(id) => id,
-        }
-    }
-}
-
-/// A link the app was opened with.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Link {
-    pub target: Target,
-    /// The server it's on (as the link says; None: it doesn't say).
-    pub server: Option<String>,
-}
-
-/// The link to share for `target` on `server` (a web address: it works in any browser).
-pub fn web(server: &str, target: Target) -> String {
-    format!("{}/open/{}/{}", server.trim_end_matches('/'), target.kind(), target.id())
-}
-
-/// Reads `acetate://open/<kind>/<id>?server=…` (or a web link, `…/open/<kind>/<id>`).
-pub fn parse(link: &str) -> Option<Link> {
-    let (path, query) = link.split_once('?').unwrap_or((link, ""));
-    let rest = match path.strip_prefix("acetate://") {
-        Some(rest) => rest.strip_prefix("open/")?,
-        None => &path[path.find("/open/")? + "/open/".len()..],
-    };
-    let (kind, id) = rest.trim_end_matches('/').split_once('/')?;
-    let id: Uuid = id.parse().ok()?;
-    let target = match kind {
-        "track" => Target::Track(id),
-        "album" => Target::Album(id),
-        "artist" => Target::Artist(id),
-        _ => return None,
-    };
-    let server = query.split('&').find_map(|p| p.strip_prefix("server=")).map(decode).or_else(|| {
-        // A web link says its server itself.
-        (!path.starts_with("acetate://")).then(|| path[..path.find("/open/").unwrap_or(0)].to_string())
-    });
-    Some(Link { target, server })
-}
-
-/// `%XX` escapes undone (a server address in a query).
-fn decode(text: &str) -> String {
-    let bytes = text.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%'
-            && let Some(byte) = text.get(i + 1..i + 3).and_then(|h| u8::from_str_radix(h, 16).ok())
-        {
-            out.push(byte);
-            i += 3;
-        } else {
-            out.push(bytes[i]);
-            i += 1;
-        }
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
-
-/// Whether two server addresses are the same server (a trailing slash, the case of the
-/// host don't matter).
-pub fn same_server(a: &str, b: &str) -> bool {
-    a.trim_end_matches('/').eq_ignore_ascii_case(b.trim_end_matches('/'))
-}
+pub use acetate_core::links::{Link, Target, parse, same_server, web};
 
 #[cfg(unix)]
 fn socket_path() -> std::path::PathBuf {
@@ -352,19 +270,6 @@ pub fn register() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn links_read_both_ways() {
-        let id = Uuid::from_u128(7);
-        let app = format!("acetate://open/album/{id}?server=https%3A%2F%2Fmusic.example.com");
-        assert_eq!(parse(&app), Some(Link { target: Target::Album(id), server: Some("https://music.example.com".into()) }));
-        let shared = web("https://music.example.com/", Target::Track(id));
-        assert_eq!(shared, format!("https://music.example.com/open/track/{id}"));
-        assert_eq!(parse(&shared), Some(Link { target: Target::Track(id), server: Some("https://music.example.com".into()) }));
-        assert_eq!(parse("acetate://open/playlist/x"), None);
-        assert_eq!(parse(&format!("acetate://open/artist/{id}")).unwrap().server, None);
-        assert!(same_server("https://Music.example.com/", "https://music.example.com"));
-    }
 
     #[test]
     fn the_program_a_command_runs() {

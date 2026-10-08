@@ -29,6 +29,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
@@ -93,6 +94,9 @@ fun AlbumScreen(model: Model, id: String) {
                         }) { Text("Shuffle") }
                         OutlinedButton({ model.playback.enqueueAlbum(id, false) }) { Text("Queue") }
                     }
+                    var sharing by remember { mutableStateOf(false) }
+                    TextButton({ sharing = true }) { Text("Share…") }
+                    if (sharing) ShareDialog(model, MarkOn.ALBUM, id, album.title) { sharing = false }
                 }
             }
             items(tracks.size, key = { it }) { i ->
@@ -151,6 +155,9 @@ fun ArtistScreen(model: Model, id: String) {
                             ids().let { model.playback.playTracks(it, randomStart(it.size)) }
                         }) { Text("Shuffle") }
                     }
+                    var sharing by remember { mutableStateOf(false) }
+                    TextButton({ sharing = true }) { Text("Share…") }
+                    if (sharing) ShareDialog(model, MarkOn.ARTIST, id, artist.name) { sharing = false }
                 }
             }
             items(albums.size, key = { it }) { i -> AlbumItem(model, albums[i]) }

@@ -13,6 +13,7 @@ use acetate_core::api::{Api, ApiError};
 use acetate_core::playback::player::{Engine, Load, Player};
 use acetate_core::playback::{QueueItem, queue, queue_item};
 use acetate_core::details::{Details, TrackDetail};
+use acetate_core::links;
 use acetate_core::playlists::Playlists;
 use acetate_core::resume::Resume;
 use acetate_core::catalog::index::{AlbumSort, ArtistSort, TrackRows, TrackSort};
@@ -171,6 +172,27 @@ fn lyrics_view(lyrics: &acetate_core::details::Lyrics) -> LyricsView {
 /// "Verse 1" or "Verse 1 · Wrenfield, Someone".
 fn heading_text(section: &acetate_core::lyrics::Section) -> String {
     if section.artists.is_empty() { section.label.clone() } else { format!("{} · {}", section.label, section.artists.join(", ")) }
+}
+
+/// Where a link leads.
+#[derive(Debug, Clone, PartialEq, uniffi::Enum)]
+pub enum LinkTarget {
+    Album { id: String },
+    Artist { id: String },
+    /// A link to another server than the one logged in to.
+    OtherServer { server: String },
+    /// Not in this library (yet).
+    NotThere,
+    /// Not a link this app opens.
+    Invalid,
+}
+
+fn link_target(on: MarkOn, id: Uuid) -> links::Target {
+    match on {
+        MarkOn::Track => links::Target::Track(id),
+        MarkOn::Album => links::Target::Album(id),
+        MarkOn::Artist => links::Target::Artist(id),
+    }
 }
 
 #[derive(Debug, Clone, Default, uniffi::Record)]
@@ -730,6 +752,50 @@ impl Core {
             Arc::new(TrackView { catalog, list })
         })
         .await
+    }
+
+    // ---- Links and sharing ----
+
+    /// The link to give someone who has an account (opens in their app or the browser).
+    pub fn open_link(&self, on: MarkOn, id: String) -> Option<String> {
+        let session = self.shared.api.session()?;
+        Some(links::web(&session.server, link_target(on, parse_id(&id)?)))
+    }
+
+    /// A link anyone can listen with (`POST /api/shares`), to a track or album, that stops
+    /// working after `days` (None: never).
+    pub async fn make_share(&self, on: MarkOn, id: String, days: Option<u32>) -> Result<String, CoreError> {
+        let Some(id) = parse_id(&id) else {
+            return Err(CoreError::Failed { code: "unexpected".into(), reason: "that isn't an id".into() });
+        };
+        let api = self.shared.api.clone();
+        let target = link_target(on, id);
+        self.runtime
+            .spawn(async move { api.share(target, days).await })
+            .await
+            .map_err(|e| CoreError::Failed { code: "unexpected".into(), reason: format!("the request stopped: {e}") })?
+            .map_err(CoreError::from)
+    }
+
+    /// What a link (`acetate://open/…` or a web link to the server) points to, here.
+    pub fn resolve_link(&self, text: String) -> LinkTarget {
+        let Some(link) = links::parse(&text) else { return LinkTarget::Invalid };
+        if let (Some(server), Some(session)) = (link.server.as_deref(), self.shared.api.session())
+            && !links::same_server(server, &session.server)
+        {
+            return LinkTarget::OtherServer { server: server.to_string() };
+        }
+        let Some(catalog) = self.shared.catalog() else { return LinkTarget::NotThere };
+        match link.target {
+            links::Target::Album(id) if catalog.album_index(id).is_some() => LinkTarget::Album { id: id.to_string() },
+            links::Target::Artist(id) if catalog.artist(id).is_some() => LinkTarget::Artist { id: id.to_string() },
+            // A track opens on its album.
+            links::Target::Track(id) => match catalog.track(id).and_then(|t| catalog.main_album(t)) {
+                Some(album) => LinkTarget::Album { id: album.id().to_string() },
+                None => LinkTarget::NotThere,
+            },
+            _ => LinkTarget::NotThere,
+        }
     }
 
     // ---- Lyrics ----

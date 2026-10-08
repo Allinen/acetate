@@ -41,6 +41,13 @@ class MainActivity : ComponentActivity() {
         if (android.os.Build.VERSION.SDK_INT >= 33) {
             requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 1)
         }
+        model.openLink(intent?.dataString)
         setContent { AcetateTheme { Root(model) } }
+    }
+
+    // A link opened while the app is running (it's one task: singleTask).
+    override fun onNewIntent(intent: android.content.Intent) {
+        super.onNewIntent(intent)
+        (application as AcetateApp).model.openLink(intent.dataString)
     }
 }

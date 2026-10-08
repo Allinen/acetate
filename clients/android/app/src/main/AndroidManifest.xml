@@ -20,10 +20,18 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
+            android:launchMode="singleTask"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <!-- acetate://open/<track|album|artist>/<id>?server=… (the server's /open page hands links here). -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="acetate" android:host="open" />
             </intent-filter>
         </activity>
         <!-- The player: Media3 plays, the core decides what (see PlaybackService). -->

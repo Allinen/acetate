@@ -23,6 +23,7 @@ pub mod api;
 pub mod catalog;
 pub mod commandline;
 pub mod details;
+pub mod links;
 pub mod lyrics;
 pub mod memory;
 pub mod playback;

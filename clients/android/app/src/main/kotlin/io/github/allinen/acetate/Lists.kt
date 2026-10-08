@@ -106,13 +106,16 @@ fun TrackMenu(
     extra: @Composable (() -> Unit) -> Unit = {},
 ) {
     var picking by remember { mutableStateOf(false) }
+    var sharing by remember { mutableStateOf(false) }
     DropdownMenu(open, close) {
         DropdownMenuItem({ Text("Play next") }, { model.playback.enqueueTracks(listOf(id), true); close() })
         DropdownMenuItem({ Text("Add to queue") }, { model.playback.enqueueTracks(listOf(id), false); close() })
         DropdownMenuItem({ Text("Add to playlist…") }, { picking = true; close() })
         DropdownMenuItem({ Text(if (starred) "Unstar" else "Star") }, { model.core.setStarred(MarkOn.TRACK, id, !starred); close() })
+        DropdownMenuItem({ Text("Share…") }, { sharing = true; close() })
         extra(close)
     }
+    if (sharing) ShareDialog(model, MarkOn.TRACK, id, "this track") { sharing = false }
     if (picking) PlaylistPicker(model, listOf(id)) { picking = false }
 }
 
