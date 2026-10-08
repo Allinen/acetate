@@ -112,6 +112,8 @@ fun TrackMenu(
         DropdownMenuItem({ Text("Add to queue") }, { model.playback.enqueueTracks(listOf(id), false); close() })
         DropdownMenuItem({ Text("Add to playlist…") }, { picking = true; close() })
         DropdownMenuItem({ Text(if (starred) "Unstar" else "Star") }, { model.core.setStarred(MarkOn.TRACK, id, !starred); close() })
+        val kept = remember(id, model.downloadsVersion) { model.core.isDownloading(uniffi.acetate_ffi.PinKind.TRACK, id) }
+        DropdownMenuItem({ Text(if (kept) "Remove download" else "Download") }, { model.core.download(uniffi.acetate_ffi.PinKind.TRACK, id, !kept); close() })
         DropdownMenuItem({ Text("Share…") }, { sharing = true; close() })
         extra(close)
     }
@@ -128,7 +130,7 @@ fun TrackItem(model: Model, row: TrackRow, extra: @Composable (() -> Unit) -> Un
     Box {
         Item(
             model, row.cover, (if (starred) "★ " else "") + row.title,
-            listOfNotNull(row.artist, row.album).joinToString(" · "),
+            (if (rememberDownloaded(model, row.id)) "↓ " else "") + listOfNotNull(row.artist, row.album).joinToString(" · "),
             Modifier.combinedClickable(onClick = onClick, onLongClick = { menu = true }),
             trailing = row.durationMs?.let(::duration), highlight = model.player.current?.id == row.id,
         )

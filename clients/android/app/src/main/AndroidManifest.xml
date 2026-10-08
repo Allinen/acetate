@@ -5,6 +5,7 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <!-- The server is whatever the user types: plain http on a LAN is allowed, and
@@ -34,6 +35,11 @@
                 <data android:scheme="acetate" android:host="open" />
             </intent-filter>
         </activity>
+        <!-- Downloads keep the app alive while they run (see DownloadService). -->
+        <service
+            android:name=".DownloadService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
         <!-- The player: Media3 plays, the core decides what (see PlaybackService). -->
         <service
             android:name=".PlaybackService"

@@ -67,7 +67,8 @@ class PlaybackService : MediaLibraryService() {
             .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
 
         player = ExoPlayer.Builder(this)
-            .setMediaSourceFactory(DefaultMediaSourceFactory(cached))
+            // Files on the device (downloads) are read from there, the rest through the cache.
+            .setMediaSourceFactory(DefaultMediaSourceFactory(androidx.media3.datasource.DefaultDataSource.Factory(this, cached)))
             .setAudioAttributes(
                 AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MUSIC).build(),
                 true,
@@ -174,7 +175,8 @@ class ExoEngine(private val player: ExoPlayer) : PlayerEngine {
     private val main = Handler(Looper.getMainLooper())
 
     private fun item(media: MediaRequest): MediaItem {
-        Auth.header = media.authorization
+        // A file on the device needs no login (and the last one's stays for what comes after).
+        if (media.authorization.isNotEmpty()) Auth.header = media.authorization
         val metadata = MediaMetadata.Builder()
             .setTitle(media.title)
             .setArtist(media.artist)

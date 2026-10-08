@@ -26,6 +26,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import uniffi.acetate_ffi.EntryRow
+import uniffi.acetate_ffi.PinKind
 import uniffi.acetate_ffi.TrackRow
 
 /** The Playlists tab: Liked songs (the starred tracks), then the playlists. */
@@ -157,6 +158,7 @@ private fun TracksPage(
                             model.playback.playTracks(ids, randomStart(ids.size))
                         }, enabled = ids.isNotEmpty()) { Text("Shuffle") }
                     }
+                    if (playlist != null) DownloadButton(model, PinKind.PLAYLIST, playlist.id) else if (title == "Liked songs") DownloadButton(model, PinKind.LIKED, "")
                 }
             }
             items(rows.size, key = { rows[it].second ?: rows[it].first.id }) { i ->

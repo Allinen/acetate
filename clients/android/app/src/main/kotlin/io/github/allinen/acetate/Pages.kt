@@ -95,6 +95,7 @@ fun AlbumScreen(model: Model, id: String) {
                     }
                     var sharing by remember { mutableStateOf(false) }
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+                        DownloadButton(model, uniffi.acetate_ffi.PinKind.ALBUM, id)
                         TextButton({ sharing = true }) { Text("Share…") }
                         ExtrasButton(model, MarkOn.ALBUM, id, album.title)
                     }
@@ -117,6 +118,7 @@ fun AlbumScreen(model: Model, id: String) {
                         )
                     }
                     if (starred) Text("★", color = MaterialTheme.colorScheme.primary)
+                    if (rememberDownloaded(model, t.id)) Text("↓", color = MaterialTheme.colorScheme.onSurfaceVariant)
                     t.durationMs?.let {
                         Text(duration(it), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }

@@ -29,6 +29,7 @@ class AcetateApp : Application() {
         Tls.init(this)
         Output.init(this)
         model = Model(filesDir.path)
+        model.context = this
         model.quality = Quality(this, model)
     }
 }
@@ -71,6 +72,17 @@ class Model(dataDir: String) : Listener {
     /** A video being watched (full screen), if any. */
     var video by mutableStateOf<VideoRef?>(null)
 
+    /** Bumped when downloads moved (a file came, was taken away, the queue changed). */
+    var downloadsVersion by mutableIntStateOf(0)
+        private set
+
+    /** What's kept on the device, as of the last [Change.DOWNLOADS]. */
+    var downloads by mutableStateOf(core.downloads())
+        private set
+
+    /** The app's context, set at start (the download service needs it). */
+    lateinit var context: android.content.Context
+
     /** Bumped when a star or rating changed (read `core.mark(id)` again). */
     var marksVersion by mutableIntStateOf(0)
         private set
@@ -110,8 +122,20 @@ class Model(dataDir: String) : Listener {
                     player = playback.state()
                     playerVersion++
                 }
-                Change.MARKS -> marksVersion++
-                Change.PLAYLISTS -> playlistsVersion++
+                Change.MARKS -> {
+                    marksVersion++
+                    // The liked songs may be kept on the device.
+                    core.refreshDownloads()
+                }
+                Change.PLAYLISTS -> {
+                    playlistsVersion++
+                    core.refreshDownloads()
+                }
+                Change.DOWNLOADS -> {
+                    downloadsVersion++
+                    downloads = core.downloads()
+                    if (downloads.queued > 0uL) DownloadService.start(context)
+                }
                 Change.DETAILS -> detailsVersion++
                 Change.CATALOG -> {
                     catalogVersion++

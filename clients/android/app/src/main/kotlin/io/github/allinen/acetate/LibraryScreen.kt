@@ -86,6 +86,7 @@ fun SyncLine(model: Model) {
     Row(Modifier.fillMaxWidth().padding(16.dp, 0.dp, 8.dp, 0.dp), verticalAlignment = Alignment.CenterVertically) {
         Text(
             when {
+                model.downloads.queued > 0uL -> "↓ ${model.downloads.done} of ${model.downloads.asked}"
                 s.error != null && !s.haveCatalog -> s.error!!
                 !s.haveCatalog -> "Loading the library…"
                 else -> "${s.albums} albums · ${s.tracks} tracks" + if (s.refreshing) " · updating…" else ""
@@ -112,6 +113,8 @@ private fun SettingsDialog(model: Model, close: () -> Unit) {
                 Spacer(Modifier.height(12.dp))
                 QualityChoice("Quality on mobile data", q.metered, q::chooseMetered)
                 Spacer(Modifier.height(12.dp))
+                DownloadSettings(model)
+                Spacer(Modifier.height(8.dp))
                 Text(
                     if (Output.reduction == 0) "Output level: full" else "Output level: −${Output.reduction} dB",
                     style = MaterialTheme.typography.labelLarge,
