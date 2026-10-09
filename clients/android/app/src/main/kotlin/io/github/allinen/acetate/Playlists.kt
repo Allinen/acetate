@@ -172,6 +172,7 @@ private fun TracksPage(
                         }, enabled = ids.isNotEmpty()) { Text("Shuffle") }
                     }
                     if (playlist != null) DownloadButton(model, PinKind.PLAYLIST, playlist.id) else if (title == "Liked songs") DownloadButton(model, PinKind.LIKED, "")
+                    if (model.editMode && mine && playlist != null) PlaylistEdits(model, playlist, rows)
                 }
             }
             if (rows.size > 5 || filter.isNotEmpty()) item {
@@ -194,4 +195,38 @@ private fun TracksPage(
             }
         }
     }
+}
+
+/** Edit mode on your own playlist: rename, put the entries in another order, delete (to the trash). */
+@Composable
+private fun PlaylistEdits(model: Model, playlist: uniffi.acetate_ffi.PlaylistPage, rows: List<Pair<TrackRow, String?>>) {
+    var renaming by remember { mutableStateOf(false) }
+    var deleting by remember { mutableStateOf(false) }
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp, androidx.compose.ui.Alignment.CenterHorizontally)) {
+        OutlinedButton({ renaming = true }) { Text("Rename") }
+        OutlinedButton({
+            model.reorder = ReorderSpec("Reorder ${playlist.name}", rows.mapNotNull { (t, e) -> e?.let { ReorderItem(it, t.title, t.artist) } }) { ids ->
+                model.core.reorderPlaylist(playlist.id, ids)
+                null
+            }
+        }, enabled = rows.size > 1) { Text("Reorder") }
+        OutlinedButton({ deleting = true }) { Text("Delete") }
+    }
+    if (renaming) {
+        var name by remember { mutableStateOf(playlist.name) }
+        AlertDialog(
+            onDismissRequest = { renaming = false },
+            title = { Text("Rename playlist") },
+            text = { OutlinedTextField(name, { name = it }, singleLine = true) },
+            confirmButton = { TextButton({ model.core.renamePlaylist(playlist.id, name.trim()); renaming = false }, enabled = name.isNotBlank() && name.trim() != playlist.name) { Text("Rename") } },
+            dismissButton = { TextButton({ renaming = false }) { Text("Cancel") } },
+        )
+    }
+    if (deleting) AlertDialog(
+        onDismissRequest = { deleting = false },
+        title = { Text("Delete “${playlist.name}”?") },
+        text = { Text("It goes to the trash; the server keeps it there.") },
+        confirmButton = { TextButton({ deleting = false; model.core.deletePlaylist(playlist.id, playlist.name); model.pages.removeAt(model.pages.lastIndex) }) { Text("Delete") } },
+        dismissButton = { TextButton({ deleting = false }) { Text("Cancel") } },
+    )
 }

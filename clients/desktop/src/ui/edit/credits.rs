@@ -4,26 +4,16 @@
 //! saved). The artist text people see is made from these by the server, never typed.
 
 use eframe::egui::{self, RichText};
-use uuid::Uuid;
 
 use super::inline_search::{Choice, InlineSearch};
 use super::{capitalized, combo};
-use crate::api::{Api, ApiError};
+
 use crate::catalog::search::Part;
 use crate::catalog::Catalog;
 use crate::ui::theme::PALETTE as P;
 use crate::ui::Shell;
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct CreditRow {
-    /// None: a new artist named `name`, made when the form is saved.
-    pub artist_id: Option<Uuid>,
-    /// The artist's name, and the alias's (for showing).
-    pub name: String,
-    pub role: String,
-    pub alias_id: Option<Uuid>,
-    pub alias: Option<String>,
-}
+pub use acetate_core::editor::forms::CreditRow;
 
 /// The editor's own state: the field artists are typed in.
 pub struct CreditsEditor {
@@ -123,56 +113,4 @@ impl CreditsEditor {
     }
 }
 
-/// Credits an artist (None: a new one): as primary if there's no primary yet, else as
-/// featured (`featured`: always featured). Not twice.
-pub fn add_artist(rows: &mut Vec<CreditRow>, id: Option<Uuid>, name: String, featured: bool) {
-    if id.is_some() && rows.iter().any(|c| c.artist_id == id) {
-        return;
-    }
-    let has_primary = rows.iter().any(|c| c.role == "primary");
-    let role = if featured || has_primary { "featured" } else { "primary" };
-    rows.push(CreditRow { artist_id: id, name, role: role.into(), alias_id: None, alias: None });
-}
-
-/// Rows from a details page's credits (a track's variant, an album): names as known.
-pub fn rows_from(credits: &[crate::details::Credit]) -> Vec<CreditRow> {
-    credits
-        .iter()
-        .map(|c| CreditRow { artist_id: Some(c.artist_id), name: c.artist_name.clone(), role: c.role.clone(), alias_id: c.alias_id, alias: c.alias.clone() })
-        .collect()
-}
-
-/// Makes the new artists (rows without an id), one per name even if credited twice, and
-/// fills in their ids. On an error, the ones made so far keep theirs.
-pub async fn make_new_artists(api: &Api, rows: &mut [CreditRow]) -> Result<(), ApiError> {
-    #[derive(serde::Deserialize)]
-    struct Created {
-        id: Uuid,
-    }
-    let mut made: Vec<(String, Uuid)> = Vec::new();
-    for row in rows.iter_mut().filter(|r| r.artist_id.is_none()) {
-        let id = match made.iter().find(|(n, _)| *n == row.name) {
-            Some((_, id)) => *id,
-            None => {
-                let created: Created = api.send_json(reqwest::Method::POST, "/api/artists", Some(serde_json::json!({ "name": row.name }))).await?;
-                made.push((row.name.clone(), created.id));
-                created.id
-            }
-        };
-        row.artist_id = Some(id);
-    }
-    Ok(())
-}
-
-/// The credits as the server takes them.
-pub fn to_json(rows: &[CreditRow]) -> Vec<serde_json::Value> {
-    rows.iter().map(|c| serde_json::json!({ "artist_id": c.artist_id, "role": c.role, "alias_id": c.alias_id })).collect()
-}
-
-/// After a save: rows still without an id get the one `sent` has for their name (the
-/// artist was made).
-pub fn take_ids(rows: &mut [CreditRow], sent: &[CreditRow]) {
-    for row in rows.iter_mut().filter(|r| r.artist_id.is_none()) {
-        row.artist_id = sent.iter().find(|s| s.name == row.name).and_then(|s| s.artist_id);
-    }
-}
+pub use acetate_core::editor::forms::{add_artist, make_new_artists, rows_from, take_ids};

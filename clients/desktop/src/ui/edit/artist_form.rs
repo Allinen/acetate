@@ -23,51 +23,9 @@ use crate::details::ArtistDetail;
 use crate::ui::theme::PALETTE as P;
 use crate::ui::{widgets, Action, Page, Shell};
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct AliasRow {
-    /// None: a new one.
-    pub id: Option<Uuid>,
-    pub name: String,
-}
+pub use acetate_core::editor::forms::{AliasRow, ArtistData};
 
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct ArtistData {
-    pub name: String,
-    pub disambiguation: String,
-    pub aliases: Vec<AliasRow>,
-}
-
-/// Where an alias is credited, as the server says (only what the user may see, and
-/// whether there's more).
-#[derive(Debug, Clone, Deserialize)]
-pub struct Uses {
-    #[serde(default)]
-    pub tracks: Vec<TrackUse>,
-    #[serde(default)]
-    pub albums: Vec<AlbumUse>,
-    #[serde(default)]
-    pub not_visible: bool,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct TrackUse {
-    pub track_id: Uuid,
-    pub title: String,
-    /// The version's label, if not the track's main one.
-    pub variant: Option<String>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct AlbumUse {
-    pub album_id: Uuid,
-    pub title: String,
-}
-
-impl Uses {
-    pub fn is_empty(&self) -> bool {
-        self.tracks.is_empty() && self.albums.is_empty() && !self.not_visible
-    }
-}
+pub use acetate_core::editor::forms::Uses;
 
 /// Where uses are answered: (the alias, where it's credited or why that's not known).
 pub type UsesAnswer = Arc<Mutex<Vec<(Uuid, Result<Uses, String>)>>>;
@@ -216,22 +174,7 @@ impl ArtistForm {
     }
 
     fn body(data: &ArtistData, base: Uuid, reason: &str) -> serde_json::Value {
-        let aliases: Vec<serde_json::Value> = data
-            .aliases
-            .iter()
-            .filter(|a| !a.name.trim().is_empty())
-            .map(|a| match a.id {
-                Some(id) => serde_json::json!({ "id": id, "name": a.name.trim() }),
-                None => serde_json::json!({ "name": a.name.trim() }),
-            })
-            .collect();
-        serde_json::json!({
-            "base_revision_id": base,
-            "name": data.name.trim(),
-            "disambiguation": data.disambiguation.trim(),
-            "aliases": aliases,
-            "reason": reason.trim(),
-        })
+        acetate_core::editor::forms::artist_body(data, base, reason)
     }
 
     pub fn save(&mut self, shell: &Shell) {

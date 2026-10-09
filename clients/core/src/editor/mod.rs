@@ -5,6 +5,7 @@
 
 pub mod diff;
 pub mod engine;
+pub mod forms;
 pub mod import;
 pub mod model;
 pub mod page_key;

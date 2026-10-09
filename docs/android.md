@@ -59,9 +59,18 @@ server's checks say, including which flags it fixes. **Save** writes it as one r
 with an optional reason, and offers **Undo** for a few seconds (it puts the earlier revision
 back as a new one; needs the right to restore revisions).
 
-Not on the phone yet: covers, lyrics, albums and artists (their own forms come next), and
-the desktop's credits-in-titles tool. Merging, review and the rest of library work stay on
-the desktop.
+**Albums and artists** have forms of their own (Edit album, Edit artist on their pages): title,
+kind, date and the credited artists (role, order, a new artist is made when you save) for an
+album; name, what tells it apart and the other names for an artist. Each saves as one
+revision, and if someone saved the same thing meanwhile it says so and offers their version.
+An other name that's still credited somewhere stays, and says where. **Edit all tracks** on an
+album opens the track editor for every track of it at once, with a preview for each.
+**Reorder** (albums, and your own playlists) is its own screen: drag the rows by their
+handles, then Save; nothing is written before. A playlist can also be renamed and deleted
+(to the trash) in edit mode.
+
+Not on the phone yet: covers and lyrics, and the desktop's credits-in-titles tool. Merging,
+review and the rest of library work stay on the desktop.
 
 ## Sound and data
 

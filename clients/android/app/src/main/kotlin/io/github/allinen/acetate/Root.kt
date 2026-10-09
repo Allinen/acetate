@@ -91,6 +91,12 @@ fun Root(model: Model) {
         }
         // An edit is above Now playing too.
         model.editor?.let { EditorScreen(model, it) }
+        when (val form = model.form) {
+            is FormRef.Album -> AlbumFormScreen(model, form.id)
+            is FormRef.Artist -> ArtistFormScreen(model, form.id)
+            null -> {}
+        }
+        model.reorder?.let { ReorderScreen(model, it) }
         // Last, so it's above everything (Now playing included).
         model.video?.let { VideoScreen(model, it) }
     }

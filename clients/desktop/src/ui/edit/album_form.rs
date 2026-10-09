@@ -19,15 +19,7 @@ use crate::details::AlbumDetail;
 use crate::ui::theme::PALETTE as P;
 use crate::ui::{Action, Shell};
 
-/// The album's data, as the form edits it.
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct AlbumData {
-    pub title: String,
-    pub kind: String,
-    /// As written (verbatim); empty: none.
-    pub release_date: String,
-    pub credits: Vec<CreditRow>,
-}
+pub use acetate_core::editor::forms::AlbumData;
 
 /// How a save went: what was sent (new artists' ids filled in), the new revision, or why
 /// not.
@@ -145,15 +137,7 @@ impl AlbumForm {
     }
 
     fn body(data: &AlbumData, base: Uuid, reason: &str) -> serde_json::Value {
-        let date = Some(data.release_date.trim()).filter(|d| !d.is_empty());
-        serde_json::json!({
-            "base_revision_id": base,
-            "title": data.title.trim(),
-            "kind": data.kind,
-            "release_date": date,
-            "credits": credits::to_json(&data.credits),
-            "reason": reason.trim(),
-        })
+        acetate_core::editor::forms::album_body(data, base, reason)
     }
 
     pub fn save(&mut self, shell: &Shell) {

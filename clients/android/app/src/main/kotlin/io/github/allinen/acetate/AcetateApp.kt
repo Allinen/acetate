@@ -128,6 +128,12 @@ class Model(dataDir: String) : Listener {
     var editorVersion by mutableIntStateOf(0)
         private set
 
+    /** A form (an album's, an artist's) open over everything. */
+    var form by mutableStateOf<FormRef?>(null)
+
+    /** A list being put in another order (over everything). */
+    var reorder by mutableStateOf<ReorderSpec?>(null)
+
     /** An edit that went through, to offer undoing for a while. */
     var undoOffer by mutableStateOf<UndoOffer?>(null)
 

@@ -235,6 +235,7 @@ impl Editor {
             .first()
             .and_then(|t| catalog.as_ref().and_then(|c| c.track_index(*t).map(|i| c.track_at(i).title().to_string())))
             .unwrap_or_default();
+        let title = if session.targets.len() > 1 { format!("{} tracks", session.targets.len()) } else { title };
         let rows = session
             .rows()
             .into_iter()

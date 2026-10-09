@@ -101,6 +101,11 @@ fun AlbumScreen(model: Model, id: String) {
                         ExtrasButton(model, MarkOn.ALBUM, id, album.title)
                     }
                     if (sharing) ShareDialog(model, MarkOn.ALBUM, id, album.title) { sharing = false }
+                    if (model.editMode) androidx.compose.foundation.layout.FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally)) {
+                        OutlinedButton({ model.form = FormRef.Album(id) }) { Text("Edit album") }
+                        OutlinedButton({ model.edit(tracks.map { it.id }) }, enabled = tracks.isNotEmpty()) { Text("Edit all tracks") }
+                        OutlinedButton({ openAlbumOrder(model, id) }, enabled = tracks.size > 1) { Text("Reorder") }
+                    }
                 }
             }
             items(tracks.size, key = { it }) { i ->
@@ -165,6 +170,7 @@ fun ArtistScreen(model: Model, id: String) {
                         ExtrasButton(model, MarkOn.ARTIST, id, artist.name)
                     }
                     if (sharing) ShareDialog(model, MarkOn.ARTIST, id, artist.name) { sharing = false }
+                    if (model.editMode) OutlinedButton({ model.form = FormRef.Artist(id) }) { Text("Edit artist") }
                 }
             }
             items(albums.size, key = { it }) { i -> AlbumItem(model, albums[i]) }
@@ -174,3 +180,20 @@ fun ArtistScreen(model: Model, id: String) {
 
 /** Shuffle starts anywhere in the list, not at its first track. */
 fun randomStart(size: Int): ULong = if (size > 0) kotlin.random.Random.nextInt(size).toULong() else 0uL
+
+/** Reorder mode for an album's tracks: saved as the places that change, in one request. */
+fun openAlbumOrder(model: Model, album: String) {
+    val rows = model.core.albumOrder(album)
+    model.reorder = ReorderSpec(
+        "Reorder tracks",
+        rows.mapIndexed { i, r -> ReorderItem(r.id, "${r.number ?: (i + 1)}  ${r.title}", r.artist) },
+    ) { ids ->
+        try {
+            model.core.saveOrder(album, ids)
+            model.core.startSync()
+            null
+        } catch (e: uniffi.acetate_ffi.CoreException.Failed) {
+            e.reason
+        }
+    }
+}

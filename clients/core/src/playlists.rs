@@ -312,14 +312,41 @@ impl Playlists {
 
     /// Moves an entry up or down by one (shown at once).
     pub fn move_entry(&mut self, id: Uuid, entry: Uuid, by: isize) {
+        let mut at = None;
+        self.change_locally(id, |d| at = d.entries.iter().position(|e| e.id == entry));
+        if let Some(at) = at {
+            self.move_entry_to(id, entry, at as isize + by);
+        }
+    }
+
+    /// Puts the entries in this order (shown at once, one request): `order` has every entry.
+    pub fn set_order(&mut self, id: Uuid, order: Vec<Uuid>) {
+        self.change_locally(id, |d| {
+            let mut by_id: std::collections::HashMap<Uuid, _> = d.entries.drain(..).map(|e| (e.id, e)).collect();
+            let mut entries: Vec<_> = order.iter().filter_map(|i| by_id.remove(i)).collect();
+            // (An entry the order left out keeps its place at the end.)
+            entries.extend(by_id.into_values());
+            d.entries = entries;
+        });
+        let api = self.api.clone();
+        self.spawn(async move {
+            match api.send(Method::PUT, &format!("/api/playlists/{id}/order"), Some(json!({ "entries": order }))).await {
+                Err(err) => vec![Answer::Notice(format!("Couldn't reorder it: {err:#}")), Answer::Refetch(id)],
+                Ok(()) => vec![],
+            }
+        });
+    }
+
+    /// Moves an entry to this place (shown at once, one request).
+    pub fn move_entry_to(&mut self, id: Uuid, entry: Uuid, to: isize) {
         let mut order = None;
         self.change_locally(id, |d| {
             let Some(at) = d.entries.iter().position(|e| e.id == entry) else { return };
-            let to = at as isize + by;
-            if to < 0 || to as usize >= d.entries.len() {
+            if to < 0 || to as usize >= d.entries.len() || to as usize == at {
                 return;
             }
-            d.entries.swap(at, to as usize);
+            let moved = d.entries.remove(at);
+            d.entries.insert(to as usize, moved);
             order = Some(d.entries.iter().map(|e| e.id).collect::<Vec<_>>());
         });
         let Some(order) = order else { return };

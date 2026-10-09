@@ -322,6 +322,7 @@ private fun Preview(state: EditorState) {
     Column(Modifier.fillMaxWidth().padding(16.dp, 0.dp)) {
         SectionHeader("What it does")
         state.tracks.forEach { t ->
+            if (state.tracks.size > 1) Text("${t.mark} ${t.title}".trim(), Modifier.padding(top = 8.dp), color = if (t.error != null) Palette.danger else Palette.text, style = MaterialTheme.typography.labelLarge)
             t.lines.forEach { Text(it, color = Palette.muted, style = MaterialTheme.typography.bodyMedium) }
             t.warnings.forEach { Text("⚠ $it", style = MaterialTheme.typography.bodyMedium) }
             t.error?.let { Text(it, color = Palette.danger, style = MaterialTheme.typography.bodyMedium) }
