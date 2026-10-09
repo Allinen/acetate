@@ -245,6 +245,7 @@ fun NowPlaying(model: Model) {
                         modifier = Modifier.clickable { openTrack(model, current.id) },
                     )
                     ArtistLine(model, MarkOn.TRACK, current.id, current.artist)
+                    if (model.editMode) TextButton({ model.edit(listOf(current.id)) }) { Text("Edit track") }
                     current.album?.let { album ->
                         Text(
                             album, maxLines = 1, overflow = TextOverflow.Ellipsis, color = MaterialTheme.colorScheme.onSurfaceVariant,

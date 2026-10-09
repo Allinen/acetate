@@ -33,7 +33,7 @@ use super::resolve::Names;
 use crate::api::Api;
 use crate::catalog::Catalog;
 use crate::details::TrackDetail;
-use crate::ui::Shell;
+use crate::Waker;
 
 const PREVIEW_CHUNK: usize = 200;
 const APPLY_CHUNK: usize = 25;
@@ -250,11 +250,24 @@ pub struct Applied {
     pub made: HashMap<Uuid, Uuid>,
 }
 
+/// What the engine works with: the server, where to run in the background, whom to tell
+/// when something arrived, and a number that changes when what plans depend on does
+/// (the catalog).
+#[derive(Clone)]
+pub struct Env {
+    pub api: Api,
+    pub runtime: tokio::runtime::Handle,
+    pub waker: Waker,
+    pub generation: u64,
+}
+
 pub struct Engine {
     loaded: Arc<Mutex<Loaded>>,
     pub plans: Vec<Plan>,
     pub plan_key: u64,
     changed_at: Instant,
+    /// When the UI was last asked to come back after the settling wait.
+    wake_at: Option<Instant>,
     pub preview: Arc<Mutex<Preview>>,
     pub applied: Arc<Mutex<Applied>>,
     /// The targets that are drafts (by their tracks).
@@ -271,6 +284,7 @@ impl Default for Engine {
             plans: Vec::new(),
             plan_key: 0,
             changed_at: Instant::now(),
+            wake_at: None,
             preview: Arc::default(),
             applied: Arc::default(),
             drafts: HashMap::new(),
@@ -306,7 +320,7 @@ impl Engine {
     /// Loads what's missing, makes the plans again when anything they depend on changed, and
     /// asks for the server's preview once they're all there.
     /// `variant`: the version edited (one track; None: the shown one).
-    pub fn update(&mut self, shell: &Shell, catalog: &Catalog, targets: &[Uuid], change: &Change, names: &Names, variant: Option<Uuid>) {
+    pub fn update(&mut self, shell: &Env, catalog: &Catalog, targets: &[Uuid], change: &Change, names: &Names, variant: Option<Uuid>) {
         self.load(shell, targets);
         let version = self.loaded.lock().unwrap().version;
         let mut hasher = std::hash::DefaultHasher::new();
@@ -346,7 +360,16 @@ impl Engine {
         }
         let wait = SETTLE.saturating_sub(self.changed_at.elapsed());
         if !wait.is_zero() {
-            shell.ctx.request_repaint_after(wait);
+            // Asked for once per moment, not on every call while waiting.
+            let at = Instant::now() + wait;
+            if self.wake_at.is_none_or(|w| w < Instant::now() || at > w + Duration::from_millis(5)) {
+                self.wake_at = Some(at);
+                let waker = shell.waker.clone();
+                shell.runtime.spawn(async move {
+                    tokio::time::sleep(wait).await;
+                    waker.changed();
+                });
+            }
             return;
         }
         self.ask_preview(shell, key, change);
@@ -405,7 +428,7 @@ impl Engine {
         loaded.version += 1;
     }
 
-    fn load(&self, shell: &Shell, targets: &[Uuid]) {
+    fn load(&self, shell: &Env, targets: &[Uuid]) {
         let missing: Vec<Uuid> = {
             let mut loaded = self.loaded.lock().unwrap();
             let missing: Vec<Uuid> = targets.iter().filter(|t| !loaded.details.contains_key(t) && !loaded.asked.contains(t)).copied().collect();
@@ -415,7 +438,7 @@ impl Engine {
         if missing.is_empty() {
             return;
         }
-        let (api, loaded, ctx) = (shell.api.clone(), self.loaded.clone(), shell.ctx.clone());
+        let (api, loaded, ctx) = (shell.api.clone(), self.loaded.clone(), shell.waker.clone());
         shell.runtime.spawn(async move {
             let limit = Arc::new(tokio::sync::Semaphore::new(8));
             let mut tasks = Vec::new();
@@ -427,7 +450,7 @@ impl Engine {
                     let mut loaded = loaded.lock().unwrap();
                     loaded.details.insert(id, d.map(Arc::new).map_err(|e| e.message));
                     loaded.version += 1;
-                    ctx.request_repaint();
+                    ctx.changed();
                 }));
             }
             for task in tasks {
@@ -531,7 +554,7 @@ impl Engine {
             .collect()
     }
 
-    fn ask_preview(&self, shell: &Shell, key: u64, change: &Change) {
+    fn ask_preview(&self, shell: &Env, key: u64, change: &Change) {
         let ready: Vec<(Uuid, Ready)> = self.plans.iter().filter_map(|p| match &p.state {
             PlanState::Ready(r) if r.sends() => Some((p.track, (**r).clone())),
             _ => None,
@@ -544,7 +567,7 @@ impl Engine {
             return;
         }
         if !self.drafts.is_empty() {
-            let (api, preview, ctx, change, stale, drafts) = (shell.api.clone(), self.preview.clone(), shell.ctx.clone(), change.clone(), self.stale_drafts.clone(), self.drafts.clone());
+            let (api, preview, ctx, change, stale, drafts) = (shell.api.clone(), self.preview.clone(), shell.waker.clone(), change.clone(), self.stale_drafts.clone(), self.drafts.clone());
             shell.runtime.spawn(async move {
                 let limit = Arc::new(tokio::sync::Semaphore::new(DRAFTS_AT_ONCE));
                 let mut tasks = Vec::new();
@@ -566,7 +589,7 @@ impl Engine {
                             p.answers.insert(track, answer);
                             p.checked += 1;
                         }
-                        ctx.request_repaint();
+                        ctx.changed();
                     }));
                 }
                 for task in tasks {
@@ -576,11 +599,11 @@ impl Engine {
                 if p.key == key {
                     p.running = false;
                 }
-                ctx.request_repaint();
+                ctx.changed();
             });
             return;
         }
-        let (api, preview, ctx, change) = (shell.api.clone(), self.preview.clone(), shell.ctx.clone(), change.clone());
+        let (api, preview, ctx, change) = (shell.api.clone(), self.preview.clone(), shell.waker.clone(), change.clone());
         shell.runtime.spawn(async move {
             let mut answers = HashMap::new();
             let mut error = None;
@@ -603,12 +626,12 @@ impl Engine {
                 p.error = error;
                 p.running = false;
             }
-            ctx.request_repaint();
+            ctx.changed();
         });
     }
 
     /// Applies the plans (the preview's), in the background.
-    pub fn apply(&self, shell: &Shell, change: &Change, variant: Option<Uuid>) {
+    pub fn apply(&self, shell: &Env, change: &Change, variant: Option<Uuid>) {
         let ready: Vec<(Uuid, Ready)> = self.plans.iter().filter_map(|p| match &p.state {
             PlanState::Ready(r) if r.changes() => Some((p.track, (**r).clone())),
             _ => None,
@@ -622,7 +645,7 @@ impl Engine {
             *applied = Applied { phase: Phase::Applying, total: ready.len(), ..Applied::default() };
         }
         if !self.drafts.is_empty() {
-            let (api, applied, ctx, change, stale, drafts) = (shell.api.clone(), self.applied.clone(), shell.ctx.clone(), change.clone(), self.stale_drafts.clone(), self.drafts.clone());
+            let (api, applied, ctx, change, stale, drafts) = (shell.api.clone(), self.applied.clone(), shell.waker.clone(), change.clone(), self.stale_drafts.clone(), self.drafts.clone());
             shell.runtime.spawn(async move {
                 let writes: Vec<(DraftOf, (Uuid, Ready))> = writes.into_iter().filter_map(|w| Some((drafts.get(&w.0)?.clone(), w))).collect();
                 let outcome = |answer: Result<(Answer, Option<Uuid>, Option<Made>), String>, track: Uuid| -> Option<Made> {
@@ -650,7 +673,7 @@ impl Engine {
                 for (draft, write) in rest.by_ref() {
                     let track = write.0;
                     made = outcome(import(&api, &draft, &write, &change, false, &Made::default(), true, &stale).await, track);
-                    ctx.request_repaint();
+                    ctx.changed();
                     if made.is_some() {
                         break;
                     }
@@ -675,7 +698,7 @@ impl Engine {
                                 }
                                 Err(err) => record(&applied, track, Outcome::Failed(err)),
                             }
-                            ctx.request_repaint();
+                            ctx.changed();
                         }));
                     }
                     for task in tasks {
@@ -686,11 +709,11 @@ impl Engine {
                 a.done = a.total;
                 a.phase = Phase::Finished;
                 a.finished_unseen = true;
-                ctx.request_repaint();
+                ctx.changed();
             });
             return;
         }
-        let (api, applied, ctx, change) = (shell.api.clone(), self.applied.clone(), shell.ctx.clone(), change.clone());
+        let (api, applied, ctx, change) = (shell.api.clone(), self.applied.clone(), shell.waker.clone(), change.clone());
         shell.runtime.spawn(async move {
             let mut ids: HashMap<Uuid, Uuid> = HashMap::new();
             let mut kinds: HashMap<String, String> = HashMap::new();
@@ -704,7 +727,7 @@ impl Engine {
                         Ok(()) => record(&applied, track, Outcome::Done),
                     }
                 }
-                ctx.request_repaint();
+                ctx.changed();
             }
             // Changed meanwhile: loaded again, the changes made again on it, once.
             for (track, position) in stale {
@@ -736,13 +759,13 @@ impl Engine {
                     Err(code) if code == "stale" => Outcome::Failed("someone changed it again meanwhile; try again".into()),
                     Err(message) => Outcome::Failed(message),
                 });
-                ctx.request_repaint();
+                ctx.changed();
             }
             let mut a = applied.lock().unwrap();
             a.done = a.total;
             a.phase = Phase::Finished;
             a.finished_unseen = true;
-            ctx.request_repaint();
+            ctx.changed();
         });
     }
 }
@@ -990,13 +1013,13 @@ fn body(chunk: &[(Uuid, Ready)], change: &Change, ids: &HashMap<Uuid, Uuid>, kin
 /// What changed between two (metadata or facts), in the history's words.
 fn diff<T: serde::Serialize>(before: &T, after: &T, catalog: &Catalog, names: &HashMap<Uuid, String>) -> Vec<String> {
     let (Ok(before), Ok(after)) = (serde_json::to_value(before), serde_json::to_value(after)) else { return Vec::new() };
-    crate::ui::views::history::changes_named(Some(&before), &after, catalog, names)
+    super::diff::changes_named(Some(&before), &after, catalog, names)
 }
 
 /// The words for an album changed along: "album “X”: title: “A” → “B”".
 pub fn along_lines(along: &Along, catalog: &Catalog) -> Vec<String> {
     let title = along.before.get("title").and_then(|t| t.as_str()).unwrap_or("its album");
-    let mut lines = crate::ui::views::history::changes_named(Some(&along.before), &along.after, catalog, &HashMap::new());
+    let mut lines = super::diff::changes_named(Some(&along.before), &along.after, catalog, &HashMap::new());
     match along.covers {
         0 => {}
         1 => lines.push("cover: + the new one".into()),
@@ -1050,7 +1073,7 @@ pub fn attached_lines(before: &Attached, after: &Attached) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::edit::editor::model::{Credit, Membership};
+    use super::model::{Credit, Membership};
 
     fn id(n: u128) -> Uuid {
         Uuid::from_u128(n)
@@ -1194,7 +1217,7 @@ mod tests {
 
     #[test]
     fn covers_and_sources_go_as_the_server_takes_them() {
-        use crate::ui::edit::editor::model::{Pic, Src};
+        use super::model::{Pic, Src};
         let change = Change { ops: vec![], new_artists: vec![], new_albums: vec![], new_groupings: vec![], along: true, sync: false, why: String::new() };
         let mut r = ready(0, &[], None);
         r.meta = r.base.meta.clone();

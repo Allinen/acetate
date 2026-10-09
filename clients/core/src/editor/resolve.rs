@@ -24,7 +24,7 @@ use crate::catalog::Catalog;
 use crate::details::AliasInfo;
 use crate::title_credits::{Fixes, NameTable, Setting};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PinKind {
     Artist,
     Album,
@@ -34,7 +34,7 @@ pub enum PinKind {
 
 /// What the line's names stand for: choices made in the list, and new artists, albums and
 /// groupings.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct Names {
     pins: Vec<(PinKind, String, Uuid)>,
     /// Stand-in id → name.
@@ -195,6 +195,27 @@ pub struct Unit {
     pub result: Result<Resolved, String>,
 }
 
+/// Something a UI hangs on a result for itself (the track page's commands: what they do is
+/// the page's), handed back untouched.
+#[derive(Clone)]
+pub struct Opaque(std::sync::Arc<dyn std::any::Any + Send + Sync>);
+
+impl Opaque {
+    pub fn new<T: std::any::Any + Send + Sync>(value: T) -> Opaque {
+        Opaque(std::sync::Arc::new(value))
+    }
+
+    pub fn get<T: std::any::Any>(&self) -> Option<&T> {
+        self.0.downcast_ref()
+    }
+}
+
+impl std::fmt::Debug for Opaque {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Opaque")
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Resolved {
     /// What it does, in words.
@@ -207,7 +228,7 @@ pub struct Resolved {
     /// What it asks for first (it's staged once that's there).
     pub want: Option<Want>,
     /// One of the track page's commands: what it does (the page says, `page_units`).
-    pub page: Option<crate::ui::views::track_commands::Does>,
+    pub page: Option<Opaque>,
 }
 
 /// The line's parts as units (a part with the `role:`, `as:`, `kind:` after it), each
@@ -643,7 +664,7 @@ fn unit(
                 };
             }
             let fields: Vec<(&str, &str)> = mods.iter().map(|p| (p.name(), p.value.trim())).collect();
-            let typed = crate::ui::edit::sources::typed(value, &fields, "track", &ctx.vocab.source_shapes)?;
+            let typed = super::source_line::typed(value, &fields, "track", &ctx.vocab.source_shapes)?;
             let (platform, name, data, shown) = (typed.platform, typed.name, typed.data, typed.shown);
             let id = {
                 use std::hash::{Hash, Hasher};
@@ -917,7 +938,7 @@ fn relation_kind(vocab: &Vocab, typed: &str) -> Option<String> {
 /// "This track is a remix of “X”" (or the other way round), for a kind.
 pub fn relation_sentence(vocab: &Vocab, kind: &str, other: &str) -> String {
     match vocab.relation_kinds.iter().find(|k| k.kind == kind) {
-        Some(k) => crate::ui::edit::capitalized(&k.template.replace("%A", "this track").replace("%B", &format!("“{other}”"))),
+        Some(k) => super::capitalized(&k.template.replace("%A", "this track").replace("%B", &format!("“{other}”"))),
         None => format!("{} “{other}”", kind.replace('_', " ")),
     }
 }
@@ -982,7 +1003,7 @@ pub fn candidates(part: &Part, group: &[Part], ctx: &Ctx, hits: &[u32], track_hi
     match part.key {
         K::Artist | K::Featured => {
             for &i in hits {
-                let (name, sub) = crate::ui::edit::inline_search::describe(ctx.catalog, SearchPart::Artists, i);
+                let (name, sub) = crate::catalog::search::describe(ctx.catalog, SearchPart::Artists, i);
                 let a = &ctx.catalog.artists[i as usize];
                 out.push(Candidate { label: name.clone(), sub, text: a.label(), pick: Some(Pick::Pin(PinKind::Artist, a.id)), next: (!part.minus).then(|| "role:".into()) });
             }
@@ -992,7 +1013,7 @@ pub fn candidates(part: &Part, group: &[Part], ctx: &Ctx, hits: &[u32], track_hi
         }
         K::Album => {
             for &i in hits {
-                let (title, sub) = crate::ui::edit::inline_search::describe(ctx.catalog, SearchPart::Albums, i);
+                let (title, sub) = crate::catalog::search::describe(ctx.catalog, SearchPart::Albums, i);
                 let a = &ctx.catalog.album_at(i);
                 out.push(Candidate { label: title, sub, text: a.title().to_string(), pick: Some(Pick::Pin(PinKind::Album, a.id())), next: (!part.minus).then(|| "#".into()) });
             }
@@ -1002,12 +1023,12 @@ pub fn candidates(part: &Part, group: &[Part], ctx: &Ctx, hits: &[u32], track_hi
         }
         K::Related => {
             for &i in hits {
-                let (title, sub) = crate::ui::edit::inline_search::describe(ctx.catalog, SearchPart::Tracks, i);
+                let (title, sub) = crate::catalog::search::describe(ctx.catalog, SearchPart::Tracks, i);
                 let t = &ctx.catalog.track_at(i);
                 out.push(Candidate { label: title, sub, text: t.title().to_string(), pick: Some(Pick::Pin(PinKind::Track, t.id())), next: (!part.minus).then(|| "kind:".into()) });
             }
         }
-        K::Status => out = simple(&ctx.vocab.statuses, &|s| crate::ui::edit::capitalized(s)),
+        K::Status => out = simple(&ctx.vocab.statuses, &|s| super::capitalized(s)),
         K::Parse => {
             // The rules not typed yet, for the word being typed.
             let mut words: Vec<&str> = value.split_whitespace().collect();
@@ -1021,7 +1042,7 @@ pub fn candidates(part: &Part, group: &[Part], ctx: &Ctx, hits: &[u32], track_hi
         }
         K::Whole => out = simple(&["on".to_string(), "off".to_string()], &|s| format!("whole:{s} (names that are an artist's kept whole)")),
         K::Role => {
-            out = simple(&ctx.vocab.credit_roles, &|s| crate::ui::edit::capitalized(s));
+            out = simple(&ctx.vocab.credit_roles, &|s| super::capitalized(s));
             for c in &mut out {
                 c.next = Some("as:".into());
             }
@@ -1042,7 +1063,7 @@ pub fn candidates(part: &Part, group: &[Part], ctx: &Ctx, hits: &[u32], track_hi
         K::Kind => match owner.map(|o| o.key) {
             Some(K::Album) => out = simple(&ctx.vocab.album_kinds, &|s| format!("New {s}")),
             Some(K::Group) => {
-                let kinds: Vec<String> = crate::ui::views::grouping::KINDS.iter().map(|k| k.to_string()).collect();
+                let kinds: Vec<String> = super::GROUPING_KINDS.iter().map(|k| k.to_string()).collect();
                 out = simple(&kinds, &|s| format!("New {s}"));
             }
             Some(K::Related) => {
@@ -1083,12 +1104,12 @@ pub fn candidates(part: &Part, group: &[Part], ctx: &Ctx, hits: &[u32], track_hi
                 }
             }
             for &i in hits.iter().take(5) {
-                let (title, sub) = crate::ui::edit::inline_search::describe(ctx.catalog, SearchPart::Albums, i);
+                let (title, sub) = crate::catalog::search::describe(ctx.catalog, SearchPart::Albums, i);
                 let a = &ctx.catalog.album_at(i);
                 out.push(Candidate { label: format!("its cover: {title}"), sub, text: a.title().to_string(), pick: Some(Pick::Pin(PinKind::Album, a.id())), next: Some("#".into()) });
             }
             for &i in track_hits.iter().take(5) {
-                let (title, sub) = crate::ui::edit::inline_search::describe(ctx.catalog, SearchPart::Tracks, i);
+                let (title, sub) = crate::catalog::search::describe(ctx.catalog, SearchPart::Tracks, i);
                 let t = &ctx.catalog.track_at(i);
                 out.push(Candidate { label: format!("its cover: {title}"), sub, text: t.title().to_string(), pick: Some(Pick::Pin(PinKind::Track, t.id())), next: Some("#".into()) });
             }
@@ -1098,7 +1119,7 @@ pub fn candidates(part: &Part, group: &[Part], ctx: &Ctx, hits: &[u32], track_hi
                 Some(rest) => ("=", rest.trim()),
                 None => ("", value),
             };
-            for c in crate::ui::edit::sources::platform_choices(rest, equals, "track", &ctx.vocab.source_shapes) {
+            for c in super::source_line::platform_choices(rest, equals, "track", &ctx.vocab.source_shapes) {
                 out.push(Candidate { label: c.label, sub: c.sub, text: c.text, pick: None, next: c.next });
             }
         }
@@ -1106,7 +1127,7 @@ pub fn candidates(part: &Part, group: &[Part], ctx: &Ctx, hits: &[u32], track_hi
         K::Field => {
             let Some(owner) = owner.filter(|o| o.key == K::Source) else { return out };
             let given: Vec<&str> = group.iter().skip(1).chain([part]).map(|p| p.name()).collect();
-            for c in crate::ui::edit::sources::field_choices(&owner.value, part.name(), value, &given, "track", &ctx.vocab.source_shapes) {
+            for c in super::source_line::field_choices(&owner.value, part.name(), value, &given, "track", &ctx.vocab.source_shapes) {
                 out.push(Candidate { label: c.label, sub: c.sub, text: c.text, pick: None, next: c.next });
             }
         }

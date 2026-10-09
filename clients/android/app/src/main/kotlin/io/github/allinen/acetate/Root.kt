@@ -69,10 +69,28 @@ fun Root(model: Model) {
                 model.notice = null
             }
         }
+        // An edit just saved: Undo, for a while.
+        LaunchedEffect(model.undoOffer) {
+            val offer = model.undoOffer ?: return@LaunchedEffect
+            val result = snacks.showSnackbar(offer.text, if (offer.canUndo) "Undo" else null, duration = androidx.compose.material3.SnackbarDuration.Long)
+            // (Cleared only after the undo: changing it ends this effect, and the undo with it.)
+            if (result == androidx.compose.material3.SnackbarResult.ActionPerformed) {
+                try {
+                    offer.editor.undo()
+                    model.notice = "Undone."
+                    model.core.startSync()
+                } catch (e: uniffi.acetate_ffi.CoreException) {
+                    model.notice = "Couldn't undo it: ${e.message}"
+                }
+            }
+            if (model.undoOffer === offer) model.undoOffer = null
+        }
         SnackbarHost(snacks, Modifier.align(Alignment.BottomCenter).windowInsetsPadding(WindowInsets.navigationBars).padding(bottom = 140.dp))
         AnimatedVisibility(model.nowPlaying, enter = slideInVertically { it }, exit = slideOutVertically { it }) {
             NowPlaying(model)
         }
+        // An edit is above Now playing too.
+        model.editor?.let { EditorScreen(model, it) }
         // Last, so it's above everything (Now playing included).
         model.video?.let { VideoScreen(model, it) }
     }

@@ -243,6 +243,11 @@ pub struct Shell {
 }
 
 impl Shell {
+    /// What the track editor's engine works with.
+    pub fn env(&self) -> edit::editor::engine::Env {
+        edit::editor::engine::Env { api: self.api.clone(), runtime: self.runtime.handle().clone(), waker: self.waker.clone(), generation: self.generation }
+    }
+
     pub fn act(&mut self, action: Action) {
         self.actions.push(action);
     }

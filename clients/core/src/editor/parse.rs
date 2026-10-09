@@ -18,7 +18,7 @@
 
 use crate::catalog::query::Key as QueryKey;
 use crate::commandline::{self, Keys};
-use crate::ui::views::track_commands::PageKey;
+use super::page_key::PageKey;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum K {

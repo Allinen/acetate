@@ -6,7 +6,7 @@
 //! brings it up to date.
 
 #[cfg(test)]
-mod fixture;
+pub(crate) mod fixture;
 pub mod suggest;
 mod flat;
 #[cfg(test)]

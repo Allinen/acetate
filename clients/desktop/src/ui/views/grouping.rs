@@ -23,7 +23,7 @@ use crate::ui::theme::{bold, font, medium, semibold, PALETTE as P};
 use crate::ui::{thousands, widgets, Action, Page, Shell};
 
 /// The kinds offered (any lowercase word is one).
-pub const KINDS: [&str; 3] = ["collective", "era", "project"];
+pub use acetate_core::editor::GROUPING_KINDS as KINDS;
 
 /// Its kind, name and description as typed (edit mode).
 #[derive(Clone, PartialEq, Default)]

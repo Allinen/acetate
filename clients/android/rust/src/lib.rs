@@ -25,6 +25,8 @@ use uuid::Uuid;
 
 uniffi::setup_scaffolding!();
 
+mod editor;
+
 /// Android's certificate checking (so a server's HTTPS works with the certificates the
 /// phone trusts, including ones the user installed) needs the app's `Context` once, before
 /// the first request: `Tls.init(context)` in Kotlin.
@@ -83,6 +85,10 @@ pub enum Change {
     Details,
     /// Downloads: something was kept, taken away, or is coming (`offline_status`).
     Downloads,
+    /// What the account may do (edit rights) arrived.
+    Account,
+    /// An edit's state moved (loaded, previewed, applied): read it again.
+    Editor,
 }
 
 /// Kotlin code the core calls, from any thread.
@@ -545,6 +551,9 @@ struct Shared {
     marks: Mutex<Marks>,
     playlists: Arc<Mutex<Playlists>>,
     track_details: Arc<Mutex<Details<TrackDetail>>>,
+    /// Who's logged in, what they may do, and the server's fixed lists.
+    account: Arc<Mutex<acetate_core::account::Account>>,
+    account_wake: acetate_core::Waker,
     /// The downloads of whoever is logged in (set when their sync starts).
     offline: Mutex<Option<Arc<Offline>>>,
     /// What the app said about them, for when they're opened.
@@ -589,9 +598,15 @@ impl Core {
         let detail_wake = Arc::new(DetailWake { details: std::sync::OnceLock::new(), listener: listener.clone() });
         let track_details = Arc::new(Mutex::new(Details::new("tracks", api.clone(), runtime.handle().clone(), detail_wake.clone())));
         let _ = detail_wake.details.set(Arc::downgrade(&track_details));
+        let account_wake = Arc::new(AccountWake { account: std::sync::OnceLock::new(), listener: listener.clone() });
+        let account = Arc::new(Mutex::new(acetate_core::account::Account::default()));
+        let _ = account_wake.account.set(Arc::downgrade(&account));
+        let account_wake: acetate_core::Waker = account_wake;
         let shared = Arc::new(Shared {
             api,
             player,
+            account,
+            account_wake,
             keeping: Mutex::new(None),
             store: Mutex::new(None),
             catalog: Mutex::new(None),
@@ -657,6 +672,7 @@ impl Core {
         self.shared.playlists.lock().unwrap().reset(None);
         self.shared.track_details.lock().unwrap().reset(None);
         *self.shared.offline.lock().unwrap() = None;
+        *self.shared.account.lock().unwrap() = Default::default();
         self.shared.listener.changed(Change::Session);
     }
 
@@ -688,6 +704,12 @@ impl Core {
             self.shared.player.send_unsent();
         }
         drop(keeping);
+        {
+            let mut account = self.shared.account.lock().unwrap();
+            if account.me.is_none() {
+                account.fetch(&self.shared.api, self.runtime.handle(), &self.shared.account_wake);
+            }
+        }
         let shared = self.shared.clone();
         *shared.asked.lock().unwrap() = Some(Instant::now());
         set_sync(&shared, |s| {
@@ -1266,6 +1288,20 @@ impl Core {
             authorization: format!("Bearer {}", session.token),
             local,
         })
+    }
+}
+
+/// What the account's fetch calls when `me` and the vocabulary have come.
+struct AccountWake {
+    account: std::sync::OnceLock<std::sync::Weak<Mutex<acetate_core::account::Account>>>,
+    listener: Arc<dyn Listener>,
+}
+
+impl acetate_core::Wake for AccountWake {
+    fn changed(&self) {
+        let Some(account) = self.account.get().and_then(|a| a.upgrade()) else { return };
+        account.lock().unwrap().poll();
+        self.listener.changed(Change::Account);
     }
 }
 

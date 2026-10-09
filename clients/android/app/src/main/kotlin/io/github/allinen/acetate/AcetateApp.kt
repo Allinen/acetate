@@ -13,6 +13,8 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.setValue
 import uniffi.acetate_ffi.Change
 import uniffi.acetate_ffi.Core
+import uniffi.acetate_ffi.CoreException
+import uniffi.acetate_ffi.Editor
 import uniffi.acetate_ffi.LinkTarget
 import uniffi.acetate_ffi.Listener
 import uniffi.acetate_ffi.SessionInfo
@@ -112,6 +114,33 @@ class Model(dataDir: String) : Listener {
     /** The Now playing screen is open. */
     var nowPlaying by mutableStateOf(false)
 
+    /** Edit mode is on: pages show their editing tools (only for accounts that may). */
+    var editMode by mutableStateOf(false)
+
+    /** Bumped when the account's rights arrived (read `core.canEdit()` again). */
+    var accountVersion by mutableIntStateOf(0)
+        private set
+
+    /** An edit being made (a screen over everything), if any. */
+    var editor by mutableStateOf<Editor?>(null)
+
+    /** Bumped when the edit moved (read `editor.state()` again). */
+    var editorVersion by mutableIntStateOf(0)
+        private set
+
+    /** An edit that went through, to offer undoing for a while. */
+    var undoOffer by mutableStateOf<UndoOffer?>(null)
+
+    /** Opens the editor for these tracks, or says why not. */
+    fun edit(tracks: List<String>) {
+        try {
+            nowPlaying = false
+            editor = core.editor(tracks)
+        } catch (e: CoreException.Failed) {
+            notice = e.reason
+        }
+    }
+
     init {
         if (session != null) core.startSync()
     }
@@ -143,6 +172,11 @@ class Model(dataDir: String) : Listener {
                     if (downloads.queued > 0uL && !downloads.paused) DownloadService.start(context)
                 }
                 Change.DETAILS -> detailsVersion++
+                Change.ACCOUNT -> {
+                    accountVersion++
+                    if (!core.canEdit()) editMode = false
+                }
+                Change.EDITOR -> editorVersion++
                 Change.CATALOG -> {
                     catalogVersion++
                     // For measuring (adb logcat -s Acetate): how long from the process starting.
@@ -181,6 +215,9 @@ class Model(dataDir: String) : Listener {
 
     fun logout() = core.logout()
 }
+
+/** The edit that was just saved, and whether it can be put back. */
+class UndoOffer(val editor: Editor, val text: String, val canUndo: Boolean)
 
 sealed interface Page {
     data class Album(val id: String) : Page

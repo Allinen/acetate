@@ -92,10 +92,4 @@ pub fn combo(ui: &mut egui::Ui, id: impl std::hash::Hash + std::fmt::Debug, valu
     });
 }
 
-pub fn capitalized(text: &str) -> String {
-    let mut chars = text.chars();
-    match chars.next() {
-        Some(first) => first.to_uppercase().chain(chars).collect(),
-        None => String::new(),
-    }
-}
+pub use acetate_core::editor::capitalized;

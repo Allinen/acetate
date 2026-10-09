@@ -2,7 +2,8 @@
 
 A listening app for your server: browse the whole library, play it with the screen off,
 keep music on the phone for when there's no connection. Library work (merging, review,
-importing) stays on the desktop; editing from the phone comes later.
+importing) stays on the desktop; for an account that may change the library, the phone
+fixes what you notice while listening (see Editing).
 
 It needs Android 10 or newer and a server that speaks catalog format 9 (the version
 that adds each file's hash to the catalog: update the server first).
@@ -39,6 +40,28 @@ certificate).
 - **Sharing** through Android's share sheet: a link for someone with an account (it opens in
   their app), or a link anyone can listen with that expires when you say. `acetate://` links
   open albums and artists in the app.
+
+## Editing
+
+For accounts that may change the library there's an **Edit** switch at the top of the library
+screens. While it's on, a track's long-press menu, its page and Now playing offer **Edit
+track**; while it's off nothing can change by accident. It needs the server (the changes are
+checked by it), so it does nothing offline.
+
+The editor shows the track's fields as the changes will leave them (what a field was is under
+it), with the review flags that are about it. Tap a field to change it: its line is put in
+the box at the bottom, ready to finish, with the choices (artists, roles, statuses…) as chips
+over the keyboard. The box speaks the same language as the desktop's editor
+(`title:…`, `artist:Ann role:featured`, `date:2020`, `status:demo`, `genre:house`, `album:…`),
+so a typed line and a tapped field are the same thing. Each change is staged as a chip
+(tap one to take it back); under them is what it does, in the history's words, and what the
+server's checks say, including which flags it fixes. **Save** writes it as one revision,
+with an optional reason, and offers **Undo** for a few seconds (it puts the earlier revision
+back as a new one; needs the right to restore revisions).
+
+Not on the phone yet: covers, lyrics, albums and artists (their own forms come next), and
+the desktop's credits-in-titles tool. Merging, review and the rest of library work stay on
+the desktop.
 
 ## Sound and data
 

@@ -154,3 +154,43 @@ mod tests {
         assert_eq!(found[0].0, 1);
     }
 }
+
+/// A match as listed: its name, and what tells it apart (an artist's disambiguation and
+/// size; an album's artists, kind and year).
+pub fn describe(catalog: &Catalog, part: Part, i: u32) -> (String, String) {
+    match part {
+        Part::Artists => {
+            let a = &catalog.artists[i as usize];
+            let mut sub = Vec::new();
+            if !a.disambiguation.is_empty() {
+                sub.push(a.disambiguation.clone());
+            }
+            sub.push(if a.track_count == 1 { "1 track".into() } else { format!("{} tracks", a.track_count) });
+            (a.name.clone(), sub.join(" · "))
+        }
+        Part::Extras => {
+            let e = &catalog.extras[i as usize];
+            let files = if e.files == 1 { "1 file".to_string() } else { format!("{} files", e.files) };
+            (e.name.clone(), format!("{} · {files}", e.kind))
+        }
+        Part::Tracks => {
+            let t = catalog.track_at(i);
+            let mut sub = vec![t.artist_display().to_string()];
+            if let Some(album) = catalog.main_album(t) {
+                sub.push(album.title().to_string());
+            }
+            if let Some(codec) = t.codec() {
+                sub.push(codec.to_string());
+            }
+            (t.title().to_string(), sub.join(" · "))
+        }
+        Part::Albums => {
+            let a = catalog.album_at(i);
+            let mut sub = vec![a.artist_display().to_string(), a.kind().to_string()];
+            if let Some(year) = a.year() {
+                sub.push(year.to_string());
+            }
+            (a.title().to_string(), sub.join(" · "))
+        }
+    }
+}

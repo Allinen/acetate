@@ -95,6 +95,8 @@ fun SyncLine(model: Model) {
             },
             Modifier.weight(1f), style = MaterialTheme.typography.labelLarge,
         )
+        val canEdit = remember(model.accountVersion, model.session) { model.core.canEdit() }
+        if (canEdit) FilterChip(model.editMode, { model.editMode = !model.editMode }, { Text("Edit") })
         TextButton({ model.settingsOpen = true }) { Text("Settings") }
         if (model.settingsOpen) SettingsDialog(model) { model.settingsOpen = false }
     }

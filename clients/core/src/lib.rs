@@ -5,6 +5,7 @@
 //! - `api`: talking to the server; `account`: who's logged in, what they may do.
 //! - `catalog`: the library kept locally, and its lookups.
 //! - `commandline`: the `key:value` line the pages are driven by.
+//! - `editor`: the track editor's engine (operations, the line, previews, applying).
 //! - `details`: everything about one track, album or artist, for their pages.
 //! - `lyrics`: synced lyrics (LRC).
 //! - `memory`: how much memory the app holds, and giving freed memory back.
@@ -22,6 +23,7 @@ pub mod account;
 pub mod api;
 pub mod blobs;
 pub mod catalog;
+pub mod editor;
 pub mod commandline;
 pub mod details;
 pub mod links;

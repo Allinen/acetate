@@ -321,7 +321,7 @@ pub fn rows(r: &Ready, know: &Know, now: &[String], after: Option<&[String]>) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::edit::editor::model::{Attached, Base, Credit, Facts, Image, Meta, Pic, Src};
+    use crate::editor::model::{Attached, Base, Credit, Facts, Image, Meta, Pic, Src};
 
     fn catalog() -> Catalog {
         let body = serde_json::json!({

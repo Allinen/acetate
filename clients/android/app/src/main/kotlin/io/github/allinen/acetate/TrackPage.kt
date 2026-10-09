@@ -114,6 +114,7 @@ fun TrackScreen(model: Model, id: String) {
                             TextButton({ sharing = true }) { Text("Share…") }
                             ExtrasButton(model, MarkOn.TRACK, id, page.row.title)
                         }
+                        if (model.editMode) OutlinedButton({ model.edit(listOf(id)) }) { Text("Edit track") }
                         if (sharing) ShareDialog(model, MarkOn.TRACK, id, page.row.title) { sharing = false }
                     }
                 }

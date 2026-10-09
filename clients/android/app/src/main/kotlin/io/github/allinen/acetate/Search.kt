@@ -111,11 +111,13 @@ private fun Header(title: String) {
 /** A line of text for the query language. When the text is changed from outside (a chip
  *  chosen), the cursor goes to its end. */
 @Composable
-fun LineField(text: String, onChange: (String) -> Unit, hint: String, modifier: Modifier) {
+fun LineField(text: String, onChange: (String) -> Unit, hint: String, modifier: Modifier, onDone: (() -> Unit)? = null) {
     var value by remember { mutableStateOf(TextFieldValue(text, TextRange(text.length))) }
     if (value.text != text) value = TextFieldValue(text, TextRange(text.length))
     OutlinedTextField(
         value, { value = it; onChange(it.text) }, modifier,
         placeholder = { Text(hint) }, singleLine = true,
+        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(imeAction = if (onDone != null) androidx.compose.ui.text.input.ImeAction.Done else androidx.compose.ui.text.input.ImeAction.Default),
+        keyboardActions = androidx.compose.foundation.text.KeyboardActions(onDone = { onDone?.invoke() }),
     )
 }

@@ -69,13 +69,8 @@
 //!   with `single:` staged when it's on no album, so a loose track gets a single of its own.
 
 mod check;
-mod engine;
-mod import;
-pub mod model;
-mod panel;
-mod parse;
-mod resolve;
-mod title_parse;
+pub use acetate_core::editor::{engine, import, model, panel, parse, resolve, title_parse};
+
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -567,7 +562,7 @@ impl TrackEditor {
         let Some(page) = page else { return };
         for (unit, command) in units.iter_mut().zip(parse::parse(text).commands()) {
             if matches!(command[0].key, K::Page(_)) {
-                unit.result = tc::resolve(command, page, &self.page_known).map(|(label, does)| resolve::Resolved { label, page: Some(does), ..Default::default() });
+                unit.result = tc::resolve(command, page, &self.page_known).map(|(label, does)| resolve::Resolved { label, page: Some(resolve::Opaque::new(does)), ..Default::default() });
             }
         }
     }
@@ -841,7 +836,7 @@ impl TrackEditor {
         let single = targets.len() == 1;
         let variant = if single { self.variant } else { None };
         let change = Change::of(self.ops(), &self.names);
-        self.engine.update(shell, catalog, targets, &change, &self.names, variant);
+        self.engine.update(&shell.env(), catalog, targets, &change, &self.names, variant);
         self.finished(shell, targets);
         let phase = self.engine.applied.lock().unwrap().phase;
         let line_id = self.cl.id();
@@ -858,7 +853,7 @@ impl TrackEditor {
             if self.refused() > 0 {
                 self.notice = Some("Not applied: the preview says it can't be (in red).".into());
             } else if self.changing() > 0 {
-                self.engine.apply(shell, &change, variant);
+                self.engine.apply(&shell.env(), &change, variant);
             }
         }
 
@@ -1586,13 +1581,13 @@ impl TrackEditor {
         for u in units {
             let Ok(mut r) = u.result else { continue };
             // The page's: done by the page, or staged to be sent by it.
-            match r.page.take() {
+            match r.page.take().as_ref().and_then(|p| p.get::<tc::Does>()) {
                 Some(tc::Does::Act(act)) => {
-                    self.page_act = Some(act);
+                    self.page_act = Some(act.clone());
                     continue;
                 }
                 Some(tc::Does::Edit(edit)) => {
-                    self.staged.push(Staged { text: u.text, label: r.label, ops: Vec::new(), warning: None, editable: true, for_you: false, page: Some(edit) });
+                    self.staged.push(Staged { text: u.text, label: r.label, ops: Vec::new(), warning: None, editable: true, for_you: false, page: Some(edit.clone()) });
                     continue;
                 }
                 None => {}
@@ -2171,7 +2166,7 @@ impl TrackEditor {
                     }
                 }
                 if apply {
-                    self.engine.apply(shell, change, variant);
+                    self.engine.apply(&shell.env(), change, variant);
                 }
                 // The new things it makes, named.
                 let mut new = Vec::new();

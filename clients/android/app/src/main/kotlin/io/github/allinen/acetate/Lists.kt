@@ -116,6 +116,7 @@ fun TrackMenu(
         val kept = remember(id, model.downloadsVersion) { model.core.isDownloading(uniffi.acetate_ffi.PinKind.TRACK, id) }
         DropdownMenuItem({ Text(if (kept) "Remove download" else "Download") }, { model.core.download(uniffi.acetate_ffi.PinKind.TRACK, id, !kept); close() })
         DropdownMenuItem({ Text("Share…") }, { sharing = true; close() })
+        if (model.editMode) DropdownMenuItem({ Text("Edit…") }, { model.edit(listOf(id)); close() })
         extra(close)
     }
     if (sharing) ShareDialog(model, MarkOn.TRACK, id, "this track") { sharing = false }
