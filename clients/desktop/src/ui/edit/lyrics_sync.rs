@@ -46,70 +46,7 @@ pub const TEXT_ID: &str = "sync-line-text";
 /// Changes Ctrl+Z can take back.
 const UNDO_DEPTH: usize = 200;
 
-#[derive(Debug, Clone, PartialEq)]
-struct Line {
-    /// Its (first) time as written (before the offset), in milliseconds.
-    at: Option<i64>,
-    /// More times, as written (a chorus sung again): kept as they are.
-    more: Vec<String>,
-    /// Its own language (`[lang:…]`), if it says one.
-    language: Option<String>,
-    /// The words.
-    text: String,
-    /// A tag line (`[ar:…]`, `[offset:…]`): kept, not timed.
-    tag: bool,
-    /// A heading (`[Verse 1: Wrenfield]`): `text` is what's in its brackets.
-    heading: bool,
-    /// The line as it was written, until it's changed.
-    original: Option<String>,
-}
-
-impl Line {
-    fn read(raw: &str) -> Line {
-        let mut line = Line { at: None, more: Vec::new(), language: None, text: String::new(), tag: false, heading: false, original: Some(raw.to_string()) };
-        let mut rest = raw.trim_start();
-        while let Some(end) = rest.strip_prefix('[').and_then(|r| r.find(']')) {
-            let tag = &rest[1..=end];
-            if let Some(at) = lyrics::timestamp(tag) {
-                match line.at {
-                    None => line.at = Some(at),
-                    Some(_) => line.more.push(rest[..end + 2].to_string()),
-                }
-            } else if let Some(language) = tag.strip_prefix("lang:") {
-                line.language = Some(language.trim().to_string()).filter(|l| !l.is_empty());
-            } else if rest[end + 2..].trim().is_empty() && line.language.is_none() && line.more.is_empty() && lyrics::section(tag).is_some() {
-                // A heading, alone on its line (a time before it allowed).
-                line.heading = true;
-                line.text = tag.to_string();
-                return line;
-            } else {
-                // Another tag: a whole line of it is metadata; else it's part of the words.
-                line.tag = line.at.is_none() && rest[end + 2..].trim().is_empty() && tag.contains(':');
-                break;
-            }
-            rest = &rest[end + 2..];
-        }
-        line.text = rest.to_string();
-        line
-    }
-
-    fn write(&self) -> String {
-        if let Some(original) = &self.original {
-            return original.clone();
-        }
-        let mut out = self.at.map(stamp).unwrap_or_default();
-        out.extend(self.more.iter().cloned());
-        if self.heading {
-            out.push_str(&format!("[{}]", self.text.trim()));
-            return out;
-        }
-        if let Some(language) = &self.language {
-            out.push_str(&format!("[lang:{language}]"));
-        }
-        out.push_str(&self.text);
-        out
-    }
-}
+pub use acetate_core::editor::lyrics_edit::{clock, Line};
 
 pub struct Sync {
     lines: Vec<Line>,
@@ -639,17 +576,6 @@ fn play_from(shell: &mut Shell, catalog: &Catalog, d: &TrackDetail, playing_this
     } else if let Some(index) = catalog.track_index(d.id) {
         shell.act(Action::Play { tracks: vec![index], start: 0 });
     }
-}
-
-/// `[mm:ss.xx]`, as LRC writes a time.
-fn stamp(ms: i64) -> String {
-    format!("[{}]", clock(ms))
-}
-
-/// `mm:ss.xx`.
-fn clock(ms: i64) -> String {
-    let ms = ms.max(0);
-    format!("{:02}:{:02}.{:02}", ms / 60_000, ms / 1000 % 60, ms % 1000 / 10)
 }
 
 #[cfg(test)]

@@ -78,7 +78,16 @@ a change like the others. **Notes** on tracks, albums and artists show at the bo
 pages; in edit mode they can be written, changed (with an optional reason) and taken off
 (kept; "Bring back" undoes it).
 
-Not on the phone yet: lyrics, and the desktop's credits-in-titles tool. Merging,
+**Lyrics** (the **Lyrics** button on a track's page, in edit mode): the track's entries (a
+track may have several: languages, official or transcribed), one open at a time with its
+text, whether it's official and its language, saved as one revision. **Sync…** times the
+lines while the song plays: tap the big button as each line starts (it counts the
+Bluetooth timing from Settings), or open a line's menu to start from it, play from just
+before it, move its time a tenth of a second, take its time away, change its words, or add a
+line or a heading (`[Verse 1: Name]`) next to it. Undo takes the last change back; Done
+puts the timed text in the form, and Save writes it.
+
+Not on the phone yet: the desktop's credits-in-titles tool. Merging,
 review and the rest of library work stay on the desktop.
 
 ## Sound and data

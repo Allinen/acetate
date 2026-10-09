@@ -7,6 +7,7 @@ pub mod diff;
 pub mod engine;
 pub mod forms;
 pub mod import;
+pub mod lyrics_edit;
 pub mod media;
 pub mod model;
 pub mod page_key;

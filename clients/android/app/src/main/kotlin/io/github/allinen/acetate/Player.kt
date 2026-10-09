@@ -64,7 +64,7 @@ fun rememberPosition(model: Model): Long {
     return position
 }
 
-private fun isPlaying(s: uniffi.acetate_ffi.PlayerState) = s.playing && !s.paused
+internal fun isPlaying(s: uniffi.acetate_ffi.PlayerState) = s.playing && !s.paused
 
 // ---- Icons (a few shapes: no icon library needed) ----
 

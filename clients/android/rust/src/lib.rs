@@ -27,6 +27,7 @@ uniffi::setup_scaffolding!();
 
 mod editor;
 mod forms;
+mod lyrics_edit;
 mod media;
 
 /// Android's certificate checking (so a server's HTTPS works with the certificates the

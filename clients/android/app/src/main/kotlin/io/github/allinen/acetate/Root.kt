@@ -95,6 +95,7 @@ fun Root(model: Model) {
             is FormRef.Album -> AlbumFormScreen(model, form.id)
             is FormRef.Artist -> ArtistFormScreen(model, form.id)
             is FormRef.Covers -> CoversScreen(model, form.album)
+            is FormRef.Lyrics -> LyricsFormScreen(model, form.track)
             null -> {}
         }
         model.reorder?.let { ReorderScreen(model, it) }

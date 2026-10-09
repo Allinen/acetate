@@ -53,6 +53,7 @@ import uniffi.acetate_ffi.EditCredit
 
 /** Which form is open over everything. */
 sealed interface FormRef {
+    data class Lyrics(val track: String) : FormRef
     data class Covers(val album: String) : FormRef
     data class Album(val id: String) : FormRef
     data class Artist(val id: String) : FormRef
@@ -60,7 +61,7 @@ sealed interface FormRef {
 
 /** What a form screen is: Cancel, the title, Save, and the fields below (scrolling, above the keyboard). */
 @Composable
-private fun FormFrame(
+internal fun FormFrame(
     title: String, canSave: Boolean, saving: Boolean, dirty: Boolean, close: () -> Unit, save: () -> Unit,
     content: @Composable () -> Unit,
 ) {
@@ -86,7 +87,7 @@ private fun FormFrame(
 }
 
 @Composable
-private fun Pill(text: String, selected: Boolean = false, click: () -> Unit) {
+internal fun FormPill(text: String, selected: Boolean = false, click: () -> Unit) {
     Text(
         text, maxLines = 1, style = MaterialTheme.typography.labelLarge, color = if (selected) Palette.bg else Palette.accent,
         modifier = Modifier.clip(RoundedCornerShape(50)).then(if (selected) Modifier.background(Palette.accent) else Modifier.border(1.dp, Palette.line, RoundedCornerShape(50)))
@@ -156,7 +157,7 @@ fun AlbumFormScreen(model: Model, id: String) {
         OutlinedTextField(title, { title = it }, Modifier.fillMaxWidth().padding(top = 8.dp), label = { Text("Title") }, singleLine = true)
         Text("Kind", Modifier.padding(top = 16.dp, bottom = 4.dp), color = Palette.muted, style = MaterialTheme.typography.labelLarge)
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            (form.kinds + listOf(kind)).distinct().forEach { k -> Pill(k, k == kind) { kind = k } }
+            (form.kinds + listOf(kind)).distinct().forEach { k -> FormPill(k, k == kind) { kind = k } }
         }
         OutlinedTextField(kind, { kind = it }, Modifier.fillMaxWidth().padding(top = 8.dp), label = { Text("…or your own word") }, singleLine = true)
         OutlinedTextField(date, { date = it }, Modifier.fillMaxWidth().padding(top = 8.dp), label = { Text("Release date (as written: 2019, 2019-05-12…)") }, singleLine = true)
@@ -193,8 +194,8 @@ fun AlbumFormScreen(model: Model, id: String) {
                 artistText = ""
             }
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.padding(top = 6.dp)) {
-                found.forEach { a -> Pill(a.name) { add(a.id, a.name) } }
-                Pill("New artist “${artistText.trim()}”") { add(null, artistText.trim()) }
+                found.forEach { a -> FormPill(a.name) { add(a.id, a.name) } }
+                FormPill("New artist “${artistText.trim()}”") { add(null, artistText.trim()) }
             }
         }
 
