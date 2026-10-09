@@ -53,8 +53,8 @@ pub fn font(size: f32, family: FontFamily) -> FontId {
     FontId::new(size, family)
 }
 
-/// The bundled Inter (all platforms look the same), with a system fallback for Chinese
-/// and Japanese if there is one.
+/// The bundled Inter (all platforms look the same), with system fallbacks for the scripts
+/// it lacks (CJK, Arabic, Hebrew, Indic, Thai) where the system has them.
 fn fonts(ctx: &egui::Context) {
     let mut fonts = FontDefinitions::default();
     let inter = [
@@ -66,21 +66,33 @@ fn fonts(ctx: &egui::Context) {
     for (name, bytes) in inter {
         fonts.font_data.insert(name.into(), Arc::new(FontData::from_static(bytes)));
     }
-    // Windows: Microsoft YaHei (Chinese, and most Japanese), else Yu Gothic.
-    let cjk = ["/usr/share/fonts/google-droid-sans-fonts/DroidSansFallbackFull.ttf", r"C:\Windows\Fonts\msyh.ttc", r"C:\Windows\Fonts\YuGothR.ttc"]
-        .into_iter()
-        .find_map(|path| std::fs::read(path).ok());
-    let has_cjk = cjk.is_some();
-    if let Some(bytes) = cjk {
-        fonts.font_data.insert("cjk".into(), Arc::new(FontData::from_owned(bytes)));
+    // System fonts for what Inter lacks, in order (first one with the glyph wins). Each
+    // entry is the paths to try for one script; the first that exists is loaded.
+    let scripts: [&[&str]; 6] = [
+        // Chinese and Japanese. Windows: Microsoft YaHei, else Yu Gothic.
+        &["/usr/share/fonts/google-droid-sans-fonts/DroidSansFallbackFull.ttf", r"C:\Windows\Fonts\msyh.ttc", r"C:\Windows\Fonts\YuGothR.ttc"],
+        // Arabic and Hebrew (Segoe UI has both).
+        &["/usr/share/fonts/google-noto-vf/NotoSansArabic[wght].ttf", "/usr/share/fonts/noto/NotoSansArabic-Regular.ttf", r"C:\Windows\Fonts\segoeui.ttf"],
+        &["/usr/share/fonts/google-noto-vf/NotoSansHebrew[wght].ttf", "/usr/share/fonts/noto/NotoSansHebrew-Regular.ttf"],
+        // Indic scripts (Nirmala UI has them all).
+        &["/usr/share/fonts/google-noto-vf/NotoSansDevanagari[wght].ttf", "/usr/share/fonts/noto/NotoSansDevanagari-Regular.ttf", r"C:\Windows\Fonts\Nirmala.ttc"],
+        &["/usr/share/fonts/google-noto-vf/NotoSansThai[wght].ttf", "/usr/share/fonts/noto/NotoSansThai-Regular.ttf", r"C:\Windows\Fonts\LeelawUI.ttf"],
+        // Korean.
+        &["/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc", r"C:\Windows\Fonts\malgun.ttf"],
+    ];
+    let mut system = Vec::new();
+    for (i, paths) in scripts.iter().enumerate() {
+        if let Some(bytes) = paths.iter().find_map(|path| std::fs::read(path).ok()) {
+            let name = format!("system-{i}");
+            fonts.font_data.insert(name.clone(), Arc::new(FontData::from_owned(bytes)));
+            system.push(name);
+        }
     }
     // egui's own fonts stay as fallbacks for symbols (▶, ⏸...).
     let fallbacks: Vec<String> = fonts.families[&FontFamily::Proportional].clone();
     let family = |first: &str| {
         let mut list = vec![first.to_string()];
-        if has_cjk {
-            list.push("cjk".into());
-        }
+        list.extend(system.iter().cloned());
         list.extend(fallbacks.iter().cloned());
         list
     };
