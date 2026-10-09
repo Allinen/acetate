@@ -348,6 +348,21 @@ impl Editor {
         }
     }
 
+    /// An image stored on the phone, as a cover when the edit is applied (uploaded now).
+    pub async fn add_cover(&self, bytes: Vec<u8>, name: String) -> Result<(), CoreError> {
+        let api = self.session.lock().unwrap().env().api.clone();
+        let label = name.clone();
+        let sha = self
+            .runtime
+            .spawn(async move { acetate_core::editor::media::stage_cover(&api, bytes, &name).await })
+            .await
+            .map_err(|e| CoreError::Failed { code: "unexpected".into(), reason: e.to_string() })??;
+        let mut session = self.session.lock().unwrap();
+        session.add_staged_cover(sha, &label);
+        self.pump(&mut session);
+        Ok(())
+    }
+
     /// Applies what the preview shows (once the preview is there, if it isn't yet).
     pub fn apply(&self) -> Result<(), CoreError> {
         let mut session = self.session.lock().unwrap();

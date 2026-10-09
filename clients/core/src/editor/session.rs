@@ -35,6 +35,8 @@ struct Staged {
     label: String,
     ops: Vec<Op>,
     warning: Option<String>,
+    /// Its text can be typed back into the line (an uploaded image's can't).
+    editable: bool,
 }
 
 /// A staged change as a screen shows it.
@@ -263,15 +265,24 @@ impl Session {
                     }
                 }
             }
-            staged.push(Staged { text: u.text, label: r.label, ops: r.ops, warning: r.warning });
+            staged.push(Staged { text: u.text, label: r.label, ops: r.ops, warning: r.warning, editable: true });
         }
         self.staged.extend(staged);
         Ok(())
     }
 
+    /// An image uploaded (see `media::stage_cover`) becomes a cover when the edit is applied:
+    /// a change like the typed ones (`name`: what it's called in words).
+    pub fn add_staged_cover(&mut self, sha: String, name: &str) {
+        let what = format!("the image “{name}”");
+        let warning = (self.targets.len() > 1).then(|| format!("each of the {} tracks gets this cover", self.targets.len()));
+        let op = Op::Cover { image: super::model::Image::Staged, sha, at: None };
+        self.staged.push(Staged { text: format!("cover: {what}"), label: format!("cover: + {what}"), ops: vec![op], warning, editable: false });
+    }
+
     /// Takes back the staged change in this place.
     pub fn unstage(&mut self, n: usize) -> Option<String> {
-        (n < self.staged.len()).then(|| self.staged.remove(n).text)
+        (n < self.staged.len()).then(|| self.staged.remove(n)).filter(|s| s.editable).map(|s| s.text)
     }
 
     /// A choice made in a list: what its text stands for from now on.
@@ -352,6 +363,11 @@ impl Session {
     /// How applying went, once (None: not finished, or already taken).
     pub fn take_finish(&mut self) -> Option<Finish> {
         self.finish.take()
+    }
+
+    /// What the session talks to the server with.
+    pub fn env(&self) -> &Env {
+        &self.env
     }
 
     /// The same changes again, on the tracks as they are now (after applying).

@@ -74,7 +74,7 @@ private fun NamePlaylist(model: Model, tracks: List<String>, close: () -> Unit) 
     AlertDialog(
         onDismissRequest = close,
         title = { Text("New playlist") },
-        text = { OutlinedTextField(name, { name = it }, singleLine = true, placeholder = { Text("Name") }) },
+        text = { FocusedField(name, { name = it }, label = { Text("Name") }) },
         confirmButton = {
             TextButton({
                 model.core.createPlaylist(name.trim(), tracks)
@@ -217,7 +217,7 @@ private fun PlaylistEdits(model: Model, playlist: uniffi.acetate_ffi.PlaylistPag
         AlertDialog(
             onDismissRequest = { renaming = false },
             title = { Text("Rename playlist") },
-            text = { OutlinedTextField(name, { name = it }, singleLine = true) },
+            text = { FocusedField(name, { name = it }) },
             confirmButton = { TextButton({ model.core.renamePlaylist(playlist.id, name.trim()); renaming = false }, enabled = name.isNotBlank() && name.trim() != playlist.name) { Text("Rename") } },
             dismissButton = { TextButton({ renaming = false }) { Text("Cancel") } },
         )

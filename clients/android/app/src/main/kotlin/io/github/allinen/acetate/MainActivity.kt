@@ -38,6 +38,19 @@ class MainActivity : ComponentActivity() {
                 model.playback.playAlbum(id, 0uL)
             }
         }
+        // Debug builds: `--es cover <album id>:<file in the app's folder>` adds that image as a cover.
+        if (BuildConfig.DEBUG) intent.getStringExtra("cover")?.let { arg ->
+            lifecycleScope.launch {
+                val (album, name) = arg.split(":", limit = 2)
+                val bytes = java.io.File(filesDir, name).readBytes()
+                try {
+                    model.core.addAlbumCover(album, bytes, name)
+                    Log.i("Acetate", "cover added to $album")
+                } catch (e: uniffi.acetate_ffi.CoreException) {
+                    Log.i("Acetate", "cover failed: ${e.message}")
+                }
+            }
+        }
         if (android.os.Build.VERSION.SDK_INT >= 33) {
             requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 1)
         }

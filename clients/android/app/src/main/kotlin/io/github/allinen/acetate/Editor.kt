@@ -81,6 +81,7 @@ private fun removeFor(row: EditorRow): String? = when (row.kind) {
     "credit" -> "-artist:" + quoted(row.value.substringBefore(" (").substringBefore(" as ").removeSuffix(" (new)"))
     "album" -> "-album:" + quoted(row.value.substringBefore(" #").removeSuffix(" (new)"))
     "related" -> "-related:" + quoted(row.value.substringAfter("“").substringBefore("”"))
+    "cover" -> "-cover:#${row.index + 1u}"
     else -> null
 }
 
@@ -145,6 +146,11 @@ fun EditorScreen(model: Model, editor: Editor) {
             model.core.startSync()
         }
     }
+    // A cover from an image on the phone: uploaded now, a change like the others.
+    val pickCover = rememberImagePicker(model) { bytes, name ->
+        try { editor.addCover(bytes, name); problem = null } catch (e: CoreException.Failed) { problem = e.reason }
+        refresh()
+    }
     // The choices for the line, found as it's typed (and again when what was asked comes).
     LaunchedEffect(line, state.chips.size, model.editorVersion) {
         choices = if (line.isBlank()) emptyList() else editor.choices(line).choices
@@ -189,7 +195,10 @@ fun EditorScreen(model: Model, editor: Editor) {
                     if (note != null) Text(note, Modifier.padding(16.dp, 4.dp), color = Palette.muted, style = MaterialTheme.typography.labelLarge)
                 }
                 items(state.rows.size, key = { "r$it" }) { i ->
-                    RowItem(state.rows[i], { run(it) }, { fill(it) })
+                    RowItem(model, state.rows[i], { run(it) }, { fill(it) }, pickCover)
+                }
+                if (state.phase == "editing" && !state.loading) item {
+                    TextButton(pickCover, Modifier.padding(8.dp, 0.dp)) { Text("Add a cover from an image on the phone…") }
                 }
                 if (state.chips.isNotEmpty()) item {
                     SectionHeader("Changes")
@@ -270,22 +279,24 @@ private fun Pill(text: String, click: () -> Unit) {
 /** One field: its name, its value now (and what it was), its flags, and ✕ where it can come off. */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun RowItem(row: EditorRow, run: (String) -> Unit, fill: (String) -> Unit) {
+private fun RowItem(model: Model, row: EditorRow, run: (String) -> Unit, fill: (String) -> Unit, addCover: () -> Unit) {
     val start = lineFor(row)
     val remove = removeFor(row)
     val adding = row.kind.startsWith("add_")
-    Column(Modifier.fillMaxWidth().clickable(enabled = start != null) { fill(start!!) }.padding(16.dp, 6.dp)) {
+    Column(Modifier.fillMaxWidth().clickable(enabled = start != null || row.kind == "add_cover") { if (row.kind == "add_cover") addCover() else fill(start!!) }.padding(16.dp, 6.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
+            row.image?.let { Cover(model, it.take(16), 56, Modifier.padding(end = 12.dp)) }
             Column(Modifier.weight(1f)) {
                 Text(row.key, color = Palette.muted, style = MaterialTheme.typography.labelSmall)
                 Text(
-                    if (adding) "add…" else row.value.ifEmpty { "none" },
+                    if (row.kind == "add_cover") "add an image from the phone…" else if (adding) "add…" else row.value.ifEmpty { "none" },
                     color = if (adding || row.kind == "removed") Palette.faint else Palette.text,
                     textDecoration = if (row.kind == "removed") TextDecoration.LineThrough else null,
                     style = MaterialTheme.typography.bodyLarge,
                 )
                 row.was?.let { Text(if (it == "new") "new" else "was: $it", color = Palette.accent, style = MaterialTheme.typography.labelSmall) }
             }
+            if (row.kind == "cover" && row.index > 0u) TextButton({ run("cover:#${row.index + 1u} #1") }) { Text("Main") }
             if (remove != null) TextButton({ run(remove) }) { Text("✕", color = Palette.muted) }
         }
         if (row.flags.isNotEmpty()) FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

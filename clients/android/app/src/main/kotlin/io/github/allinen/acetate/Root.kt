@@ -94,6 +94,7 @@ fun Root(model: Model) {
         when (val form = model.form) {
             is FormRef.Album -> AlbumFormScreen(model, form.id)
             is FormRef.Artist -> ArtistFormScreen(model, form.id)
+            is FormRef.Covers -> CoversScreen(model, form.album)
             null -> {}
         }
         model.reorder?.let { ReorderScreen(model, it) }

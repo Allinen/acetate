@@ -53,6 +53,7 @@ import uniffi.acetate_ffi.EditCredit
 
 /** Which form is open over everything. */
 sealed interface FormRef {
+    data class Covers(val album: String) : FormRef
     data class Album(val id: String) : FormRef
     data class Artist(val id: String) : FormRef
 }

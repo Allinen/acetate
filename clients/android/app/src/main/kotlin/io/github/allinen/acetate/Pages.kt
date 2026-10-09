@@ -103,6 +103,7 @@ fun AlbumScreen(model: Model, id: String) {
                     if (sharing) ShareDialog(model, MarkOn.ALBUM, id, album.title) { sharing = false }
                     if (model.editMode) androidx.compose.foundation.layout.FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally)) {
                         OutlinedButton({ model.form = FormRef.Album(id) }) { Text("Edit album") }
+                        OutlinedButton({ model.form = FormRef.Covers(id) }) { Text("Covers") }
                         OutlinedButton({ model.edit(tracks.map { it.id }) }, enabled = tracks.isNotEmpty()) { Text("Edit all tracks") }
                         OutlinedButton({ openAlbumOrder(model, id) }, enabled = tracks.size > 1) { Text("Reorder") }
                     }
@@ -131,6 +132,7 @@ fun AlbumScreen(model: Model, id: String) {
                 }
                 }
             }
+            item { NotesSection(model, MarkOn.ALBUM, id) }
         }
     }
 }
@@ -174,6 +176,7 @@ fun ArtistScreen(model: Model, id: String) {
                 }
             }
             items(albums.size, key = { it }) { i -> AlbumItem(model, albums[i]) }
+            item { NotesSection(model, MarkOn.ARTIST, id) }
         }
     }
 }

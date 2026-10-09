@@ -27,6 +27,7 @@ uniffi::setup_scaffolding!();
 
 mod editor;
 mod forms;
+mod media;
 
 /// Android's certificate checking (so a server's HTTPS works with the certificates the
 /// phone trusts, including ones the user installed) needs the app's `Context` once, before

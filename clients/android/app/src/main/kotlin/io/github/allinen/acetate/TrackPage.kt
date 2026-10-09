@@ -139,6 +139,7 @@ fun TrackScreen(model: Model, id: String) {
                         }
                     }
                 }
+                item { NotesSection(model, MarkOn.TRACK, id) }
                 // More of what we know of the track goes below this (related tracks, its
                 // history…), each in a section of its own.
                 if (lyrics != null) item {
