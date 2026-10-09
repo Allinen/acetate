@@ -72,7 +72,8 @@ handles, then Save; nothing is written before. A playlist can also be renamed an
 **Covers:** an album's **Covers** screen lists them with the main one first: make one main,
 move it earlier or later, put it on all the album's tracks, move it to the trash (the server
 keeps it there), or add an image from the phone's storage (the system picker, so the app
-needs no storage permission). A track's covers are in its editor, where an image added is
+needs no storage permission). Nothing is sent until you press Save (Cancel asks before
+throwing the changes away). A track's covers are in its editor, where an image added is
 a change like the others. **Notes** on tracks, albums and artists show at the bottom of their
 pages; in edit mode they can be written, changed (with an optional reason) and taken off
 (kept; "Bring back" undoes it).
