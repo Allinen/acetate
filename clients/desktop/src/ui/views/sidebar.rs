@@ -110,7 +110,13 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell, page: Page, username: &str) {
     ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
         if shell.account.can("edit_metadata") {
             let label = if shell.edit_mode { "Edit mode" } else { "Listen mode" };
-            let tip = if shell.edit_mode { "Back to listening (e)" } else { "Edit the library (e)" };
+            let tip = if shell.edit_mode {
+                "Back to listening (e)"
+            } else if shell.connection.is_offline() {
+                "Offline: editing needs the server"
+            } else {
+                "Edit the library (e)"
+            };
             if widgets::chip_morph(ui, "edit-mode", label, shell.edit_mode).on_hover_text(tip).clicked() {
                 shell.act(Action::ToggleEditMode);
             }

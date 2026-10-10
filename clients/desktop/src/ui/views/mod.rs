@@ -104,7 +104,15 @@ impl Pages {
             return;
         }
         if page == Page::Trash {
+            if shell.connection.is_offline() {
+                offline(ui, "The trash");
+                return;
+            }
             self.trash.show(ui, shell);
+            return;
+        }
+        if page == Page::Review && shell.connection.is_offline() {
+            offline(ui, "Review");
             return;
         }
         let Some(catalog) = shell.catalog.value.clone() else {
@@ -127,6 +135,14 @@ impl Pages {
             Page::NowPlaying | Page::Queue | Page::Settings | Page::Trash => {}
         }
     }
+}
+
+/// A page that needs the server, while it's away.
+pub fn offline(ui: &mut egui::Ui, what: &str) {
+    ui.add_space(24.0);
+    ui.label(RichText::new("Offline").font(theme::font(24.0, theme::bold())));
+    ui.add_space(6.0);
+    ui.label(RichText::new(format!("{what} needs the server, which can't be reached. What's on this computer still plays; the server is asked again now and then (or Try now, in the sidebar).")).color(P.muted));
 }
 
 /// Credited artists (producers left out) as links to their pages, each as credited

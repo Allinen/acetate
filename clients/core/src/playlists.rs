@@ -245,6 +245,20 @@ impl Playlists {
         });
     }
 
+    /// For a change only the server can make (`what`): whether it can be made now. Offline
+    /// it can't, and the user is told so. (Adding tracks can: it waits in the outbox.)
+    fn needs_server(&self, what: &str) -> bool {
+        if !self.api.connection().is_offline() {
+            return true;
+        }
+        // (Taken in by `poll`, and the app woken afterwards: whoever called this may hold
+        // the lock the app's waker takes.)
+        self.answers.lock().unwrap().push(Answer::Notice(format!("Offline: {what} needs the server.")));
+        let waker = self.waker.clone();
+        self.runtime.spawn(async move { waker.changed() });
+        false
+    }
+
     /// A new number for a request for this playlist.
     fn ask(&mut self, id: Uuid) -> u64 {
         let number = self.asked.entry(id).or_default();
@@ -318,6 +332,9 @@ impl Playlists {
 
     /// Makes a playlist, with these tracks in it.
     pub fn create(&self, name: String, tracks: Vec<Uuid>) {
+        if !self.needs_server("making a playlist") {
+            return;
+        }
         let api = self.api.clone();
         self.spawn(async move {
             #[derive(Deserialize)]
@@ -348,6 +365,9 @@ impl Playlists {
 
     /// Removes entries (shown at once).
     pub fn remove(&mut self, id: Uuid, entries: Vec<Uuid>) {
+        if !self.needs_server("taking tracks out of a playlist") {
+            return;
+        }
         self.change_locally(id, |d| d.entries.retain(|e| !entries.contains(&e.id)));
         let api = self.api.clone();
         self.spawn(async move {
@@ -372,6 +392,9 @@ impl Playlists {
 
     /// Puts the entries in this order (shown at once, one request): `order` has every entry.
     pub fn set_order(&mut self, id: Uuid, order: Vec<Uuid>) {
+        if !self.needs_server("reordering a playlist") {
+            return;
+        }
         self.change_locally(id, |d| {
             let mut by_id: std::collections::HashMap<Uuid, _> = d.entries.drain(..).map(|e| (e.id, e)).collect();
             let mut entries: Vec<_> = order.iter().filter_map(|i| by_id.remove(i)).collect();
@@ -390,6 +413,9 @@ impl Playlists {
 
     /// Moves an entry to this place (shown at once, one request).
     pub fn move_entry_to(&mut self, id: Uuid, entry: Uuid, to: isize) {
+        if !self.needs_server("reordering a playlist") {
+            return;
+        }
         let mut order = None;
         self.change_locally(id, |d| {
             let Some(at) = d.entries.iter().position(|e| e.id == entry) else { return };
@@ -414,6 +440,9 @@ impl Playlists {
 
     /// Renames it, describes it, or makes it public/private.
     pub fn update(&mut self, id: Uuid, name: Option<String>, public: Option<bool>, description: Option<String>) {
+        if !self.needs_server("changing a playlist") {
+            return;
+        }
         self.change_locally(id, |d| {
             if let Some(name) = &name {
                 d.name = name.clone();
@@ -440,6 +469,9 @@ impl Playlists {
 
     /// Moves it to the trash (it's taken back out on the Trash page).
     pub fn trash(&mut self, id: Uuid, name: String) {
+        if !self.needs_server("moving a playlist to the trash") {
+            return;
+        }
         let api = self.api.clone();
         self.spawn(async move {
             let mut answers = match api.send(Method::DELETE, &format!("/api/playlists/{id}"), None).await {
@@ -452,6 +484,9 @@ impl Playlists {
     }
 
     pub fn undo(&mut self, id: Uuid, change: Uuid) {
+        if !self.needs_server("undoing") {
+            return;
+        }
         let api = self.api.clone();
         self.spawn(async move {
             #[derive(Deserialize)]
@@ -508,6 +543,22 @@ async fn list(api: &Api) -> Vec<Answer> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn offline_server_only_changes_are_refused_with_the_reason() {
+        let dir = tempfile::tempdir().unwrap();
+        let away = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap();
+        let session = crate::api::Session { server: format!("http://{away}"), token: "t".into(), username: "ann".into(), instance: None };
+        std::fs::write(dir.path().join("session.json"), serde_json::to_vec(&session).unwrap()).unwrap();
+        let api = Api::new(dir.path().to_path_buf());
+        let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap();
+        let _ = runtime.block_on(api.send(Method::GET, "/api/vocab", None));
+        assert!(api.connection().is_offline());
+        let mut playlists = Playlists::new(api, runtime.handle().clone(), Arc::new(crate::NoWake));
+        playlists.remove(Uuid::nil(), vec![Uuid::nil()]);
+        playlists.poll();
+        assert_eq!(playlists.notice.map(|n| n.0).as_deref(), Some("Offline: taking tracks out of a playlist needs the server."));
+    }
 
     #[test]
     fn a_kept_playlist_is_fetched_again_when_the_catalog_says_it_changed() {

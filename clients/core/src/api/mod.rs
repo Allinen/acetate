@@ -363,6 +363,8 @@ impl Api {
         let moved = Session { server: address.trim().trim_end_matches('/').to_string(), ..session };
         self.keep(&moved);
         *self.session.write().unwrap() = Some(moved);
+        // It answered there: whatever happened at the old address, it's there now.
+        self.set_connection(Connection::Online);
         Ok(())
     }
 

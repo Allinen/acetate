@@ -1125,6 +1125,9 @@ impl Core {
         let Some(id) = parse_id(&id) else {
             return Err(CoreError::Failed { code: "unexpected".into(), reason: "that isn't an id".into() });
         };
+        if self.shared.api.connection().is_offline() {
+            return Err(CoreError::Failed { code: "offline".into(), reason: "Offline: making a share link needs the server.".into() });
+        }
         let api = self.shared.api.clone();
         let target = link_target(on, id);
         self.runtime

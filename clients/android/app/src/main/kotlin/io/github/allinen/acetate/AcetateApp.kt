@@ -128,6 +128,9 @@ class Model(dataDir: String) : Listener {
     /** Edit mode is on: pages show their editing tools (only for accounts that may). */
     var editMode by mutableStateOf(false)
 
+    /** Edit mode was on when the server went away: it comes back on with the server. */
+    private var editModeWhenBack = false
+
     /** Bumped when the account's rights arrived (read `core.canEdit()` again). */
     var accountVersion by mutableIntStateOf(0)
         private set
@@ -191,10 +194,22 @@ class Model(dataDir: String) : Listener {
                 Change.DETAILS -> detailsVersion++
                 Change.ACCOUNT -> {
                     accountVersion++
-                    if (!core.canEdit()) editMode = false
+                    if (!core.mayEdit()) editMode = false
                 }
                 Change.EDITOR -> editorVersion++
-                Change.CONNECTION -> connection = core.connection()
+                Change.CONNECTION -> {
+                    val wasOffline = connection.offline
+                    connection = core.connection()
+                    // Editing needs the server: off while it's away (what's unsaved stays).
+                    if (connection.offline && !wasOffline && editMode) {
+                        editMode = false
+                        editModeWhenBack = true
+                        notice = "Offline: edit mode is off until the server is back."
+                    } else if (!connection.offline && wasOffline && editModeWhenBack) {
+                        editModeWhenBack = false
+                        if (core.canEdit()) editMode = true
+                    }
+                }
                 Change.CATALOG -> {
                     catalogVersion++
                     // For measuring (adb logcat -s Acetate): how long from the process starting.

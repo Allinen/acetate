@@ -348,6 +348,7 @@ impl Marking {
                 !self.marked.is_empty() && shell.account.can("edit_metadata") && i.consume_key(egui::Modifiers::COMMAND, egui::Key::E),
             )
         });
+        let open = open && shell.needs_server("editing");
         if toggle {
             self.toggle(selected, id_at);
         }
@@ -453,7 +454,7 @@ impl Marking {
             if ui.button("Queue  (q)").on_hover_text("At the end of the queue (Shift+Q: first)").clicked() {
                 self.queue(shell, catalog, false, len, id_at);
             }
-            if !self.in_place && shell.account.can("edit_metadata") && ui.button(format!("Change {} tracks…  (Ctrl+E)", thousands(self.last_count))).clicked() {
+            if !self.in_place && shell.can_edit() && ui.button(format!("Change {} tracks…  (Ctrl+E)", thousands(self.last_count))).clicked() {
                 self.open_bulk();
             }
             if !tools {

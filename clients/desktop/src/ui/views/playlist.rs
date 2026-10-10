@@ -125,18 +125,18 @@ impl PlaylistPage {
             }
             ui.add_space(8.0);
             if detail.mine {
-                if widgets::chip(ui, if detail.public { "Public" } else { "Private" }, detail.public) {
+                if widgets::chip(ui, if detail.public { "Public" } else { "Private" }, detail.public) && shell.needs_server("changing a playlist") {
                     shell.playlists.update(id, None, Some(!detail.public), None);
                 }
-                if widgets::chip(ui, "Rename  F2", false) {
+                if widgets::chip(ui, "Rename  F2", false) && shell.needs_server("renaming a playlist") {
                     shell.act(Action::RenamePlaylist(id));
                 }
                 let open = self.describing.as_ref().is_some_and(|(d, _)| *d == id);
-                if widgets::chip(ui, "Describe…", open) {
+                if widgets::chip(ui, "Describe…", open) && (open || shell.needs_server("changing a playlist")) {
                     self.describing = if open { None } else { Some((id, detail.description.clone())) };
                 }
             }
-            if widgets::chip(ui, "History", self.history) {
+            if widgets::chip(ui, "History", self.history) && (self.history || shell.needs_server("a playlist's history")) {
                 self.history = !self.history;
                 if self.history {
                     shell.playlists.fetch_log(id);
@@ -144,7 +144,7 @@ impl PlaylistPage {
             }
             if detail.mine {
                 let label = if self.confirm_trash { "Click again: move to trash" } else { "Move to trash" };
-                if widgets::chip(ui, label, self.confirm_trash) {
+                if widgets::chip(ui, label, self.confirm_trash) && shell.needs_server("moving a playlist to the trash") {
                     if self.confirm_trash {
                         shell.playlists.trash(id, detail.name.clone());
                         shell.act(Action::Back);
@@ -159,7 +159,7 @@ impl PlaylistPage {
             ui.add(egui::TextEdit::multiline(text).hint_text("What it's for, what's in it (optional)").desired_rows(3).desired_width(520.0));
             let text = text.trim().to_string();
             ui.horizontal(|ui| {
-                if ui.button("Save the description").clicked() {
+                if ui.button("Save the description").clicked() && shell.needs_server("changing a playlist") {
                     shell.playlists.update(id, None, None, Some(text));
                     self.describing = None;
                 }
@@ -188,6 +188,12 @@ impl PlaylistPage {
                     i.consume_key(Modifiers::NONE, Key::F2),
                 )
             });
+            // (Taking tracks out and moving them need the server: adding doesn't.)
+            let (delete, up, down, rename) = if (delete || up || down || rename) && !shell.needs_server("changing a playlist's tracks") {
+                (false, false, false, false)
+            } else {
+                (delete, up, down, rename)
+            };
             if let Some(row) = shown.selected {
                 if delete {
                     shell.playlists.remove(id, vec![entries[row]]);
@@ -233,7 +239,7 @@ impl PlaylistPage {
                             text.push_str(" · undone");
                         }
                         ui.label(RichText::new(text).color(color));
-                        if mine && entry.undoable() && ui.add(egui::Button::new(RichText::new("Undo").color(P.accent)).frame(false)).clicked() {
+                        if mine && entry.undoable() && ui.add(egui::Button::new(RichText::new("Undo").color(P.accent)).frame(false)).clicked() && shell.needs_server("undoing") {
                             shell.playlists.undo(id, entry.id);
                         }
                     });

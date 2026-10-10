@@ -187,7 +187,13 @@ fn kind_of(kind: RowKind) -> (&'static str, u32) {
 #[uniffi::export]
 impl Core {
     /// Whether this account may change the library's tracks (edit mode is for them).
+    /// Whether editing is offered now: the user may, and the server is there.
     pub fn can_edit(&self) -> bool {
+        self.may_edit() && !self.shared.api.connection().is_offline()
+    }
+
+    /// Whether the user may edit (whether the server is there or not).
+    pub fn may_edit(&self) -> bool {
         self.shared.account.lock().unwrap().can("edit_metadata")
     }
 
@@ -202,6 +208,9 @@ impl Core {
         let targets: Vec<Uuid> = tracks.iter().filter_map(|t| parse_id(t)).collect();
         if targets.is_empty() {
             return Err(failed("There are no tracks to edit."));
+        }
+        if self.shared.api.connection().is_offline() {
+            return Err(failed("Offline: editing needs the server."));
         }
         let catalog = self.shared.catalog().ok_or_else(|| failed("The library isn't loaded yet."))?;
         let (vocab, may_relate, may_source) = {

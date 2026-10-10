@@ -154,6 +154,8 @@ pub struct Shell {
     pub account: crate::account::Account,
     /// Whether the server could be reached, as of the last frame (see `api::Connection`).
     pub connection: acetate_core::api::Connection,
+    /// Edit mode was on when the server went away: it comes back on with the server.
+    edit_mode_when_back: bool,
     /// Pages show their editors (only with `edit_metadata`).
     pub edit_mode: bool,
     /// Open review flags (the Review page's list).
@@ -253,6 +255,21 @@ impl Shell {
 
     pub fn act(&mut self, action: Action) {
         self.actions.push(action);
+    }
+
+    /// For something only the server can do (`what`: "editing", "share links"…): whether
+    /// it can be done now. Offline it can't, and the user is told so.
+    pub fn needs_server(&mut self, what: &str) -> bool {
+        if !self.connection.is_offline() {
+            return true;
+        }
+        self.playlists.notice = Some((format!("Offline: {what} needs the server."), Instant::now()));
+        false
+    }
+
+    /// Whether editing is offered: the user may, and the server is there.
+    pub fn can_edit(&self) -> bool {
+        self.account.can("edit_metadata") && !self.connection.is_offline()
     }
 
     /// The user's star, rating and play count on a track, album or artist.
@@ -680,6 +697,13 @@ impl Shell {
         let (was, is) = (self.connection.is_offline(), now.is_offline());
         self.connection = now;
         if is && !was {
+            // Editing needs the server: edit mode goes off (what's unsaved in open forms
+            // stays), and comes back on with the server.
+            if self.edit_mode {
+                self.edit_mode = false;
+                self.edit_mode_when_back = true;
+                self.playlists.notice = Some(("Offline: edit mode is off until the server is back (nothing unsaved is lost).".into(), Instant::now()));
+            }
             let kept = self.offline.as_ref().map(|o| o.sources()).unwrap_or_default();
             let blobs = self.data_dir.join("blobs");
             let (controller, api) = (self.controller.clone(), self.api.clone());
@@ -692,6 +716,10 @@ impl Shell {
             });
         }
         if was && !is {
+            if std::mem::take(&mut self.edit_mode_when_back) && self.account.can("edit_metadata") {
+                self.edit_mode = true;
+                self.playlists.notice = Some(("Back online: edit mode is on again.".into(), Instant::now()));
+            }
             // What waited goes first, so the library asked for next has it.
             if let Some(outbox) = &self.outbox {
                 outbox.kick();
@@ -871,6 +899,7 @@ impl App {
             settings: crate::settings::Settings::load(&data_dir),
             account: crate::account::Account::default(),
             connection: acetate_core::api::Connection::Online,
+            edit_mode_when_back: false,
             edit_mode: false,
             picker: edit::Picker::default(),
             flags: Default::default(),
@@ -970,6 +999,9 @@ impl App {
         }
         if !self.shell.account.can("share") {
             self.shell.playlists.notice = Some(("Making share links needs the share permission (the plain link, Ctrl+L, works for anyone with an account).".into(), Instant::now()));
+            return;
+        }
+        if !self.shell.needs_server("making a share link") {
             return;
         }
         // The qualities the server makes copies at: asked now, they arrive in the popup.
@@ -1222,8 +1254,16 @@ impl App {
                     self.shell.change_mark(kind, id, Mark { rating: (mark.rating + by).clamp(0, 10), ..mark });
                 }
                 Action::AddToPlaylist(tracks) => self.pages.palette.open(ctx, views::palette::Mode::AddTo(tracks)),
-                Action::NewPlaylist => self.pages.palette.open(ctx, views::palette::Mode::Name(None)),
-                Action::RenamePlaylist(id) => self.pages.palette.open(ctx, views::palette::Mode::Name(Some(id))),
+                Action::NewPlaylist => {
+                    if self.shell.needs_server("making a playlist") {
+                        self.pages.palette.open(ctx, views::palette::Mode::Name(None));
+                    }
+                }
+                Action::RenamePlaylist(id) => {
+                    if self.shell.needs_server("renaming a playlist") {
+                        self.pages.palette.open(ctx, views::palette::Mode::Name(Some(id)));
+                    }
+                }
                 Action::RefreshLibrary => self.shell.refresh_library(ctx),
                 Action::ShowKeys => self.keys_open = true,
                 Action::CopyShareLink(target) => self.open_share_dialog(target),
@@ -1246,10 +1286,12 @@ impl App {
                 }
                 Action::Pick { kind, except } => self.pages.palette.open(ctx, views::palette::Mode::Pick(kind, except)),
                 Action::ToggleEditMode => {
-                    if self.shell.account.can("edit_metadata") {
-                        self.shell.edit_mode = !self.shell.edit_mode;
-                    } else {
+                    if !self.shell.account.can("edit_metadata") {
                         self.shell.playlists.notice = Some(("Editing needs the edit_metadata permission.".into(), Instant::now()));
+                    } else if self.shell.edit_mode || self.shell.needs_server("editing") {
+                        // (Turning it off is always possible.)
+                        self.shell.edit_mode = !self.shell.edit_mode;
+                        self.shell.edit_mode_when_back = false;
                     }
                 }
                 Action::LoggedIn => {

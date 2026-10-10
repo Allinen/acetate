@@ -349,6 +349,7 @@ impl TrackTable {
             let id = id_at(self.selected);
             if let Some(id) = id
                 && ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::E))
+                && shell.needs_server("editing")
             {
                 self.marking.open_quick(id);
             }

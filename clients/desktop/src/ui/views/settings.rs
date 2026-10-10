@@ -115,6 +115,7 @@ impl SettingsPage {
             Tab::Sound => self.sound.show(ui, shell, player),
             Tab::Computer => self.computer.show(ui, shell, &mut self.mirror),
             Tab::Account => self.account.show(ui, shell),
+            Tab::Server if shell.connection.is_offline() => super::offline(ui, "The server's settings"),
             Tab::Server => self.server.show(ui, shell),
             Tab::Mirror => self.mirror.show(ui, shell),
             Tab::General => self.general.show(ui, shell),

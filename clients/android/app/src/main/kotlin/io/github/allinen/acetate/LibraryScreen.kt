@@ -95,8 +95,14 @@ fun SyncLine(model: Model) {
             },
             Modifier.weight(1f), style = MaterialTheme.typography.labelLarge,
         )
-        val canEdit = remember(model.accountVersion, model.session) { model.core.canEdit() }
-        if (canEdit) FilterChip(model.editMode, { model.editMode = !model.editMode }, { Text("Edit") })
+        val mayEdit = remember(model.accountVersion, model.session) { model.core.mayEdit() }
+        if (mayEdit) {
+            FilterChip(model.editMode, {
+                // Editing needs the server (turning it off doesn't).
+                if (!model.editMode && model.connection.offline) model.notice = "Offline: editing needs the server."
+                else model.editMode = !model.editMode
+            }, { Text(if (model.connection.offline && !model.editMode) "Edit (offline)" else "Edit") })
+        }
         TextButton({ model.settingsOpen = true }) { Text("Settings") }
         if (model.settingsOpen) SettingsDialog(model) { model.settingsOpen = false }
     }
