@@ -612,7 +612,9 @@ fn chain(err: &reqwest::Error) -> String {
 
 /// A request that didn't get an answer, in words.
 fn unreachable(err: &reqwest::Error, server: &str) -> ApiError {
-    let message = if err.is_connect() {
+    let message = if err.is_builder() {
+        format!("\"{server}\" isn't a valid server address. Check it for typos, and start it with https:// (or http://), like https://music.example.com.")
+    } else if err.is_connect() {
         format!("Can't reach the server at {server}. Is it running, and is the address right?")
     } else if err.is_timeout() {
         format!("The server at {server} didn't answer in time.")
