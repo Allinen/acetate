@@ -1,9 +1,9 @@
-# Acetate on a server: Postgres and Acetate. Copy this folder there, copy
-# .env.example to .env and fill it in, then `docker compose up -d`.
+# Acetate in Docker: Postgres and Acetate. Copy this folder to the machine that runs it,
+# copy .env.example to .env and fill it in, then `docker compose up -d`.
 #
 # CLI commands run inside the container, e.g.:
 #   docker compose exec acetate acetate user create admin --group admin
-#   docker compose exec acetate acetate ingest /pool/Music/ --layout tags --source generic --dry-run
+#   docker compose exec acetate acetate ingest /disk/Music/ --layout tags --source generic --dry-run
 
 services:
   postgres:
@@ -27,12 +27,12 @@ services:
 
   acetate:
     container_name: acetate
-    image: ${ACETATE_IMAGE:-localhost:5000/acetate:latest}
+    image: ${ACETATE_IMAGE:-acetate:latest}
     restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
-    # Who owns the files it writes on the disks below.
+    # Who owns the files it writes on the disk(s) below.
     user: "${ACETATE_UID:-1000}:${ACETATE_GID:-1000}"
     environment:
       DATABASE_URL: postgres://acetate:${POSTGRES_PASSWORD}@postgres:5432/acetate
@@ -44,8 +44,11 @@ services:
     ports:
       - "${ACETATE_PORT:-3000}:3000"
     volumes:
-      # One mount per disk, holding both the music to import and Acetate's volume on that
-      # disk: a reflink (instant, no extra space) only works within a single mount, even
-      # if two mounts are the same disk.
-      - ${FAST_DISK:?set FAST_DISK in .env}:/pool
-      - ${SLOW_DISK:?set SLOW_DISK in .env}:/hdd
+      # Host folders for Acetate's files and for music to import. Tip: if the music and
+      # Acetate's volume are under the same mount, imports can be reflinks (instant, no
+      # extra space) on filesystems that support them (btrfs, XFS, ZFS with block cloning);
+      # that only works within a single mount, even if two mounts are the same disk.
+      - ${DISK:?set DISK in .env}:/disk
+      # A second disk for another volume (see ACETATE_VOLUMES in .env): uncomment, and set
+      # DISK2 in .env.
+      # - ${DISK2:?set DISK2 in .env}:/disk2

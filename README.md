@@ -85,15 +85,15 @@ Acetate runs as two containers: Postgres and the server. There's no published im
 git clone https://github.com/Allinen/acetate.git && cd acetate
 docker build -t acetate .
 cd deploy
-cp .env.example .env        # set POSTGRES_PASSWORD, your disks, and ACETATE_IMAGE=acetate
+cp .env.example .env        # set POSTGRES_PASSWORD, POSTGRES_DATA and DISK (where your music lives)
 docker compose up -d
 docker compose exec acetate acetate user create admin --group admin   # asks for a password
 ```
 
-Then bring your music in. Paths are as the container sees them, so with `FAST_DISK=/mnt/fast`, `/mnt/fast/Music` is `/pool/Music`:
+Then bring your music in. Paths are as the container sees them, so with `DISK=/srv/media`, `/srv/media/Music` is `/disk/Music`:
 
 ```sh
-docker compose exec acetate acetate ingest /pool/Music --layout tags --origin my-library --dry-run
+docker compose exec acetate acetate ingest /disk/Music --layout tags --origin my-library --dry-run
 ```
 
 Drop `--dry-run` once the output looks right. Keep your music on the same mount as Acetate's volume: imports are then reflinks, which are instant and take no extra space (on btrfs, XFS, or ZFS with block cloning; anywhere else the files are copied).

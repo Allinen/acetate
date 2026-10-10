@@ -1,6 +1,6 @@
-# Acetate's server and CLI, for running in Docker (e.g. on a NAS).
+# Acetate's server and CLI, for running in Docker (on a server, a NAS, a home lab...).
 #
-#   scripts/build-image.sh            # build and push localhost:5000/acetate:latest
+#   scripts/build-image.sh            # build and push to a registry (see the script)
 #
 # Built without a database: the queries were checked when `.sqlx/` was made
 # (`cargo sqlx prepare -- --all-targets`, after changing any query).

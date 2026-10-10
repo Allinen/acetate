@@ -4,7 +4,8 @@
 #   scripts/build-image.sh          # :latest, plus a :YYYYMMDD-HHMM tag to roll back to
 #   scripts/build-image.sh v0.1     # another tag instead of latest
 #
-# ACETATE_REGISTRY overrides the registry (default localhost:5000). The image is built
+# ACETATE_REGISTRY overrides the registry (default localhost:5000, a local one; set it to
+# your own, then ACETATE_IMAGE in deploy/.env to match). The image is built
 # without a database, from `.sqlx/`: after changing any query, run
 # `cargo sqlx prepare -- --all-targets` first (with DATABASE_URL on an up-to-date dev DB).
 set -euo pipefail

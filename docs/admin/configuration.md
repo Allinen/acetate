@@ -24,4 +24,5 @@ Imports on the server itself (`acetate ingest`, `import`) don't go through the A
 upload limits don't apply to them.
 
 The Docker setup uses `deploy/.env`: see `deploy/.env.example` for `POSTGRES_PASSWORD`,
-`POSTGRES_DATA`, `FAST_DISK`, `SLOW_DISK`, `ACETATE_UID`/`ACETATE_GID`, and `ACETATE_PORT`.
+`POSTGRES_DATA`, `DISK` (and optionally `DISK2`), `ACETATE_VOLUMES`, `ACETATE_UID`/`ACETATE_GID`,
+`ACETATE_IMAGE` and `ACETATE_PORT`.
