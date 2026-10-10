@@ -26,16 +26,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: The tag is on main and says the app's version
+      - name: The tag is on main
         if: github.ref_type == 'tag'
         run: |
           git merge-base --is-ancestor "$GITHUB_SHA" origin/main \
             || { echo "::error::$GITHUB_REF_NAME isn't on main"; exit 1; }
-          for manifest in Cargo.toml clients/core/Cargo.toml clients/desktop/Cargo.toml clients/android/rust/Cargo.toml; do
-            version=$(sed -n 's/^version = "\(.*\)"/\1/p' "$manifest" | head -1)
-            [ "$GITHUB_REF_NAME" = "v$version" ] \
-              || { echo "::error::the tag is $GITHUB_REF_NAME, $manifest says $version"; exit 1; }
-          done
+      - name: The tag is the version of everything (scripts/versions.py)
+        run: scripts/versions.py ${{ github.ref_type == 'tag' && format('--tag {0}', github.ref_name) || '' }}
 
   linux:
     needs: check

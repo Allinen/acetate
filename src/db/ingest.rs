@@ -327,7 +327,6 @@ pub async fn create_album(
         kind: kind.to_string(),
         release_date: release_date.map(str::to_string),
         credits,
-        ..Default::default()
     };
     revisions::create_album(conn, &data, Source::Import, "imported_from_file").await
 }

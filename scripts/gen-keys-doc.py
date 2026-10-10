@@ -2,9 +2,11 @@
 """Writes docs/keys.md from the table behind the app's `?` overlay
 (clients/desktop/src/ui/keymap.rs), so the two never drift apart.
 
-    scripts/gen-keys-doc.py
+    scripts/gen-keys-doc.py           # writes it
+    scripts/gen-keys-doc.py --check   # says whether it is up to date (the hooks and CI)
 """
 import re
+import sys
 from pathlib import Path
 
 root = Path(__file__).resolve().parent.parent
@@ -31,4 +33,10 @@ for title, body in group.findall(table):
         cell = lambda s: "`" + unescape(s).replace("|", "\\|") + "`"
         out.append(f"| {cell(keys)} | {unescape(what).replace('|', '\\|')} |")
     out.append("")
-(root / "docs/keys.md").write_text("\n".join(out))
+text = "\n".join(out)
+target = root / "docs/keys.md"
+if "--check" in sys.argv:
+    if target.read_text() != text:
+        sys.exit("docs/keys.md is out of date: run scripts/gen-keys-doc.py")
+else:
+    target.write_text(text)

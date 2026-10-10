@@ -1193,7 +1193,7 @@ async fn an_album_made_for_a_track_gets_its_covers(
     let single: Uuid = sqlx::query_scalar("SELECT id FROM albums WHERE kind = 'single' AND title = 'Tidelines'")
         .fetch_one(&lib.owner)
         .await?;
-    assert_eq!(covers_of(single).await?, [single_cover.clone()]);
+    assert_eq!(covers_of(single).await?, std::slice::from_ref(&single_cover));
     assert_eq!(covers_of(track).await?, [album_cover[0].clone(), single_cover.clone()]);
 
     // Singles made that way before this: no covers. `fix-merged-covers` gives them the

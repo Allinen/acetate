@@ -556,8 +556,8 @@ impl Matcher<'_> {
         };
         // Imported from this very path: that's it, no need to read the file. (Only if
         // it's one track: a path reused for several imports says nothing.)
-        if let Some(text) = path.to_str() {
-            if let [track] = db::ingest::tracks_imported_from(conn, text).await?[..] {
+        if let Some(text) = path.to_str()
+            && let [track] = db::ingest::tracks_imported_from(conn, text).await?[..] {
                 let track = sqlx::query_scalar!(r#"SELECT COALESCE(merged_into, id) AS "id!" FROM tracks WHERE id = $1"#, track)
                     .fetch_one(&mut *conn)
                     .await?;
@@ -565,7 +565,6 @@ impl Matcher<'_> {
                 self.stats.tracks_found_by_path += 1;
                 return Ok(Some(track));
             }
-        }
         let hashed = {
             let path = path.clone();
             tokio::task::spawn_blocking(move || crate::storage::hash_file(&path)).await?
@@ -761,11 +760,10 @@ impl Matcher<'_> {
 fn map_path(path: &Path, maps: &[(String, PathBuf)]) -> PathBuf {
     let text = path.to_string_lossy();
     for (from, to) in maps {
-        if let Some(rest) = text.strip_prefix(from.as_str()) {
-            if rest.is_empty() || rest.starts_with('/') {
+        if let Some(rest) = text.strip_prefix(from.as_str())
+            && (rest.is_empty() || rest.starts_with('/')) {
                 return to.join(rest.trim_start_matches('/'));
             }
-        }
     }
     path.to_path_buf()
 }

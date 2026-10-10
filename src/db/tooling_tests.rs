@@ -78,7 +78,7 @@ async fn albums_get_a_copy_of_the_cover_they_show(_: PgPoolOptions, connect: PgC
     crate::album_covers_command::run(&lib.owner, false).await?;
     assert!(own().await?.is_empty(), "a look changes nothing");
     crate::album_covers_command::run(&lib.owner, true).await?;
-    assert_eq!(own().await?, [sha.clone()], "album A has the image it showed, as its own");
+    assert_eq!(own().await?, std::slice::from_ref(&sha), "album A has the image it showed, as its own");
     crate::album_covers_command::run(&lib.owner, true).await?;
     assert_eq!(own().await?.len(), 1, "once");
     Ok(())

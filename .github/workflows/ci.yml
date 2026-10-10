@@ -16,6 +16,29 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Cheap, and the first to say what is wrong: the versions agree, the generated docs are
+  # current, and clippy is quiet (the pre-push hook runs the same).
+  checks:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev pkg-config
+          rustup toolchain install stable --profile minimal --component clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            clients
+      - run: scripts/versions.py
+      - run: cargo clippy --all-targets --locked -- -D warnings
+        env:
+          SQLX_OFFLINE: "true"
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+        working-directory: clients
+
   server:
     runs-on: ubuntu-24.04
     services:

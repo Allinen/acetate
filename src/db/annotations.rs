@@ -211,11 +211,10 @@ pub async fn played_at(conn: &mut PgConnection, track_id: Uuid, at: DateTime<Utc
         a.play_count = a.play_count.saturating_add(1);
         a.last_played_at = last(&a);
         // Hidden ones (e.g. an artist only visible through other tracks) are skipped.
-        if let Err(err) = put(conn, item, &a).await {
-            if !matches!(err.downcast_ref::<EditRejected>(), Some(EditRejected::NotFound(_))) {
+        if let Err(err) = put(conn, item, &a).await
+            && !matches!(err.downcast_ref::<EditRejected>(), Some(EditRejected::NotFound(_))) {
                 return Err(err);
             }
-        }
     }
     Ok(track)
 }

@@ -91,13 +91,12 @@ fn folder_names(root: &Path, path: &Path) -> Vec<String> {
     if let Some(name) = root.file_name() {
         names.push(name.to_string_lossy().to_string());
     }
-    if let Some(parent) = path.parent() {
-        if let Ok(below) = parent.strip_prefix(root) {
+    if let Some(parent) = path.parent()
+        && let Ok(below) = parent.strip_prefix(root) {
             for part in below.components() {
                 names.push(part.as_os_str().to_string_lossy().to_string());
             }
         }
-    }
     names
 }
 

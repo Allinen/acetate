@@ -692,12 +692,11 @@ async fn ingest_options(args: &IngestArgs, groups: Groups<'_>) -> anyhow::Result
 
 /// A `--volume` given on the command line, checked against the configured ones.
 fn cli_volume(store: &BlobStore, volume: Option<String>) -> anyhow::Result<Option<String>> {
-    if let Some(name) = &volume {
-        if !store.has_volume(name) {
+    if let Some(name) = &volume
+        && !store.has_volume(name) {
             let names: Vec<&str> = store.volumes().iter().map(|v| v.name.as_str()).collect();
             anyhow::bail!("no storage volume called \"{name}\" (ACETATE_VOLUMES has: {})", names.join(", "));
         }
-    }
     Ok(volume)
 }
 

@@ -417,11 +417,10 @@ pub async fn ingest_in(
     // 1. Same bytes already stored? What this import says that the track doesn't have yet
     //    (another album, other metadata...) is merged into it (`merge_duplicate`). Else,
     //    or with nothing new, there's nothing to do but note the sources.
-    if !options.hints.no_duplicate_merge {
-        if let Some(report) = merge_duplicate(conn, store, file, options, dry_run).await? {
+    if !options.hints.no_duplicate_merge
+        && let Some(report) = merge_duplicate(conn, store, file, options, dry_run).await? {
             return Ok(report);
         }
-    }
     if let Some(mut report) = duplicate_in(conn, &file.sha256, options).await? {
         report.album_covers_added = covers_for_known_album(conn, store, options, dry_run).await?;
         return Ok(report);
@@ -503,14 +502,12 @@ async fn merge_duplicate(
     // how tags are read now, or from edits made since.
     let metadata_from_elsewhere = options.tags_from.is_some() || options.hints.described.is_some();
     let mut new_metadata = false;
-    if metadata_from_elsewhere {
-        if let Some(metadata) = db::revisions::primary_metadata(&mut attempt, new).await? {
-            if !db::revisions::metadata_is_known(&mut attempt, existing, &metadata).await? {
+    if metadata_from_elsewhere
+        && let Some(metadata) = db::revisions::primary_metadata(&mut attempt, new).await?
+            && !db::revisions::metadata_is_known(&mut attempt, existing, &metadata).await? {
                 new_metadata = true;
                 added.push("its tags' metadata, which differs (as another variant)".to_string());
             }
-        }
-    }
     let covers = sqlx::query_scalar!(
         r#"
         SELECT count(*) AS "n!" FROM covers d
@@ -640,12 +637,11 @@ async fn new_track(
     // tags have none; artists where they have none, or always if they're meant to win.
     let described = &options.hints.given;
     let mut described_notes = Vec::new();
-    if let Some(title) = described.title.as_ref().filter(|t| !t.trim().is_empty()) {
-        if tags.title.is_none() {
+    if let Some(title) = described.title.as_ref().filter(|t| !t.trim().is_empty())
+        && tags.title.is_none() {
             tags.title = Some(title.clone());
             described_notes.push(format!("title from {}", described.title_from));
         }
-    }
     let described_artists = tags::split_artists(described.artists.clone());
     if !described_artists.is_empty()
         && (tags.artists.is_empty() || described.artists_over_tags)

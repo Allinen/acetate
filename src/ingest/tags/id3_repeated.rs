@@ -171,7 +171,7 @@ fn decode_text(body: &[u8]) -> Vec<String> {
                 }
             }
             let units: Vec<u16> = data
-                .chunks_exact(2)
+                .as_chunks::<2>().0.iter()
                 .map(|p| if big_endian { u16::from_be_bytes([p[0], p[1]]) } else { u16::from_le_bytes([p[0], p[1]]) })
                 .collect();
             // Each value may start with its own BOM.

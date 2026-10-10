@@ -31,8 +31,23 @@ use crate::auth::CurrentUser;
 use crate::db;
 use crate::db::library::{ALBUM_COLUMNS, ANNOTATION_COLUMNS, ARTIST_COLUMNS, EXTRA_COLUMNS, GROUPING_COLUMNS, ISSUE_COLUMNS, LYRIC_COLUMNS, TRACK_COLUMNS};
 
-/// Bumped when the format changes in a way old clients can't read.
-const FORMAT: u32 = 10;
+/// Bumped when the format changes in a way old clients can't read: the number in the
+/// `CATALOG_FORMAT` file, which the clients are built with too.
+const FORMAT: u32 = parse_format(include_str!("../../CATALOG_FORMAT"));
+
+/// (`str::parse` isn't `const`.)
+const fn parse_format(text: &str) -> u32 {
+    let bytes = text.as_bytes();
+    let mut n = 0;
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i].is_ascii_digit() {
+            n = n * 10 + (bytes[i] - b'0') as u32;
+        }
+        i += 1;
+    }
+    n
+}
 
 #[derive(Debug, Deserialize)]
 pub struct CatalogParams {

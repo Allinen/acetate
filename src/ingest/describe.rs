@@ -647,17 +647,15 @@ fn kind_name(kind: Kind) -> &'static str {
 /// system, so this goes through row-level security.
 pub async fn check_explicit_ids(conn: &mut PgConnection, hints: &Hints) -> anyhow::Result<()> {
     for hint in &hints.artists {
-        if let Some(id) = hint.id {
-            if !db::sources::owner_exists(conn, SourceOwner::Artist(id)).await? {
+        if let Some(id) = hint.id
+            && !db::sources::owner_exists(conn, SourceOwner::Artist(id)).await? {
                 return Err(EditRejected::NotFound("artist").into());
             }
-        }
     }
-    if let Some(id) = hints.album.as_ref().and_then(|a| a.id) {
-        if !db::sources::owner_exists(conn, SourceOwner::Album(id)).await? {
+    if let Some(id) = hints.album.as_ref().and_then(|a| a.id)
+        && !db::sources::owner_exists(conn, SourceOwner::Album(id)).await? {
             return Err(EditRejected::NotFound("album").into());
         }
-    }
     Ok(())
 }
 
@@ -666,19 +664,16 @@ pub async fn check_explicit_ids(conn: &mut PgConnection, hints: &Hints) -> anyho
 /// going back to the user's role.
 pub async fn hide_invisible(conn: &mut PgConnection, report: &mut Report) -> anyhow::Result<()> {
     for resolved in &mut report.artists {
-        if let Some(id) = resolved.id {
-            if !db::sources::owner_exists(conn, SourceOwner::Artist(id)).await? {
+        if let Some(id) = resolved.id
+            && !db::sources::owner_exists(conn, SourceOwner::Artist(id)).await? {
                 resolved.id = None;
             }
-        }
     }
-    if let Some(album) = &mut report.album {
-        if let Some(id) = album.id {
-            if !db::sources::owner_exists(conn, SourceOwner::Album(id)).await? {
+    if let Some(album) = &mut report.album
+        && let Some(id) = album.id
+            && !db::sources::owner_exists(conn, SourceOwner::Album(id)).await? {
                 album.id = None;
             }
-        }
-    }
     let mut visible = Vec::new();
     for id in &report.same_song_as {
         if db::sources::owner_exists(conn, SourceOwner::Track(*id)).await? {
