@@ -33,6 +33,9 @@ certificate).
   their page; tap a track's title on Now playing for the track's own page.
 - **Stars and ratings** (half stars) on tracks, albums and artists, kept on the server.
   Liked songs is the starred tracks.
+- **Collectives & groupings:** at the top of the Artists tab. A grouping (a collective, an era,
+  a project…) shows its description, its members (tap one to open the artist), its releases
+  and its tracks, and plays like an album. Making and changing them is desktop work.
 - **Playlists:** add tracks from the long-press menu, reorder with Move up / Move down, filter
   inside a playlist (play and shuffle then use only what's left).
   A track taken out (or unstarred, on Liked songs) stays on the page, faded, until you open it

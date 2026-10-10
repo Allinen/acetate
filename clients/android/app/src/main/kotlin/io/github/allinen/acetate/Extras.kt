@@ -57,6 +57,12 @@ data class VideoRef(val file: String, val name: String)
 @Composable
 fun ExtrasButton(model: Model, on: MarkOn, id: String, title: String) {
     val extras = remember(on, id, model.catalogVersion) { model.core.extrasOf(on, id) }
+    ExtrasButtonOf(model, extras, title)
+}
+
+/** The same for a list already read (a grouping's). */
+@Composable
+fun ExtrasButtonOf(model: Model, extras: List<ExtraRow>, title: String) {
     if (extras.isEmpty()) return
     var open by remember { mutableStateOf(false) }
     TextButton({ open = true }) { Text("Extras (${extras.size})") }

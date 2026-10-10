@@ -271,6 +271,8 @@ sealed interface Page {
     data class Artist(val id: String) : Page
     data class Track(val id: String) : Page
     data class Playlist(val id: String) : Page
+    data class Grouping(val id: String) : Page
+    data object Groupings : Page
     data object Liked : Page
     data object Downloads : Page
     data object Changes : Page

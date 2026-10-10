@@ -68,7 +68,11 @@ fun AlbumList(model: Model, view: AlbumView) {
 @Composable
 fun ArtistList(model: Model, view: ArtistView) {
     val rows = remember(view) { Rows(view.count().toInt()) { s, n -> view.rows(s.toULong(), n.toULong()) } }
+    val groupings = remember(model.catalogVersion) { model.core.groupings("").size }
     LazyColumn(Modifier.fillMaxWidth()) {
+        if (groupings > 0) item {
+            ListLine("Collectives & groupings", "$groupings", Modifier.clickable { model.pages.add(Page.Groupings) })
+        }
         items(rows.count, key = { it }) { i -> rows[i]?.let { ArtistItem(model, it) } }
     }
 }

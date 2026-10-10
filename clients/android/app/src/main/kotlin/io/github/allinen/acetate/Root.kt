@@ -63,6 +63,8 @@ fun Root(model: Model) {
                     is Page.Artist -> ArtistScreen(model, page.id)
                     is Page.Track -> TrackScreen(model, page.id)
                     is Page.Playlist -> PlaylistScreen(model, page.id)
+                    is Page.Grouping -> GroupingScreen(model, page.id)
+                    Page.Groupings -> GroupingsScreen(model)
                     Page.Liked -> LikedScreen(model)
                     Page.Downloads -> DownloadsScreen(model)
                     Page.Changes -> ChangesScreen(model)

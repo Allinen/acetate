@@ -27,6 +27,7 @@ uniffi::setup_scaffolding!();
 
 mod editor;
 mod forms;
+mod groupings;
 mod history;
 mod lyrics_edit;
 mod media;
@@ -448,6 +449,18 @@ pub struct ImageRequest {
     /// The same image kept on the device (downloads keep the covers of what they keep): a
     /// file to read instead.
     pub local: Option<String>,
+}
+
+fn extra_row(e: &acetate_core::catalog::model::Extra) -> ExtraRow {
+    ExtraRow {
+        id: e.id.to_string(),
+        name: e.name.clone(),
+        kind: e.kind.clone(),
+        duration_ms: e.duration_ms,
+        audio_file: e.first_file.filter(|_| e.video.is_none()).map(|f| f.to_string()),
+        video_file: e.video.map(|v| v.to_string()),
+        thumb: e.thumb_key.clone(),
+    }
 }
 
 fn album_row(a: Album) -> AlbumRow {
@@ -1183,15 +1196,7 @@ impl Core {
             .extras
             .iter()
             .filter(|e| e.links.iter().any(|(k, i)| k == kind && *i == id))
-            .map(|e| ExtraRow {
-                id: e.id.to_string(),
-                name: e.name.clone(),
-                kind: e.kind.clone(),
-                duration_ms: e.duration_ms,
-                audio_file: e.first_file.filter(|_| e.video.is_none()).map(|f| f.to_string()),
-                video_file: e.video.map(|v| v.to_string()),
-                thumb: e.thumb_key.clone(),
-            })
+            .map(extra_row)
             .collect()
     }
 

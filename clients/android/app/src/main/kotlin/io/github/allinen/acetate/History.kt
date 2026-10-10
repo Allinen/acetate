@@ -88,7 +88,7 @@ fun HistorySection(model: Model, on: MarkOn, id: String) {
 }
 
 @Composable
-private fun Muted(text: String) = Text(text, color = Palette.faint, style = MaterialTheme.typography.bodyMedium)
+fun Muted(text: String) = Text(text, color = Palette.faint, style = MaterialTheme.typography.bodyMedium)
 
 /** One revision: when, how and by whom, why, what it changed. */
 @Composable
