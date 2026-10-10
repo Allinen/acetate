@@ -105,7 +105,8 @@ impl PlaylistPage {
             if let Some(t) = catalog.track_index(e.track_id) {
                 tracks.push(t);
                 entries.push(e.id);
-                added.push(e.added_at.clone());
+                // (Added here and not sent yet: the server hasn't said when.)
+                added.push(if e.waiting { "waiting".to_string() } else { e.added_at.clone() });
             }
         }
         let rows = TrackRows { tracks: Some(&tracks), added: Some(&added) };

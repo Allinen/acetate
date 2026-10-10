@@ -18,11 +18,9 @@ use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 use super::on_disk::OnDisk;
-use super::unsent::Unsent;
 use super::queue::{self, Queue, Upcoming};
 use super::scrobble::Listen;
 use super::{AudioSource, PlayerView, QueueItem};
-use crate::api::Api;
 use crate::resume::Resume;
 
 /// Something to load into the platform player: the track and where its audio is fetched
@@ -90,19 +88,17 @@ struct State {
 pub struct Player {
     state: Mutex<State>,
     engine: Mutex<Option<Arc<dyn Engine>>>,
-    api: Option<Api>,
     runtime: tokio::runtime::Handle,
     waker: crate::Waker,
     resume: Mutex<Option<Resume>>,
-    /// Listens to report again (see `unsent`).
-    unsent: Arc<Mutex<Option<Unsent>>>,
+    /// Where listens go (None: nowhere, for tests).
+    outbox: Mutex<Option<Arc<crate::outbox::Outbox>>>,
     /// Tells the user something, in words.
     notify: Mutex<Option<Arc<dyn Fn(String) + Send + Sync>>>,
 }
 
 impl Player {
-    /// `api`: where listens are reported (None: nowhere, for tests).
-    pub fn new(api: Option<Api>, runtime: tokio::runtime::Handle, waker: crate::Waker) -> Player {
+    pub fn new(runtime: tokio::runtime::Handle, waker: crate::Waker) -> Player {
         Player {
             state: Mutex::new(State {
                 queue: Queue::default(),
@@ -120,11 +116,10 @@ impl Player {
                 notice: None,
             }),
             engine: Mutex::new(None),
-            api,
             runtime,
             waker,
             resume: Mutex::new(None),
-            unsent: Arc::new(Mutex::new(None)),
+            outbox: Mutex::new(None),
             notify: Mutex::new(None),
         }
     }
@@ -172,23 +167,9 @@ impl Player {
         self.state.lock().unwrap().local = Some(find);
     }
 
-    /// Keeps listens that couldn't be reported in `file`, and reports the ones kept there
-    /// from before now.
-    pub fn keep_listens(&self, file: std::path::PathBuf) {
-        *self.unsent.lock().unwrap() = Some(Unsent::load(file));
-        self.send_unsent();
-    }
-
-    /// Reports the listens kept for later again (call when the connection may be back).
-    pub fn send_unsent(&self) {
-        let Some(api) = self.api.clone() else { return };
-        let tracks = match self.unsent.lock().unwrap().as_mut() {
-            Some(unsent) => unsent.take(),
-            None => return,
-        };
-        for track in tracks {
-            self.report(api.clone(), track);
-        }
+    /// Where listens go from now on (the outbox of whoever is logged in).
+    pub fn send_listens_to(&self, outbox: Option<Arc<crate::outbox::Outbox>>) {
+        *self.outbox.lock().unwrap() = outbox;
     }
 
     // ---- What to play ----
@@ -462,26 +443,11 @@ impl Player {
         }
     }
 
+    /// A listen, to the outbox (sent now, or when the server is back).
     fn report_listen(&self, track: Uuid) {
-        let Some(api) = self.api.clone() else { return };
-        self.report(api, track);
+        let Some(outbox) = self.outbox.lock().unwrap().clone() else { return };
+        outbox.push(crate::outbox::Change::played(track));
         self.waker.changed();
-    }
-
-    /// Sends one listen; if the server can't be reached it's kept for later (an answer, even
-    /// a refusal, settles it).
-    fn report(&self, api: Api, track: Uuid) {
-        let unsent = self.unsent.clone();
-        self.runtime.spawn(async move {
-            if let Err(err) = api.played(track).await {
-                eprintln!("couldn't report a listen of {track}: {err}");
-                if err.status.is_none()
-                    && let Some(unsent) = unsent.lock().unwrap().as_mut()
-                {
-                    unsent.add(track);
-                }
-            }
-        });
     }
 }
 
@@ -674,7 +640,7 @@ mod tests {
 
     fn rig() -> Rig {
         let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
-        let player = Arc::new(Player::new(None, runtime.handle().clone(), Arc::new(crate::NoWake)));
+        let player = Arc::new(Player::new(runtime.handle().clone(), Arc::new(crate::NoWake)));
         let engine = Arc::new(Fake::default());
         *engine.player.lock().unwrap() = Arc::downgrade(&player);
         player.attach(engine.clone());
@@ -804,7 +770,7 @@ mod tests {
         }
         let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
         let count = Arc::new(Count(Default::default()));
-        let player = Player::new(None, runtime.handle().clone(), count.clone());
+        let player = Player::new(runtime.handle().clone(), count.clone());
         let woken = || count.0.load(std::sync::atomic::Ordering::SeqCst);
         player.on_position(Duration::from_secs(1), false, true);
         let before = woken();
@@ -916,7 +882,7 @@ mod tests {
     fn an_engine_that_comes_late_gets_what_is_loaded() {
         let r = rig();
         let late = Arc::new(Fake::default());
-        let player = Arc::new(Player::new(None, r._runtime.handle().clone(), Arc::new(crate::NoWake)));
+        let player = Arc::new(Player::new(r._runtime.handle().clone(), Arc::new(crate::NoWake)));
         player.restore(items(&[1, 2]), 0, vec![], None, Duration::from_secs(7), false, false);
         player.attach(late.clone());
         assert_eq!(late.took(), ["play 1 @7 paused".to_string(), format!("next 2 {}", path(2))]);

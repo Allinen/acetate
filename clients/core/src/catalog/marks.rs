@@ -4,7 +4,8 @@
 //! A change shows at once (kept here) and goes to the server; its answer replaces it.
 //! When a catalog arrives from the server that was asked for after a change, the
 //! catalog has it too, so the change is forgotten here: the server's copy wins, as
-//! everywhere.
+//! everywhere. A change goes to the server through the outbox (see `outbox`): one still
+//! waiting there stays, and one is counted as made when it reached the server (`touch`).
 
 use std::collections::HashMap;
 use std::time::Instant;
@@ -61,10 +62,17 @@ impl Marks {
         self.local.insert(id, (mark, Instant::now()));
     }
 
-    /// A catalog asked for at `asked` arrived from the server: it has every change made
-    /// before then.
-    pub fn catalog_arrived(&mut self, asked: Instant) {
-        self.local.retain(|_, (_, at)| *at > asked);
+    /// A change reached the server now (it was made earlier, offline perhaps).
+    pub fn touch(&mut self, id: Uuid) {
+        if let Some((_, at)) = self.local.get_mut(&id) {
+            *at = Instant::now();
+        }
+    }
+
+    /// A catalog asked for at `asked` arrived from the server: it has every change that
+    /// reached the server before then (not the ones in `waiting`, still to be sent).
+    pub fn catalog_arrived(&mut self, asked: Instant, waiting: &std::collections::HashSet<Uuid>) {
+        self.local.retain(|id, (_, at)| *at > asked || waiting.contains(id));
     }
 
     /// Ids starred (or unstarred) in this session, newest first.

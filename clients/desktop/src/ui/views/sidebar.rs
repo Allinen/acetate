@@ -148,6 +148,16 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell, page: Page, username: &str) {
                 None => "Offline".to_string(),
             };
             ui.add_space(4.0);
+            // (Bottom up: this goes under the line below.)
+            let waiting = match shell.outbox.as_ref().map_or(0, |o| o.len()) {
+                0 => None,
+                1 => Some("1 change waits to be sent".to_string()),
+                n => Some(format!("{n} changes wait to be sent")),
+            };
+            if let Some(waiting) = waiting {
+                ui.label(RichText::new(waiting).color(P.faint).small())
+                    .on_hover_text("Stars, ratings, plays and playlist additions made offline: sent when the server is back.");
+            }
             ui.horizontal(|ui| {
                 ui.label(RichText::new(text).color(P.danger).font(font(12.5, medium())))
                     .on_hover_text("The server can't be reached. What's kept here still plays; it's asked again now and then.");

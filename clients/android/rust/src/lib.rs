@@ -118,6 +118,8 @@ pub struct ConnectionInfo {
     pub offline: bool,
     /// Since when it's offline (milliseconds since 1970).
     pub since_ms: Option<u64>,
+    /// Changes waiting to be sent (stars, ratings, plays, playlist additions).
+    pub waiting: u64,
 }
 
 #[derive(Debug, Clone, Default, uniffi::Record)]
@@ -569,6 +571,8 @@ struct Shared {
     account_wake: acetate_core::Waker,
     /// The downloads of whoever is logged in (set when their sync starts).
     offline: Mutex<Option<Arc<Offline>>>,
+    /// Their stars, ratings, plays and playlist additions on the way to the server.
+    outbox: Mutex<Option<Arc<acetate_core::outbox::Outbox>>>,
     /// What the app said about them, for when they're opened.
     download_quality: Mutex<Option<u32>>,
     downloads_allowed: std::sync::atomic::AtomicBool,
@@ -604,7 +608,7 @@ impl Core {
             .build()
             .expect("a tokio runtime");
         let api = Api::new(data_dir.clone());
-        let player = Arc::new(Player::new(Some(api.clone()), runtime.handle().clone(), Arc::new(ChangeWake(listener.clone()))));
+        let player = Arc::new(Player::new(runtime.handle().clone(), Arc::new(ChangeWake(listener.clone()))));
         let playlist_wake = Arc::new(PlaylistWake { playlists: std::sync::OnceLock::new(), listener: listener.clone() });
         let playlists = Arc::new(Mutex::new(Playlists::new(api.clone(), runtime.handle().clone(), playlist_wake.clone())));
         let _ = playlist_wake.playlists.set(Arc::downgrade(&playlists));
@@ -628,6 +632,7 @@ impl Core {
             playlists,
             track_details,
             offline: Mutex::new(None),
+            outbox: Mutex::new(None),
             download_quality: Mutex::new(None),
             downloads_allowed: std::sync::atomic::AtomicBool::new(true),
             asked: Mutex::new(None),
@@ -653,7 +658,10 @@ impl Core {
                     shared.player.playable_changed();
                 }
                 if offline && !now && shared.api.session().is_some() {
-                    shared.player.send_unsent();
+                    // What waited goes first, so the catalog asked for next has it.
+                    if let Some(outbox) = shared.outbox.lock().unwrap().clone() {
+                        outbox.kick();
+                    }
                     shared.account.lock().unwrap().fetch(&shared.api, &tokio::runtime::Handle::current(), &shared.account_wake);
                     sync_catalog(&shared, false);
                     refresh_offline(&shared);
@@ -667,11 +675,13 @@ impl Core {
 
     /// Whether the server can be reached, as of the last request.
     pub fn connection(&self) -> ConnectionInfo {
+        let waiting = self.shared.outbox.lock().unwrap().as_ref().map_or(0, |o| o.len()) as u64;
         match self.shared.api.connection() {
-            acetate_core::api::Connection::Online => ConnectionInfo { offline: false, since_ms: None },
+            acetate_core::api::Connection::Online => ConnectionInfo { offline: false, since_ms: None, waiting },
             acetate_core::api::Connection::Offline { since } => ConnectionInfo {
                 offline: true,
                 since_ms: since.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_millis() as u64),
+                waiting,
             },
         }
     }
@@ -724,7 +734,9 @@ impl Core {
         *self.shared.store.lock().unwrap() = None;
         *self.shared.sync.lock().unwrap() = SyncState::default();
         self.shared.marks.lock().unwrap().clear();
-        self.shared.playlists.lock().unwrap().reset(None);
+        self.shared.playlists.lock().unwrap().reset(None, None);
+        *self.shared.outbox.lock().unwrap() = None;
+        self.shared.player.send_listens_to(None);
         self.shared.track_details.lock().unwrap().reset(None);
         *self.shared.offline.lock().unwrap() = None;
         *self.shared.account.lock().unwrap() = Default::default();
@@ -748,7 +760,12 @@ impl Core {
         let mut keeping = self.shared.keeping.lock().unwrap();
         if keeping.as_deref() != Some(&key) {
             self.shared.player.keep_with(Resume::new(&self.data_dir, &key));
-            self.shared.playlists.lock().unwrap().reset(Some(self.data_dir.join(format!("playlists-{key}"))));
+            // Changes on their way to the server (some kept from when it was away).
+            let wake = Arc::new(OutboxWake(Arc::downgrade(&self.shared)));
+            let outbox = acetate_core::outbox::Outbox::open(self.data_dir.join(format!("outbox-{key}.json")), self.shared.api.clone(), self.runtime.handle().clone(), wake);
+            *self.shared.outbox.lock().unwrap() = Some(outbox.clone());
+            self.shared.player.send_listens_to(Some(outbox.clone()));
+            self.shared.playlists.lock().unwrap().reset(Some(self.data_dir.join(format!("playlists-{key}"))), Some(outbox));
             self.shared.track_details.lock().unwrap().reset(Some(self.data_dir.join(format!("details-{key}"))));
             match Offline::open(&self.data_dir.join(format!("offline-{key}")), self.shared.api.clone(), self.runtime.handle().clone(), Arc::new(DownloadWake(self.shared.listener.clone()))) {
                 Ok(offline) => {
@@ -758,7 +775,6 @@ impl Core {
                 }
                 Err(err) => log::warn!("couldn't open the downloads: {err:#}"),
             }
-            self.shared.player.keep_listens(self.data_dir.join(format!("unsent-{key}.json")));
             // What the account may do, as kept (it may be offline), then as the server says.
             let mut account = self.shared.account.lock().unwrap();
             *account = acetate_core::account::Account::open(Some(self.data_dir.join(format!("me-{key}.json"))));
@@ -766,9 +782,6 @@ impl Core {
             drop(account);
             self.shared.listener.changed(Change::Account);
             *keeping = Some(key);
-        } else {
-            // Back to the front: the connection may be back.
-            self.shared.player.send_unsent();
         }
         drop(keeping);
         // Back to the front: the server may be back too.
@@ -1392,46 +1405,70 @@ impl acetate_core::Wake for PlaylistWake {
 }
 
 impl Core {
+    /// Shows the change at once and sends it to the server (through the outbox: now, or
+    /// when it's back).
     fn change_mark(&self, on: MarkOn, id: &str, change: impl FnOnce(&mut Mark), star: bool) {
         let Some(id) = parse_id(id) else { return };
-        let shared = self.shared.clone();
-        let before = shared.marks.lock().unwrap().get(shared.catalog().as_deref(), id);
+        let Some(outbox) = self.shared.outbox.lock().unwrap().clone() else { return };
+        let catalog = self.shared.catalog();
+        let before = self.shared.marks.lock().unwrap().get(catalog.as_deref(), id);
         let mut mark = before;
         change(&mut mark);
         if mark == before {
             return;
         }
-        shared.marks.lock().unwrap().set(id, mark);
-        shared.listener.changed(Change::Marks);
-        let kind = match on {
-            MarkOn::Track => Kind::Track,
-            MarkOn::Album => Kind::Album,
-            MarkOn::Artist => Kind::Artist,
+        self.shared.marks.lock().unwrap().set(id, mark);
+        self.shared.listener.changed(Change::Marks);
+        let (kind, name) = match on {
+            MarkOn::Track => (Kind::Track, catalog.as_ref().and_then(|c| Some(c.track(id)?.title().to_string()))),
+            MarkOn::Album => (Kind::Album, catalog.as_ref().and_then(|c| Some(c.album(id)?.title().to_string()))),
+            MarkOn::Artist => (Kind::Artist, catalog.as_ref().and_then(|c| Some(c.artist(id)?.name.clone()))),
         };
-        self.runtime.spawn(async move {
-            let result = if star {
-                shared.api.star(kind.path(), id, mark.starred).await
-            } else {
-                shared.api.rate(kind.path(), id, mark.rating).await
-            };
-            match result {
-                Ok(a) => shared.marks.lock().unwrap().set(id, Mark { play_count: a.play_count, rating: a.rating, starred: a.starred }),
-                Err(err) => {
-                    // Only what this change did goes back: another may be on its way.
-                    let mut marks = shared.marks.lock().unwrap();
-                    let mut now = marks.get(shared.catalog().as_deref(), id);
-                    if star {
-                        now.starred = before.starred;
-                    } else {
-                        now.rating = before.rating;
-                    }
-                    marks.set(id, now);
-                    drop(marks);
-                    shared.listener.notice(format!("{err:#}"));
-                }
-            }
-            shared.listener.changed(Change::Marks);
+        let (kind, name) = (kind.path().to_string(), name.unwrap_or_default());
+        outbox.push(if star {
+            acetate_core::outbox::Change::Star { kind, id, name, starred: mark.starred, from: before.starred }
+        } else {
+            acetate_core::outbox::Change::Rate { kind, id, name, rating: mark.rating, from: before.rating }
         });
+    }
+}
+
+/// What the outbox calls when something came of a change: it's taken in, and the app told.
+struct OutboxWake(std::sync::Weak<Shared>);
+
+impl acetate_core::Wake for OutboxWake {
+    fn changed(&self) {
+        use acetate_core::outbox::Sent;
+        let Some(shared) = self.0.upgrade() else { return };
+        let Some(outbox) = shared.outbox.lock().unwrap().clone() else { return };
+        let catalog = shared.catalog();
+        for sent in outbox.take() {
+            let mut marks = shared.marks.lock().unwrap();
+            let mark = |marks: &Marks, id| marks.get(catalog.as_deref(), id);
+            match sent {
+                Sent::Played(track) => {
+                    let now = mark(&marks, track);
+                    marks.set(track, Mark { play_count: now.play_count + 1, ..now });
+                }
+                Sent::Marked(id) => marks.touch(id),
+                Sent::Unstar { id, starred } => {
+                    let now = mark(&marks, id);
+                    marks.set(id, Mark { starred, ..now });
+                }
+                Sent::Unrate { id, rating } => {
+                    let now = mark(&marks, id);
+                    marks.set(id, Mark { rating, ..now });
+                }
+                Sent::Playlist(id) => {
+                    drop(marks);
+                    shared.playlists.lock().unwrap().fetch(id);
+                }
+                Sent::Notice(text) => shared.listener.notice(text),
+            }
+        }
+        shared.listener.changed(Change::Marks);
+        // (The count of what waits is shown with the connection.)
+        shared.listener.changed(Change::Connection);
     }
 }
 
@@ -1455,7 +1492,8 @@ fn sync_catalog(shared: &Arc<Shared>, load: bool) {
                 if from_server
                     && let Some(asked) = *shared.asked.lock().unwrap()
                 {
-                    shared.marks.lock().unwrap().catalog_arrived(asked);
+                    let waiting = shared.outbox.lock().unwrap().as_ref().map(|o| o.waiting_marks()).unwrap_or_default();
+                    shared.marks.lock().unwrap().catalog_arrived(asked, &waiting);
                     shared.playlists.lock().unwrap().catalog_arrived(asked);
                 }
                 set_catalog(&shared, catalog);

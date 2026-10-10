@@ -94,7 +94,7 @@ pub fn expires_at(days: u32) -> String {
     rfc3339(now + days as u64 * 86_400)
 }
 
-fn rfc3339(secs: u64) -> String {
+pub(crate) fn rfc3339(secs: u64) -> String {
     let (days, rest) = ((secs / 86_400) as i64, secs % 86_400);
     // Days since 1970-01-01 to a calendar date (Howard Hinnant's civil_from_days).
     let z = days + 719_468;

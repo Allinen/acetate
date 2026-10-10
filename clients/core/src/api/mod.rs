@@ -76,6 +76,16 @@ pub struct Annotation {
     pub starred: bool,
 }
 
+/// A star or rating as the server answers its change: the annotation, and what it was
+/// before the change.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Changed {
+    #[serde(flatten)]
+    pub annotation: Annotation,
+    pub was_starred: bool,
+    pub was_rating: i16,
+}
+
 /// What `GET /api/catalog` answered.
 pub enum CatalogResponse {
     /// The same as the copy we have (its ETag matched).
@@ -468,13 +478,13 @@ impl Api {
     }
 
     /// Stars or unstars a track, album or artist (`kind`: "tracks", "albums", "artists").
-    pub async fn star(&self, kind: &str, id: Uuid, starred: bool) -> Result<Annotation, ApiError> {
+    pub async fn star(&self, kind: &str, id: Uuid, starred: bool) -> Result<Changed, ApiError> {
         let method = if starred { reqwest::Method::POST } else { reqwest::Method::DELETE };
         self.send_json(method, &format!("/api/{kind}/{id}/star"), None).await
     }
 
     /// Rates it, 0 (not rated) to 10 (five stars).
-    pub async fn rate(&self, kind: &str, id: Uuid, rating: i16) -> Result<Annotation, ApiError> {
+    pub async fn rate(&self, kind: &str, id: Uuid, rating: i16) -> Result<Changed, ApiError> {
         self.send_json(reqwest::Method::PUT, &format!("/api/{kind}/{id}/rating"), Some(serde_json::json!({ "rating": rating }))).await
     }
 
@@ -501,9 +511,11 @@ impl Api {
         Ok(format!("{}/s/{}", server.trim_end_matches('/'), created.token))
     }
 
-    /// Reports a listen (after half the track or 4 minutes).
-    pub async fn played(&self, track: Uuid) -> Result<Annotation, ApiError> {
-        self.send_json(reqwest::Method::POST, &format!("/api/tracks/{track}/played"), None).await
+    /// Reports a listen (after half the track or 4 minutes). `when`: when it was (seconds
+    /// since 1970), and the key that makes sending it again count once.
+    pub async fn played(&self, track: Uuid, when: Option<(u64, Uuid)>) -> Result<Annotation, ApiError> {
+        let body = when.map(|(at, key)| serde_json::json!({ "played_at": crate::links::rfc3339(at), "key": key }));
+        self.send_json(reqwest::Method::POST, &format!("/api/tracks/{track}/played"), body).await
     }
 
     /// The library (`GET /api/catalog`). With the version of the copy we have (`since`),

@@ -10,6 +10,7 @@
 //! - `lyrics`: synced lyrics (LRC).
 //! - `memory`: how much memory the app holds, and giving freed memory back.
 //! - `playback`: the queue, and the view of the player a UI draws from.
+//! - `outbox`: stars, ratings, plays and playlist additions, kept until the server has them.
 //! - `playlists`: playlists, kept locally like the catalog.
 //! - `resume`: the queue kept between runs.
 //! - `review`: the review flags.
@@ -28,6 +29,7 @@ pub mod commandline;
 pub mod details;
 pub mod links;
 pub mod offline;
+pub mod outbox;
 pub mod lyrics;
 pub mod memory;
 pub mod playback;

@@ -241,7 +241,8 @@ pub struct Shell {
     refresh_again: bool,
     /// The server's answers to mark changes: (id, the mark it has, or an error with the
     /// mark to go back to).
-    mark_answers: Arc<Mutex<Vec<(Uuid, Result<Mark, (String, Mark)>)>>>,
+    /// Stars, ratings, plays and playlist additions on their way to the server.
+    pub outbox: Option<Arc<acetate_core::outbox::Outbox>>,
 }
 
 impl Shell {
@@ -259,25 +260,27 @@ impl Shell {
         self.marks.get(self.catalog.value.as_deref(), id)
     }
 
-    /// Shows `mark` at once and sends the change to the server.
+    /// Shows `mark` at once and sends the change to the server (through the outbox: now,
+    /// or when it's back).
     fn change_mark(&mut self, kind: Kind, id: Uuid, mark: Mark) {
         let before = self.mark(id);
+        let Some(outbox) = self.outbox.clone() else { return };
         if mark == before {
             return;
         }
         self.marks.set(id, mark);
-        let (api, answers, ctx) = (self.api.clone(), self.mark_answers.clone(), self.ctx.clone());
-        self.runtime.spawn(async move {
-            let result = if mark.starred != before.starred {
-                api.star(kind.path(), id, mark.starred).await
-            } else {
-                api.rate(kind.path(), id, mark.rating).await
-            };
-            let answer = result
-                .map(|a| Mark { play_count: a.play_count, rating: a.rating, starred: a.starred })
-                .map_err(|err| (format!("{err:#}"), before));
-            answers.lock().unwrap().push((id, answer));
-            ctx.request_repaint();
+        let catalog = self.catalog.value.as_deref();
+        let name = match kind {
+            Kind::Track => catalog.and_then(|c| Some(c.track(id)?.title().to_string())),
+            Kind::Album => catalog.and_then(|c| Some(c.album(id)?.title().to_string())),
+            Kind::Artist => catalog.and_then(|c| Some(c.artist(id)?.name.clone())),
+        }
+        .unwrap_or_default();
+        let kind = kind.path().to_string();
+        outbox.push(if mark.starred != before.starred {
+            acetate_core::outbox::Change::Star { kind, id, name, starred: mark.starred, from: before.starred }
+        } else {
+            acetate_core::outbox::Change::Rate { kind, id, name, rating: mark.rating, from: before.rating }
         });
     }
 
@@ -314,21 +317,27 @@ impl Shell {
         offline.set_wanted(wants, complete);
     }
 
-    fn take_mark_answers(&mut self) {
-        // Plays counted by playback: the answer has the new play count.
-        for (track, answer) in std::mem::take(&mut *self.controller.played.lock().unwrap()) {
-            match answer {
-                Ok(a) => self.marks.set(track, Mark { play_count: a.play_count, rating: a.rating, starred: a.starred }),
-                Err(err) => self.controller.report(format!("Couldn't count the play. {err}")),
-            }
-        }
-        for (id, answer) in std::mem::take(&mut *self.mark_answers.lock().unwrap()) {
-            match answer {
-                Ok(mark) => self.marks.set(id, mark),
-                Err((err, before)) => {
-                    self.marks.set(id, before);
-                    self.controller.report(err);
+    /// Takes in what came of the changes in the outbox.
+    fn take_sent(&mut self) {
+        use acetate_core::outbox::Sent;
+        let Some(outbox) = self.outbox.clone() else { return };
+        for sent in outbox.take() {
+            match sent {
+                Sent::Played(track) => {
+                    let mark = self.mark(track);
+                    self.marks.set(track, Mark { play_count: mark.play_count + 1, ..mark });
                 }
+                Sent::Marked(id) => self.marks.touch(id),
+                Sent::Unstar { id, starred } => {
+                    let mark = self.mark(id);
+                    self.marks.set(id, Mark { starred, ..mark });
+                }
+                Sent::Unrate { id, rating } => {
+                    let mark = self.mark(id);
+                    self.marks.set(id, Mark { rating, ..mark });
+                }
+                Sent::Playlist(id) => self.playlists.fetch(id),
+                Sent::Notice(text) => self.playlists.notice = Some((text, Instant::now())),
             }
         }
     }
@@ -616,7 +625,11 @@ impl Shell {
         let Some(session) = self.api.session() else { return };
         let store = Arc::new(Store::new(&self.data_dir, &session));
         self.store = Some(store.clone());
-        self.playlists.reset(Some(self.data_dir.join(format!("playlists-{}", store::key(&session)))));
+        // Changes on their way to the server (some kept from when it was away).
+        let outbox = acetate_core::outbox::Outbox::open(self.data_dir.join(format!("outbox-{}.json", store::key(&session))), self.api.clone(), self.runtime.handle().clone(), self.waker.clone());
+        self.controller.send_listens_to(Some(outbox.clone()));
+        self.playlists.reset(Some(self.data_dir.join(format!("playlists-{}", store::key(&session)))), Some(outbox.clone()));
+        self.outbox = Some(outbox);
         self.resume = Some(crate::resume::Resume::new(&self.data_dir, &store::key(&session)));
         self.resumed = false;
         // What's downloaded plays from the disk.
@@ -678,6 +691,10 @@ impl Shell {
             });
         }
         if was && !is {
+            // What waited goes first, so the library asked for next has it.
+            if let Some(outbox) = &self.outbox {
+                outbox.kick();
+            }
             self.controller.on_disk.set(None);
             let controller = self.controller.clone();
             self.runtime.spawn(async move { controller.playable_changed().await });
@@ -729,7 +746,8 @@ impl Shell {
                     self.generation += 1;
                     if from_server {
                         if let Some(asked) = self.refresh_asked {
-                            self.marks.catalog_arrived(asked);
+                            let waiting = self.outbox.as_ref().map(|o| o.waiting_marks()).unwrap_or_default();
+                            self.marks.catalog_arrived(asked, &waiting);
                             self.playlists.catalog_arrived(asked);
                         }
                         self.catalog.refreshing = false;
@@ -891,7 +909,7 @@ impl App {
             store: None,
             refresh_asked: None,
             refresh_again: false,
-            mark_answers: Arc::default(),
+            outbox: None,
         };
         if shell.api.session().is_some() {
             shell.load_library(&cc.egui_ctx);
@@ -1246,7 +1264,9 @@ impl App {
                     self.shell.controller.on_disk.set(None);
                     self.shell.marks.clear();
                     self.shell.offline = None;
-                    self.shell.playlists.reset(None);
+                    self.shell.playlists.reset(None, None);
+                    self.shell.outbox = None;
+                    self.shell.controller.send_listens_to(None);
                     self.shell.resume = None;
                     self.shell.track_details.reset(None);
                     self.shell.album_details.reset(None);
@@ -1449,7 +1469,7 @@ impl eframe::App for App {
         self.keys(&ctx);
         self.open_links();
         self.take_share(&ctx);
-        self.shell.take_mark_answers();
+        self.shell.take_sent();
         if let Some(notice) = self.shell.controller.notice.lock().unwrap().take() {
             self.shell.playlists.notice = Some((notice, Instant::now()));
         }

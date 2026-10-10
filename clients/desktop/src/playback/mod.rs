@@ -17,7 +17,7 @@ use eframe::egui;
 use tokio::sync::Mutex as AsyncMutex;
 use uuid::Uuid;
 
-use crate::api::{Annotation, Api};
+use crate::api::Api;
 use scrobble::Listen;
 use engine::{Command, Scope, Status};
 
@@ -69,8 +69,8 @@ pub struct Controller {
     shuffle: std::sync::atomic::AtomicBool,
     /// The volume slider and mute, as the UI and the system's media controls see them.
     volume: Mutex<(f32, bool)>,
-    /// Plays reported to the server, with its answers, for the UI to take.
-    pub played: Mutex<Vec<(Uuid, Result<Annotation, String>)>>,
+    /// Where listens go (the outbox of whoever is logged in).
+    outbox: Mutex<Option<Arc<acetate_core::outbox::Outbox>>>,
     /// The quality asked for (kbps, see `set_quality`): None, as the server decides.
     quality: Mutex<Option<u32>>,
     /// Files downloaded ahead (see `prepare`).
@@ -116,7 +116,7 @@ impl Controller {
             repeat: Default::default(),
             shuffle: Default::default(),
             volume: Mutex::new((1.0, false)),
-            played: Mutex::default(),
+            outbox: Mutex::default(),
             quality: Mutex::new(None),
             kept: Mutex::default(),
             recent: Mutex::default(),
@@ -196,6 +196,11 @@ impl Controller {
         state.fetching = false;
         state.next_asked += 1;
         self.send(Command::SetNext(None));
+    }
+
+    /// Where listens go from now on.
+    pub fn send_listens_to(&self, outbox: Option<Arc<acetate_core::outbox::Outbox>>) {
+        *self.outbox.lock().unwrap() = outbox;
     }
 
     /// Where downloaded files are: what's there plays from the disk.
@@ -689,13 +694,10 @@ impl Controller {
             // (A file that didn't import isn't a track: nothing to count.)
             let track = current.filter(|c| c.source == AudioSource::File).map(|c| c.track_id);
             let heard = self.listen.lock().unwrap().update(track, length, view.position_now(), view.paused);
-            if let Some(track) = heard {
-                let this = self.clone();
-                tokio::spawn(async move {
-                    let answer = this.api.played(track).await.map_err(|err| format!("{err:#}"));
-                    this.played.lock().unwrap().push((track, answer));
-                    this.ctx.request_repaint();
-                });
+            if let Some(track) = heard
+                && let Some(outbox) = self.outbox.lock().unwrap().clone()
+            {
+                outbox.push(acetate_core::outbox::Change::played(track));
             }
             if let Some(media) = self.media.get() {
                 media.update(&view);

@@ -164,16 +164,37 @@ pub async fn set_rating(conn: &mut PgConnection, item: Item, rating: i16) -> any
 /// A play of a track by the current user (the client calls it after a real listen): one
 /// more play of the track, and of its albums and its primary artists, as Navidrome counts;
 /// and a line in the play log (`plays`).
+#[cfg(test)]
 pub async fn played(conn: &mut PgConnection, track_id: Uuid) -> anyhow::Result<Annotation> {
-    let now = Utc::now();
+    played_at(conn, track_id, Utc::now(), None).await
+}
+
+/// `played`, at a time (a play kept on a client while it was offline, sent later), and
+/// with the client's `key` for it (written as `client:<key>`): a play sent again with the
+/// same key counts once.
+pub async fn played_at(conn: &mut PgConnection, track_id: Uuid, at: DateTime<Utc>, key: Option<Uuid>) -> anyhow::Result<Annotation> {
     let mut track = get(conn, Item::Track(track_id)).await?;
+    // Only something the user can see (the play log's policy says so too).
+    if !sqlx::query_scalar!(r#"SELECT EXISTS (SELECT 1 FROM tracks WHERE id = $1) AS "e!""#, track_id).fetch_one(&mut *conn).await? {
+        return Err(EditRejected::NotFound("track").into());
+    }
+    // In the play log, with its time. A key it has already: counted before.
+    let logged = sqlx::query!(
+        "INSERT INTO plays (track_id, played_at, imported_key) VALUES ($1, $2, $3) ON CONFLICT (imported_key) DO NOTHING",
+        track_id,
+        at,
+        key.map(|k| format!("client:{k}")),
+    )
+    .execute(&mut *conn)
+    .await?;
+    if logged.rows_affected() == 0 {
+        return Ok(track);
+    }
+    // (An earlier play sent late doesn't move the last play back.)
+    let last = |a: &Annotation| a.last_played_at.max(Some(at));
     track.play_count = track.play_count.saturating_add(1);
-    track.last_played_at = Some(now);
+    track.last_played_at = last(&track);
     put(conn, Item::Track(track_id), &track).await?;
-    // And in the play log, with its time.
-    sqlx::query!("INSERT INTO plays (track_id, played_at) VALUES ($1, $2)", track_id, now)
-        .execute(&mut *conn)
-        .await?;
 
     let albums = sqlx::query_scalar!("SELECT album_id FROM album_tracks WHERE track_id = $1", track_id)
         .fetch_all(&mut *conn)
@@ -188,7 +209,7 @@ pub async fn played(conn: &mut PgConnection, track_id: Uuid) -> anyhow::Result<A
     for item in items {
         let mut a = get(conn, item).await?;
         a.play_count = a.play_count.saturating_add(1);
-        a.last_played_at = Some(now);
+        a.last_played_at = last(&a);
         // Hidden ones (e.g. an artist only visible through other tracks) are skipped.
         if let Err(err) = put(conn, item, &a).await {
             if !matches!(err.downcast_ref::<EditRejected>(), Some(EditRejected::NotFound(_))) {

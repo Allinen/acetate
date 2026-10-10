@@ -38,6 +38,9 @@ pub struct Entry {
     pub id: Uuid,
     pub track_id: Uuid,
     pub added_at: String,
+    /// Added here, waiting to be sent (in the outbox); `id` is made up until then.
+    #[serde(default)]
+    pub waiting: bool,
 }
 
 /// One change in a playlist's log (`GET /api/playlists/{id}/log`).
@@ -87,6 +90,8 @@ enum Answer {
     Notice(String),
     /// A change failed: fetch this playlist again.
     Refetch(Uuid),
+    /// The server is away: the copy kept here is what there is (nothing to tell).
+    Offline(Uuid),
 }
 
 pub struct Playlists {
@@ -107,6 +112,8 @@ pub struct Playlists {
     pub notice: Option<(String, Instant)>,
     /// A playlist just made here: the app opens it.
     pub created: Option<Uuid>,
+    /// Where additions go (see `outbox`).
+    outbox: Option<Arc<crate::outbox::Outbox>>,
 }
 
 impl Playlists {
@@ -123,12 +130,15 @@ impl Playlists {
             answers: Arc::default(),
             notice: None,
             created: None,
+            outbox: None,
         }
     }
 
-    /// Starts over for a login: `dir` is where this server's and user's playlists are kept.
-    pub fn reset(&mut self, dir: Option<PathBuf>) {
+    /// Starts over for a login: `dir` is where this server's and user's playlists are kept;
+    /// `outbox`, where additions go.
+    pub fn reset(&mut self, dir: Option<PathBuf>, outbox: Option<Arc<crate::outbox::Outbox>>) {
         self.dir = dir;
+        self.outbox = outbox;
         self.list = None;
         self.details.clear();
         self.logs.clear();
@@ -176,12 +186,7 @@ impl Playlists {
                 Answer::List(list) => self.list = Some((list, Instant::now())),
                 Answer::Detail(id, number, _) if self.asked.get(&id) != Some(&number) => {}
                 Answer::Detail(id, _, detail) => {
-                    if let (Some(path), Ok(bytes)) = (self.path(id), serde_json::to_vec(&detail)) {
-                        if let Some(dir) = path.parent() {
-                            let _ = std::fs::create_dir_all(dir);
-                        }
-                        let _ = std::fs::write(path, bytes);
-                    }
+                    self.keep(id, &detail);
                     let cached = self.details.entry(id).or_default();
                     cached.value = Some(Arc::new(detail));
                     cached.refreshing = false;
@@ -201,12 +206,27 @@ impl Playlists {
                 }
                 Answer::Notice(text) => self.notice = Some((text, Instant::now())),
                 Answer::Refetch(id) => self.fetch(id),
+                Answer::Offline(id) => {
+                    if let Some(cached) = self.details.get_mut(&id) {
+                        cached.refreshing = false;
+                    }
+                }
             }
         }
     }
 
     fn path(&self, id: Uuid) -> Option<PathBuf> {
         self.dir.as_ref().map(|d| d.join(format!("{id}.json")))
+    }
+
+    /// Writes a playlist to disk (best effort: it's fetched again next time).
+    fn keep(&self, id: Uuid, detail: &Detail) {
+        if let (Some(path), Ok(bytes)) = (self.path(id), serde_json::to_vec(detail)) {
+            if let Some(dir) = path.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            let _ = std::fs::write(path, bytes);
+        }
     }
 
     /// Runs `work` in the background; its answers are taken in by `poll`.
@@ -241,6 +261,7 @@ impl Playlists {
             let mut answers = vec![match detail {
                 Ok(detail) => Answer::Detail(id, number, detail),
                 Err(err) if err.status == Some(404) => Answer::Gone(id),
+                Err(err) if err.code == "offline" => return vec![Answer::Offline(id)],
                 Err(err) => Answer::Notice(format!("Couldn't load the playlist: {err:#}")),
             }];
             answers.extend(list(&api).await);
@@ -276,23 +297,16 @@ impl Playlists {
         });
     }
 
-    /// Adds tracks at the end.
+    /// Adds tracks at the end: shown at once (waiting), sent through the outbox (now, or
+    /// when the server is back). It answers with a notice and the playlist fetched again.
     pub fn add(&mut self, id: Uuid, name: String, tracks: Vec<Uuid>) {
-        let api = self.api.clone();
-        let count = tracks.len();
-        self.spawn(async move {
-            let body = json!({ "tracks": tracks });
-            let result = api.send_json::<serde_json::Value>(Method::POST, &format!("/api/playlists/{id}/entries"), Some(body)).await;
-            let what = if count == 1 { "1 track".to_string() } else { format!("{count} tracks") };
-            vec![
-                match result {
-                    Ok(_) => Answer::Notice(format!("Added {what} to “{name}”")),
-                    Err(err) => Answer::Notice(format!("Couldn't add to “{name}”: {err:#}")),
-                },
-                Answer::Refetch(id),
-            ]
-        });
-        self.logs.remove(&id);
+        let Some(outbox) = self.outbox.clone() else { return };
+        let added = tracks.iter().map(|&track_id| Entry { id: Uuid::new_v4(), track_id, added_at: String::new(), waiting: true });
+        self.change_locally(id, |d| d.entries.extend(added));
+        if let Some(detail) = self.details.get(&id).and_then(|c| c.value.clone()) {
+            self.keep(id, &detail);
+        }
+        outbox.push(crate::outbox::Change::Add { playlist: id, name, tracks });
     }
 
     /// Removes entries (shown at once).
@@ -465,8 +479,10 @@ mod against_a_server {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("session.json"), json!({"server": server, "token": token, "username": "test"}).to_string()).unwrap();
         let runtime = tokio::runtime::Runtime::new().unwrap();
-        let mut store = Playlists::new(Api::new(dir.clone()), runtime.handle().clone(), std::sync::Arc::new(crate::NoWake));
-        store.reset(Some(dir.join("playlists")));
+        let api = Api::new(dir.clone());
+        let mut store = Playlists::new(api.clone(), runtime.handle().clone(), std::sync::Arc::new(crate::NoWake));
+        let outbox = crate::outbox::Outbox::open(dir.join("outbox-test.json"), api, runtime.handle().clone(), std::sync::Arc::new(crate::NoWake));
+        store.reset(Some(dir.join("playlists")), Some(outbox.clone()));
         // Polls until `done` says so (or gives up).
         let wait = |store: &mut Playlists, done: &dyn Fn(&mut Playlists) -> bool| {
             for _ in 0..100 {
@@ -490,9 +506,18 @@ mod against_a_server {
         wait(&mut store, &|s| s.details.get(&id).is_some_and(|c| c.value.is_some()));
         assert_eq!(entries(&mut store, id), [tracks[0]]);
 
-        // Add the second, twice (duplicates are allowed), then move the last one up.
+        // Add the second, twice (duplicates are allowed): shown at once, waiting, then as
+        // the server has it once sent. Then move the last one up.
         store.add(id, "client test".into(), vec![tracks[1], tracks[1]]);
-        wait(&mut store, &|s| entries(s, id).len() == 3);
+        assert_eq!(entries(&mut store, id).len(), 3);
+        wait(&mut store, &|s| {
+            for sent in outbox.take() {
+                if let crate::outbox::Sent::Playlist(p) = sent {
+                    s.fetch(p);
+                }
+            }
+            s.details[&id].value.as_ref().is_some_and(|d| d.entries.len() == 3 && d.entries.iter().all(|e| !e.waiting))
+        });
         let last = store.details[&id].value.as_ref().unwrap().entries[2].id;
         store.move_entry(id, last, -1);
         assert_eq!(entries(&mut store, id), [tracks[0], tracks[1], tracks[1]], "shown at once");

@@ -51,3 +51,30 @@ async fn annotations_are_personal(_: PgPoolOptions, connect: PgConnectOptions) -
     annotations::set_rating(&mut tx, Item::Album(lib.album), 0).await?;
     Ok(())
 }
+
+#[sqlx::test]
+async fn a_play_sent_twice_counts_once(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
+    let lib = setup(connect).await?;
+    let (key, now) = (uuid::Uuid::now_v7(), chrono::Utc::now());
+    let yesterday = now - chrono::Duration::days(1);
+    let mut tx = db::begin(&lib.app, Some(lib.carol)).await?;
+    annotations::played_at(&mut tx, lib.v, now, None).await?;
+    // Kept offline, sent later; then sent again (the answer was lost).
+    annotations::played_at(&mut tx, lib.v, yesterday, Some(key)).await?;
+    let again = annotations::played_at(&mut tx, lib.v, yesterday, Some(key)).await?;
+    assert_eq!(again.play_count, 2);
+    // The earlier play doesn't move the last one back, for the album either.
+    let last = again.last_played_at.unwrap();
+    assert!((last - now).num_milliseconds().abs() < 1, "{last} {now}");
+    let album = annotations::get(&mut tx, Item::Album(lib.album)).await?;
+    assert_eq!(album.play_count, 2);
+    assert_eq!(album.last_played_at, again.last_played_at);
+    let logged: Vec<(chrono::DateTime<chrono::Utc>, Option<String>)> =
+        sqlx::query_as("SELECT played_at, imported_key FROM plays ORDER BY played_at").fetch_all(&mut *tx).await?;
+    assert_eq!(logged.len(), 2);
+    assert_eq!(logged[0].1, Some(format!("client:{key}")));
+    // Not something she can see: not found.
+    let err = annotations::played_at(&mut tx, lib.h, now, Some(uuid::Uuid::now_v7())).await.unwrap_err();
+    assert!(matches!(err.downcast_ref::<EditRejected>(), Some(EditRejected::NotFound(_))), "{err:#}");
+    Ok(())
+}

@@ -5,7 +5,6 @@ pub mod on_disk;
 pub mod player;
 pub mod queue;
 pub mod scrobble;
-pub mod unsent;
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};

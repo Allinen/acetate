@@ -191,7 +191,17 @@ private fun OfflineBar(model: Model) {
         Modifier.fillMaxWidth().background(Palette.sidebar).padding(16.dp, 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(text, color = Palette.danger, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+        val waiting = model.connection.waiting.toLong()
+        Column(Modifier.weight(1f)) {
+            Text(text, color = Palette.danger, style = MaterialTheme.typography.bodySmall)
+            // Stars, ratings, plays and playlist additions made offline: sent when it's back.
+            if (waiting > 0) {
+                Text(
+                    if (waiting == 1L) "1 change waits to be sent" else "$waiting changes wait to be sent",
+                    color = Palette.faint, style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        }
         TextButton({ model.core.tryNow() }) { Text("Try now", color = Palette.muted) }
     }
 }
