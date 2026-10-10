@@ -41,6 +41,9 @@ struct Cli {
 enum Command {
     /// Run the HTTP server.
     Serve,
+    /// Apply the migrations that haven't run yet, and stop (every command applies them
+    /// first; this one does nothing else). See `scripts/migrate-db.sh`.
+    Migrate,
     /// Import audio files from disk. The files themselves are copied, never modified.
     Import {
         /// Files to import.
@@ -407,6 +410,10 @@ async fn main() -> anyhow::Result<()> {
         .run(&pool)
         .await
         .context("running migrations")?;
+    if let Command::Migrate = cli.command {
+        tracing::info!("the database is up to date");
+        return Ok(());
+    }
 
     // The catalog's change log keeps 90 days (clients with an older copy get the whole
     // catalog); see migration 0029.
@@ -428,6 +435,7 @@ async fn main() -> anyhow::Result<()> {
 
     match cli.command {
         Command::Serve => serve(config, pool, store).await,
+        Command::Migrate => Ok(()),
         Command::User { command } => user_commands::run(&pool, command).await,
         Command::Import {
             paths,
