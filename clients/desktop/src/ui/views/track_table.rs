@@ -211,6 +211,8 @@ pub struct TrackTable {
     order: Vec<usize>,
     /// The table's lines: `order`, with disc names between discs where they show.
     lines: Vec<Line>,
+    /// For each row (of the rows given): which of its track's rows it is (0: the first).
+    copies: Vec<u32>,
     /// What `order` was made from (the caller's version of the rows).
     made_for: Option<u64>,
     selected: usize,
@@ -239,6 +241,7 @@ impl TrackTable {
             descending: false,
             order: Vec::new(),
             lines: Vec::new(),
+            copies: Vec::new(),
             made_for: None,
             selected: 0,
             scroll_to: None,
@@ -341,7 +344,8 @@ impl TrackTable {
 
         // ---- Marking ----
         let order = &self.order;
-        let id_at = |n: usize| order.get(n).map(|&row| catalog.track_at(rows.track(row)).id());
+        let copies = &self.copies;
+        let id_at = |n: usize| order.get(n).map(|&row| (catalog.track_at(rows.track(row)).id(), copies[row]));
         if !shell.edit_mode {
             self.marking.close_popups();
         }
@@ -354,7 +358,7 @@ impl TrackTable {
                 && ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::E))
                 && shell.needs_server("editing")
             {
-                self.marking.open_quick(id);
+                self.marking.open_quick(id.0);
             }
         }
         if options.keys {
@@ -379,7 +383,8 @@ impl TrackTable {
         let len = if popup || !options.keys { 0 } else { self.order.len() };
         let moved = widgets::move_selection(&ctx, &mut self.selected, len, 1, visible);
         let order = &self.order;
-        let id_at = |n: usize| order.get(n).map(|&row| catalog.track_at(rows.track(row)).id());
+        let copies = &self.copies;
+        let id_at = |n: usize| order.get(n).map(|&row| (catalog.track_at(rows.track(row)).id(), copies[row]));
         if moved.moved {
             self.scroll_to = Some(self.selected);
             // Shift+↑/↓: a range from where it starts; a plain move is where ranges start.
@@ -538,7 +543,7 @@ impl TrackTable {
                     let at = self.order[n];
                     let t = catalog.track_at(rows.track(at));
                     row.set_selected(n == self.selected);
-                    let marked = self.marking.contains(&t.id());
+                    let marked = self.marking.contains(&(t.id(), self.copies[at]));
                     let color = if playing == Some(t.id()) { P.accent } else { P.text };
                     let away = !acetate_core::playback::on_disk::has(here.as_deref(), t.sha256_bytes());
                     for (idx, c) in columns.iter().enumerate() {
@@ -688,7 +693,8 @@ impl TrackTable {
         }
         let modifiers = ctx.input(|i| i.modifiers);
         let order = &self.order;
-        let id_at = |n: usize| order.get(n).map(|&row| catalog.track_at(rows.track(row)).id());
+        let copies = &self.copies;
+        let id_at = |n: usize| order.get(n).map(|&row| (catalog.track_at(rows.track(row)).id(), copies[row]));
         if let Some(n) = boxed {
             self.marking.toggle(n, id_at);
             self.selected = n;
@@ -717,10 +723,12 @@ impl TrackTable {
         }
     }
 
-    /// The marked tracks, in the order shown (none marked: none).
-    pub fn marked_tracks(&self, catalog: &Catalog, rows: &TrackRows) -> Vec<Uuid> {
-        let order = &self.order;
-        self.marking.ordered(order.len(), |n| order.get(n).map(|&row| catalog.track_at(rows.track(row)).id()))
+    /// The marked rows, as the rows given have them (a track twice in them is marked at one
+    /// of its rows, or both), in the order shown.
+    pub fn marked_rows(&self, catalog: &Catalog, rows: &TrackRows) -> Vec<usize> {
+        let (order, copies) = (&self.order, &self.copies);
+        let shown = self.marking.marked_rows(order.len(), |n| order.get(n).map(|&row| (catalog.track_at(rows.track(row)).id(), copies[row])));
+        shown.into_iter().map(|n| order[n]).collect()
     }
 
     /// Unmarks everything.
@@ -730,6 +738,14 @@ impl TrackTable {
 
     fn remake(&mut self, catalog: &Catalog, rows: &TrackRows, version: u64, options: &Options) {
         self.order = catalog.order_tracks(rows, &self.filter, self.sort, self.descending);
+        let mut seen: HashMap<Uuid, u32> = HashMap::new();
+        self.copies = (0..rows.len(catalog))
+            .map(|r| {
+                let seen = seen.entry(catalog.track_at(rows.track(r)).id()).or_insert(0);
+                *seen += 1;
+                *seen - 1
+            })
+            .collect();
         self.made_for = Some(version);
         self.selected = self.selected.min(self.order.len().saturating_sub(1));
         // The rows moved: ranges start from the cursor.

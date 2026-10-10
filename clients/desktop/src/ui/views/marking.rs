@@ -32,10 +32,15 @@ use crate::ui::{thousands, widgets, Action, Shell};
 /// Starring or rating is one request a track: up to this many at once.
 const MANY: usize = 1000;
 
+/// A row of a list: its track, and which of the track's rows that is (0: the first, or
+/// the only).
+pub type Key = (Uuid, u32);
+
 #[derive(Default)]
 pub struct Marking {
-    /// Marked tracks (by id: sorting and filtering keep them).
-    marked: HashSet<Uuid>,
+    /// Marked rows (by track and which of its copies: sorting and filtering keep them, and
+    /// a track twice in a list is marked once at a time).
+    marked: HashSet<Key>,
     /// Where a range starts (a row shown), and whether the range marks (or unmarks):
     /// Shift+click and Shift+↑/↓ go from here.
     anchor: Option<(usize, bool)>,
@@ -73,7 +78,7 @@ impl Marking {
         self.marked.is_empty()
     }
 
-    pub fn contains(&self, id: &Uuid) -> bool {
+    pub fn contains(&self, id: &Key) -> bool {
         self.marked.contains(id)
     }
 
@@ -83,7 +88,7 @@ impl Marking {
         if self.bulk.applying_or_applied() {
             return;
         }
-        self.marked.retain(|id| keep(id));
+        self.marked.retain(|key| keep(&key.0));
     }
 
     /// One of the tools' popups is open (it takes the keys).
@@ -103,17 +108,27 @@ impl Marking {
         shell.edit_mode || self.in_place
     }
 
-    /// The marked tracks, in the order shown (marked ones not shown last).
-    pub fn ordered(&self, len: usize, id_at: impl Fn(usize) -> Option<Uuid>) -> Vec<Uuid> {
-        let shown: Vec<Uuid> = (0..len).filter_map(id_at).filter(|id| self.marked.contains(id)).collect();
-        let seen: HashSet<&Uuid> = shown.iter().collect();
-        let hidden: Vec<Uuid> = self.marked.iter().filter(|id| !seen.contains(id)).copied().collect();
-        shown.into_iter().chain(hidden).collect()
+    /// The marked tracks, in the order shown (marked ones not shown last), each once.
+    pub fn ordered(&self, len: usize, id_at: impl Fn(usize) -> Option<Key>) -> Vec<Uuid> {
+        let mut seen = HashSet::new();
+        let shown = (0..len).filter_map(id_at).filter(|key| self.marked.contains(key)).map(|key| key.0);
+        let hidden = self.marked.iter().map(|key| key.0);
+        shown.chain(hidden).filter(|id| seen.insert(*id)).collect()
+    }
+
+    /// The marked rows shown, as positions.
+    pub fn marked_rows(&self, len: usize, id_at: impl Fn(usize) -> Option<Key>) -> Vec<usize> {
+        (0..len).filter(|&n| id_at(n).is_some_and(|key| self.marked.contains(&key))).collect()
+    }
+
+    /// The marked tracks, once each (unordered).
+    fn tracks(&self) -> HashSet<Uuid> {
+        self.marked.iter().map(|key| key.0).collect()
     }
 
     /// Marks or unmarks one shown row; it becomes where ranges start, and they do as it
     /// did (mark, or unmark).
-    pub fn toggle(&mut self, n: usize, id_at: impl Fn(usize) -> Option<Uuid>) {
+    pub fn toggle(&mut self, n: usize, id_at: impl Fn(usize) -> Option<Key>) {
         let mut on = false;
         if let Some(id) = id_at(n)
             && !self.marked.remove(&id)
@@ -131,7 +146,7 @@ impl Marking {
 
     /// The rows from the anchor (or `from`) to `to` are marked, or (the anchor was a row
     /// just unmarked) unmarked.
-    pub fn range_to(&mut self, from: usize, to: usize, id_at: impl Fn(usize) -> Option<Uuid>) {
+    pub fn range_to(&mut self, from: usize, to: usize, id_at: impl Fn(usize) -> Option<Key>) {
         let (start, on) = self.anchor.unwrap_or((from, true));
         for n in start.min(to)..=start.max(to) {
             if let Some(id) = id_at(n) {
@@ -148,7 +163,7 @@ impl Marking {
     /// A click on row `n` (`selected` before it): Ctrl+click marks or unmarks it,
     /// Shift+click marks the range from where it starts (see `range_to`), a plain click
     /// is where ranges start.
-    pub fn click(&mut self, n: usize, selected: usize, modifiers: egui::Modifiers, id_at: impl Fn(usize) -> Option<Uuid>) {
+    pub fn click(&mut self, n: usize, selected: usize, modifiers: egui::Modifiers, id_at: impl Fn(usize) -> Option<Key>) {
         if modifiers.command {
             self.toggle(n, id_at);
         } else if modifiers.shift {
@@ -183,7 +198,7 @@ impl Marking {
             [] => {}
             [one] => self.open_quick(*one),
             _ => {
-                self.marked = ids.into_iter().collect();
+                self.marked = ids.into_iter().map(|id| (id, 0)).collect();
                 self.anchor = None;
                 self.open_bulk();
             }
@@ -204,7 +219,7 @@ impl Marking {
 
     /// The change for the marked tracks, in the page (`change_in_place`). Done with it
     /// ("Close" once applied): the marks are cleared, and the page is as before.
-    pub fn change(&mut self, ui: &mut egui::Ui, shell: &mut Shell, len: usize, id_at: impl Fn(usize) -> Option<Uuid>, album: Option<Uuid>) {
+    pub fn change(&mut self, ui: &mut egui::Ui, shell: &mut Shell, len: usize, id_at: impl Fn(usize) -> Option<Key>, album: Option<Uuid>) {
         let Some(catalog) = shell.catalog.value.clone() else { return };
         let marked = self.ordered(len, id_at);
         ui.label(RichText::new(format!("Change {} tracks", thousands(marked.len()))).font(font(22.0, bold())));
@@ -227,7 +242,7 @@ impl Marking {
             return Vec::new();
         }
         let mut verbs = vec![Verb::CreditedAs];
-        if self.marked.len() == 2 {
+        if self.tracks().len() == 2 {
             verbs.insert(0, Verb::MergeTwo);
         }
         if shell.account.can("edit_files") {
@@ -250,7 +265,7 @@ impl Marking {
     /// Each frame, before the list: the answers come in, and the popups are drawn (first:
     /// they take Esc and Ctrl+Enter before the list sees them). `album`: the list is an
     /// album's (numbering on it).
-    pub fn popups(&mut self, ctx: &egui::Context, shell: &mut Shell, player: &PlayerView, len: usize, id_at: impl Fn(usize) -> Option<Uuid> + Copy, album: Option<Uuid>) {
+    pub fn popups(&mut self, ctx: &egui::Context, shell: &mut Shell, player: &PlayerView, len: usize, id_at: impl Fn(usize) -> Option<Key> + Copy, album: Option<Uuid>) {
         // Marked tracks put in a grouping: said so, and the lists catch up.
         if let Some(result) = self.grouping_answer.lock().unwrap().take() {
             let text = match result {
@@ -318,7 +333,7 @@ impl Marking {
     /// tracks, Ctrl+M merges the two marked (edit mode; in a text field too, as on the
     /// track page). The list's own keys for a track (s, p, q…) go to `star`, `add`… while
     /// tracks are marked.
-    pub fn keys(&mut self, ctx: &egui::Context, shell: &mut Shell, selected: usize, len: usize, id_at: impl Fn(usize) -> Option<Uuid> + Copy) {
+    pub fn keys(&mut self, ctx: &egui::Context, shell: &mut Shell, selected: usize, len: usize, id_at: impl Fn(usize) -> Option<Key> + Copy) {
         if shell.palette_open {
             return;
         }
@@ -369,13 +384,14 @@ impl Marking {
     /// Stars the marked tracks; all of them starred already: unstars them.
     pub fn star(&self, shell: &mut Shell) {
         // One request a track: not for the whole library at once.
-        if self.marked.len() > MANY {
-            let text = format!("Starring is for up to {} tracks at once ({} marked).", thousands(MANY), thousands(self.marked.len()));
+        let tracks = self.tracks();
+        if tracks.len() > MANY {
+            let text = format!("Starring is for up to {} tracks at once ({} marked).", thousands(MANY), thousands(tracks.len()));
             shell.playlists.notice = Some((text, std::time::Instant::now()));
             return;
         }
-        let on = !self.marked.iter().all(|id| shell.mark(*id).starred);
-        for &id in &self.marked {
+        let on = !tracks.iter().all(|id| shell.mark(*id).starred);
+        for id in tracks {
             if shell.mark(id).starred != on {
                 shell.act(Action::ToggleStar(Kind::Track, id));
             }
@@ -384,30 +400,31 @@ impl Marking {
 
     /// The marked tracks rated half a star up (or down, `by` -1).
     pub fn rate_by(&self, shell: &mut Shell, by: i16) {
-        if self.marked.len() > MANY {
-            let text = format!("Rating is for up to {} tracks at once ({} marked).", thousands(MANY), thousands(self.marked.len()));
+        let tracks = self.tracks();
+        if tracks.len() > MANY {
+            let text = format!("Rating is for up to {} tracks at once ({} marked).", thousands(MANY), thousands(tracks.len()));
             shell.playlists.notice = Some((text, std::time::Instant::now()));
             return;
         }
-        for &id in &self.marked {
+        for id in tracks {
             shell.act(Action::RateBy(Kind::Track, id, by));
         }
     }
 
     /// The marked tracks added to a playlist (chosen in the palette), in the order shown.
-    pub fn add(&self, shell: &mut Shell, len: usize, id_at: impl Fn(usize) -> Option<Uuid>) {
+    pub fn add(&self, shell: &mut Shell, len: usize, id_at: impl Fn(usize) -> Option<Key>) {
         shell.act(Action::AddToPlaylist(self.ordered(len, id_at)));
     }
 
     /// The marked tracks queued, in the order shown: at the end, or (`next`) first.
-    pub fn queue(&self, shell: &mut Shell, catalog: &Catalog, next: bool, len: usize, id_at: impl Fn(usize) -> Option<Uuid>) {
+    pub fn queue(&self, shell: &mut Shell, catalog: &Catalog, next: bool, len: usize, id_at: impl Fn(usize) -> Option<Key>) {
         let tracks = self.ordered(len, id_at).into_iter().filter_map(|id| catalog.track_index(id)).collect();
         shell.act(Action::Enqueue { tracks, next });
     }
 
     /// While tracks are marked: how many, and the tools for them (a row). `salt`: the
     /// list's own (pages with several lists).
-    pub fn bar(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: &Catalog, len: usize, id_at: impl Fn(usize) -> Option<Uuid> + Copy, salt: &str) {
+    pub fn bar(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: &Catalog, len: usize, id_at: impl Fn(usize) -> Option<Key> + Copy, salt: &str) {
         // It's pulled down from behind what's above when the first track is marked, the
         // rows below sliding with it, and pulled up again when the marks are cleared.
         let id = egui::Id::new(("marking-bar", salt));
@@ -440,11 +457,11 @@ impl Marking {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn bar_contents(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: &Catalog, len: usize, id_at: impl Fn(usize) -> Option<Uuid> + Copy, salt: &str, tools: bool) {
+    fn bar_contents(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: &Catalog, len: usize, id_at: impl Fn(usize) -> Option<Key> + Copy, salt: &str, tools: bool) {
         ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new(format!("{} marked", thousands(self.last_count))).font(font(13.0, semibold())).color(P.accent));
             // In any mode.
-            let starred = self.marked.iter().all(|id| shell.mark(*id).starred);
+            let starred = self.marked.iter().all(|key| shell.mark(key.0).starred);
             if ui.button(if starred { "Unstar  (s)" } else { "Star  (s)" }).clicked() {
                 self.star(shell);
             }
@@ -497,7 +514,7 @@ impl Marking {
             if shell.account.can("edit_files") && ui.button("Mark as original files…").on_hover_text("Their files are original files (og files) whose tags didn't say so").clicked() {
                 self.mark_og = Some(super::mark_og::MarkOg::open(shell, self.ordered(len, id_at)));
             }
-            if self.last_count == 2 && ui.button("Merge the two…  (Ctrl+M)").clicked() {
+            if self.last_count == 2 && self.tracks().len() == 2 && ui.button("Merge the two…  (Ctrl+M)").clicked() {
                 let marked = self.ordered(len, id_at);
                 self.merge = Some(super::merge::MergeView::new(marked[0], marked[1]).in_popup());
             }

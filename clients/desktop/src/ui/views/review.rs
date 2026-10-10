@@ -174,7 +174,7 @@ impl Review {
         }
         // The marked tracks' popups, before the keys too.
         let entries = &self.entries;
-        let id_at = |n: usize| entries.get(n).map(|e| catalog.track_at(e.track).id());
+        let id_at = |n: usize| entries.get(n).map(|e| (catalog.track_at(e.track).id(), 0));
         self.marking.popups(&ui.ctx().clone(), shell, player, entries.len(), id_at, None);
         // (Files that didn't import have their own keys.)
         if !self.showing_not_imported && !self.showing_unlinked && !self.showing_unused {
@@ -289,7 +289,7 @@ impl Review {
         });
         ui.add_space(6.0);
         let entries = &self.entries;
-        let id_at = |n: usize| entries.get(n).map(|e| catalog.track_at(e.track).id());
+        let id_at = |n: usize| entries.get(n).map(|e| (catalog.track_at(e.track).id(), 0));
         self.marking.bar(ui, shell, catalog, entries.len(), id_at, "review");
 
         // ---- The list, and the selected track ----
@@ -304,7 +304,7 @@ impl Review {
             self.editor(&mut editor_ui, shell, catalog, player, &vocab);
         } else {
             let entries = &self.entries;
-            self.marking.change(&mut editor_ui, shell, entries.len(), |n| entries.get(n).map(|e| catalog.track_at(e.track).id()), None);
+            self.marking.change(&mut editor_ui, shell, entries.len(), |n| entries.get(n).map(|e| (catalog.track_at(e.track).id(), 0)), None);
         }
         ui.allocate_rect(rest, Sense::hover());
     }
@@ -548,7 +548,7 @@ impl Review {
         // The marks' keys first (Ctrl+M is theirs while tracks are marked).
         let at = self.selected.and_then(|id| self.position(catalog, id)).unwrap_or(self.selected_at);
         let entries = &self.entries;
-        let id_at = |n: usize| entries.get(n).map(|e| catalog.track_at(e.track).id());
+        let id_at = |n: usize| entries.get(n).map(|e| (catalog.track_at(e.track).id(), 0));
         self.marking.keys(ctx, shell, at, entries.len(), id_at);
         let (next, previous, merge) = ctx.input_mut(|i| {
             (
@@ -611,7 +611,7 @@ impl Review {
             self.focus_first = false;
             let to = self.selected.and_then(|id| self.position(catalog, id)).unwrap_or(at);
             let entries = &self.entries;
-            self.marking.range_to(at, to, |n| entries.get(n).map(|e| catalog.track_at(e.track).id()));
+            self.marking.range_to(at, to, |n| entries.get(n).map(|e| (catalog.track_at(e.track).id(), 0)));
         } else if key(Key::J) || key(Key::ArrowDown) || key(Key::K) || key(Key::ArrowUp) {
             self.step(shell, catalog, if key(Key::J) || key(Key::ArrowDown) { 1 } else { -1 });
             // Ranges start from the cursor.
@@ -691,7 +691,7 @@ impl Review {
                         // The mark's box, in front.
                         let mark = egui::Rect::from_min_size(rect.min + Vec2::new(8.0, (ROW - 18.0) / 2.0), Vec2::splat(18.0));
                         let on_box = |pos: Option<egui::Pos2>| pos.is_some_and(|p| mark.expand(4.0).contains(p));
-                        super::marking::paint_box(painter, t.id(), mark, self.marking.contains(&t.id()), on_box(response.hover_pos()));
+                        super::marking::paint_box(painter, t.id(), mark, self.marking.contains(&(t.id(), 0)), on_box(response.hover_pos()));
                         let text_left = mark.right() + 10.0 - rect.left();
                         let title = if t.title().trim().is_empty() { "(no title)" } else { t.title() };
                         let color = if playing == Some(t.id()) { P.accent } else { P.text };
@@ -725,7 +725,7 @@ impl Review {
         let modifiers = ui.input(|i| i.modifiers);
         let from = self.selected.and_then(|id| self.position(catalog, id)).unwrap_or(self.selected_at);
         let entries = &self.entries;
-        let id_at = |n: usize| entries.get(n).map(|e| catalog.track_at(e.track).id());
+        let id_at = |n: usize| entries.get(n).map(|e| (catalog.track_at(e.track).id(), 0));
         if let Some(n) = boxed {
             self.marking.toggle(n, id_at);
         } else if let Some(n) = clicked {

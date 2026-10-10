@@ -199,11 +199,10 @@ impl PlaylistPage {
                 (remove, up, down, rename)
             };
             if remove {
-                // The marked tracks (every entry of each), or the selected entry.
-                let marked = self.table.marked_tracks(catalog, &rows);
+                // The marked entries (just the copy marked of a track in it twice), or the selected one.
+                let marked = self.table.marked_rows(catalog, &rows);
                 let out: Vec<Uuid> = if !marked.is_empty() {
-                    let marked: std::collections::HashSet<&Uuid> = marked.iter().collect();
-                    detail.entries.iter().filter(|e| marked.contains(&e.track_id)).map(|e| e.id).collect()
+                    marked.into_iter().map(|row| entries[row]).collect()
                 } else {
                     shown.selected.map(|row| entries[row]).into_iter().collect()
                 };
