@@ -94,7 +94,7 @@ jobs:
           ndk=$(sed -n 's/.*ndkVersion = "\(.*\)"/\1/p' clients/android/app/build.gradle.kts)
           sdk=$(sed -n 's/.*compileSdk { version = release(\([0-9]*\)) }/\1/p' clients/android/app/build.gradle.kts)
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
-          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;$ndk" "platforms;android-$sdk"
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;$ndk" "platforms;android-$sdk.0"
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: clients
