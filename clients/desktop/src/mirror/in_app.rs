@@ -51,6 +51,8 @@ pub struct InApp {
     snapshot_running: Arc<AtomicBool>,
     /// Paused (`Command::Pause`).
     pub paused: Arc<AtomicBool>,
+    /// Mirroring is turned on in the settings (kept here for the pages, every frame).
+    enabled: Arc<AtomicBool>,
     /// Which of the server's folders a folder here has the files of (`detect`), and a way
     /// to stop looking.
     pub detected: Arc<Mutex<Option<(PathBuf, Option<Result<Detected, String>>)>>>,
@@ -67,7 +69,7 @@ impl InApp {
         }
         let (sender, receiver) = mpsc::unbounded_channel();
         self.commands = Some(sender);
-        let (slot, opening, outcome, paused) = (self.mirror.clone(), self.opening.clone(), self.outcome.clone(), self.paused.clone());
+        let (slot, opening, outcome, paused, enabled) = (self.mirror.clone(), self.opening.clone(), self.outcome.clone(), self.paused.clone(), self.enabled.clone());
         *opening.lock().unwrap() = Some(Opening::NotYet);
         self.task = Some(runtime.spawn(async move {
             let started = Instant::now();
@@ -99,7 +101,7 @@ impl InApp {
             *slot.lock().unwrap() = Some(mirror.clone());
             *opening.lock().unwrap() = Some(Opening::Open);
             ctx.request_repaint();
-            supervise(mirror, receiver, outcome, paused, ctx).await;
+            supervise(mirror, receiver, outcome, paused, enabled, ctx).await;
         }));
     }
 
@@ -120,6 +122,11 @@ impl InApp {
         self.snapshot_at = None;
     }
 
+    /// Mirroring is on: the pages have no use for a "Download" then (the files are here).
+    pub fn is_enabled(&self) -> bool {
+        self.enabled.load(Relaxed)
+    }
+
     pub fn opening(&self) -> Option<Opening> {
         self.opening.lock().unwrap().clone()
     }
@@ -138,6 +145,7 @@ impl InApp {
     pub fn set_config(&mut self, config: &super::index::Config) -> Result<(), String> {
         let mirror = self.mirror.lock().unwrap().clone().ok_or("The mirror isn't open yet.")?;
         mirror.set_config(config).map_err(|e| format!("{e:#}"))?;
+        self.enabled.store(config.enabled, Relaxed);
         // Shown at once, not after the next look.
         if let Some(Ok(snapshot)) = &mut *self.snapshot.lock().unwrap() {
             snapshot.config = config.clone();
@@ -201,10 +209,13 @@ async fn supervise(
     mut commands: mpsc::UnboundedReceiver<Command>,
     outcome: Arc<Mutex<Option<String>>>,
     paused: Arc<AtomicBool>,
+    enabled: Arc<AtomicBool>,
     ctx: eframe::egui::Context,
 ) {
     loop {
-        let on = mirror.config().is_ok_and(|c| c.enabled) && !paused.load(Relaxed);
+        let is_enabled = mirror.config().is_ok_and(|c| c.enabled);
+        enabled.store(is_enabled, Relaxed);
+        let on = is_enabled && !paused.load(Relaxed);
         let command = if on {
             tokio::select! {
                 _ = mirror.watch() => commands.recv().await,

@@ -371,6 +371,10 @@ pub fn share_chip(ui: &mut egui::Ui, shell: &mut crate::ui::Shell, target: crate
 /// stops, again: goes on), then "Downloaded ✓" (Shift+click takes the files away).
 pub fn download_chip(ui: &mut egui::Ui, shell: &mut crate::ui::Shell, kind: &str, id: &str, name: &str) {
     let Some(offline) = shell.offline.clone() else { return };
+    // The mirror has every file already (and shares the pins), so there's nothing to ask for.
+    if shell.mirror.is_enabled() {
+        return;
+    }
     let pinned = shell.is_pinned(kind, id);
     let status = offline.status();
     let coming = status.queued > 0;
