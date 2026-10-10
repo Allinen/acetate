@@ -186,6 +186,12 @@ keyPassword=…
 # clients/android/app/build/outputs/apk/release/app-release.apk
 ```
 
+A tagged release is built by GitHub Actions (`.github/workflows/release.yml`) with the key in
+the repository's secrets: `base64 -w0 ~/acetate-release.jks` as `ANDROID_KEYSTORE_BASE64`, and
+`ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD`. The workflow takes
+`versionName` from the version in `clients/android/rust/Cargo.toml` (the tag has to agree with
+it) and makes `versionCode` from it: 1.2.3 is 10203.
+
 `versionCode` must go up with every release (Android refuses to install a lower one over a
 higher); `versionName` is what people see. (A phone that has a build signed with the debug key can't be updated by one signed with your key: uninstall once, which loses its login and downloads.) Without a key the release is signed with the debug
 key: it installs, but don't publish it, because the real key can't replace it later without
