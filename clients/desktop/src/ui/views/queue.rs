@@ -153,7 +153,9 @@ impl QueuePage {
                 let row = rows[n];
                 let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW), Sense::click());
                 if let Row::Heading(title) = row {
-                    ui.painter().text(rect.left_bottom() + Vec2::new(4.0, -10.0), Align2::LEFT_BOTTOM, title, font(15.0, semibold()), P.muted);
+                    // Headings slide with the rows around them.
+                    let slide = (widgets::glide(&ctx, egui::Id::new(("queue-heading", title)), n as f32, 0.2) - n as f32) * ROW;
+                    ui.painter().text(rect.left_bottom() + Vec2::new(4.0, -10.0 + slide), Align2::LEFT_BOTTOM, title, font(15.0, semibold()), P.muted);
                     continue;
                 }
                 let Some(item) = item(row) else { continue };

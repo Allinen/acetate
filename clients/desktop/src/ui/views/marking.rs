@@ -516,8 +516,10 @@ fn show_editor(editor: &mut crate::ui::edit::editor::TrackEditor, ui: &mut egui:
 pub fn paint_box(painter: &egui::Painter, id: impl std::hash::Hash + std::fmt::Debug, rect: egui::Rect, marked: bool, hovered: bool) {
     let ctx = painter.ctx();
     let id = egui::Id::new(("mark-box", id));
-    let on = ctx.animate_bool_with_time(id, marked, 0.12);
-    let hover = ctx.animate_bool_with_time(id.with("hover"), hovered, 0.1);
+    // (`glide`: a box not drawn for a while, like all of them once the marks are cleared in
+    // listen mode, starts at its state instead of animating from where it was left.)
+    let on = widgets::glide(ctx, id, marked as u8 as f32, 0.12);
+    let hover = widgets::glide(ctx, id.with("hover"), hovered as u8 as f32, 0.1);
     let stroke = widgets::lerp(P.line, P.muted, hover);
     painter.rect_stroke(rect, 4, egui::Stroke::new(1.5, stroke.gamma_multiply(1.0 - on)), egui::StrokeKind::Inside);
     if on > 0.0 {
