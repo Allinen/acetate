@@ -682,6 +682,12 @@ impl Core {
     /// Shows the kept catalog and asks the server what changed (once per call: call it at
     /// start and when the app comes back to the front).
     pub fn start_sync(&self) {
+        // A session from before servers had an identity learns it first (what's kept moves
+        // under it); the server being away only delays that to the next time.
+        if self.shared.api.session().is_some_and(|s| s.instance.is_none()) {
+            let api = self.shared.api.clone();
+            let _ = self.runtime.block_on(async { tokio::time::timeout(std::time::Duration::from_secs(3), api.learn_instance()).await });
+        }
         let Some(session) = self.shared.api.session() else { return };
         let store = Arc::new(Store::new(&self.data_dir, &session));
         *self.shared.store.lock().unwrap() = Some(store.clone());

@@ -174,6 +174,8 @@ pub struct LoginResponse {
     /// For clients using `Authorization: Bearer`. The web UI can ignore it (cookie).
     token: String,
     user: CurrentUser,
+    /// Which server this is (see `db::state::instance_id`), the same whatever its address.
+    instance: Uuid,
 }
 
 /// `POST /api/auth/login`, JSON `{"username": "...", "password": "..."}`. Sets the session
@@ -213,6 +215,7 @@ pub async fn login(
     let body = LoginResponse {
         token,
         user: current_user(session),
+        instance: db::state::instance_id(&state.pool).await?,
     };
     Ok(([(SET_COOKIE, cookie)], Json(body)).into_response())
 }
@@ -231,10 +234,18 @@ pub async fn logout(State(state): State<AppState>, user: CurrentUser) -> Result<
     Ok((StatusCode::NO_CONTENT, [(SET_COOKIE, cookie)]).into_response())
 }
 
-/// `GET /api/auth/me`: who you're logged in as (no `id`/`username` for guests), and what
-/// you may do.
-pub async fn me(user: CurrentUser) -> Json<CurrentUser> {
-    Json(user)
+#[derive(Debug, Serialize)]
+pub struct Me {
+    #[serde(flatten)]
+    user: CurrentUser,
+    /// Which server this is (see `db::state::instance_id`), the same whatever its address.
+    instance: Uuid,
+}
+
+/// `GET /api/auth/me`: who you're logged in as (no `id`/`username` for guests), what
+/// you may do, and which server this is (`instance`).
+pub async fn me(State(state): State<AppState>, user: CurrentUser) -> Result<Json<Me>, AppError> {
+    Ok(Json(Me { user, instance: db::state::instance_id(&state.pool).await? }))
 }
 
 #[derive(Debug, Deserialize)]

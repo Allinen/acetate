@@ -60,6 +60,7 @@ fn core(with_catalog: bool) -> (tempfile::TempDir, Arc<Core>, Arc<Events>) {
             server: SERVER.into(),
             token: String::new(),
             username: "ann".into(),
+            instance: None,
         });
         // Kept the way the store keeps it: a snapshot, generation 1.
         let catalog = acetate_core::catalog::Catalog::build(acetate_core::catalog::model::parse(catalog_json().as_bytes()).unwrap());
@@ -340,7 +341,7 @@ fn a_downloaded_track_plays_from_the_device_without_the_login() {
     const HELLO: &str = "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824";
     let (dir, core, _events) = core(true);
     // What an earlier run kept: the file by its hash, and the list that says so.
-    let key = acetate_core::catalog::store::key(&acetate_core::api::Session { server: SERVER.into(), token: String::new(), username: "ann".into() });
+    let key = acetate_core::catalog::store::key(&acetate_core::api::Session { server: SERVER.into(), token: String::new(), username: "ann".into(), instance: None });
     let root = dir.path().join(format!("offline-{key}"));
     let blob = root.join("blobs/2c/f2").join(HELLO);
     std::fs::create_dir_all(blob.parent().unwrap()).unwrap();
@@ -395,7 +396,7 @@ fn a_list_of_tracks_can_be_filtered_in_its_own_order() {
 fn a_kept_cover_is_read_from_the_device_and_the_downloads_list_counts_what_is_here() {
     const HELLO: &str = "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824";
     let (dir, core, _events) = core(true);
-    let key = acetate_core::catalog::store::key(&acetate_core::api::Session { server: SERVER.into(), token: String::new(), username: "ann".into() });
+    let key = acetate_core::catalog::store::key(&acetate_core::api::Session { server: SERVER.into(), token: String::new(), username: "ann".into(), instance: None });
     let root = dir.path().join(format!("offline-{key}"));
     std::fs::create_dir_all(root.join("covers")).unwrap();
     std::fs::write(root.join("covers/0011223344556677-small"), b"png").unwrap();

@@ -23,6 +23,11 @@ pub struct Session {
     pub server: String,
     pub token: String,
     pub username: String,
+    /// Which server it is, whatever its address (the server's `instance`): what's kept on
+    /// disk is kept under this, so the address can change. None in a session made before
+    /// servers had one (`Api::learn_instance` fills it in).
+    #[serde(default)]
+    pub instance: Option<Uuid>,
 }
 
 /// A request that failed. Shown as `message`, a sentence for a person.
@@ -136,22 +141,57 @@ impl Api {
         #[derive(Deserialize)]
         struct Login {
             token: String,
+            instance: Option<Uuid>,
         }
         let login: Login = read_json(self.go(request, &server).await?).await?;
-        let session = Session { server, token: login.token, username: username.to_string() };
+        let session = Session { server, token: login.token, username: username.to_string(), instance: login.instance };
+        if session.instance.is_some() {
+            // What an earlier version kept under the address is this server's too.
+            self.adopt_kept(&Session { instance: None, ..session.clone() }, &session);
+        }
+        self.keep(&session);
+        *self.session.write().unwrap() = Some(session.clone());
+        self.expired.store(false, Relaxed);
+        Ok(session)
+    }
+
+    /// Writes the session to its file (best effort: logged in all the same; only the next
+    /// start asks again).
+    fn keep(&self, session: &Session) {
         let saved = self
             .session_file
             .parent()
             .map(std::fs::create_dir_all)
             .transpose()
-            .and_then(|_| std::fs::write(&*self.session_file, serde_json::to_vec(&session).unwrap_or_default()));
+            .and_then(|_| std::fs::write(&*self.session_file, serde_json::to_vec(session).unwrap_or_default()));
         if let Err(err) = saved {
-            // Logged in all the same; only the next start asks again.
             eprintln!("couldn't keep the session: {err}");
         }
-        *self.session.write().unwrap() = Some(session.clone());
-        self.expired.store(false, Relaxed);
-        Ok(session)
+    }
+
+    /// What's kept in the app's folder under `from`'s key is now kept under `to`'s.
+    fn adopt_kept(&self, from: &Session, to: &Session) {
+        if let Some(dir) = self.session_file.parent() {
+            crate::catalog::store::move_kept(dir, &crate::catalog::store::key(from), &crate::catalog::store::key(to));
+        }
+    }
+
+    /// For a session made before servers had an identity: asks the server which it is, and
+    /// from then on what's kept is kept under that, not the address (what is already kept
+    /// under the address moves). Without an answer (the server's away) nothing changes and
+    /// the next call tries again; call it before opening what's kept.
+    pub async fn learn_instance(&self) {
+        let Some(session) = self.session().filter(|s| s.instance.is_none()) else { return };
+        #[derive(Deserialize)]
+        struct Me {
+            instance: Option<Uuid>,
+        }
+        let Ok(me) = self.send_json::<Me>(reqwest::Method::GET, "/api/auth/me", None).await else { return };
+        let Some(instance) = me.instance else { return };
+        let learned = Session { instance: Some(instance), ..session.clone() };
+        self.adopt_kept(&session, &learned);
+        self.keep(&learned);
+        *self.session.write().unwrap() = Some(learned);
     }
 
     pub fn logout(&self) {

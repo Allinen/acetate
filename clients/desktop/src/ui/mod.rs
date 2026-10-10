@@ -538,6 +538,12 @@ impl Shell {
 
     /// Starts loading the library: the copy on disk first, then the server's.
     fn load_library(&mut self, ctx: &egui::Context) {
+        // A session from before servers had an identity learns it first (what's kept moves
+        // under it); the server being away only delays that to the next time.
+        if self.api.session().is_some_and(|s| s.instance.is_none()) {
+            let api = self.api.clone();
+            let _ = self.runtime.block_on(async { tokio::time::timeout(std::time::Duration::from_secs(3), api.learn_instance()).await });
+        }
         let Some(session) = self.api.session() else { return };
         let store = Arc::new(Store::new(&self.data_dir, &session));
         self.store = Some(store.clone());

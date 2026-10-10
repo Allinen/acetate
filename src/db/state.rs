@@ -4,7 +4,8 @@
 //!
 //! Names in use:
 //! * `uploads`: today's upload count (`api::upload_limits`);
-//! * `rate_limits`: recent failed logins and share lookups (`api::rate_limit`).
+//! * `rate_limits`: recent failed logins and share lookups (`api::rate_limit`);
+//! * `instance_id`: this server's identity, a uuid made by migration 0061 and never changed.
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -28,6 +29,14 @@ pub async fn set<T: Serialize>(conn: &mut PgConnection, key: &str, value: &T) ->
     .execute(conn)
     .await?;
     Ok(())
+}
+
+/// This server's identity (see migration 0061): the same across restarts, restores and
+/// address changes.
+pub async fn instance_id(pool: &sqlx::PgPool) -> anyhow::Result<uuid::Uuid> {
+    let mut conn = pool.acquire().await?;
+    let id: String = get(&mut conn, "instance_id").await?.ok_or_else(|| anyhow::anyhow!("the server has no instance id (migration 0061)"))?;
+    Ok(id.parse()?)
 }
 
 #[cfg(test)]
@@ -54,6 +63,16 @@ mod tests {
         assert_eq!(get::<Count>(&mut tx, "test").await?, None);
         // Kept, not removed.
         assert!(sqlx::query("DELETE FROM server_state").execute(&mut *tx).await.is_err());
+        Ok(())
+    }
+
+    /// The migration makes it; the app role reads it, and it stays the same.
+    #[sqlx::test]
+    async fn the_server_has_an_identity(_: sqlx::postgres::PgPoolOptions, connect: sqlx::postgres::PgConnectOptions) -> anyhow::Result<()> {
+        let lib = crate::db::rls_tests::setup(connect).await?;
+        let id = instance_id(&lib.app).await?;
+        assert_eq!(instance_id(&lib.app).await?, id);
+        assert!(!id.is_nil());
         Ok(())
     }
 }

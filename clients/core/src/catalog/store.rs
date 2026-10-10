@@ -17,12 +17,37 @@ use super::{Catalog, model};
 use crate::api::{Api, CatalogResponse, Session};
 
 /// The server and user, readable but safe in a file name (things kept on disk are per
-/// server and user).
+/// server and user). The server is its identity, so a new address doesn't change it; a
+/// session from before servers had one is keyed by the address.
 pub fn key(session: &Session) -> String {
-    format!("{}-{}", session.server, session.username)
+    match session.instance {
+        Some(instance) => format!("{instance}-{}", session.username),
+        None => format!("{}-{}", session.server, session.username),
+    }
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' })
         .collect()
+}
+
+/// Moves what's kept in `dir` for the key `from` (the catalog, downloads, queue…: a name
+/// like `catalog-<key>.<generation>.snap`, `offline-<key>`, `list-<key>.json`) to the key
+/// `to`. What is already there under `to` is left alone (and so is what's under `from`).
+pub fn move_kept(dir: &Path, from: &str, to: &str) {
+    if from == to {
+        return;
+    }
+    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let Ok(name) = entry.file_name().into_string() else { continue };
+        let Some((word, rest)) = name.split_once('-') else { continue };
+        let Some(after) = rest.strip_prefix(from) else { continue };
+        if !word.chars().all(|c| c.is_ascii_lowercase()) || !(after.is_empty() || after.starts_with('.')) {
+            continue;
+        }
+        let target = dir.join(format!("{word}-{to}{after}"));
+        if !target.exists() {
+            let _ = std::fs::rename(entry.path(), target);
+        }
+    }
 }
 
 /// What a load or refresh found.
@@ -185,7 +210,7 @@ mod kept_copy {
         let built = super::super::index::Merger::from_base(model::parse_base(&body).unwrap()).unwrap().build(None).unwrap();
         println!("built from the JSON in {:?}: {} tracks", t.elapsed(), built.track_count());
         let dir = tempfile::tempdir().unwrap();
-        let store = Store::new(dir.path(), &Session { server: "http://x".into(), token: String::new(), username: "u".into() });
+        let store = Store::new(dir.path(), &Session { server: "http://x".into(), token: String::new(), username: "u".into(), instance: None });
         let t = std::time::Instant::now();
         let kept = store.keep(built);
         println!("kept in {:?}: {} MB on disk, mapped: {}", t.elapsed(), std::fs::metadata(&store.snapshots()[0].1).unwrap().len() / 1_000_000, kept.is_mapped());
@@ -199,5 +224,30 @@ mod kept_copy {
             let tracks = loaded.track_list("artist:a", super::super::index::TrackSort::Title, false);
             println!("   first album list and a track filter in {:?}: {} albums, {} tracks", t.elapsed(), list.len(), tracks.len());
         }
+    }
+
+    #[test]
+    fn the_key_follows_the_server_not_its_address() {
+        let id = uuid::Uuid::new_v4();
+        let at = |server: &str, instance| Session { server: server.into(), token: String::new(), username: "ann".into(), instance };
+        assert_eq!(key(&at("https://a.example", Some(id))), key(&at("https://b.example", Some(id))));
+        assert_ne!(key(&at("https://a.example", Some(id))), key(&at("https://a.example", Some(uuid::Uuid::new_v4()))));
+        assert_eq!(key(&at("https://a.example", None)), "https___a_example-ann");
+    }
+
+    #[test]
+    fn what_is_kept_moves_to_the_new_key_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let touch = |name: &str| std::fs::write(dir.path().join(name), name).unwrap();
+        for name in ["catalog-old-ann.0000000000000001.snap", "list-old-ann.json", "offline-old-ann", "catalog-old-anna.1.snap", "catalog-other.1.snap"] {
+            touch(name);
+        }
+        move_kept(dir.path(), "old-ann", "new-ann");
+        let mut names: Vec<String> = std::fs::read_dir(dir.path()).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
+        names.sort();
+        assert_eq!(names, ["catalog-new-ann.0000000000000001.snap", "catalog-old-anna.1.snap", "catalog-other.1.snap", "list-new-ann.json", "offline-new-ann"]);
+        // Again: nothing left to move, nothing damaged.
+        move_kept(dir.path(), "old-ann", "new-ann");
+        assert!(dir.path().join("list-new-ann.json").is_file());
     }
 }
