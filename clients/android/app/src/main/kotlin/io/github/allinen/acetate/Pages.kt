@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -113,12 +114,16 @@ fun AlbumScreen(model: Model, id: String) {
                 val t = tracks[i]
                 var menu by remember { mutableStateOf(false) }
                 val starred = rememberMark(model, t.id).starred
+                val picked = t.id in model.selected
                 Box {
                 TrackMenu(model, t.id, starred, menu, { menu = false })
-                Row(Modifier.fillMaxWidth().combinedClickable(onClick = { model.playback.playAlbum(id, i.toULong()) }, onLongClick = { menu = true }).padding(16.dp, 8.dp)) {
+                Row(Modifier.fillMaxWidth().combinedClickable(
+                    onClick = { if (model.selected.isNotEmpty()) model.toggleSelected(t.id) else model.playback.playAlbum(id, i.toULong()) },
+                    onLongClick = { menu = true },
+                ).background(if (picked) Palette.accentSoft else Color.Transparent).padding(16.dp, 8.dp)) {
                     Text("${i + 1}", Modifier.width(32.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Column(Modifier.weight(1f)) {
-                        Text(t.title, maxLines = 1, color = if (model.player.current?.id == t.id) MaterialTheme.colorScheme.primary else Color.Unspecified)
+                        Text((if (picked) "✓ " else "") + t.title, maxLines = 1, color = if (model.player.current?.id == t.id) MaterialTheme.colorScheme.primary else Color.Unspecified)
                         Text(
                             t.artist, maxLines = 1,
                             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,

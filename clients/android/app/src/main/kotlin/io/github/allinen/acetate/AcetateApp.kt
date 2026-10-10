@@ -142,6 +142,13 @@ class Model(dataDir: String) : Listener {
     var editorVersion by mutableIntStateOf(0)
         private set
 
+    /** Tracks picked in a list (in the order they were picked); empty when not selecting. */
+    val selected = mutableStateListOf<String>()
+
+    fun toggleSelected(id: String) {
+        if (!selected.remove(id)) selected.add(id)
+    }
+
     /** A form (an album's, an artist's) open over everything. */
     var form by mutableStateOf<FormRef?>(null)
 

@@ -109,6 +109,7 @@ fun TrackMenu(
     var picking by remember { mutableStateOf(false) }
     var sharing by remember { mutableStateOf(false) }
     DropdownMenu(open, close) {
+        DropdownMenuItem({ Text("Select") }, { if (id !in model.selected) model.selected.add(id); close() })
         DropdownMenuItem({ Text("Go to track") }, { openTrack(model, id); close() })
         DropdownMenuItem({ Text("Play next") }, { model.playback.enqueueTracks(listOf(id), true); close() })
         DropdownMenuItem({ Text("Add to queue") }, { model.playback.enqueueTracks(listOf(id), false); close() })
@@ -124,7 +125,7 @@ fun TrackMenu(
     if (picking) PlaylistPicker(model, listOf(id)) { picking = false }
 }
 
-/** A track: tap plays, long press opens a menu (play next, add to queue, star…). */
+/** A track: tap plays (or, while tracks are picked, picks), long press opens a menu (select, play next, star…). */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun TrackItem(model: Model, row: TrackRow, extra: @Composable (() -> Unit) -> Unit = {}, onClick: () -> Unit) {
@@ -132,11 +133,15 @@ fun TrackItem(model: Model, row: TrackRow, extra: @Composable (() -> Unit) -> Un
     val starred = rememberMark(model, row.id).starred
     // Offline, what isn't downloaded can't play: dimmed.
     val playable = remember(row.id, model.connection, model.catalogVersion) { model.core.isPlayable(row.id) }
+    val picked = row.id in model.selected
     Box(if (playable) Modifier else Modifier.alpha(0.4f)) {
         Item(
             model, row.cover, (if (starred) "★ " else "") + row.title,
             (if (rememberDownloaded(model, row.id)) "↓ " else "") + listOfNotNull(row.artist, row.album).joinToString(" · "),
-            Modifier.combinedClickable(onClick = onClick, onLongClick = { menu = true }),
+            Modifier.combinedClickable(
+                onClick = { if (model.selected.isNotEmpty()) model.toggleSelected(row.id) else onClick() },
+                onLongClick = { menu = true },
+            ).background(if (picked) Palette.accentSoft else Color.Transparent),
             trailing = row.durationMs?.let(::duration), highlight = model.player.current?.id == row.id,
         )
         TrackMenu(model, row.id, starred, menu, { menu = false }, extra)

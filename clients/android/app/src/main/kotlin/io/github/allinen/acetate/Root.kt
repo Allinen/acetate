@@ -49,6 +49,9 @@ fun Root(model: Model) {
         return
     }
     BackHandler(enabled = model.pages.isNotEmpty() && !model.nowPlaying) { model.pages.removeAt(model.pages.lastIndex) }
+    BackHandler(enabled = model.selected.isNotEmpty()) { model.selected.clear() }
+    // Picks don't outlive the screen they were made on.
+    LaunchedEffect(model.pages.size, model.tab, model.nowPlaying) { model.selected.clear() }
     // The bottom bar's inset is taken here once, so the screens above the mini player
     // don't leave a gap of it.
     Box(Modifier.fillMaxSize()) {
@@ -68,6 +71,7 @@ fun Root(model: Model) {
             // The keyboard takes the place of the bars while typing.
             if (!WindowInsets.isImeVisible) {
                 if (model.connection.offline) OfflineBar(model)
+                if (model.selected.isNotEmpty()) SelectionBar(model)
                 if (model.player.current != null) MiniPlayer(model)
                 BottomBar(model)
             }
