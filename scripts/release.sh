@@ -3,8 +3,12 @@
 #
 #   scripts/release.sh 0.2.0
 #
-# Needs: a clean tree, on main. It runs the tests (the server's against the dev database),
-# sets the version with scripts/versions.py, commits "release: 0.2.0" and tags v0.2.0. Then:
+# Needs: a clean tree, on main, and git-cliff (`cargo install git-cliff --locked`). It runs
+# the tests (the server's against the dev database), drafts CHANGELOG.md's entry for the
+# release from the commits since the last one (cliff.toml) and opens it in $EDITOR: write
+# it for the people who use Acetate, not for the commit log. That entry is what the release
+# page shows. Then it sets the version with scripts/versions.py, commits "release: 0.2.0"
+# and tags v0.2.0. Then:
 #
 #   git push origin main v0.2.0
 #
@@ -31,6 +35,21 @@ SQLX_OFFLINE=true cargo clippy --all-targets --quiet -- -D warnings
 (cd clients && cargo clippy --workspace --all-targets --quiet -- -D warnings)
 cargo test --quiet
 (cd clients && cargo test --workspace --quiet)
+
+echo "== changelog"
+command -v git-cliff > /dev/null || { echo "git-cliff isn't installed: cargo install git-cliff --locked" >&2; exit 1; }
+if grep -q "^## $version " CHANGELOG.md; then
+    echo "CHANGELOG.md has an entry for $version already: using it as it is"
+else
+    draft="$(mktemp)"
+    git cliff --unreleased --tag "$tag" --strip header 2> /dev/null > "$draft"
+    # The draft goes under the "# Changelog" heading.
+    { head -n 2 CHANGELOG.md; cat "$draft"; echo; tail -n +3 CHANGELOG.md; } > "$draft.new"
+    mv "$draft.new" CHANGELOG.md
+    rm -f "$draft"
+    "${VISUAL:-${EDITOR:-vi}}" CHANGELOG.md
+    grep -q "^## $version " CHANGELOG.md || { echo "CHANGELOG.md has no '## $version' entry: nothing done to the version (restore it with git checkout CHANGELOG.md)" >&2; exit 1; }
+fi
 
 echo "== version"
 scripts/versions.py --set "$version"

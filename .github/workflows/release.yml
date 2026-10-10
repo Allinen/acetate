@@ -233,13 +233,15 @@ jobs:
       - name: Inspect
         run: docker buildx imagetools inspect "$IMAGE:${{ steps.meta.outputs.version }}"
 
+  # (Runs on a manual run too, up to the last step: a change to how artifacts are handled
+  # shows up there and not only on a real release.)
   release:
-    if: github.ref_type == 'tag'
     needs: [linux, windows, android]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
       # (Only these: the run has others too, like the image's digests and the build records
       # docker/build-push-action keeps, which aren't release files.)
       - uses: actions/download-artifact@v8
@@ -259,5 +261,12 @@ jobs:
           mv Acetate-linux-x86_64.tar.gz "Acetate-$tag-linux-x86_64.tar.gz"
           mv Acetate-windows-x86_64.zip "Acetate-$tag-windows-x86_64.zip"
           mv app-release.apk "Acetate-$tag-android.apk"
-          gh release create "$tag" --repo "$GITHUB_REPOSITORY" --title "Acetate $tag" --generate-notes \
+          # The notes are the release's entry in CHANGELOG.md (written at release time,
+          # scripts/release.sh); GitHub's own list of commits if there isn't one.
+          awk -v v="${tag#v}" '/^## /{on = index($0, "## " v " ") == 1; next} on' CHANGELOG.md > notes.md
+          if [ -s notes.md ]; then notes=(--notes-file notes.md); else notes=(--generate-notes); fi
+          if [ "$GITHUB_REF_TYPE" != tag ]; then
+            echo "not a tag: nothing published. The notes would be:"; cat notes.md; ls -l Acetate-*; exit 0
+          fi
+          gh release create "$tag" --repo "$GITHUB_REPOSITORY" --title "Acetate $tag" "${notes[@]}" \
             "Acetate-$tag-linux-x86_64.tar.gz" "Acetate-$tag-windows-x86_64.zip" "Acetate-$tag-android.apk"

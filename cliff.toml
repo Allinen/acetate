@@ -1,0 +1,30 @@
+# The draft of a release's changelog (scripts/release.sh runs `git cliff`; you edit the
+# result in CHANGELOG.md, and that is what the release page shows). Commits are grouped by
+# their type; ci, tests and chores are left out, since nobody reading the notes cares.
+[changelog]
+header = "# Changelog\n"
+body = """
+## {{ version | trim_start_matches(pat="v") }} - {{ timestamp | date(format="%Y-%m-%d") }}
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group | striptags | trim | upper_first }}
+{% for commit in commits %}
+- {{ commit.message | split(pat="\n") | first | upper_first | trim }}\
+{% endfor %}
+{% endfor %}
+"""
+trim = true
+
+[git]
+conventional_commits = true
+filter_unconventional = true
+commit_parsers = [
+  { message = "^feat", group = "Features" },
+  { message = "^fix", group = "Fixes" },
+  { message = "^perf", group = "Performance" },
+  { message = "^refactor", group = "Changes" },
+  { message = "^docs", group = "Documentation" },
+  { message = "^(ci|test|chore|release)", skip = true },
+]
+filter_commits = true
+tag_pattern = "v[0-9]*"
+sort_commits = "oldest"
