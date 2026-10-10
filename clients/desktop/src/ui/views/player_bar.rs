@@ -237,7 +237,16 @@ fn toast(ui: &egui::Ui, shell: &mut Shell) {
     };
     let Some((text, at, base, color)) = newest else { return };
     shell.messages.record(&text, at, color == P.danger);
-    let (age, life) = (at.elapsed().as_secs_f32(), toast_life(&text, base));
+    if shell.messages.open || shell.messages.dismissed.is_some_and(|d| at <= d) {
+        return;
+    }
+    if shell.messages.held.0 != Some(at) {
+        shell.messages.held = (Some(at), 0.0);
+    }
+    if shell.messages.hovering {
+        shell.messages.held.1 += ctx.input(|i| i.unstable_dt).min(0.1);
+    }
+    let (age, life) = ((at.elapsed().as_secs_f32() - shell.messages.held.1).max(0.0), toast_life(&text, base));
     if age >= life {
         return;
     }
@@ -247,9 +256,8 @@ fn toast(ui: &egui::Ui, shell: &mut Shell) {
     ctx.request_repaint_after(Duration::from_secs_f32(if age < FADE_IN || left < FADE_OUT { 0.016 } else { (left - FADE_OUT).min(0.5) }));
     let screen = ctx.content_rect();
     let max_width = (screen.width() - 212.0 - 64.0).clamp(200.0, 520.0);
-    egui::Area::new(egui::Id::new("toast"))
+    let area = egui::Area::new(egui::Id::new("toast"))
         .order(egui::Order::Tooltip)
-        .interactable(false)
         .anchor(Align2::RIGHT_BOTTOM, Vec2::new(-16.0, -(84.0 + 12.0) + rise * 10.0))
         .show(ctx, |ui| {
             ui.multiply_opacity(opacity * (1.0 - rise));
@@ -261,7 +269,21 @@ fn toast(ui: &egui::Ui, shell: &mut Shell) {
                 .inner_margin(egui::Margin::symmetric(14, 10))
                 .show(ui, |ui| {
                     ui.set_max_width(max_width);
-                    ui.add(egui::Label::new(RichText::new(&text).font(font(12.5, medium())).color(color)).wrap());
+                    ui.horizontal_top(|ui| {
+                        // Text can be selected and copied; a click on it opens the earlier messages.
+                        let label = ui.add(egui::Label::new(RichText::new(&text).font(font(12.5, medium())).color(color)).wrap());
+                        if label.clicked() {
+                            shell.messages.open = true;
+                        }
+                        let close = ui.add(egui::Button::new(RichText::new("✕").font(font(12.0, medium())).color(P.muted)).frame(false));
+                        if close.on_hover_text("Dismiss").clicked() {
+                            shell.messages.dismissed = Some(at);
+                        }
+                    });
                 });
         });
+    shell.messages.hovering = area.response.contains_pointer();
+    if shell.messages.hovering {
+        ctx.request_repaint();
+    }
 }

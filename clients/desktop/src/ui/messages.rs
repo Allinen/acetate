@@ -21,6 +21,11 @@ pub struct Messages {
     /// Oldest first.
     pub list: Vec<Message>,
     pub open: bool,
+    /// The toast made at this time or before is cleared (the x).
+    pub dismissed: Option<Instant>,
+    /// The pointer is over the toast: it stays while it is (time held, for the toast made at).
+    pub held: (Option<Instant>, f32),
+    pub hovering: bool,
 }
 
 impl Messages {
@@ -51,7 +56,7 @@ impl Messages {
             self.open = false;
             return;
         }
-        let width = (screen.width() - 80.0).clamp(300.0, 640.0);
+        let width = (screen.width() - 80.0).clamp(300.0, 900.0);
         egui::Area::new(egui::Id::new("messages"))
             .order(egui::Order::Tooltip)
             .pivot(Align2::CENTER_CENTER)
@@ -65,12 +70,13 @@ impl Messages {
                     .inner_margin(egui::Margin::same(24))
                     .show(ui, |ui| {
                         ui.set_width(width);
+                        ui.set_min_height((screen.height() - 140.0).max(120.0));
                         ui.label(RichText::new("Earlier messages").font(font(20.0, bold())));
                         ui.add_space(10.0);
                         if self.list.is_empty() {
                             ui.label(RichText::new("None yet.").font(font(13.0, medium())).color(P.muted));
                         }
-                        egui::ScrollArea::vertical().max_height((screen.height() - 160.0).max(120.0)).show(ui, |ui| {
+                        egui::ScrollArea::vertical().max_height((screen.height() - 140.0).max(120.0)).show(ui, |ui| {
                             for m in self.list.iter().rev() {
                                 ui.horizontal_top(|ui| {
                                     ui.add_sized([64.0, 16.0], egui::Label::new(RichText::new(ago(m.at)).font(font(11.5, medium())).color(P.faint)));
