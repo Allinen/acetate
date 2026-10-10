@@ -6,8 +6,9 @@
 //! Opus is always decoded at 48 kHz. The encoder's first samples aren't part of the sound
 //! (the header's "pre-skip", 312 of them usually), nor is what's past the end of the last
 //! page; both are dropped here, so tracks are gapless. Symphonia marks the end on the last
-//! packet (`trim_end`), but not the start (it keeps the pre-skip in the timestamps), so the
-//! start is left out here, by timestamp. The header's output gain is applied.
+//! packet (`trim_end`), but not the start: the track says how long the delay is (`delay`,
+//! after `start_ts`; Matroska has it taken off the timestamps already), so the start is
+//! left out here, by timestamp. The header's output gain is applied.
 
 use std::num::NonZero;
 use std::time::Duration;
@@ -16,12 +17,13 @@ use rusty_opus::multistream::OpusMSDecoder;
 use rusty_opus::OpusDecoder;
 use rodio::source::SeekError;
 use rodio::{ChannelCount, Sample, SampleRate, Source};
-use symphonia::core::codecs::CODEC_TYPE_OPUS;
+use symphonia::core::codecs::audio::well_known::CODEC_ID_OPUS;
+use symphonia::core::codecs::CodecParameters;
+use symphonia::core::formats::probe::Hint;
 use symphonia::core::formats::{FormatOptions, FormatReader, SeekMode, SeekTo};
 use symphonia::core::io::{MediaSource, MediaSourceStream};
 use symphonia::core::meta::MetadataOptions;
-use symphonia::core::probe::Hint;
-use symphonia::core::units::TimeBase;
+use symphonia::core::units::Timestamp;
 
 const RATE: u32 = 48_000;
 /// The longest an Opus packet can be: 120 ms.
@@ -43,9 +45,11 @@ pub struct OpusSource {
     at: usize,
     /// A packet's worth of samples, decoded into.
     scratch: Vec<f32>,
-    /// Samples before this timestamp (at 48 kHz, per channel, pre-skip included) are
-    /// dropped: the pre-skip, and after a jump what's before the point asked for.
-    skip_until: u64,
+    /// Where the sound starts, as a timestamp (at 48 kHz, per channel).
+    origin: i64,
+    /// Samples before this timestamp are dropped: the pre-skip, and after a jump what's
+    /// before the point asked for.
+    skip_until: i64,
     duration: Option<Duration>,
 }
 
@@ -54,17 +58,24 @@ impl OpusSource {
     /// not Opus in it).
     pub fn new(source: Box<dyn MediaSource>) -> Result<OpusSource, String> {
         let stream = MediaSourceStream::new(source, Default::default());
-        let options = FormatOptions { enable_gapless: true, ..Default::default() };
-        let probed = symphonia::default::get_probe()
-            .format(&Hint::new(), stream, &options, &MetadataOptions::default())
+        let format = symphonia::default::get_probe()
+            .probe(&Hint::new(), stream, FormatOptions::default(), MetadataOptions::default())
             .map_err(|err| err.to_string())?;
-        let format = probed.format;
-        let track = format.tracks().iter().find(|t| t.codec_params.codec == CODEC_TYPE_OPUS).ok_or("not Opus")?;
-        let head = Head::parse(track.codec_params.extra_data.as_deref().unwrap_or_default())?;
+        let (track, params) = format
+            .tracks()
+            .iter()
+            .find_map(|t| match &t.codec_params {
+                Some(CodecParameters::Audio(p)) if p.codec == CODEC_ID_OPUS => Some((t, p)),
+                _ => None,
+            })
+            .ok_or("not Opus")?;
+        let head = Head::parse(params.extra_data.as_deref().unwrap_or_default())?;
         let decoder = Decoder::new(&head)?;
         let channels = NonZero::new(head.channels as u16).ok_or("Opus: no channels")?;
-        let duration = track.codec_params.n_frames.map(|n| Duration::from_secs_f64(n.saturating_sub(head.pre_skip) as f64 / RATE as f64));
+        let duration = track.duration.map(|d| Duration::from_secs_f64(d.get().saturating_sub(track.delay.unwrap_or(0).into()) as f64 / RATE as f64));
+        let origin = track.start_ts.get() + i64::from(track.delay.unwrap_or(0));
         Ok(OpusSource {
+            origin,
             track_id: track.id,
             format,
             decoder,
@@ -74,7 +85,7 @@ impl OpusSource {
             buffer: Vec::new(),
             at: 0,
             scratch: vec![0.0; MAX_FRAMES * channels.get() as usize],
-            skip_until: head.pre_skip,
+            skip_until: origin,
             duration,
         })
     }
@@ -85,20 +96,20 @@ impl OpusSource {
         let channels = self.channels.get() as usize;
         loop {
             let packet = match self.format.next_packet() {
-                Ok(packet) => packet,
-                Err(_) => return false,
+                Ok(Some(packet)) => packet,
+                _ => return false,
             };
-            if packet.track_id() != self.track_id {
+            if packet.track_id != self.track_id {
                 continue;
             }
             // How long it is, all of it (`dur` is without what's left out).
-            let length = (packet.dur + u64::from(packet.trim_start) + u64::from(packet.trim_end)) as usize;
+            let length = packet.block_dur().get() as usize;
             // A packet that doesn't decode is left out (a moment of silence, not the end).
             let Ok(frames) = self.decoder.decode(&packet.data, length.min(MAX_FRAMES), &mut self.scratch) else { continue };
             // What the container says to leave out, and what's before a jump's target.
-            let start = packet.trim_start as usize;
-            let end = frames.saturating_sub(packet.trim_end as usize);
-            let early = self.skip_until.saturating_sub(packet.ts) as usize;
+            let start = packet.trim_start.get() as usize;
+            let end = frames.saturating_sub(packet.trim_end.get() as usize);
+            let early = self.skip_until.saturating_sub(packet.pts.get()).max(0) as usize;
             let start = start + early.min(end.saturating_sub(start));
             if start >= end {
                 continue;
@@ -138,8 +149,8 @@ impl Source for OpusSource {
         self.duration
     }
     fn try_seek(&mut self, position: Duration) -> Result<(), SeekError> {
-        let timestamp = |at: Duration| TimeBase::new(1, RATE).calc_timestamp(at.as_secs_f64().into()) + self.head.pre_skip;
-        let to = SeekTo::TimeStamp { ts: timestamp(position.saturating_sub(PREROLL)), track_id: self.track_id };
+        let timestamp = |at: Duration| self.origin + (at.as_secs_f64() * RATE as f64).round() as i64;
+        let to = SeekTo::Timestamp { ts: Timestamp::new(timestamp(position.saturating_sub(PREROLL))), track_id: self.track_id };
         self.format.seek(SeekMode::Accurate, to).map_err(|err| SeekError::Other(std::sync::Arc::new(err)))?;
         // A fresh decoder: what it remembers of the sound before doesn't fit anymore.
         self.decoder = Decoder::new(&self.head).map_err(|err| SeekError::Other(std::sync::Arc::new(std::io::Error::other(err))))?;
