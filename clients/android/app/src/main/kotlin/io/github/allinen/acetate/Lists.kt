@@ -28,6 +28,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
@@ -129,7 +130,9 @@ fun TrackMenu(
 fun TrackItem(model: Model, row: TrackRow, extra: @Composable (() -> Unit) -> Unit = {}, onClick: () -> Unit) {
     var menu by remember { mutableStateOf(false) }
     val starred = rememberMark(model, row.id).starred
-    Box {
+    // Offline, what isn't downloaded can't play: dimmed.
+    val playable = remember(row.id, model.connection, model.catalogVersion) { model.core.isPlayable(row.id) }
+    Box(if (playable) Modifier else Modifier.alpha(0.4f)) {
         Item(
             model, row.cover, (if (starred) "★ " else "") + row.title,
             (if (rememberDownloaded(model, row.id)) "↓ " else "") + listOfNotNull(row.artist, row.album).joinToString(" · "),

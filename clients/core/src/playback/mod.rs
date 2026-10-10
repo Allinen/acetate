@@ -1,6 +1,7 @@
 //! What plays, as the clients see it: the queue (`queue`), play counting (`scrobble`) and
 //! the view of the player a UI draws from. The audio itself is each platform's.
 
+pub mod on_disk;
 pub mod player;
 pub mod queue;
 pub mod scrobble;

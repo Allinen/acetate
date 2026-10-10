@@ -634,6 +634,8 @@ impl Core {
             listener,
         });
         // What's downloaded plays from the device.
+        let notices = shared.listener.clone();
+        shared.player.on_notice(Arc::new(move |text| notices.notice(text)));
         let weak = Arc::downgrade(&shared);
         shared.player.set_local(Arc::new(move |sha| weak.upgrade()?.offline.lock().unwrap().as_ref()?.local_path(sha)));
         // The server going away is shown; its coming back sends what waited, and asks what
@@ -644,6 +646,12 @@ impl Core {
             while connection.changed().await.is_ok() {
                 let Some(shared) = weak.upgrade() else { return };
                 let now = connection.borrow_and_update().is_offline();
+                // Away: only what's downloaded plays. Back: everything does.
+                if now != offline {
+                    let kept = shared.offline.lock().unwrap().as_ref().map(|o| o.sources()).unwrap_or_default();
+                    shared.player.on_disk().set(now.then(|| acetate_core::playback::on_disk::gather(kept, None)));
+                    shared.player.playable_changed();
+                }
                 if offline && !now && shared.api.session().is_some() {
                     shared.player.send_unsent();
                     shared.account.lock().unwrap().fetch(&shared.api, &tokio::runtime::Handle::current(), &shared.account_wake);
@@ -974,6 +982,13 @@ impl Core {
     pub fn is_downloaded(&self, track: String) -> bool {
         let (Some(offline), Some(catalog)) = (self.shared.offline.lock().unwrap().clone(), self.shared.catalog()) else { return false };
         parse_id(&track).and_then(|id| catalog.track(id)?.sha256()).is_some_and(|sha| offline.local_path(&sha).is_some())
+    }
+
+    /// Whether a track can play now: online, any; offline, one that's downloaded.
+    pub fn is_playable(&self, track: String) -> bool {
+        let Some(here) = self.shared.player.on_disk().get() else { return true };
+        let hash = parse_id(&track).zip(self.shared.catalog()).and_then(|(id, catalog)| catalog.track(id)?.sha256_bytes());
+        acetate_core::playback::on_disk::has(Some(&here), hash)
     }
 
     /// What's kept: the pins, and how much of them is here.

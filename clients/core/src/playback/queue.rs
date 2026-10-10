@@ -25,8 +25,9 @@ pub struct Current {
 pub enum Upcoming {
     /// The same track again (looping it).
     Again,
-    /// The first track in the queue.
-    Queued,
+    /// This track of the queue (the first, unless the ones before it can't play: they're
+    /// passed over).
+    Queued(usize),
     /// This track of the list.
     List(usize),
 }
@@ -72,21 +73,23 @@ impl Queue {
 
     /// What comes after the current track.
     pub fn upcoming(&self, repeat: bool) -> Option<Upcoming> {
+        self.upcoming_where(repeat, |_| true)
+    }
+
+    /// What comes after the current track that can play (`playable`: offline, what's on
+    /// this device), passing over the ones that can't. Looping, it's the same track.
+    pub fn upcoming_where(&self, repeat: bool, playable: impl Fn(&QueueItem) -> bool) -> Option<Upcoming> {
         if repeat && self.current.is_some() {
-            Some(Upcoming::Again)
-        } else if !self.queued.is_empty() {
-            Some(Upcoming::Queued)
-        } else if self.list_index + 1 < self.list.len() {
-            Some(Upcoming::List(self.list_index + 1))
-        } else {
-            None
+            return Some(Upcoming::Again);
         }
+        let queued = self.queued.iter().position(&playable).map(Upcoming::Queued);
+        queued.or_else(|| (self.list_index + 1..self.list.len()).find(|&i| playable(&self.list[i])).map(Upcoming::List))
     }
 
     pub fn item(&self, upcoming: Upcoming) -> Option<&QueueItem> {
         match upcoming {
             Upcoming::Again => self.current.as_ref().map(|c| &c.item),
-            Upcoming::Queued => self.queued.first(),
+            Upcoming::Queued(i) => self.queued.get(i),
             Upcoming::List(i) => self.list.get(i),
         }
     }
@@ -95,8 +98,8 @@ impl Queue {
     pub fn advance(&mut self, upcoming: Upcoming) {
         match upcoming {
             Upcoming::Again => {}
-            Upcoming::Queued => {
-                self.play(Place::Queued(0));
+            Upcoming::Queued(i) => {
+                self.play(Place::Queued(i));
             }
             Upcoming::List(i) => {
                 self.play(Place::List(i));
@@ -217,11 +220,11 @@ impl Queue {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use uuid::Uuid;
 
-    fn item(n: u128) -> QueueItem {
+    pub(crate) fn item(n: u128) -> QueueItem {
         QueueItem {
             track_id: Uuid::from_u128(n),
             file_id: Uuid::from_u128(n),
@@ -322,5 +325,22 @@ mod tests {
         let playing = q.current.as_ref().unwrap().item.title.clone();
         q.set_shuffled(false);
         assert_eq!(q.list[q.list_index].title, playing);
+    }
+
+    #[test]
+    fn what_cant_play_is_passed_over() {
+        let mut q = Queue::default();
+        q.play_list(items(&[1, 2, 3, 4]), 0, false);
+        q.enqueue(items(&[10, 11]), false);
+        let playable = |i: &QueueItem| !["2", "10"].contains(&i.title.as_str());
+        let mut played = vec!["1".to_string()];
+        while let Some(next) = q.upcoming_where(false, playable) {
+            q.advance(next);
+            played.push(q.current.as_ref().unwrap().item.title.clone());
+        }
+        assert_eq!(played, ["1", "11", "3", "4"]);
+        assert!(q.queued.is_empty(), "passed over is played past");
+        // Looping stays on the track.
+        assert_eq!(q.upcoming_where(true, |_| false), Some(Upcoming::Again));
     }
 }

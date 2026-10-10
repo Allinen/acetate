@@ -39,6 +39,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
@@ -310,8 +311,10 @@ private fun SectionTitle(title: String, action: String?, onAction: () -> Unit) {
 
 @Composable
 private fun QueueRow(model: Model, row: TrackRow, part: QueuePart, index: Int) {
+    // Offline, what isn't downloaded is passed over: dimmed.
+    val playable = remember(row.id, model.connection, model.catalogVersion) { model.core.isPlayable(row.id) }
     Row(
-        Modifier.fillMaxWidth().clickable { model.playback.playPlace(part, index.toULong()) }.padding(16.dp, 6.dp, 4.dp, 6.dp),
+        Modifier.fillMaxWidth().alpha(if (playable) 1f else 0.4f).clickable { model.playback.playPlace(part, index.toULong()) }.padding(16.dp, 6.dp, 4.dp, 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Cover(model, row.cover, 40)

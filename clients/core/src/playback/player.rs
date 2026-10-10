@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 
 use uuid::Uuid;
 
+use super::on_disk::OnDisk;
 use super::unsent::Unsent;
 use super::queue::{self, Queue, Upcoming};
 use super::scrobble::Listen;
@@ -80,6 +81,10 @@ struct State {
     paused: bool,
     listen: Listen,
     local: Option<LocalFiles>,
+    /// While offline, what can play (the rest is passed over).
+    on_disk: OnDisk,
+    /// Something to tell the user (tracks passed over), handed to `notify` after the change.
+    notice: Option<String>,
 }
 
 pub struct Player {
@@ -91,6 +96,8 @@ pub struct Player {
     resume: Mutex<Option<Resume>>,
     /// Listens to report again (see `unsent`).
     unsent: Arc<Mutex<Option<Unsent>>>,
+    /// Tells the user something, in words.
+    notify: Mutex<Option<Arc<dyn Fn(String) + Send + Sync>>>,
 }
 
 impl Player {
@@ -109,6 +116,8 @@ impl Player {
                 paused: false,
                 listen: Listen::default(),
                 local: None,
+                on_disk: OnDisk::default(),
+                notice: None,
             }),
             engine: Mutex::new(None),
             api,
@@ -116,7 +125,24 @@ impl Player {
             waker,
             resume: Mutex::new(None),
             unsent: Arc::new(Mutex::new(None)),
+            notify: Mutex::new(None),
         }
+    }
+
+    /// What can play while offline (the app fills it in when the server goes away).
+    pub fn on_disk(&self) -> OnDisk {
+        self.state.lock().unwrap().on_disk.clone()
+    }
+
+    /// Where notices go (tracks passed over: not on this device).
+    pub fn on_notice(&self, notify: Arc<dyn Fn(String) + Send + Sync>) {
+        *self.notify.lock().unwrap() = Some(notify);
+    }
+
+    /// What's on the device changed, or the server went or came: the next slot is filled
+    /// again if what comes next is no longer what it holds.
+    pub fn playable_changed(&self) {
+        self.change(|_, _| {});
     }
 
     /// The platform's player, once it's there. If something is loaded already (a queue
@@ -195,7 +221,8 @@ impl Player {
     /// The next track (even when looping this one).
     pub fn next(&self) {
         self.change(|s, out| {
-            let Some(upcoming) = s.queue.upcoming(false) else { return };
+            let on_disk = s.on_disk.clone();
+            let Some(upcoming) = s.queue.upcoming_where(false, |i| on_disk.playable(i)) else { return };
             // Already in the next slot: go on to it.
             let loaded = s.slot.as_ref().is_some_and(|slot| slot.upcoming == upcoming);
             let item = s.queue.item(upcoming).cloned();
@@ -408,12 +435,16 @@ impl Player {
     /// slot if what comes next is no longer what it holds.
     fn change(&self, f: impl FnOnce(&mut State, &mut Vec<Command>)) {
         let mut commands = Vec::new();
-        {
+        let notice = {
             let mut s = self.state.lock().unwrap();
             f(&mut s, &mut commands);
             s.fill_next_slot(&mut commands);
-        }
+            s.notice.take()
+        };
         self.run(commands);
+        if let (Some(notice), Some(notify)) = (notice, self.notify.lock().unwrap().clone()) {
+            notify(notice);
+        }
         self.waker.changed();
     }
 
@@ -476,8 +507,33 @@ impl State {
         Load { item: item.clone(), path: self.path_of(item), local }
     }
 
-    /// Starts `item` now: the engine plays it, and its next slot is empty.
-    fn start(&mut self, item: QueueItem, at: Duration, paused: bool, out: &mut Vec<Command>) {
+    /// Starts `item` now: the engine plays it, and its next slot is empty. While offline,
+    /// one not on the device is passed over for the next that is (none: nothing plays).
+    fn start(&mut self, mut item: QueueItem, mut at: Duration, paused: bool, out: &mut Vec<Command>) {
+        let on_disk = self.on_disk.clone();
+        let mut skipped = 0;
+        while !on_disk.playable(&item) {
+            skipped += 1;
+            let next = self.queue.upcoming_where(false, |i| on_disk.playable(i)).and_then(|upcoming| {
+                let next = self.queue.item(upcoming).cloned();
+                self.queue.advance(upcoming);
+                next
+            });
+            match next {
+                Some(next) => (item, at) = (next, Duration::ZERO),
+                None => {
+                    self.notice = Some("Not on this device, and nothing after it is: nothing to play offline.".into());
+                    self.slot = None;
+                    self.playing = false;
+                    self.paused = false;
+                    out.push(Command::Stop);
+                    return;
+                }
+            }
+        }
+        if skipped > 0 {
+            self.notice = Some(format!("Not on this device: skipped {skipped}."));
+        }
         self.slot = None;
         self.note_start(&item);
         self.position = at;
@@ -508,7 +564,8 @@ impl State {
         if self.queue.current.is_none() {
             return;
         }
-        let want = self.queue.upcoming(self.repeat).and_then(|upcoming| {
+        let on_disk = self.on_disk.clone();
+        let want = self.queue.upcoming_where(self.repeat, |i| on_disk.playable(i)).and_then(|upcoming| {
             let load = self.load_of(self.queue.item(upcoming)?);
             Some(Slot { upcoming, load })
         });
@@ -626,6 +683,40 @@ mod tests {
 
     fn current(p: &Player) -> String {
         p.view().current.map(|c| c.title).unwrap_or_default()
+    }
+
+    /// Items with hashes; `here`: which are on the device.
+    fn offline_with(r: &Rig, ns: &[u128], here: &[u128]) -> Vec<QueueItem> {
+        let hash = |n: u128| format!("{n:064x}");
+        let on_disk = r.player.on_disk();
+        on_disk.set(Some(here.iter().map(|&n| super::super::on_disk::parse(&hash(n)).unwrap()).collect()));
+        ns.iter().map(|&n| QueueItem { sha256: Some(hash(n)), ..item(n) }).collect()
+    }
+
+    #[test]
+    fn offline_what_isnt_on_the_device_is_passed_over() {
+        let r = rig();
+        let notices = Arc::new(Mutex::new(Vec::new()));
+        let n = notices.clone();
+        r.player.on_notice(Arc::new(move |text| n.lock().unwrap().push(text)));
+        let list = offline_with(&r, &[1, 2, 3], &[1, 3]);
+        r.player.play_list(list.clone(), 0);
+        assert_eq!(r.engine.took(), ["play 1 @0", &format!("next 3 {}", path(3))], "2 isn't next: 3 is");
+        r.player.on_transition();
+        assert_eq!(current(&r.player), "3");
+        // Starting on one that isn't here starts the next that is.
+        r.player.play_list(list.clone(), 1);
+        assert_eq!(r.engine.took()[0], "play 3 @0");
+        assert_eq!(notices.lock().unwrap().last().unwrap(), "Not on this device: skipped 1.");
+        // None after it: nothing plays.
+        let none = offline_with(&r, &[4, 5], &[]);
+        r.player.play_list(none, 0);
+        assert_eq!(r.engine.took(), ["stop"]);
+        assert!(!r.player.view().playing);
+        // Online (nothing limits it): nothing is passed over.
+        r.player.on_disk().set(None);
+        r.player.play_list(list, 1);
+        assert_eq!(r.engine.took(), ["play 2 @0", &format!("next 3 {}", path(3))]);
     }
 
     #[test]
@@ -751,6 +842,8 @@ mod tests {
             paused: false,
             listen: Listen::default(),
             local: None,
+            on_disk: OnDisk::default(),
+            notice: None,
         };
         assert!(state.path_of(&item).ends_with("?transcode=true"));
         item.codec = Some("flac".into());

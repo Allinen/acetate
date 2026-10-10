@@ -41,6 +41,9 @@ struct State {
     next_asked: u64,
     /// The engine's switch count last seen (a change: the next track plays now).
     seen_switches: u64,
+    /// The fetch for the next slot failed (online) at this `next_asked`: not tried again
+    /// until what comes next changes.
+    next_failed: Option<u64>,
 }
 
 pub struct Controller {
@@ -80,6 +83,13 @@ pub struct Controller {
     /// play are found there (decided in `path_of`).
     local: Mutex<Option<acetate_core::playback::player::LocalFiles>>,
     locals: Mutex<std::collections::HashMap<Uuid, std::path::PathBuf>>,
+    /// While offline, what can play (the rest is passed over).
+    pub on_disk: acetate_core::playback::on_disk::OnDisk,
+    /// Files that failed to come while offline (on disk by the list, but not there after
+    /// all): passed over too, until the server is back.
+    unplayable: Mutex<std::collections::HashSet<Uuid>>,
+    /// Something to tell the user (tracks passed over), for the UI to take.
+    pub notice: Mutex<Option<String>>,
     ctx: egui::Context,
 }
 
@@ -112,8 +122,39 @@ impl Controller {
             recent: Mutex::default(),
             local: Mutex::new(None),
             locals: Mutex::default(),
+            on_disk: Default::default(),
+            unplayable: Mutex::default(),
+            notice: Mutex::default(),
             ctx,
         })
+    }
+
+    /// Whether an item can play now (offline: only what's on this computer).
+    fn playable(&self, item: &QueueItem) -> bool {
+        self.on_disk.playable(item) && !self.unplayable.lock().unwrap().contains(&item.file_id)
+    }
+
+    /// What's on this computer changed, or the server went or came: the next slot is filled
+    /// again if what comes next is no longer what it holds.
+    pub async fn playable_changed(&self) {
+        if !self.on_disk.is_limited() {
+            self.unplayable.lock().unwrap().clear();
+        }
+        let mut state = self.state.lock().await;
+        let next = self.upcoming(&state).map(|(upcoming, _)| upcoming);
+        if state.appended.is_some() && state.appended != next || state.next_failed.is_some() {
+            state.appended = None;
+            state.fetching = false;
+            state.next_asked += 1;
+            state.next_failed = None;
+            self.send(Command::SetNext(None));
+        }
+        self.ctx.request_repaint();
+    }
+
+    fn tell(&self, notice: String) {
+        *self.notice.lock().unwrap() = Some(notice);
+        self.ctx.request_repaint();
     }
 
     fn send(&self, command: Command) {
@@ -273,24 +314,64 @@ impl Controller {
         self.start_fading(item, paused, at, false).await;
     }
 
-    /// `start`, with `fade`: a quick fade from what plays to it.
-    async fn start_fading(self: &Arc<Self>, item: QueueItem, paused: bool, at: Duration, fade: bool) {
-        let generation = {
-            let mut state = self.state.lock().await;
-            state.generation += 1;
-            state.appended = None;
-            state.fetching = false;
-            state.next_asked += 1;
-            *self.pending_seek.lock().unwrap() = None;
-            state.generation
-        };
-        match self.fetch(item.file_id, self.path_of(&item)).await {
-            Ok(file) => {
-                if self.state.lock().await.generation == generation {
-                    self.send(Command::Replace { file, paused, at, fade, follow: false });
+    /// `start`, with `fade`: a quick fade from what plays to it. While offline, one that
+    /// isn't on this computer (or doesn't come: the server just went away) is passed over
+    /// for the next that is.
+    async fn start_fading(self: &Arc<Self>, mut item: QueueItem, paused: bool, mut at: Duration, fade: bool) {
+        let mut skipped = 0;
+        loop {
+            let generation = {
+                let mut state = self.state.lock().await;
+                state.generation += 1;
+                state.appended = None;
+                state.fetching = false;
+                state.next_asked += 1;
+                *self.pending_seek.lock().unwrap() = None;
+                state.generation
+            };
+            let fetched = if self.playable(&item) { Some(self.fetch(item.file_id, self.path_of(&item)).await) } else { None };
+            match fetched {
+                Some(Ok(file)) => {
+                    if self.state.lock().await.generation == generation {
+                        self.send(Command::Replace { file, paused, at, fade, follow: false });
+                    }
+                    break;
+                }
+                // Online, a failure is a failure.
+                Some(Err(err)) if !self.api.connection().is_offline() => {
+                    self.report(format!("{err:#}"));
+                    break;
+                }
+                Some(Err(_)) => {
+                    self.unplayable.lock().unwrap().insert(item.file_id);
+                }
+                None => {}
+            }
+            skipped += 1;
+            let next = {
+                let mut state = self.state.lock().await;
+                if state.generation != generation {
+                    return;
+                }
+                let next = state.queue.upcoming_where(false, |i| self.playable(i));
+                next.and_then(|upcoming| {
+                    let item = state.queue.item(upcoming).cloned();
+                    state.queue.advance(upcoming);
+                    item
+                })
+            };
+            match next {
+                Some(next) => (item, at) = (next, Duration::ZERO),
+                None => {
+                    self.send(Command::Stop);
+                    self.tell("Not on this computer, and nothing after it is: nothing to play offline.".into());
+                    self.ctx.request_repaint();
+                    return;
                 }
             }
-            Err(err) => self.report(format!("{err:#}")),
+        }
+        if skipped > 0 {
+            self.tell(format!("Not on this computer: skipped {skipped}."));
         }
         self.ctx.request_repaint();
     }
@@ -298,7 +379,7 @@ impl Controller {
     /// What comes next, as the "next" slot would hold it: which, and which file (and where
     /// it's fetched from).
     fn upcoming(&self, state: &State) -> Option<(queue::Upcoming, (Uuid, String))> {
-        let upcoming = state.queue.upcoming(self.repeat.load(Relaxed))?;
+        let upcoming = state.queue.upcoming_where(self.repeat.load(Relaxed), |i| self.playable(i))?;
         let item = state.queue.item(upcoming)?;
         Some((upcoming, (item.file_id, self.path_of(item))))
     }
@@ -434,7 +515,7 @@ impl Controller {
         let item = {
             let mut state = self.state.lock().await;
             // Next means the next track, even when looping this one.
-            let Some(upcoming) = state.queue.upcoming(false) else { return };
+            let Some(upcoming) = state.queue.upcoming_where(false, |i| self.playable(i)) else { return };
             // Already in the audio thread's "next" slot: go on to it.
             if state.appended == Some(upcoming) {
                 self.send(Command::Skip);
@@ -637,8 +718,8 @@ impl Controller {
 
             // The next track goes into the audio thread's "next" slot as soon as the
             // current one plays (for gapless playback; it can still be changed later).
-            let upcoming = self.upcoming(&state);
-            if let (true, None, false, Some((next, file_id))) = (status.playing, state.appended, state.fetching, upcoming) {
+            let wanted = status.playing && state.appended.is_none() && !state.fetching && state.next_failed != Some(state.next_asked);
+            if let Some((next, file_id)) = wanted.then(|| self.upcoming(&state)).flatten() {
                 state.fetching = true;
                 let asked = state.next_asked;
                 drop(state);
@@ -655,7 +736,14 @@ impl Controller {
                             state.appended = Some(next);
                             this.send(Command::SetNext(Some(file)));
                         }
-                        Err(err) => this.report(format!("{err:#}")),
+                        // Offline: passed over; the one after it is tried next.
+                        Err(_) if this.api.connection().is_offline() => {
+                            this.unplayable.lock().unwrap().insert(file_id.0);
+                        }
+                        Err(err) => {
+                            state.next_failed = Some(asked);
+                            this.report(format!("{err:#}"));
+                        }
                     }
                 });
             }

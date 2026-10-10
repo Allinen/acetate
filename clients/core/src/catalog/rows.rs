@@ -308,6 +308,12 @@ impl<'a> Track<'a> {
         bytes.iter().any(|b| *b != 0).then(|| bytes.iter().map(|b| format!("{b:02x}")).collect())
     }
 
+    /// `sha256`, as bytes.
+    pub fn sha256_bytes(self) -> Option<[u8; 32]> {
+        let bytes = self.row.sha256;
+        bytes.iter().any(|b| *b != 0).then_some(bytes)
+    }
+
     /// Its file's sample rate (Hz), where known.
     pub fn sample_rate(self) -> Option<i32> {
         (self.row.sample_rate != i32::MIN).then_some(self.row.sample_rate)

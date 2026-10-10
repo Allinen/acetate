@@ -330,6 +330,11 @@ impl Offline {
         self.inner.lock().unwrap().index.files.get(source).map(|k| k.size)
     }
 
+    /// The files kept, by their hashes on the server.
+    pub fn sources(&self) -> Vec<String> {
+        self.inner.lock().unwrap().index.files.keys().cloned().collect()
+    }
+
     /// Where a file is, if it's here: `source` is its hash on the server.
     pub fn local_path(&self, source: &str) -> Option<PathBuf> {
         let blob = self.inner.lock().unwrap().index.files.get(source)?.blob.clone();

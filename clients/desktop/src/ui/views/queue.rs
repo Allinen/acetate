@@ -147,6 +147,8 @@ impl QueuePage {
                 })
                 .collect()
         };
+        // Offline: what isn't on this computer is passed over, and dimmed.
+        let on_disk = shell.controller.on_disk.clone();
         let output = scroll.show_rows(ui, ROW, rows.len(), |ui, range| {
             ui.spacing_mut().item_spacing.y = 0.0;
             for n in range {
@@ -182,7 +184,7 @@ impl QueuePage {
                 }
                 let played = matches!(row, Row::List(i) if i <= player.list_index);
                 let (title_color, sub_color) = match row {
-                    _ if played => (P.faint, P.faint),
+                    _ if played || !on_disk.playable(item) => (P.faint, P.faint),
                     Row::Current => (P.accent, P.muted),
                     _ => (P.text, P.muted),
                 };

@@ -502,6 +502,8 @@ impl TrackTable {
                 }
             })
             .body(|body| {
+                // Offline: what isn't on this computer can't play, and is dimmed.
+                let here = shell.controller.on_disk.get();
                 body.rows(ROW, self.lines.len(), |mut row| {
                     let line = self.lines[row.index()];
                     let n = match line {
@@ -524,8 +526,12 @@ impl TrackTable {
                     row.set_selected(n == self.selected);
                     let marked = self.marking.contains(&t.id());
                     let color = if playing == Some(t.id()) { P.accent } else { P.text };
+                    let away = !acetate_core::playback::on_disk::has(here.as_deref(), t.sha256_bytes());
                     for (idx, c) in columns.iter().enumerate() {
                         row.col(|ui| {
+                            if away {
+                                ui.multiply_opacity(0.35);
+                            }
                             // The mark's box, in front of the first column: a click (un)marks the row.
                             if idx == 0 && boxes {
                                 // (No gap after it, the content's place is the header's: it'd jump at the end.)

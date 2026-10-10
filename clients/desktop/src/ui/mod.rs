@@ -658,13 +658,29 @@ impl Shell {
         }));
     }
 
-    /// Notices the server going away or coming back. Back: the library is asked what
-    /// changed, the account what it may do, and the mirror tries again.
+    /// Notices the server going away or coming back. Away: only what's on this computer
+    /// plays (worked out in the background). Back: everything plays again, the library is
+    /// asked what changed, the account what it may do, and the mirror tries again.
     fn follow_connection(&mut self) {
         let now = self.api.connection();
-        let back = self.connection.is_offline() && !now.is_offline();
+        let (was, is) = (self.connection.is_offline(), now.is_offline());
         self.connection = now;
-        if back {
+        if is && !was {
+            let kept = self.offline.as_ref().map(|o| o.sources()).unwrap_or_default();
+            let blobs = self.data_dir.join("blobs");
+            let (controller, api) = (self.controller.clone(), self.api.clone());
+            self.runtime.spawn(async move {
+                let here = tokio::task::spawn_blocking(move || acetate_core::playback::on_disk::gather(kept, Some(&blobs))).await.unwrap_or_default();
+                if api.connection().is_offline() {
+                    controller.on_disk.set(Some(here));
+                    controller.playable_changed().await;
+                }
+            });
+        }
+        if was && !is {
+            self.controller.on_disk.set(None);
+            let controller = self.controller.clone();
+            self.runtime.spawn(async move { controller.playable_changed().await });
             self.act(Action::RefreshLibrary);
             self.account.fetch(&self.api, self.runtime.handle(), &self.waker);
             self.mirror.server_back();
@@ -1227,6 +1243,7 @@ impl App {
                     self.shell.catalog = Cached::default();
                     self.shell.account = Default::default();
                     self.shell.connection = acetate_core::api::Connection::Online;
+                    self.shell.controller.on_disk.set(None);
                     self.shell.marks.clear();
                     self.shell.offline = None;
                     self.shell.playlists.reset(None);
@@ -1433,6 +1450,9 @@ impl eframe::App for App {
         self.open_links();
         self.take_share(&ctx);
         self.shell.take_mark_answers();
+        if let Some(notice) = self.shell.controller.notice.lock().unwrap().take() {
+            self.shell.playlists.notice = Some((notice, Instant::now()));
+        }
         self.shell.playlists.poll();
         self.shell.account.poll();
         self.shell.follow_connection();
