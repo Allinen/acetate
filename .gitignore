@@ -6,12 +6,6 @@
 .env
 .idea/workspace.xml
 .idea/shelf/
-/navidrome.db*
-/netease_id.json
-/qq_ids.json
-/kuwo_ids.json
-/sc_ids.json
-/traktrain.json
 __pycache__/
 *.egg-info/
 /TODO.md
