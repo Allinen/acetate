@@ -58,6 +58,14 @@ pub struct Marking {
 }
 
 impl Marking {
+    /// The boxes are about to show for the first time (the first track was marked in listen
+    /// mode): the marked ones start unmarked, so they animate in.
+    pub fn boxes_appear(&self, ctx: &egui::Context) {
+        for id in &self.marked {
+            widgets::glide_from(ctx, egui::Id::new(("mark-box", id)), 0.0);
+        }
+    }
+
     pub fn is_empty(&self) -> bool {
         self.marked.is_empty()
     }

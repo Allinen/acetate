@@ -201,6 +201,8 @@ pub struct TrackTable {
     /// Marked tracks and the tools for them (Ctrl+E on the selected track with nothing
     /// marked).
     marking: super::marking::Marking,
+    /// Tracks were marked last frame (the boxes show; they animate in when this turns on).
+    had_marks: bool,
 }
 
 /// In the rows' own order.
@@ -223,6 +225,7 @@ impl TrackTable {
             scroll_to: None,
             select_id: None,
             marking: Default::default(),
+            had_marks: false,
         }
     }
 
@@ -341,6 +344,10 @@ impl TrackTable {
         let popup = self.marking.popup_open();
         // The marks' boxes: in edit mode, and in listen mode while tracks are marked.
         let boxes = shell.edit_mode || !self.marking.is_empty();
+        if !self.marking.is_empty() && !self.had_marks {
+            self.marking.boxes_appear(&ctx);
+        }
+        self.had_marks = !self.marking.is_empty();
 
         // ---- Keys for the row under the cursor ----
         // (At most a window's worth: in a page that scrolls, the room below is endless.)

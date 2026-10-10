@@ -163,6 +163,13 @@ pub fn glide(ctx: &egui::Context, id: egui::Id, target: f32, secs: f32) -> f32 {
     shown
 }
 
+/// `glide`'s thing `id` starts (now) at `value`: for a thing about to be drawn for the first
+/// time that should still animate to its target (a box that appears already marked).
+pub fn glide_from(ctx: &egui::Context, id: egui::Id, value: f32) {
+    let (pass, now) = (ctx.cumulative_pass_nr(), ctx.input(|i| i.time));
+    ctx.data_mut(|d| d.insert_temp(id, (value, value, now, pass)));
+}
+
 pub fn lerp(a: Color32, b: Color32, t: f32) -> Color32 {
     let t = t.clamp(0.0, 1.0);
     let mix = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t) as u8;
