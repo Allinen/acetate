@@ -1,0 +1,56 @@
+# Weekly update pull requests. Minor and patch bumps of an ecosystem come together in one
+# pull request (a week's worth, tested once); a major version gets its own, to read the
+# changelog before merging. Security updates ignore this schedule and come as they are
+# found (turn them on under Settings -> Advanced Security).
+version: 2
+updates:
+  # The server and CLI.
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      cargo:
+        update-types: [minor, patch]
+
+  # The clients' workspace: the core, the desktop app and the Android app's Rust library.
+  - package-ecosystem: cargo
+    directory: /clients
+    schedule:
+      interval: weekly
+    groups:
+      cargo-clients:
+        update-types: [minor, patch]
+
+  # The Android app (gradle/libs.versions.toml, the Gradle wrapper).
+  - package-ecosystem: gradle
+    directory: /clients/android
+    schedule:
+      interval: weekly
+    groups:
+      gradle:
+        update-types: [minor, patch]
+
+  # The Python library.
+  - package-ecosystem: pip
+    directory: /clients/python
+    schedule:
+      interval: weekly
+    groups:
+      pip:
+        update-types: [minor, patch]
+
+  # The image's base images.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+
+  # The actions the workflows use.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        update-types: [minor, patch]
