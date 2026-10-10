@@ -166,7 +166,7 @@ impl Controller {
         // A downloaded copy is played from the disk (`fetch` finds it by the file's id).
         let local = item.sha256.as_deref().zip(self.local.lock().unwrap().as_ref()).and_then(|(sha, find)| find(sha));
         match local {
-            Some(path) if item.source == AudioSource::File => self.locals.lock().unwrap().insert(item.file_id, path),
+            Some(path) if matches!(item.source, AudioSource::File | AudioSource::Extra) => self.locals.lock().unwrap().insert(item.file_id, path),
             _ => self.locals.lock().unwrap().remove(&item.file_id),
         };
         let path = item.stream_path();

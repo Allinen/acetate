@@ -455,7 +455,7 @@ impl Shell {
     /// Shows a cover's original (unchanged, full size) in a popup. It's fetched now, and
     /// let go when the popup closes.
     pub fn open_original(&mut self, ctx: &egui::Context, cover: Cover) {
-        self.original = Some(covers::Original::open(&self.api, self.runtime.handle(), ctx, cover.key));
+        self.original = Some(covers::Original::open(&self.api, self.runtime.handle(), ctx, cover.key, self.covers.here()));
     }
 
     /// The original's popup, while one is open: as big as fits (never bigger than it is),
@@ -645,6 +645,7 @@ impl Shell {
                         (acetate_core::blobs::is_sha256(sha) && path.is_file()).then_some(path)
                     })
                 }));
+                self.covers.set_here(covers::Here { downloads: Some(offline.clone()), mirror: Some(self.data_dir.clone()) });
                 self.offline = Some(offline);
             }
             Err(err) => eprintln!("couldn't open the downloads: {err:#}"),
@@ -696,6 +697,7 @@ impl Shell {
                 outbox.kick();
             }
             self.controller.on_disk.set(None);
+            self.covers.forget_failed();
             let controller = self.controller.clone();
             self.runtime.spawn(async move { controller.playable_changed().await });
             self.act(Action::RefreshLibrary);
@@ -738,6 +740,10 @@ impl Shell {
         while let Ok(update) = self.updates.1.try_recv() {
             match update {
                 Update::Loaded { catalog, from_server } => {
+                    if from_server {
+                        // Every playlist kept on disk, as the server has it (for offline).
+                        self.playlists.keep_all_fresh(&catalog);
+                    }
                     self.catalog.value = Some(catalog);
                     self.downloads_checked = Instant::now().checked_sub(std::time::Duration::from_secs(3600)).unwrap_or_else(Instant::now);
                     // The old one's memory, back to the system (it held about as much),
@@ -1264,6 +1270,7 @@ impl App {
                     self.shell.controller.on_disk.set(None);
                     self.shell.marks.clear();
                     self.shell.offline = None;
+                    self.shell.covers.set_here(covers::Here::default());
                     self.shell.playlists.reset(None, None);
                     self.shell.outbox = None;
                     self.shell.controller.send_listens_to(None);

@@ -183,7 +183,7 @@ impl ExtraPage {
                 if f.is_video() {
                     shell.watch(f.id, &extra.name);
                 } else {
-                    crate::ui::edit::extras::play_file(shell, &extra.name, f.id, &f.name, f.duration_ms);
+                    crate::ui::edit::extras::play_file(shell, &extra.name, f.id, f.sha256.clone(), &f.name, f.duration_ms);
                 }
             }
         }

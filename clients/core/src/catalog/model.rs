@@ -235,6 +235,9 @@ pub struct Playlist {
     pub mine: bool,
     pub entries: i64,
     pub duration_ms: i64,
+    /// When it last changed (its entries, their order, its name…).
+    #[serde(default)]
+    pub updated_at: Option<String>,
 }
 
 #[derive(Deserialize)]

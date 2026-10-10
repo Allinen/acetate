@@ -620,7 +620,7 @@ fn search_result(shell: &mut Shell, catalog: Option<&Catalog>, entry: Entry, shi
             // Shift: its video is watched, or its first audio file plays; else its page.
             match (shift, extra.video, extra.first_file) {
                 (true, Some(video), _) => shell.watch(video, &extra.name),
-                (true, None, Some(file)) => crate::ui::edit::extras::play_file(shell, &extra.name, file, &extra.name, extra.duration_ms),
+                (true, None, Some(file)) => crate::ui::edit::extras::play_file(shell, &extra.name, file, None, &extra.name, extra.duration_ms),
                 _ => shell.act(Action::Go(Page::Extra(extra.id))),
             }
         }

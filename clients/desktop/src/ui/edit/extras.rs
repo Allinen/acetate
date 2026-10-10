@@ -62,8 +62,9 @@ impl Owner {
     }
 }
 
-/// Plays one of an extra's files (not counted as a play: it isn't a track).
-pub fn play_file(shell: &Shell, extra: &str, file: Uuid, name: &str, duration_ms: Option<i64>) {
+/// Plays one of an extra's files (not counted as a play: it isn't a track). `sha256`: the
+/// file's hash, if known (it plays from the mirror when it's there).
+pub fn play_file(shell: &Shell, extra: &str, file: Uuid, sha256: Option<String>, name: &str, duration_ms: Option<i64>) {
     let item = QueueItem {
         track_id: file,
         file_id: file,
@@ -74,7 +75,7 @@ pub fn play_file(shell: &Shell, extra: &str, file: Uuid, name: &str, duration_ms
         duration_ms,
         cover: None,
         codec: None,
-        sha256: None,
+        sha256,
     };
     let controller = shell.controller.clone();
     shell.runtime.spawn(async move { controller.play(vec![item], 0).await });
@@ -111,7 +112,7 @@ pub fn file_line(ui: &mut egui::Ui, shell: &mut Shell, extra: &Extra, f: &ExtraF
                 shell.watch(f.id, &extra.name);
             }
         } else if (f.duration_ms.is_some() || f.codec.is_some()) && ui.small_button("▶").on_hover_text("Play it").clicked() {
-            play_file(shell, &extra.name, f.id, &f.name, f.duration_ms);
+            play_file(shell, &extra.name, f.id, f.sha256.clone(), &f.name, f.duration_ms);
         }
         ui.label(RichText::new(&f.name).font(font(13.5, medium())));
         let mut facts = Vec::new();

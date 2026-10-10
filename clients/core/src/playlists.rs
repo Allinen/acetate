@@ -31,6 +31,9 @@ pub struct Detail {
     pub owner: String,
     pub mine: bool,
     pub entries: Vec<Entry>,
+    /// When it last changed, as the server said when it was fetched.
+    #[serde(default)]
+    pub updated_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -249,6 +252,40 @@ impl Playlists {
         *number
     }
 
+    /// A catalog arrived: every playlist whose copy here is older than it says (or missing)
+    /// is fetched, one after another in the background, so each is on disk to use offline.
+    pub fn keep_all_fresh(&mut self, catalog: &Catalog) {
+        let stale: Vec<Uuid> = catalog
+            .playlists
+            .iter()
+            .filter(|p| {
+                let kept = self.details.get(&p.id).and_then(|c| c.value.clone()).or_else(|| {
+                    let bytes = std::fs::read(self.path(p.id)?).ok()?;
+                    serde_json::from_slice::<Detail>(&bytes).ok().map(Arc::new)
+                });
+                is_stale(kept.as_deref(), p)
+            })
+            .map(|p| p.id)
+            .collect();
+        if stale.is_empty() {
+            return;
+        }
+        let asked: Vec<(Uuid, u64)> = stale.iter().map(|&id| (id, self.ask(id))).collect();
+        let api = self.api.clone();
+        self.spawn(async move {
+            let mut answers = Vec::new();
+            for (id, number) in asked {
+                match api.send_json::<Detail>(Method::GET, &format!("/api/playlists/{id}"), None).await {
+                    Ok(detail) => answers.push(Answer::Detail(id, number, detail)),
+                    // (Gone meanwhile, or the server went away: the next catalog says.)
+                    Err(err) if err.status.is_none() => break,
+                    Err(_) => {}
+                }
+            }
+            answers
+        });
+    }
+
     /// Fetches a playlist (and the list, whose counts change with it).
     pub fn fetch(&mut self, id: Uuid) {
         if let Some(cached) = self.details.get_mut(&id) {
@@ -450,11 +487,59 @@ impl Playlists {
     }
 }
 
+/// Whether the copy of a playlist kept here (if any) is older than the catalog says it is.
+fn is_stale(kept: Option<&Detail>, listed: &Playlist) -> bool {
+    match (kept, &listed.updated_at) {
+        (None, _) => true,
+        (Some(kept), Some(_)) => kept.updated_at != listed.updated_at,
+        // A catalog from before it said when: by the count.
+        (Some(kept), None) => kept.entries.len() as i64 != listed.entries,
+    }
+}
+
 /// The playlist list, fresh from the server.
 async fn list(api: &Api) -> Vec<Answer> {
     match api.send_json::<Vec<Playlist>>(Method::GET, "/api/playlists", None).await {
         Ok(list) => vec![Answer::List(list)],
         Err(_) => vec![],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_kept_playlist_is_fetched_again_when_the_catalog_says_it_changed() {
+        let listed = |at: Option<&str>, entries| Playlist {
+            id: Uuid::nil(),
+            name: "Mix".into(),
+            description: String::new(),
+            public: false,
+            owner: "ann".into(),
+            mine: true,
+            entries,
+            duration_ms: 0,
+            updated_at: at.map(str::to_string),
+        };
+        let entry = Entry { id: Uuid::nil(), track_id: Uuid::nil(), added_at: String::new(), waiting: false };
+        let kept = |at: Option<&str>| Detail {
+            id: Uuid::nil(),
+            name: "Mix".into(),
+            description: String::new(),
+            public: false,
+            owner: "ann".into(),
+            mine: true,
+            entries: vec![entry.clone()],
+            updated_at: at.map(str::to_string),
+        };
+        let (t1, t2) = (Some("2026-10-01T10:00:00Z"), Some("2026-10-02T10:00:00Z"));
+        assert!(is_stale(None, &listed(t1, 1)), "not kept yet");
+        assert!(!is_stale(Some(&kept(t1)), &listed(t1, 1)));
+        assert!(is_stale(Some(&kept(t1)), &listed(t2, 1)), "reordered or renamed: the same count, a new time");
+        assert!(is_stale(Some(&kept(None)), &listed(t1, 1)), "kept before copies said when");
+        assert!(!is_stale(Some(&kept(t1)), &listed(None, 1)));
+        assert!(is_stale(Some(&kept(t1)), &listed(None, 2)));
     }
 }
 

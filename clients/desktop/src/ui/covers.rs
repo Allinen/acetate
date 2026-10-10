@@ -17,6 +17,11 @@
 //! `covers-standard/<key>` in the cache folder): an image never changes under its key, so
 //! the copy is good forever; the next start, or a cover shown again after being let go,
 //! comes from there without the network.
+//!
+//! Not in the cache, a cover is looked for on this computer before it's asked of the
+//! server (so it shows offline too): among the covers the downloads keep (the same two
+//! sizes), then among the mirror's files, where the original is (scaled here as the server
+//! scales it, and kept in the cache).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -68,6 +73,47 @@ enum State {
     Failed,
 }
 
+/// Where covers are on this computer, besides the cache.
+#[derive(Clone, Default)]
+pub struct Here {
+    /// The downloads (their kept covers).
+    pub downloads: Option<Arc<acetate_core::offline::Offline>>,
+    /// The mirror's root (its index and blobs), if this computer keeps one.
+    pub mirror: Option<PathBuf>,
+}
+
+impl Here {
+    /// A kept copy at `size`: its bytes, as the server made them.
+    fn kept(&self, key: CoverKey, size: CoverSize) -> Option<Vec<u8>> {
+        let path = self.downloads.as_ref()?.cover_path(&format!("{:016x}", key.0), size.query())?;
+        std::fs::read(path).ok()
+    }
+
+    /// The original, from the mirror.
+    fn original(&self, key: CoverKey) -> Option<Vec<u8>> {
+        let root = self.mirror.as_ref()?;
+        let index = root.join("mirror.sqlite");
+        if !index.is_file() {
+            return None;
+        }
+        let sha256 = crate::mirror::index::Index::open_reader(&index).ok()?.find_by_start(&format!("{:016x}", key.0)).ok()??;
+        std::fs::read(root.join("blobs").join(sha256.get(0..2)?).join(sha256.get(2..4)?).join(&sha256)).ok()
+    }
+}
+
+/// An image scaled to fit `pixels` on its longest side, as the server does it (a JPEG); one
+/// that fits already is as it is.
+fn scaled(original: &[u8], pixels: u32) -> Option<Vec<u8>> {
+    let image = image::load_from_memory(original).ok()?;
+    if image.width().max(image.height()) <= pixels {
+        return Some(original.to_vec());
+    }
+    let scaled = image.resize(pixels, pixels, image::imageops::FilterType::CatmullRom).to_rgb8();
+    let mut out = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 88).encode_image(&scaled).ok()?;
+    Some(out)
+}
+
 pub struct Covers {
     states: HashMap<(CoverKey, CoverSize), State>,
     /// Decoded images from the background, waiting to be uploaded.
@@ -76,11 +122,26 @@ pub struct Covers {
     dir: Arc<PathBuf>,
     api: Api,
     runtime: Handle,
+    here: Here,
 }
 
 impl Covers {
     pub fn new(api: Api, runtime: Handle, cache_dir: PathBuf) -> Covers {
-        Covers { states: HashMap::new(), done: Arc::default(), loading: 0, dir: Arc::new(cache_dir), api, runtime }
+        Covers { states: HashMap::new(), done: Arc::default(), loading: 0, dir: Arc::new(cache_dir), api, runtime, here: Here::default() }
+    }
+
+    /// Where covers are on this computer (for whoever is logged in).
+    pub fn set_here(&mut self, here: Here) {
+        self.here = here;
+    }
+
+    pub fn here(&self) -> Here {
+        self.here.clone()
+    }
+
+    /// Covers that didn't load (the server was away) are tried again when next shown.
+    pub fn forget_failed(&mut self) {
+        self.states.retain(|_, state| !matches!(state, State::Failed));
     }
 
     /// Takes what finished loading, and lets go of what hasn't been shown for a while.
@@ -158,9 +219,9 @@ impl Covers {
                 if self.loading < PARALLEL {
                     self.loading += 1;
                     self.states.insert(key, State::Loading);
-                    let (done, api, dir, ctx) = (self.done.clone(), self.api.clone(), self.dir.clone(), ctx.clone());
+                    let (done, api, dir, ctx, here) = (self.done.clone(), self.api.clone(), self.dir.clone(), ctx.clone(), self.here.clone());
                     self.runtime.spawn(async move {
-                        let image = load(&api, &dir, cover.key, size).await;
+                        let image = load(&api, &dir, &here, cover.key, size).await;
                         done.lock().unwrap().push((key, image));
                         ctx.request_repaint();
                     });
@@ -182,14 +243,31 @@ pub fn path(cache_dir: &Path, key: CoverKey, size: CoverSize) -> PathBuf {
     cache_dir.join(format!("covers-{}", size.query())).join(format!("{:016x}", key.0))
 }
 
-async fn load(api: &Api, dir: &Path, key: CoverKey, size: CoverSize) -> Option<ColorImage> {
+/// The cover at `size`: from the cache, else this computer (`here`), else the server.
+async fn load(api: &Api, dir: &Path, here: &Here, key: CoverKey, size: CoverSize) -> Option<ColorImage> {
     let path = path(dir, key, size);
-    let cached = {
-        let path = path.clone();
-        tokio::task::spawn_blocking(move || std::fs::read(path).ok()).await.ok().flatten()
+    let found = {
+        let (path, here) = (path.clone(), here.clone());
+        // (Reading, and scaling an original: off the async threads.)
+        tokio::task::spawn_blocking(move || {
+            if let Ok(bytes) = std::fs::read(&path) {
+                return Some((bytes, true));
+            }
+            if let Some(bytes) = here.kept(key, size) {
+                return Some((bytes, true));
+            }
+            let pixels = match size {
+                CoverSize::Small => 200,
+                CoverSize::Standard => 640,
+            };
+            here.original(key).and_then(|original| scaled(&original, pixels)).map(|bytes| (bytes, false))
+        })
+        .await
+        .ok()
+        .flatten()
     };
-    let (bytes, from_disk) = match cached {
-        Some(bytes) => (bytes, true),
+    let (bytes, from_disk) = match found {
+        Some(found) => found,
         None => (api.image(&format!("{:016x}", key.0), Some(size.query())).await.ok()?, false),
     };
     // Decoding is CPU work: off the async threads.
@@ -222,11 +300,17 @@ pub struct Original {
 }
 
 impl Original {
-    pub fn open(api: &Api, runtime: &Handle, ctx: &egui::Context, key: CoverKey) -> Original {
+    /// `here`: the mirror has it, perhaps (then the server isn't asked).
+    pub fn open(api: &Api, runtime: &Handle, ctx: &egui::Context, key: CoverKey, here: Here) -> Original {
         let answer: Arc<Mutex<Option<Result<(ColorImage, usize), String>>>> = Arc::default();
         let (api, sink, ctx) = (api.clone(), answer.clone(), ctx.clone());
         runtime.spawn(async move {
-            let result = match api.image(&format!("{:016x}", key.0), None).await {
+            let mirrored = tokio::task::spawn_blocking(move || here.original(key)).await.ok().flatten();
+            let fetched = match mirrored {
+                Some(bytes) => Ok(bytes),
+                None => api.image(&format!("{:016x}", key.0), None).await,
+            };
+            let result = match fetched {
                 Ok(bytes) => tokio::task::spawn_blocking(move || {
                     let image = image::load_from_memory(&bytes).map_err(|err| format!("It isn't an image this can show ({err})."))?.to_rgba8();
                     Ok((ColorImage::from_rgba_unmultiplied([image.width() as usize, image.height() as usize], image.as_raw()), bytes.len()))
@@ -255,4 +339,26 @@ impl Original {
 /// Fast start, gentle stop.
 pub fn ease_out(t: f32) -> f32 {
     1.0 - (1.0 - t).powi(3)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn png(width: u32, height: u32) -> Vec<u8> {
+        let mut out = std::io::Cursor::new(Vec::new());
+        image::RgbImage::new(width, height).write_to(&mut out, image::ImageFormat::Png).unwrap();
+        out.into_inner()
+    }
+
+    #[test]
+    fn an_original_is_scaled_to_fit_like_the_server_does() {
+        let big = scaled(&png(1000, 500), 640).unwrap();
+        let image = image::load_from_memory(&big).unwrap();
+        assert_eq!((image.width(), image.height()), (640, 320));
+        assert_eq!(image::guess_format(&big).unwrap(), image::ImageFormat::Jpeg);
+        // One that fits already: as it is.
+        let small = png(100, 80);
+        assert_eq!(scaled(&small, 200).unwrap(), small);
+    }
 }

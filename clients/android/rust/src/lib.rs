@@ -1496,6 +1496,10 @@ fn sync_catalog(shared: &Arc<Shared>, load: bool) {
                     shared.marks.lock().unwrap().catalog_arrived(asked, &waiting);
                     shared.playlists.lock().unwrap().catalog_arrived(asked);
                 }
+                // Every playlist kept on disk, as the server has it (for offline).
+                if from_server {
+                    shared.playlists.lock().unwrap().keep_all_fresh(&catalog);
+                }
                 set_catalog(&shared, catalog);
             }
             Update::Unchanged => {}

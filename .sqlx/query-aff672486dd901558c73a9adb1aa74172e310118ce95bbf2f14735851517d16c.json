@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, name, size_bytes, container, codec, sample_rate, channels, bit_depth, duration_ms,\n                  width, height, frame_rate, video_codec, left(thumb_sha256, 16) AS thumb,\n                  hidden_at IS NOT NULL AS \"hidden!\", added_at\n           FROM extra_files WHERE extra_id = $1 ORDER BY lower(name), id",
+  "query": "SELECT id, name, sha256, size_bytes, container, codec, sample_rate, channels, bit_depth, duration_ms,\n                  width, height, frame_rate, video_codec, left(thumb_sha256, 16) AS thumb,\n                  hidden_at IS NOT NULL AS \"hidden!\", added_at\n           FROM extra_files WHERE extra_id = $1 ORDER BY lower(name), id",
   "describe": {
     "columns": [
       {
@@ -27,6 +27,17 @@
       },
       {
         "ordinal": 2,
+        "name": "sha256",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "extra_files",
+            "name": "sha256"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
         "name": "size_bytes",
         "type_info": "Int8",
         "origin": {
@@ -37,7 +48,7 @@
         }
       },
       {
-        "ordinal": 3,
+        "ordinal": 4,
         "name": "container",
         "type_info": "Text",
         "origin": {
@@ -48,7 +59,7 @@
         }
       },
       {
-        "ordinal": 4,
+        "ordinal": 5,
         "name": "codec",
         "type_info": "Text",
         "origin": {
@@ -59,7 +70,7 @@
         }
       },
       {
-        "ordinal": 5,
+        "ordinal": 6,
         "name": "sample_rate",
         "type_info": "Int4",
         "origin": {
@@ -70,7 +81,7 @@
         }
       },
       {
-        "ordinal": 6,
+        "ordinal": 7,
         "name": "channels",
         "type_info": "Int2",
         "origin": {
@@ -81,7 +92,7 @@
         }
       },
       {
-        "ordinal": 7,
+        "ordinal": 8,
         "name": "bit_depth",
         "type_info": "Int2",
         "origin": {
@@ -92,7 +103,7 @@
         }
       },
       {
-        "ordinal": 8,
+        "ordinal": 9,
         "name": "duration_ms",
         "type_info": "Int8",
         "origin": {
@@ -103,7 +114,7 @@
         }
       },
       {
-        "ordinal": 9,
+        "ordinal": 10,
         "name": "width",
         "type_info": "Int4",
         "origin": {
@@ -114,7 +125,7 @@
         }
       },
       {
-        "ordinal": 10,
+        "ordinal": 11,
         "name": "height",
         "type_info": "Int4",
         "origin": {
@@ -125,7 +136,7 @@
         }
       },
       {
-        "ordinal": 11,
+        "ordinal": 12,
         "name": "frame_rate",
         "type_info": "Float4",
         "origin": {
@@ -136,7 +147,7 @@
         }
       },
       {
-        "ordinal": 12,
+        "ordinal": 13,
         "name": "video_codec",
         "type_info": "Text",
         "origin": {
@@ -147,19 +158,19 @@
         }
       },
       {
-        "ordinal": 13,
+        "ordinal": 14,
         "name": "thumb",
         "type_info": "Text",
         "origin": "Expression"
       },
       {
-        "ordinal": 14,
+        "ordinal": 15,
         "name": "hidden!",
         "type_info": "Bool",
         "origin": "Expression"
       },
       {
-        "ordinal": 15,
+        "ordinal": 16,
         "name": "added_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -179,6 +190,7 @@
       false,
       false,
       false,
+      false,
       true,
       true,
       true,
@@ -194,5 +206,5 @@
       false
     ]
   },
-  "hash": "b7cb1168e36952d29915f61204f574df65f91f2b4424af09360b195da4b541a7"
+  "hash": "aff672486dd901558c73a9adb1aa74172e310118ce95bbf2f14735851517d16c"
 }

@@ -188,6 +188,9 @@ pub struct GroupRef {
 pub struct ExtraFile {
     pub id: Uuid,
     pub name: String,
+    /// The file's hash (a mirror plays it from the disk).
+    #[serde(default)]
+    pub sha256: Option<String>,
     pub size_bytes: i64,
     pub codec: Option<String>,
     pub sample_rate: Option<i32>,

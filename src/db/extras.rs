@@ -77,6 +77,8 @@ pub struct Access {
 pub struct ExtraFile {
     pub id: Uuid,
     pub name: String,
+    /// The file's hash: a client that keeps the file (a mirror) plays it from there.
+    pub sha256: String,
     pub size_bytes: i64,
     pub container: Option<String>,
     pub codec: Option<String>,
@@ -634,7 +636,7 @@ async fn groups(conn: &mut PgConnection, extra: Uuid) -> sqlx::Result<Vec<Group>
 async fn files(conn: &mut PgConnection, extra: Uuid) -> sqlx::Result<Vec<ExtraFile>> {
     sqlx::query_as!(
         ExtraFile,
-        r#"SELECT id, name, size_bytes, container, codec, sample_rate, channels, bit_depth, duration_ms,
+        r#"SELECT id, name, sha256, size_bytes, container, codec, sample_rate, channels, bit_depth, duration_ms,
                   width, height, frame_rate, video_codec, left(thumb_sha256, 16) AS thumb,
                   hidden_at IS NOT NULL AS "hidden!", added_at
            FROM extra_files WHERE extra_id = $1 ORDER BY lower(name), id"#,

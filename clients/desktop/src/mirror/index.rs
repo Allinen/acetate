@@ -304,6 +304,13 @@ impl Index {
 
     // ---- What's here ----
 
+    /// A blob here whose hash starts so (a cover's key: the start of its image's hash).
+    pub fn find_by_start(&self, start: &str) -> anyhow::Result<Option<String>> {
+        // (Hex: every hash starting so sorts between it and it followed by "g".)
+        let found = self.conn.query_row("SELECT sha256 FROM have WHERE sha256 >= ?1 AND sha256 < ?1 || 'g' LIMIT 1", [start], |r| r.get(0)).optional()?;
+        Ok(found)
+    }
+
     pub fn has(&self, sha256: &str) -> anyhow::Result<bool> {
         Ok(self.conn.query_row("SELECT 1 FROM have WHERE sha256 = ?1", [sha256], |_| Ok(())).optional()?.is_some())
     }
@@ -504,6 +511,16 @@ mod tests {
 
     fn listed(c: char, volume: &str, size: i64, state: &str) -> Listed {
         Listed { sha256: sha(c), volume: Some(volume.into()), size: Some(size), path: None, state: state.into() }
+    }
+
+    #[test]
+    fn a_blob_is_found_by_the_start_of_its_hash() {
+        let dir = tempfile::tempdir().unwrap();
+        let index = Index::open(&dir.path().join("mirror.sqlite")).unwrap();
+        index.add(&sha('a'), 1, "downloaded", true).unwrap();
+        index.add(&sha('b'), 1, "downloaded", true).unwrap();
+        assert_eq!(index.find_by_start(&sha('b')[..16]).unwrap(), Some(sha('b')));
+        assert_eq!(index.find_by_start(&sha('c')[..16]).unwrap(), None);
     }
 
     #[test]
