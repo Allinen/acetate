@@ -18,7 +18,14 @@ Settings is `Ctrl+,`. It has tabs (Sound, This computer, Account, and for admins
 
 `Ctrl+K`, from anywhere. Type to find any artist, album, track, playlist or command: letters
 in order, words anywhere. `Enter` opens it (a track: plays it, then the rest of its album),
-`Shift+Enter` plays it (a track: opens its album). Start with `>` to list only commands.
+`Shift+Enter` plays it (a track: opens its album).
+
+The line is a [commandline](searching.md): `artist:`, `album:`, `year:`, `status:` and the other
+search keys filter. `go:` lists the pages (`go:albums`, `go:queue`) and `do:` the other commands
+(`do:pause`, `do:shuffle`); each command shows its `go:`/`do:` form under its name. With nothing
+typed, the keys are listed too. `Tab` writes the highlighted key or command in full (on anything
+else it moves down), `Enter` on a key writes it and lets you keep typing. `Esc` empties the line,
+and closes the palette when it's already empty.
 
 ## Playing
 

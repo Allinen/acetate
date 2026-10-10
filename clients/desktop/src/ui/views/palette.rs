@@ -1,7 +1,14 @@
 //! The command palette (Ctrl+K, anywhere): type to find any artist, album or track
 //! (fuzzy: letters in order, words anywhere) or a command. ↑/↓ choose, Enter opens (a
 //! track: plays it, then the rest of its album), Shift+Enter plays (a track: opens its
-//! album), Esc closes. A query starting with ">" lists only commands.
+//! album). Esc empties the line, and closes it when it's empty.
+//!
+//! The line is a commandline (`crate::commandline`'s language): the search's keys
+//! (`artist:` `album:` `year:` `status:`…) filter, `go:albums` lists the pages and `do:pause`
+//! the other commands (a command's short word is shown under its name). Plain words find
+//! commands too, and the keys themselves are listed (Tab or Enter writes one and carries on
+//! typing). Tab completes the highlighted key or command to its `go:` / `do:` form; on
+//! anything else it moves down.
 //!
 //! It also asks for things: which playlist to add tracks to (`p` on anything; typing a
 //! new name offers to make that playlist), and a playlist's name (new, or a rename).
@@ -16,7 +23,9 @@ use eframe::egui::{self, Align2, Color32, Key, Modifiers, Pos2, Rect, RichText, 
 
 use uuid::Uuid;
 
+use crate::catalog::query::Key as Find;
 use crate::catalog::search::{Hits, Search};
+use crate::commandline::{self, Keys};
 use crate::catalog::Catalog;
 use crate::ui::theme::{font, medium, semibold, PALETTE as P};
 use crate::ui::edit::PickKind;
@@ -25,39 +34,42 @@ use crate::ui::{widgets, Action, Page, Shell};
 const INPUT_ID: &str = "palette-input";
 const ROW: f32 = 44.0;
 
-/// A command: its name, its key (shown as a hint), and what it does.
+/// A command: its name, a short word to type for it (`go:albums`, `do:pause`), whether it
+/// goes to a page (`go:`; else `do:`), its key (shown as a hint), and what it does.
 struct Command {
     name: &'static str,
+    word: &'static str,
+    page: bool,
     keys: &'static str,
     action: fn() -> Action,
 }
 
 const COMMANDS: &[Command] = &[
-    Command { name: "Go to Albums", keys: "1", action: || Action::Go(Page::Albums) },
-    Command { name: "Go to Artists", keys: "2", action: || Action::Go(Page::Artists) },
-    Command { name: "Go to Tracks", keys: "3", action: || Action::Go(Page::Tracks) },
-    Command { name: "Go to Now playing", keys: "4", action: || Action::Go(Page::NowPlaying) },
-    Command { name: "Go to the queue", keys: "5", action: || Action::Go(Page::Queue) },
-    Command { name: "Go to Review (fix the library)", keys: "6", action: || Action::Go(Page::Review) },
-    Command { name: "Play / pause", keys: "Space", action: || Action::TogglePause },
-    Command { name: "Next track", keys: "Ctrl+→", action: || Action::Next },
-    Command { name: "Previous track", keys: "Ctrl+←", action: || Action::Previous },
-    Command { name: "Loop this track (repeat) on / off", keys: "r", action: || Action::ToggleRepeat },
-    Command { name: "Shuffle on / off", keys: "z", action: || Action::ToggleShuffle },
-    Command { name: "Check the library for changes", keys: "F5", action: || Action::RefreshLibrary },
-    Command { name: "Back", keys: "Alt+←", action: || Action::Back },
-    Command { name: "Forward", keys: "Alt+→", action: || Action::Forward },
-    Command { name: "Go to Liked songs", keys: "", action: || Action::Go(Page::Liked) },
-    Command { name: "Go to collectives & groupings", keys: "", action: || Action::Go(Page::Groupings) },
-    Command { name: "New playlist…", keys: "", action: || Action::NewPlaylist },
-    Command { name: "Settings", keys: "Ctrl+,", action: || Action::Go(Page::Settings) },
-    Command { name: "Copy a link to this page (to send)", keys: "Ctrl+L", action: || Action::CopyPageLink },
-    Command { name: "Make a share link to this page (anyone can open it; options first)", keys: "Ctrl+Shift+L", action: || Action::CopyPageShareLink },
-    Command { name: "Trash (take things back out, clean up old files)", keys: "", action: || Action::Go(Page::Trash) },
-    Command { name: "Edit mode on / off", keys: "e", action: || Action::ToggleEditMode },
-    Command { name: "Show every key", keys: "?", action: || Action::ShowKeys },
-    Command { name: "Mute / unmute", keys: "m", action: || Action::ToggleMute },
-    Command { name: "Log out", keys: "", action: || Action::LogOut },
+    Command { name: "Go to Albums", word: "albums", page: true, keys: "1", action: || Action::Go(Page::Albums) },
+    Command { name: "Go to Artists", word: "artists", page: true, keys: "2", action: || Action::Go(Page::Artists) },
+    Command { name: "Go to Tracks", word: "tracks", page: true, keys: "3", action: || Action::Go(Page::Tracks) },
+    Command { name: "Go to Now playing", word: "playing", page: true, keys: "4", action: || Action::Go(Page::NowPlaying) },
+    Command { name: "Go to the queue", word: "queue", page: true, keys: "5", action: || Action::Go(Page::Queue) },
+    Command { name: "Go to Review (fix the library)", word: "review", page: true, keys: "6", action: || Action::Go(Page::Review) },
+    Command { name: "Play / pause", word: "pause", page: false, keys: "Space", action: || Action::TogglePause },
+    Command { name: "Next track", word: "next", page: false, keys: "Ctrl+→", action: || Action::Next },
+    Command { name: "Previous track", word: "previous", page: false, keys: "Ctrl+←", action: || Action::Previous },
+    Command { name: "Loop this track (repeat) on / off", word: "repeat", page: false, keys: "r", action: || Action::ToggleRepeat },
+    Command { name: "Shuffle on / off", word: "shuffle", page: false, keys: "z", action: || Action::ToggleShuffle },
+    Command { name: "Check the library for changes", word: "refresh", page: false, keys: "F5", action: || Action::RefreshLibrary },
+    Command { name: "Back", word: "back", page: false, keys: "Alt+←", action: || Action::Back },
+    Command { name: "Forward", word: "forward", page: false, keys: "Alt+→", action: || Action::Forward },
+    Command { name: "Go to Liked songs", word: "liked", page: true, keys: "", action: || Action::Go(Page::Liked) },
+    Command { name: "Go to collectives & groupings", word: "groupings", page: true, keys: "", action: || Action::Go(Page::Groupings) },
+    Command { name: "New playlist…", word: "playlist", page: false, keys: "", action: || Action::NewPlaylist },
+    Command { name: "Settings", word: "settings", page: true, keys: "Ctrl+,", action: || Action::Go(Page::Settings) },
+    Command { name: "Copy a link to this page (to send)", word: "link", page: false, keys: "Ctrl+L", action: || Action::CopyPageLink },
+    Command { name: "Make a share link to this page (anyone can open it; options first)", word: "share", page: false, keys: "Ctrl+Shift+L", action: || Action::CopyPageShareLink },
+    Command { name: "Trash (take things back out, clean up old files)", word: "trash", page: true, keys: "", action: || Action::Go(Page::Trash) },
+    Command { name: "Edit mode on / off", word: "edit", page: false, keys: "e", action: || Action::ToggleEditMode },
+    Command { name: "Show every key", word: "keys", page: false, keys: "?", action: || Action::ShowKeys },
+    Command { name: "Mute / unmute", word: "mute", page: false, keys: "m", action: || Action::ToggleMute },
+    Command { name: "Log out", word: "logout", page: false, keys: "", action: || Action::LogOut },
 ];
 
 /// What the palette is open for.
@@ -76,9 +88,65 @@ pub enum Mode {
     Pick(PickKind, Option<Uuid>),
 }
 
-#[derive(Clone, Copy, PartialEq)]
+/// The palette's keys: `go:` and `do:` take a command's word; the search's keys go with
+/// each other, as they do in a track list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum K {
+    Go,
+    Do,
+    Find(Find),
+}
+
+impl Keys for K {
+    const MINUS: bool = false;
+
+    fn key(name: &str) -> Option<K> {
+        match name.to_lowercase().as_str() {
+            "go" | "goto" => Some(K::Go),
+            "do" | "run" => Some(K::Do),
+            _ => Find::parse(name).map(K::Find),
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            K::Go => "go",
+            K::Do => "do",
+            K::Find(key) => key.name(),
+        }
+    }
+
+    fn takes(main: K, arg: K) -> bool {
+        matches!((main, arg), (K::Find(_), K::Find(_)))
+    }
+}
+
+/// Keys listed when nothing (or the start of one) is typed: what to type, and what it's for.
+const INSERTS: &[(&str, &str)] = &[
+    ("go:", "go to a page"),
+    ("do:", "run a command"),
+    ("artist:", "find an artist"),
+    ("album:", "find an album"),
+    ("year:", "tracks and albums from a year"),
+    ("status:", "tracks by their status"),
+];
+
+/// `go:…` / `do:…` at the start of the line: whether it's pages, and the words after it.
+fn command_line(query: &str) -> Option<(bool, String)> {
+    let line = commandline::parse::<K>(query);
+    let first = line.parts.first()?;
+    match first.key {
+        K::Go => Some((true, first.value.clone())),
+        K::Do => Some((false, first.value.clone())),
+        K::Find(_) => None,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
 enum Entry {
     Command(usize),
+    /// A key to type (its place in `INSERTS`).
+    Insert(usize),
     Artist(u32),
     Album(u32),
     Track(u32),
@@ -159,18 +227,29 @@ impl Palette {
         }
 
         // Keys for the list, taken before the text field sees them.
-        let (up, down, enter, shift_enter, escape) = ctx.input_mut(|i| {
+        let (up, down, tab, enter, shift_enter, escape) = ctx.input_mut(|i| {
             // Shift+Enter first: a plain Enter may also match with Shift held.
             let shift_enter = i.consume_key(Modifiers::SHIFT, Key::Enter);
             let enter = i.consume_key(Modifiers::NONE, Key::Enter);
             let up = i.consume_key(Modifiers::NONE, Key::ArrowUp);
-            let down = i.consume_key(Modifiers::NONE, Key::ArrowDown) || i.consume_key(Modifiers::NONE, Key::Tab);
-            (up, down, enter, shift_enter, i.consume_key(Modifiers::NONE, Key::Escape))
+            let down = i.consume_key(Modifiers::NONE, Key::ArrowDown);
+            (up, down, i.consume_key(Modifiers::NONE, Key::Tab), enter, shift_enter, i.consume_key(Modifiers::NONE, Key::Escape))
         });
         if escape {
-            self.open = false;
-            return;
+            // Esc empties the line first, as on a page's commandline.
+            if matches!(self.mode, Mode::Search) && !self.query.is_empty() {
+                self.write(ctx, String::new());
+            } else {
+                self.open = false;
+                return;
+            }
         }
+        // Tab writes a key or command in full; on anything else it moves down.
+        let completes = tab.then(|| self.entries.get(self.selected).and_then(|e| completion(*e))).flatten();
+        if let Some(text) = completes.clone() {
+            self.write(ctx, text);
+        }
+        let down = down || (tab && completes.is_none());
 
         // A dim veil over the app; a click on it closes the palette.
         let screen = ctx.content_rect();
@@ -200,7 +279,7 @@ impl Palette {
                     egui::TextEdit::singleline(&mut self.query)
                         .id(egui::Id::new(INPUT_ID))
                         .hint_text(match &self.mode {
-                            Mode::Search => "Search anything (or artist:… album:… year:… status:…), > for commands".to_string(),
+                            Mode::Search => "Search anything (artist:… album:… year:… status:…), go: a page, do: a command".to_string(),
                             Mode::AddTo(tracks) if tracks.len() == 1 => "Add the track to which playlist? (or type a new name)".to_string(),
                             Mode::AddTo(tracks) => format!("Add the {} tracks to which playlist? (or type a new name)", tracks.len()),
                             Mode::Name(None) => "The new playlist's name".to_string(),
@@ -269,6 +348,13 @@ impl Palette {
                 if enter || shift_enter {
                     chosen = Some((self.entries[self.selected], shift_enter));
                 }
+                ui.add_space(4.0);
+                ui.label(RichText::new("↑↓ choose · Enter opens · Shift+Enter plays · Tab completes · Esc empties").color(P.faint).small());
+                // A key is written into the line, and the typing goes on.
+                if let Some((Entry::Insert(i), _)) = chosen {
+                    self.write(ctx, INSERTS[i].0.to_string());
+                    return;
+                }
                 if let Some((entry, shift)) = chosen {
                     self.open = false;
                     let name = playlists.iter().find(|p| Entry::Playlist(p.0) == entry).map(|p| p.1.clone()).unwrap_or_default();
@@ -278,11 +364,24 @@ impl Palette {
         });
     }
 
+    /// Replaces the line with `text`, the cursor after it, and asks the library again.
+    fn write(&mut self, ctx: &egui::Context, text: String) {
+        let id = egui::Id::new(INPUT_ID);
+        let mut state = egui::text_edit::TextEditState::load(ctx, id).unwrap_or_default();
+        let end = egui::text::CCursor::new(text.chars().count());
+        state.cursor.set_char_range(Some(egui::text::CCursorRange::one(end)));
+        state.store(ctx, id);
+        self.query = text;
+        self.selected = 0;
+        self.made_for = None;
+        ctx.memory_mut(|m| m.request_focus(id));
+    }
+
     /// Starts a library search for the current query in the background.
     fn ask(&mut self, shell: &mut Shell, catalog: Option<Arc<Catalog>>) {
         self.asked += 1;
         let query = self.query.trim().to_string();
-        if query.is_empty() || query.starts_with('>') {
+        if query.is_empty() || command_line(&query).is_some() {
             self.hits = Hits::default();
             return;
         }
@@ -300,7 +399,9 @@ impl Palette {
     /// playlists (and making one) to add to; or just the name.
     fn entries(&self, catalog: Option<&Catalog>, playlists: &[PlaylistRow]) -> Vec<Entry> {
         let query = self.query.trim();
-        let words: Vec<String> = query.trim_start_matches('>').to_lowercase().split_whitespace().map(str::to_string).collect();
+        let command = command_line(query);
+        let typed = command.as_ref().map(|c| c.1.as_str()).unwrap_or(query);
+        let words: Vec<String> = typed.to_lowercase().split_whitespace().map(str::to_string).collect();
         let matches = |name: &str| {
             let name = name.to_lowercase();
             words.iter().all(|w| name.contains(w.as_str()))
@@ -308,7 +409,7 @@ impl Palette {
         let mut entries = Vec::new();
         match &self.mode {
             Mode::Search => {
-                let commands_only = query.starts_with('>');
+                let commands_only = command.is_some();
                 if !commands_only && catalog.is_some() {
                     entries.extend(self.hits.artists.iter().take(4).map(|h| Entry::Artist(h.0)));
                     entries.extend(self.hits.albums.iter().take(6).map(|h| Entry::Album(h.0)));
@@ -324,8 +425,13 @@ impl Palette {
                         entries.extend(c.groupings.iter().enumerate().filter(|(_, g)| matches(&g.name)).take(4).map(|(i, _)| Entry::Grouping(i as u32)));
                     }
                 }
-                for (i, command) in COMMANDS.iter().enumerate() {
-                    if matches(command.name) {
+                // The keys, until something else is typed (or a start of one).
+                if !commands_only && !query.contains(':') && words.len() <= 1 {
+                    let start = words.first().map(String::as_str).unwrap_or("");
+                    entries.extend(INSERTS.iter().enumerate().filter(|(_, ins)| ins.0.starts_with(start)).map(|(i, _)| Entry::Insert(i)));
+                }
+                for (i, c) in COMMANDS.iter().enumerate() {
+                    if command.as_ref().is_none_or(|(page, _)| *page == c.page) && (matches(c.name) || matches(c.word)) {
                         entries.push(Entry::Command(i));
                     }
                 }
@@ -393,7 +499,11 @@ impl Palette {
             }
             (Entry::Command(i), _) => {
                 painter.text(cover_rect.center(), Align2::CENTER_CENTER, "›", font(18.0, semibold()), P.accent);
-                (COMMANDS[i].name.to_string(), None, COMMANDS[i].keys.to_string())
+                (COMMANDS[i].name.to_string(), completion(entry), COMMANDS[i].keys.to_string())
+            }
+            (Entry::Insert(i), _) => {
+                painter.text(cover_rect.center(), Align2::CENTER_CENTER, ":", font(18.0, semibold()), P.accent);
+                (INSERTS[i].0.to_string(), Some(INSERTS[i].1.to_string()), "Tab".into())
             }
             (Entry::Artist(i), Some(c)) => {
                 let artist = &c.artists[i as usize];
@@ -463,6 +573,15 @@ impl Palette {
             widgets::text_in(&painter, Rect::from_min_size(Pos2::new(text_left, rect.center().y + 1.0), Vec2::new(width, 16.0)), &sub, font(12.0, medium()), P.muted);
         }
         painter.text(rect.right_center() - Vec2::new(14.0, 0.0), Align2::RIGHT_CENTER, kind, font(11.5, medium()), P.faint);
+    }
+}
+
+/// What Tab writes for `entry`: a key, or a command's `go:` / `do:` form.
+fn completion(entry: Entry) -> Option<String> {
+    match entry {
+        Entry::Insert(i) => Some(INSERTS[i].0.to_string()),
+        Entry::Command(i) => Some(format!("{}:{}", if COMMANDS[i].page { "go" } else { "do" }, COMMANDS[i].word)),
+        _ => None,
     }
 }
 
@@ -571,5 +690,63 @@ fn capitalized(text: &str) -> String {
     match chars.next() {
         Some(first) => first.to_uppercase().chain(chars).collect(),
         None => String::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn go_and_do_pick_the_group() {
+        assert_eq!(command_line("go:alb"), Some((true, "alb".into())));
+        assert_eq!(command_line("do:"), Some((false, String::new())));
+        assert_eq!(command_line("run:pause"), Some((false, "pause".into())));
+        // Search keys and plain words are searches.
+        assert_eq!(command_line("artist:go:x"), None);
+        assert_eq!(command_line("go to albums"), None);
+        assert_eq!(command_line(""), None);
+    }
+
+    #[test]
+    fn search_keys_are_not_swallowed() {
+        assert_eq!(<K as Keys>::key("artist"), Some(K::Find(Find::Artist)));
+        assert_eq!(<K as Keys>::key("go"), Some(K::Go));
+        assert_eq!(<K as Keys>::key("DO"), Some(K::Do));
+    }
+
+    #[test]
+    fn tab_completes_keys_and_commands() {
+        let command = |word: &str| COMMANDS.iter().position(|c| c.word == word).unwrap();
+        assert_eq!(completion(Entry::Command(command("albums"))), Some("go:albums".into()));
+        assert_eq!(completion(Entry::Command(command("pause"))), Some("do:pause".into()));
+        assert_eq!(completion(Entry::Insert(0)), Some("go:".into()));
+        assert_eq!(completion(Entry::Liked), None);
+    }
+
+    #[test]
+    fn every_command_word_is_unique() {
+        let mut words: Vec<_> = COMMANDS.iter().map(|c| c.word).collect();
+        words.sort();
+        words.dedup();
+        assert_eq!(words.len(), COMMANDS.len());
+    }
+
+    #[test]
+    fn go_lists_only_pages() {
+        let palette = Palette { query: "go:".into(), ..Palette::default() };
+        let entries = palette.entries(None, &[]);
+        assert!(!entries.is_empty());
+        assert!(entries.iter().all(|e| matches!(e, Entry::Command(i) if COMMANDS[*i].page)));
+        let palette = Palette { query: "do:pau".into(), ..Palette::default() };
+        assert_eq!(palette.entries(None, &[]).len(), 1);
+    }
+
+    #[test]
+    fn empty_line_lists_the_keys_first() {
+        let entries = Palette::default().entries(None, &[]);
+        assert_eq!(entries[0], Entry::Insert(0));
+        let palette = Palette { query: "ar".into(), ..Palette::default() };
+        assert!(palette.entries(None, &[]).contains(&Entry::Insert(2)));
     }
 }

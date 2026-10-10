@@ -239,8 +239,9 @@ matched by the character you type, so it works on non-US layouts.
 
 | Keys | Does |
 |---|---|
-| `↑ ↓  or  Tab` | choose |
+| `↑ ↓` | choose |
+| `Tab` | write the key or command in full |
 | `Enter` | open (a track: play it) |
 | `Shift+Enter` | play (a track: open its album) |
-| `>` | only commands |
-| `Esc` | close |
+| `go:  do:` | pages  /  other commands |
+| `Esc` | empty the line, then close |
