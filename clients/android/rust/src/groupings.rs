@@ -30,7 +30,7 @@ pub struct GroupingInfo {
     pub members: Vec<GroupingMemberRow>,
 }
 
-fn row(g: &acetate_core::catalog::model::Grouping) -> GroupingRow {
+pub(crate) fn row(g: &acetate_core::catalog::model::Grouping) -> GroupingRow {
     GroupingRow { id: g.id.to_string(), kind: g.kind.clone(), name: g.name.clone(), tracks: g.track_count, albums: g.album_count }
 }
 

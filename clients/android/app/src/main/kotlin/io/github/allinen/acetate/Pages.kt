@@ -23,6 +23,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.Button
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Icon
@@ -63,7 +64,12 @@ fun PageScaffold(model: Model, title: String, content: @Composable (Modifier) ->
 fun AlbumScreen(model: Model, id: String) {
     // Read again when a new catalog arrives.
     val album = remember(id, model.catalogVersion) { model.core.album(id) }
-    val tracks = remember(id, model.catalogVersion) { model.core.albumTracks(id) }
+    val allTracks = remember(id, model.catalogVersion) { model.core.albumTracks(id) }
+    // The "Original files" chip leaves only those.
+    val og = remember(id, model.catalogVersion) { model.core.albumOriginalFiles(id).toSet() }
+    var ogOnly by remember(id) { mutableStateOf(false) }
+    val tracks = if (ogOnly && og.isNotEmpty()) allTracks.filter { it.id in og } else allTracks
+    val groupings = remember(id, model.catalogVersion) { model.core.albumGroupings(id) }
     PageScaffold(model, album?.title ?: "Album") { modifier ->
         LazyColumn(modifier) {
             if (album != null) item {
@@ -80,6 +86,8 @@ fun AlbumScreen(model: Model, id: String) {
                         "${album.trackCount} tracks · ${duration(album.durationMs)}",
                         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    if (og.isNotEmpty()) FilterChip(ogOnly, { ogOnly = !ogOnly }, { Text("Original files  ${og.size}") })
+                    GroupingLinks(model, "Part of", groupings.map { it to null })
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                         RatingBar(model, MarkOn.ALBUM, id)
                         StarToggle(model, MarkOn.ALBUM, id)
@@ -87,11 +95,11 @@ fun AlbumScreen(model: Model, id: String) {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally), modifier = Modifier.fillMaxWidth()) {
                         Button({
                             if (model.player.shuffle) model.playback.toggleShuffle()
-                            model.playback.playAlbum(id, 0uL)
+                            if (ogOnly) model.playback.playTracks(tracks.map { it.id }, 0uL) else model.playback.playAlbum(id, 0uL)
                         }) { Text("Play") }
                         OutlinedButton({
                             if (!model.player.shuffle) model.playback.toggleShuffle()
-                            model.playback.playAlbum(id, randomStart(tracks.size))
+                            if (ogOnly) model.playback.playTracks(tracks.map { it.id }, randomStart(tracks.size)) else model.playback.playAlbum(id, randomStart(tracks.size))
                         }) { Text("Shuffle") }
                         OutlinedButton({ model.playback.enqueueAlbum(id, false) }) { Text("Queue") }
                     }
@@ -105,7 +113,7 @@ fun AlbumScreen(model: Model, id: String) {
                     if (model.editMode) androidx.compose.foundation.layout.FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally)) {
                         OutlinedButton({ model.form = FormRef.Album(id) }) { Text("Edit album") }
                         OutlinedButton({ model.form = FormRef.Covers(id) }) { Text("Covers") }
-                        OutlinedButton({ model.edit(tracks.map { it.id }) }, enabled = tracks.isNotEmpty()) { Text("Edit all tracks") }
+                        OutlinedButton({ model.edit(allTracks.map { it.id }) }, enabled = allTracks.isNotEmpty()) { Text("Edit all tracks") }
                         OutlinedButton({ openAlbumOrder(model, id) }, enabled = tracks.size > 1) { Text("Reorder") }
                     }
                 }
@@ -118,7 +126,7 @@ fun AlbumScreen(model: Model, id: String) {
                 Box {
                 TrackMenu(model, t.id, starred, menu, { menu = false })
                 Row(Modifier.fillMaxWidth().combinedClickable(
-                    onClick = { if (model.selected.isNotEmpty()) model.toggleSelected(t.id) else model.playback.playAlbum(id, i.toULong()) },
+                    onClick = { if (model.selected.isNotEmpty()) model.toggleSelected(t.id) else if (ogOnly) model.playback.playTracks(tracks.map { it.id }, i.toULong()) else model.playback.playAlbum(id, i.toULong()) },
                     onLongClick = { menu = true },
                 ).background(if (picked) Palette.accentSoft else Color.Transparent).padding(16.dp, 8.dp)) {
                     Text("${i + 1}", Modifier.width(32.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -146,7 +154,12 @@ fun AlbumScreen(model: Model, id: String) {
 @Composable
 fun ArtistScreen(model: Model, id: String) {
     val artist = remember(id, model.catalogVersion) { model.core.artist(id) }
-    val albums = remember(id, model.catalogVersion) { model.core.artistAlbums(id) }
+    val facets = remember(id, model.catalogVersion) { model.core.artistFacets(id) }
+    // Narrowed by the names it's credited under, and to original files (the chips).
+    var names by remember(id) { mutableStateOf(setOf<String?>()) }
+    var ogOnly by remember(id) { mutableStateOf(false) }
+    val shown = remember(id, model.catalogVersion, names, ogOnly) { model.core.artistNarrowed(id, names.toList(), ogOnly) }
+    val albums = shown.albums
     PageScaffold(model, artist?.name ?: "Artist") { modifier ->
         LazyColumn(modifier) {
             if (artist != null) item {
@@ -156,12 +169,13 @@ fun ArtistScreen(model: Model, id: String) {
                         "${artist.albumCount} albums · ${artist.trackCount} tracks",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    if (facets != null) ArtistFacetsView(model, artist.name, facets, names, { names = it }, ogOnly, { ogOnly = it })
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                         RatingBar(model, MarkOn.ARTIST, id)
                         StarToggle(model, MarkOn.ARTIST, id)
                     }
-                    // Every track of the artist's albums, in album order.
-                    val ids = { albums.flatMap { a -> model.core.albumTracks(a.id).map { it.id } } }
+                    // Every track of the artist's albums, in album order (narrowed: those the chips leave).
+                    val ids = { shown.tracks }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally), modifier = Modifier.fillMaxWidth()) {
                         Button({
                             if (model.player.shuffle) model.playback.toggleShuffle()

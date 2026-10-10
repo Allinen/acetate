@@ -132,3 +132,47 @@ fun GroupingScreen(model: Model, id: String) {
         }
     }
 }
+
+/** "Part of A (era), B (project)": the groupings something is in, each a link. `count`: how many tracks of it. */
+@Composable
+fun GroupingLinks(model: Model, label: String, groupings: List<Pair<uniffi.acetate_ffi.GroupingRow, Long?>>) {
+    if (groupings.isEmpty()) return
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally), verticalArrangement = Arrangement.Center) {
+        Text(label, Modifier.padding(vertical = 4.dp), style = MaterialTheme.typography.bodySmall, color = Palette.faint)
+        groupings.forEach { (g, count) ->
+            Text(
+                g.name + " (" + g.kind + (count?.let { ", $it" } ?: "") + ")",
+                Modifier.clickable { model.pages.add(Page.Grouping(g.id)) }.padding(vertical = 4.dp),
+                style = MaterialTheme.typography.bodySmall, color = Palette.accent,
+            )
+        }
+    }
+}
+
+/**
+ * Under an artist's name: the other names it has, chips to see only what is credited under
+ * one name (when it has several), "Original files", and the groupings it is in.
+ */
+@Composable
+fun ArtistFacetsView(
+    model: Model, own: String, facets: uniffi.acetate_ffi.ArtistFacets,
+    names: Set<String?>, setNames: (Set<String?>) -> Unit, ogOnly: Boolean, setOg: (Boolean) -> Unit,
+) {
+    val several = facets.names.size >= 2
+    if (!several && facets.aliases.isNotEmpty()) {
+        Text("Also credited as ${facets.aliases.joinToString(", ")}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
+    }
+    if (several || facets.originalFiles > 0uL) {
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally)) {
+            if (several) {
+                FilterChip(names.isEmpty(), { setNames(emptySet()) }, { Text("All") })
+                facets.names.forEach { n ->
+                    FilterChip(n.name in names, { setNames(if (n.name in names) names - n.name else names + n.name) }, { Text("as ${n.name ?: own}  ${n.tracks}") })
+                }
+            }
+            if (facets.originalFiles > 0uL) FilterChip(ogOnly, { setOg(!ogOnly) }, { Text("Original files  ${facets.originalFiles}") })
+        }
+    }
+    GroupingLinks(model, "Member of", facets.memberOf.map { it to null })
+    GroupingLinks(model, "Its tracks are in", facets.tracksIn.map { it.grouping to it.tracks.toLong() })
+}

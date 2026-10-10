@@ -36,6 +36,9 @@ certificate).
 - **Collectives & groupings:** at the top of the Artists tab. A grouping (a collective, an era,
   a project…) shows its description, its members (tap one to open the artist), its releases
   and its tracks, and plays like an album. Making and changing them is desktop work.
+- **Artist and album pages:** an artist credited under several names has a chip for each, to see
+  only what is credited under one; **Original files** (artist and album) leaves only those
+  tracks; groupings an artist or album is in are links under the name.
 - **Playlists:** add tracks from the long-press menu, reorder with Move up / Move down, filter
   inside a playlist (play and shuffle then use only what's left).
   A track taken out (or unstarred, on Liked songs) stays on the page, faded, until you open it

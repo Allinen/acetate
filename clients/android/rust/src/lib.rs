@@ -26,6 +26,7 @@ use uuid::Uuid;
 uniffi::setup_scaffolding!();
 
 mod editor;
+mod facets;
 mod forms;
 mod groupings;
 mod history;
