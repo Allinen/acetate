@@ -128,13 +128,13 @@ fun TrackMenu(
 /** A track: tap plays (or, while tracks are picked, picks), long press opens a menu (select, play next, star…). */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun TrackItem(model: Model, row: TrackRow, extra: @Composable (() -> Unit) -> Unit = {}, onClick: () -> Unit) {
+fun TrackItem(model: Model, row: TrackRow, faded: Boolean = false, extra: @Composable (() -> Unit) -> Unit = {}, onClick: () -> Unit) {
     var menu by remember { mutableStateOf(false) }
     val starred = rememberMark(model, row.id).starred
     // Offline, what isn't downloaded can't play: dimmed.
     val playable = remember(row.id, model.connection, model.catalogVersion) { model.core.isPlayable(row.id) }
     val picked = row.id in model.selected
-    Box(if (playable) Modifier else Modifier.alpha(0.4f)) {
+    Box(if (faded) Modifier.alpha(0.35f) else if (playable) Modifier else Modifier.alpha(0.4f)) {
         Item(
             model, row.cover, (if (starred) "★ " else "") + row.title,
             (if (rememberDownloaded(model, row.id)) "↓ " else "") + listOfNotNull(row.artist, row.album).joinToString(" · "),

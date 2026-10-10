@@ -891,6 +891,13 @@ impl Core {
         self.shared.playlists.lock().unwrap().add(id, name, tracks);
     }
 
+    /// `add_to_playlist`, before the playlist's `at`-th entry (a track put back where it was).
+    pub fn add_to_playlist_at(&self, id: String, name: String, tracks: Vec<String>, at: u64) {
+        let Some(id) = parse_id(&id) else { return };
+        let tracks = tracks.iter().filter_map(|t| parse_id(t)).collect();
+        self.shared.playlists.lock().unwrap().add_at(id, name, tracks, Some(at as usize));
+    }
+
     pub fn remove_from_playlist(&self, id: String, entries: Vec<String>) {
         let Some(id) = parse_id(&id) else { return };
         let entries = entries.iter().filter_map(|e| parse_id(e)).collect();

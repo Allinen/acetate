@@ -21,12 +21,14 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import uniffi.acetate_ffi.EntryRow
+import uniffi.acetate_ffi.MarkOn
 import uniffi.acetate_ffi.PinKind
 import uniffi.acetate_ffi.TrackRow
 
@@ -116,42 +118,80 @@ fun PlaylistPicker(model: Model, tracks: List<String>, close: () -> Unit) {
     )
 }
 
+/** A row of a tracks page: `entry` is its place in a playlist; `faded`: taken out (unstarred) since the page opened. */
+data class ListRow(val track: TrackRow, val entry: String?, val faded: Boolean)
+
+/** A playlist entry taken out since the page opened, with its place in the list then. */
+private class Ghost(val at: Int, val row: EntryRow)
+
 @Composable
 fun LikedScreen(model: Model) {
-    val rows = remember(model.marksVersion, model.catalogVersion) { model.core.liked() }
-    TracksPage(model, "Liked songs", "${rows.size} tracks", rows.map { it to null }, mine = false, playlist = null)
+    // The liked songs when the page opened, in their order: one unstarred meanwhile stays
+    // there, faded, until the page is opened again; starring it again puts it back in place.
+    val seen = remember { model.core.liked() }
+    val rows = remember(model.marksVersion, model.catalogVersion) {
+        val known = seen.map { it.id }.toSet()
+        val fresh = model.core.liked().filter { it.id !in known }
+        (fresh + seen).map { ListRow(it, null, !model.core.mark(it.id).starred) }
+    }
+    TracksPage(model, "Liked songs", "${rows.count { !it.faded }} tracks", rows, mine = false, playlist = null) { row ->
+        model.core.setStarred(MarkOn.TRACK, row.track.id, true)
+    }
 }
 
 @Composable
 fun PlaylistScreen(model: Model, id: String) {
+    val removed = remember(id) { mutableStateListOf<Ghost>() }
     val page = remember(id, model.playlistsVersion, model.catalogVersion) { model.core.playlist(id) }
+    // Entries taken out meanwhile stay in their place, faded (unless they are back).
+    val rows = remember(page, removed.toList()) {
+        val live = page?.entries ?: emptyList()
+        val list = live.map { ListRow(it.track, it.entry, false) }.toMutableList()
+        removed.filter { g -> live.none { it.entry == g.row.entry } }.sortedBy { it.at }.forEach { g -> list.add(minOf(g.at, list.size), ListRow(g.row.track, g.row.entry, true)) }
+        list
+    }
+    val live = rows.count { !it.faded }
     val facts = when {
         page == null -> ""
         page.entries.isEmpty() && page.loading -> "Loading…"
-        else -> listOfNotNull(if (page.mine) null else page.owner, "${page.entries.size} tracks", page.error).joinToString(" · ")
+        else -> listOfNotNull(if (page.mine) null else page.owner, "$live tracks", page.error).joinToString(" · ")
     }
     TracksPage(
-        model, page?.name?.ifEmpty { "Playlist" } ?: "Playlist", facts,
-        page?.entries?.map { it.track to it.entry } ?: emptyList(), mine = page?.mine == true, playlist = page,
-    )
+        model, page?.name?.ifEmpty { "Playlist" } ?: "Playlist", facts, rows, mine = page?.mine == true, playlist = page,
+        onRemove = { row ->
+            val at = rows.indexOfFirst { it.entry == row.entry }
+            if (page != null && at >= 0 && row.entry != null) {
+                removed.add(Ghost(at, EntryRow(row.entry, row.track)))
+                model.core.removeFromPlaylist(page.id, listOf(row.entry))
+            }
+        },
+    ) { row ->
+        // Back where it was: before the playlist's entry that now stands at its place.
+        val n = rows.indexOfFirst { it.entry == row.entry }
+        if (page != null && n >= 0) {
+            removed.removeAll { it.row.entry == row.entry }
+            model.core.addToPlaylistAt(page.id, page.name, listOf(row.track.id), rows.take(n).count { !it.faded }.toULong())
+        }
+    }
 }
 
 /** A page of tracks (Liked songs or a playlist): play, shuffle, and the rows. */
 @Composable
 private fun TracksPage(
-    model: Model, title: String, facts: String, rows: List<Pair<TrackRow, String?>>, mine: Boolean,
-    playlist: uniffi.acetate_ffi.PlaylistPage?,
+    model: Model, title: String, facts: String, rows: List<ListRow>, mine: Boolean,
+    playlist: uniffi.acetate_ffi.PlaylistPage?, onRemove: (ListRow) -> Unit = {}, onRestore: (ListRow) -> Unit,
 ) {
     // What the filter leaves (its places in `rows`, in order): playing starts from, and goes
-    // through, only those.
+    // through, only those. (What was taken out is never played.)
     var filter by remember { mutableStateOf("") }
-    val all = remember(rows) { rows.map { it.first.id } }
+    val all = remember(rows) { rows.map { it.track.id } }
     var visible by remember { mutableStateOf<List<Int>?>(null) }
     LaunchedEffect(filter, all, model.catalogVersion) {
         visible = if (filter.isBlank()) null else model.core.filterList(all, filter).map { it.toInt() }
     }
     val shown = visible?.map { it to rows[it] } ?: rows.mapIndexed { i, r -> i to r }
-    val ids = shown.map { it.second.first.id }
+    val ids = shown.filter { !it.second.faded }.map { it.second.track.id }
+    val anyFaded = rows.any { it.faded }
     PageScaffold(model, title) { modifier ->
         LazyColumn(modifier) {
             item {
@@ -172,7 +212,7 @@ private fun TracksPage(
                         }, enabled = ids.isNotEmpty()) { Text("Shuffle") }
                     }
                     if (playlist != null) DownloadButton(model, PinKind.PLAYLIST, playlist.id) else if (title == "Liked songs") DownloadButton(model, PinKind.LIKED, "")
-                    if (model.editMode && mine && playlist != null) PlaylistEdits(model, playlist, rows)
+                    if (model.editMode && mine && playlist != null) PlaylistEdits(model, playlist, rows.filter { !it.faded })
                 }
             }
             if (rows.size > 5 || filter.isNotEmpty()) item {
@@ -181,17 +221,23 @@ private fun TracksPage(
                     Suggestions(model, filter) { filter = it }
                 }
             }
-            items(shown.size, key = { shown[it].second.second ?: shown[it].second.first.id }) { n ->
-                val (i, pair) = shown[n]
-                val (row, entry) = pair
-                TrackItem(model, row, extra = { close ->
-                    // Moving makes sense in the whole playlist, not in what a filter leaves.
-                    if (mine && entry != null && playlist != null) {
-                        if (filter.isBlank() && i > 0) DropdownMenuItem({ Text("Move up") }, { model.core.moveInPlaylist(playlist.id, entry, -1); close() })
-                        if (filter.isBlank() && i < rows.size - 1) DropdownMenuItem({ Text("Move down") }, { model.core.moveInPlaylist(playlist.id, entry, 1); close() })
-                        DropdownMenuItem({ Text("Remove from playlist") }, { model.core.removeFromPlaylist(playlist.id, listOf(entry)); close() })
+            items(shown.size, key = { shown[it].second.entry ?: shown[it].second.track.id }) { n ->
+                val (i, row) = shown[n]
+                TrackItem(model, row.track, faded = row.faded, extra = { close ->
+                    if (row.faded) {
+                        if (playlist == null || mine) DropdownMenuItem({ Text("Put back") }, { onRestore(row); close() })
+                    } else if (mine && row.entry != null && playlist != null) {
+                        // Moving makes sense in the whole playlist, not in what a filter leaves,
+                        // nor while the tracks just taken out are shown.
+                        val moves = filter.isBlank() && !anyFaded
+                        if (moves && i > 0) DropdownMenuItem({ Text("Move up") }, { model.core.moveInPlaylist(playlist.id, row.entry, -1); close() })
+                        if (moves && i < rows.size - 1) DropdownMenuItem({ Text("Move down") }, { model.core.moveInPlaylist(playlist.id, row.entry, 1); close() })
+                        DropdownMenuItem({ Text("Remove from playlist") }, { onRemove(row); close() })
                     }
-                }) { model.playback.playTracks(ids, n.toULong()) }
+                }) {
+                    if (row.faded) model.notice = "Taken out. Long press it to put it back."
+                    else model.playback.playTracks(ids, shown.take(n).count { !it.second.faded }.toULong())
+                }
             }
         }
     }
@@ -199,13 +245,13 @@ private fun TracksPage(
 
 /** Edit mode on your own playlist: rename, put the entries in another order, delete (to the trash). */
 @Composable
-private fun PlaylistEdits(model: Model, playlist: uniffi.acetate_ffi.PlaylistPage, rows: List<Pair<TrackRow, String?>>) {
+private fun PlaylistEdits(model: Model, playlist: uniffi.acetate_ffi.PlaylistPage, rows: List<ListRow>) {
     var renaming by remember { mutableStateOf(false) }
     var deleting by remember { mutableStateOf(false) }
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp, androidx.compose.ui.Alignment.CenterHorizontally)) {
         OutlinedButton({ renaming = true }) { Text("Rename") }
         OutlinedButton({
-            model.reorder = ReorderSpec("Reorder ${playlist.name}", rows.mapNotNull { (t, e) -> e?.let { ReorderItem(it, t.title, t.artist) } }) { ids ->
+            model.reorder = ReorderSpec("Reorder ${playlist.name}", rows.mapNotNull { r -> r.entry?.let { ReorderItem(it, r.track.title, r.track.artist) } }) { ids ->
                 model.core.reorderPlaylist(playlist.id, ids)
                 null
             }

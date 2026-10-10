@@ -35,6 +35,8 @@ certificate).
   Liked songs is the starred tracks.
 - **Playlists:** add tracks from the long-press menu, reorder with Move up / Move down, filter
   inside a playlist (play and shuffle then use only what's left).
+  A track taken out (or unstarred, on Liked songs) stays on the page, faded, until you open it
+  again; long press it and choose **Put back** to return it to its old place.
 - **Lyrics** full screen from Now playing, following the song; tap a line to go there.
 - **Extras** (stems, vocals, videos) from albums, artists and tracks.
 - **Sharing** through Android's share sheet: a link for someone with an account (it opens in
