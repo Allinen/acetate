@@ -1449,11 +1449,14 @@ impl eframe::App for App {
                 if t < 1.0 {
                     ctx.request_repaint();
                 }
-                // Edit mode: an accent line along the top says so.
-                if self.shell.edit_mode {
+                // Edit mode: an accent line along the top says so; it grows out from the middle
+                // when edit mode is turned on, and shrinks back into it when it's off.
+                let edit = covers::ease_out(ctx.animate_bool_with_time(egui::Id::new("edit-line"), self.shell.edit_mode, 0.3));
+                if edit > 0.0 {
                     let top = ui.max_rect();
-                    let line = egui::Rect::from_min_size(egui::pos2(top.left() - 28.0, top.top() - 22.0), egui::vec2(top.width() + 56.0, 3.0));
-                    ui.painter().rect_filled(line, 0, P.accent);
+                    let width = (top.width() + 56.0) * edit;
+                    let line = egui::Rect::from_center_size(egui::pos2(top.center().x, top.top() - 22.0 + 1.5), egui::vec2(width, 3.0));
+                    ui.painter().rect_filled(line, 0, P.accent.gamma_multiply(edit));
                 }
                 ui.multiply_opacity(t);
                 ui.add_space((1.0 - t) * 16.0);
