@@ -17,3 +17,11 @@ new domain or machine, open the desktop app's **Settings → Account → Change 
 asks the new address which server it is, and if it's the same one (and still accepts your
 login) only the address changes. Nothing is fetched again and nothing is left behind. A
 different server (a new database) needs a log out and a log in, and has its own copy.
+
+## Versions
+
+The server and the apps each have a release (`0.1.0`) and an *API version*, a number that
+goes up when a change would break an app that doesn't have it. `GET /api/version` (open to
+anyone) tells the server's. When an app's differs from its server's, the desktop app says so
+when it connects, under the sidebar's links (**Version mismatch**) and in **Settings →
+General**: update the app if the server is newer, the server if the app is.

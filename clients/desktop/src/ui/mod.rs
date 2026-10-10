@@ -61,6 +61,8 @@ pub enum Page {
     Review,
     /// What's in the trash (to take back out, or purge), and old files to clean up.
     Trash,
+    /// What was changed lately in the library's metadata, by anyone.
+    Changes,
     /// A collective, an era, a project…: its tracks and releases.
     Grouping(Uuid),
     /// Every grouping, to browse.
@@ -156,6 +158,8 @@ pub struct Shell {
     pub settings: crate::settings::Settings,
     /// Who's logged in, what they may do, and the server's fixed lists.
     pub account: crate::account::Account,
+    /// The version warning already shown (a toast), so it isn't repeated at every refresh.
+    warned_version: Option<String>,
     /// Whether the server could be reached, as of the last frame (see `api::Connection`).
     pub connection: acetate_core::api::Connection,
     /// Edit mode was on when the server went away: it comes back on with the server.
@@ -904,6 +908,7 @@ impl App {
             logo: widgets::logo_texture(&cc.egui_ctx),
             settings: crate::settings::Settings::load(&data_dir),
             account: crate::account::Account::default(),
+            warned_version: None,
             connection: acetate_core::api::Connection::Online,
             edit_mode_when_back: false,
             edit_mode: false,
@@ -1128,6 +1133,9 @@ impl App {
             }
             if page == Page::Trash {
                 self.pages.trash.opened(&self.shell);
+            }
+            if page == Page::Changes {
+                self.pages.changes.opened(&self.shell);
             }
             // Details shown as kept, and fetched again (cache first).
             match page {
@@ -1547,6 +1555,13 @@ impl eframe::App for App {
         }
         self.shell.playlists.poll();
         self.shell.account.poll();
+        // The server is of another version than this app: said once per server version.
+        if let Some(warning) = self.shell.account.server.as_ref().and_then(|s| s.warning())
+            && self.shell.warned_version.as_ref() != Some(&warning)
+        {
+            *self.shell.controller.error.lock().unwrap() = Some((warning.clone(), Instant::now()));
+            self.shell.warned_version = Some(warning);
+        }
         self.shell.follow_connection();
         // Admins: the mirror is opened (it runs if it's turned on).
         if self.shell.account.can("admin") {

@@ -9,6 +9,7 @@ pub mod access;
 pub mod album_merges;
 pub mod annotations;
 pub mod blobs;
+pub mod changes;
 pub mod catalog;
 pub mod covers;
 pub mod groupings;
@@ -75,6 +76,8 @@ mod og_files_tests;
 mod notes_tests;
 #[cfg(test)]
 mod extras_tests;
+#[cfg(test)]
+mod changes_tests;
 
 use std::time::Duration;
 

@@ -1,0 +1,121 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT r.id, r.artist_id, a.name, r.created_at, u.username AS \"author?\", r.source, r.reason, r.data,\n               (SELECT p.data FROM artist_revisions p WHERE p.artist_id = r.artist_id AND p.id < r.id\n                ORDER BY p.id DESC LIMIT 1) AS before\n        FROM artist_revisions r\n        JOIN artists a ON a.id = r.artist_id\n        LEFT JOIN users u ON u.id = r.author_id\n        WHERE ($1::uuid IS NULL OR r.id < $1) AND ($2 OR r.source <> 'import')\n        ORDER BY r.id DESC\n        LIMIT $3\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "artist_revisions",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "artist_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "artist_revisions",
+            "name": "artist_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "artists",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "artist_revisions",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "author?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "username"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "source",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "artist_revisions",
+            "name": "source"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "reason",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "artist_revisions",
+            "name": "reason"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "data",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "artist_revisions",
+            "name": "data"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "before",
+        "type_info": "Jsonb",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Bool",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "a7c15fba5dc518c710687c0aac1a3be797171e500fe466ec75c810241329fd2d"
+}

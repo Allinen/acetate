@@ -19,5 +19,13 @@ commandline opens it.
 What *doesn't* have a history? 
 - Some less important things like which version is the main one
 
+## Changes: what was changed lately
+
+The desktop app's **Changes** (in the sidebar, or `changes` in the palette) lists the newest
+revisions of all tracks, albums and artists together, whoever made them: when, which, how,
+why, and in words what changed from the revision before. A name opens its page. Imports
+(a file's first metadata) are most of the revisions, so they're left out until you turn on
+**Include imports**. It needs `view_history`, and shows only what you may see.
+
 Nobody can wipe metadata for good: either don't give the permission, or revert. Take backups
 all the same.

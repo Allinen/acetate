@@ -13,6 +13,7 @@ mod lyrics;
 mod notes;
 mod extras;
 mod catalog;
+mod changes;
 mod groupings;
 mod groups;
 mod media;
@@ -63,6 +64,20 @@ use crate::model::sources::InvalidSource;
 use crate::storage::BlobStore;
 use auth::require;
 pub use rate_limit::RateLimits;
+
+/// The API's version: the number in the `API_VERSION` file, which the clients are built
+/// with too. Raise it by hand whenever a change to the API would break a client that
+/// doesn't have it (a field renamed or removed, a route moved, a meaning changed);
+/// adding something new is no reason. Clients compare it to their own and warn if they differ.
+pub fn api_version() -> u32 {
+    include_str!("../../API_VERSION").trim().parse().expect("API_VERSION holds a number")
+}
+
+/// `GET /api/version`, open to everyone (a client asks before logging in): the server's
+/// release and its API version.
+async fn version() -> Json<serde_json::Value> {
+    Json(json!({ "version": env!("CARGO_PKG_VERSION"), "api": api_version() }))
+}
 
 /// Shared state handed to every handler. Cloning it is cheap: `PgPool` is a
 /// reference-counted handle, and `BlobStore` is just two paths.
@@ -146,6 +161,7 @@ pub fn router(state: AppState) -> Router {
             "/api/tracks/{id}/primary-variant",
             require(&[EditMetadata], put(tracks::set_primary_variant)),
         )
+        .route("/api/changes", require(&[ViewHistory], get(changes::list)))
         .route("/api/revisions/{id}/restore", require(&[RestoreRevision], post(tracks::restore)))
         .route(
             "/api/artist-revisions/{id}/restore",
@@ -359,6 +375,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/share/{token}/covers/{cover_id}", get(shares::cover))
         .route_layer(middleware::from_fn_with_state(state.clone(), rate_limit::limit_shares));
     let public = Router::new()
+        .route("/api/version", get(version))
         .route("/api/auth/login", post(auth::login))
         .merge(share_links)
         // The web UI's page for a share link; the page itself reads the token from the URL.

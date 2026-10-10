@@ -4,6 +4,7 @@
 //!
 //! - `api`: talking to the server; `account`: who's logged in, what they may do.
 //! - `catalog`: the library kept locally, and its lookups.
+//! - `changes`: the changelist, what was changed lately.
 //! - `commandline`: the `key:value` line the pages are driven by.
 //! - `editor`: the track editor's engine (operations, the line, previews, applying).
 //! - `details`: everything about one track, album or artist, for their pages.
@@ -24,6 +25,7 @@ pub mod account;
 pub mod api;
 pub mod blobs;
 pub mod catalog;
+pub mod changes;
 pub mod editor;
 pub mod commandline;
 pub mod details;

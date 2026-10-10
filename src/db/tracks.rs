@@ -446,7 +446,7 @@ pub async fn get_track(
     };
 
     let alias_names = match &revisions {
-        Some(revisions) => Some(alias_names(conn, revisions).await?),
+        Some(revisions) => Some(alias_names(conn, revisions.iter().map(|r| &r.data)).await?),
         None => None,
     };
     let (removed_lyrics, lyrics) = lyrics_of(conn, id, with_history).await?.into_iter().partition(|l| l.removed);
@@ -508,7 +508,7 @@ pub async fn get_track(
 /// Revisions store the whole picture, including things only some users may see (e.g. a
 /// relation with a restricted track). Row-level security filters rows, not what's inside
 /// a JSON column, so that's done here, before revision data is shown to anyone.
-async fn strip_hidden<'a>(
+pub(super) async fn strip_hidden<'a>(
     conn: &mut PgConnection,
     datas: impl Iterator<Item = &'a mut serde_json::Value>,
 ) -> sqlx::Result<()> {
@@ -569,10 +569,9 @@ async fn strip_hidden<'a>(
 }
 
 /// The names of the aliases credited in these revisions (the ones the user may see).
-async fn alias_names(conn: &mut PgConnection, revisions: &[Revision]) -> sqlx::Result<std::collections::HashMap<Uuid, String>> {
-    let ids: Vec<Uuid> = revisions
-        .iter()
-        .filter_map(|r| r.data.get("credits")?.as_array())
+pub(super) async fn alias_names<'a>(conn: &mut PgConnection, datas: impl Iterator<Item = &'a serde_json::Value>) -> sqlx::Result<std::collections::HashMap<Uuid, String>> {
+    let ids: Vec<Uuid> = datas
+        .filter_map(|data| data.get("credits")?.as_array())
         .flatten()
         .filter_map(|c| c.get("alias_id")?.as_str()?.parse().ok())
         .collect::<std::collections::BTreeSet<Uuid>>()

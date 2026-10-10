@@ -52,6 +52,14 @@ impl GeneralTab {
             shell.act(Action::ShowKeys);
         }
         ui.add_space(24.0);
-        ui.label(RichText::new(format!("Acetate {}", env!("CARGO_PKG_VERSION"))).color(P.faint).small());
+        let server = shell.account.server.clone();
+        let line = match &server {
+            Some(server) => format!("Acetate {} · server {}", env!("CARGO_PKG_VERSION"), server.version),
+            None => format!("Acetate {}", env!("CARGO_PKG_VERSION")),
+        };
+        ui.label(RichText::new(line).color(P.faint).small());
+        if let Some(warning) = server.and_then(|s| s.warning()) {
+            ui.label(RichText::new(warning).color(P.danger));
+        }
     }
 }

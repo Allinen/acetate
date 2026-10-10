@@ -38,6 +38,7 @@ pub mod settings_sound;
 pub mod sidebar;
 pub mod track_table;
 pub mod trash;
+pub mod changes;
 pub mod track;
 pub mod track_commands;
 pub mod to_collective;
@@ -69,6 +70,7 @@ pub struct Pages {
     queue: queue::QueuePage,
     pub settings: settings::SettingsPage,
     pub trash: trash::TrashPage,
+    pub changes: changes::ChangesPage,
     grouping: grouping::GroupingPage,
     groupings: groupings::GroupingsPage,
     extra: extra::ExtraPage,
@@ -111,6 +113,10 @@ impl Pages {
             self.trash.show(ui, shell);
             return;
         }
+        if page == Page::Changes && shell.connection.is_offline() {
+            offline(ui, "Changes");
+            return;
+        }
         if page == Page::Review && shell.connection.is_offline() {
             offline(ui, "Review");
             return;
@@ -132,6 +138,7 @@ impl Pages {
             Page::Grouping(id) => self.grouping.show(ui, shell, &catalog, id, player),
             Page::Groupings => self.groupings.show(ui, shell, &catalog),
             Page::Extra(id) => self.extra.show(ui, shell, id),
+            Page::Changes => self.changes.show(ui, shell, &catalog),
             Page::NowPlaying | Page::Queue | Page::Settings | Page::Trash => {}
         }
     }

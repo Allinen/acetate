@@ -33,7 +33,7 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell, page: Page, username: &str) {
         Page::Queue => Some(4),
         Page::Review => Some(5),
         // Playlists are marked in their own list below.
-        Page::Liked | Page::Playlist(_) | Page::Track(_) | Page::Settings | Page::Trash | Page::Extra(_) => None,
+        Page::Liked | Page::Playlist(_) | Page::Track(_) | Page::Settings | Page::Trash | Page::Changes | Page::Extra(_) => None,
     };
     let height = 36.0;
     let top = ui.cursor().top();
@@ -141,10 +141,22 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell, page: Page, username: &str) {
                 shell.act(Action::LogOut);
             }
         });
+        // (Bottom up: above the links.)
+        if shell.account.can("view_history") {
+            let changes = RichText::new("Changes").color(if page == Page::Changes { P.text } else { P.muted });
+            if ui.add(egui::Button::new(changes).frame(false)).on_hover_text("What was changed lately in the metadata").clicked() {
+                shell.act(Action::Go(Page::Changes));
+            }
+        }
         ui.label(RichText::new(username).color(P.muted).font(font(13.0, medium())));
         let status = ui.label(RichText::new(shell.library_status()).color(P.faint).small());
         if status.on_hover_text("F5: check for changes now").clicked() {
             shell.act(Action::RefreshLibrary);
+        }
+        // The app and the server are of different API versions: said under everything.
+        if let Some(warning) = shell.account.server.as_ref().and_then(|s| s.warning()) {
+            ui.add_space(4.0);
+            ui.label(RichText::new("Version mismatch").color(P.danger).font(font(12.5, medium()))).on_hover_text(warning);
         }
         // The server can't be reached: since when, and a way to ask it now.
         if let acetate_core::api::Connection::Offline { since } = shell.connection {
