@@ -12,7 +12,7 @@ matched by the character you type, so it works on non-US layouts.
 | `Ctrl+K` | command palette: find anything, run a command |
 | `Ctrl+1 … 6` | albums, artists, tracks, now playing, queue, review |
 | `1 … 6` | the same, outside a text field |
-| `Ctrl+,` | settings |
+| `Ctrl+,` | settings (`h`/`l` or the arrows: next tab) |
 | `Ctrl+L` | copy a link to the track, album or artist shown (for someone with an account) |
 | `Ctrl+Shift+L` | share link popup for the track or album shown (anyone can open it) |
 | `right-click a track or album` | Share (Shift+click: share link popup) |

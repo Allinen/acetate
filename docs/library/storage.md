@@ -6,7 +6,7 @@ Blobs can be spread over several disks, for example a fast SSD for most music an
 for the less important part. `ACETATE_VOLUMES=main=/srv/acetate,archive=/mnt/hdd/acetate`
 names them (each gets `blobs/` and `tmp/`); the first is the default, and where covers go.
 Without it there is one volume, `main`, in `ACETATE_DATA_DIR` (default `./data`).
-`--volume` on ingest picks one. Admins can see what each volume holds in Settings.
+`--volume` on ingest picks one. Admins can see what each volume holds in Settings → Server.
 
 Imports from the same filesystem are reflinks: instant and free of extra space.
 

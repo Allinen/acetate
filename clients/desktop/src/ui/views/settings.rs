@@ -1,51 +1,64 @@
-//! Settings: the sound output and volume, the account, what the server stores and the
-//! mirror of its files (admins, see `settings_mirror`), and the library kept on this
-//! computer (how much, where, moving it, and checking it against the server).
-
-use std::sync::{Arc, Mutex};
+//! Settings, in tabs (`h`/`l` or the arrows move between them): Sound; This computer (the
+//! downloads, the library kept here, memory); Account; and for admins the Server (what it
+//! stores) and the Mirror of its files; General. Each tab is its own file.
 
 use eframe::egui::{self, RichText};
 
+use super::settings_computer::ComputerTab;
+use super::settings_general::GeneralTab;
+use super::settings_mirror::MirrorSection;
+use super::settings_server::ServerTab;
+use super::settings_sound::SoundTab;
 use crate::playback::PlayerView;
 use crate::ui::theme::{bold, font, medium, PALETTE as P};
-use crate::ui::{thousands, widgets, Action, Shell};
+use crate::ui::{widgets, Shell};
+
+#[derive(Clone, Copy, PartialEq, Default)]
+enum Tab {
+    #[default]
+    Sound,
+    Computer,
+    Account,
+    /// Admins.
+    Server,
+    /// Admins.
+    Mirror,
+    General,
+}
+
+impl Tab {
+    const ALL: [Tab; 6] = [Tab::Sound, Tab::Computer, Tab::Account, Tab::Server, Tab::Mirror, Tab::General];
+
+    fn name(self) -> &'static str {
+        match self {
+            Tab::Sound => "Sound",
+            Tab::Computer => "This computer",
+            Tab::Account => "Account",
+            Tab::Server => "Server",
+            Tab::Mirror => "Mirror",
+            Tab::General => "General",
+        }
+    }
+
+    fn admin_only(self) -> bool {
+        matches!(self, Tab::Server | Tab::Mirror)
+    }
+}
 
 #[derive(Default)]
 pub struct SettingsPage {
-    /// The sound outputs there are, listed in the background when the page opens (it can
-    /// take a moment).
-    outputs: Arc<Mutex<Option<Vec<String>>>>,
-    /// The qualities the server makes copies at (`GET /api/qualities`), the default first.
-    qualities: Arc<Mutex<Option<Vec<u32>>>>,
-    /// The size of the kept covers (small, standard, and an earlier version's no longer
-    /// used), measured in the background: (files, bytes) each.
-    covers_size: Arc<Mutex<Option<[(usize, u64); 3]>>>,
-    /// Which app opens acetate:// links (the system's answer), asked in the background.
-    links_handler: Arc<Mutex<Option<crate::links::Handler>>>,
-    /// What the server stores on each volume (`GET /api/storage`, admins), asked when the
-    /// page opens.
-    storage: Arc<Mutex<Option<Result<Vec<StorageVolume>, String>>>>,
-    /// The mirror, and moving the folder everything's kept in.
-    mirror: super::settings_mirror::MirrorSection,
-}
-
-#[derive(Clone, serde::Deserialize)]
-struct StorageVolume {
-    name: String,
-    default: bool,
-    parts: Vec<StoragePart>,
-}
-
-#[derive(Clone, serde::Deserialize)]
-struct StoragePart {
-    kind: String,
-    blobs: i64,
-    bytes: i64,
-    unmeasured: i64,
+    /// The tab shown (kept while the app runs).
+    tab: Tab,
+    sound: SoundTab,
+    computer: ComputerTab,
+    server: ServerTab,
+    /// The mirror, and moving the folder everything's kept in (shown in This computer).
+    mirror: MirrorSection,
+    general: GeneralTab,
 }
 
 /// `12.3 MB`, `1.2 GB`, `3.4 TB`.
-fn size(bytes: i64) -> String {
+pub fn size(bytes: i64) -> String {
     let bytes = bytes as f64;
     if bytes >= 1e12 {
         format!("{:.1} TB", bytes / 1e12)
@@ -59,363 +72,59 @@ fn size(bytes: i64) -> String {
 impl SettingsPage {
     pub fn opened(&mut self, shell: &Shell) {
         self.mirror.opened(shell);
+        self.sound.opened(shell);
+        self.computer.opened(shell);
+        self.general.opened(shell);
         if shell.account.can("admin") {
-            let (api, storage, ctx) = (shell.api.clone(), self.storage.clone(), shell.ctx.clone());
-            shell.runtime.spawn(async move {
-                let answer = api.send_json::<Vec<StorageVolume>>(reqwest::Method::GET, "/api/storage", None).await.map_err(|e| e.message);
-                *storage.lock().unwrap() = Some(answer);
-                ctx.request_repaint();
-            });
+            self.server.opened(shell);
         }
-        let outputs = self.outputs.clone();
-        shell.runtime.spawn_blocking(move || *outputs.lock().unwrap() = Some(crate::playback::engine::outputs()));
-        let (qualities, api, ctx) = (self.qualities.clone(), shell.api.clone(), shell.ctx.clone());
-        shell.runtime.spawn(async move {
-            #[derive(serde::Deserialize)]
-            struct Qualities {
-                kbps: Vec<u32>,
-            }
-            if let Ok(q) = api.send_json::<Qualities>(reqwest::Method::GET, "/api/qualities", None).await {
-                *qualities.lock().unwrap() = Some(q.kbps);
-                ctx.request_repaint();
-            }
-        });
-        let handler = self.links_handler.clone();
-        shell.runtime.spawn_blocking(move || *handler.lock().unwrap() = Some(crate::links::handler()));
-        let (size, dir) = (self.covers_size.clone(), shell.cache_dir.clone());
-        shell.runtime.spawn_blocking(move || {
-            let measure = |name: &str| {
-                let files: Vec<u64> = std::fs::read_dir(dir.join(name))
-                    .map(|entries| entries.filter_map(|e| e.ok()?.metadata().ok()).filter(|m| m.is_file()).map(|m| m.len()).collect())
-                    .unwrap_or_default();
-                (files.len(), files.iter().sum())
-            };
-            *size.lock().unwrap() = Some([measure("covers-small"), measure("covers-standard"), measure("covers")]);
-        });
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui, shell: &mut Shell, player: &PlayerView) {
+        let admin = shell.account.can("admin");
+        let tabs: Vec<Tab> = Tab::ALL.into_iter().filter(|t| admin || !t.admin_only()).collect();
+        if !tabs.contains(&self.tab) {
+            self.tab = Tab::Sound;
+        }
+        // Outside text fields (there the letters are for the text).
+        if !ui.ctx().egui_wants_keyboard_input() {
+            let key = |k: egui::Key| ui.ctx().input(|i| i.key_pressed(k) && i.modifiers.is_none());
+            let at = tabs.iter().position(|&t| t == self.tab).unwrap_or(0);
+            if (key(egui::Key::ArrowLeft) || key(egui::Key::H)) && at > 0 {
+                self.tab = tabs[at - 1];
+            } else if (key(egui::Key::ArrowRight) || key(egui::Key::L)) && at + 1 < tabs.len() {
+                self.tab = tabs[at + 1];
+            }
+        }
+
         ui.label(RichText::new("Settings").font(font(30.0, bold())));
         ui.add_space(12.0);
-        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            section(ui, "Sound");
-            egui::Grid::new("sound").num_columns(2).spacing([24.0, 10.0]).show(ui, |ui| {
-                ui.label(RichText::new("Output").color(P.muted));
-                let outputs = self.outputs.lock().unwrap().clone();
-                let current = shell.settings.output.clone();
-                let shown = current.clone().unwrap_or_else(|| "The system's default".into());
-                egui::ComboBox::from_id_salt("output").selected_text(shown).width(320.0).show_ui(ui, |ui| {
-                    if ui.selectable_label(current.is_none(), "The system's default").clicked() {
-                        shell.act(Action::SetOutput(None));
-                    }
-                    match &outputs {
-                        None => {
-                            ui.label(RichText::new("Looking for outputs…").color(P.faint));
-                        }
-                        Some(names) => {
-                            for name in names {
-                                if ui.selectable_label(current.as_deref() == Some(name.as_str()), name).clicked() {
-                                    shell.act(Action::SetOutput(Some(name.clone())));
-                                }
-                            }
-                        }
-                    }
-                });
-                ui.end_row();
-
-                ui.label(RichText::new("Volume").color(P.muted));
-                ui.horizontal(|ui| {
-                    let mut volume = player.volume;
-                    let slider = egui::Slider::new(&mut volume, 0.0..=1.0).show_value(false);
-                    if ui.add_sized([240.0, 20.0], slider).changed() {
-                        shell.act(Action::SetVolume(volume));
-                    }
-                    ui.label(RichText::new(format!("{}%", (player.volume * 100.0).round())).color(P.muted));
-                    let mut muted = player.muted;
-                    if ui.checkbox(&mut muted, "Muted").changed() {
-                        shell.act(Action::ToggleMute);
-                    }
-                });
-                ui.end_row();
-            });
-            egui::Grid::new("quality").num_columns(2).spacing([24.0, 10.0]).show(ui, |ui| {
-                ui.label(RichText::new("Streaming quality").color(P.muted));
-                let current = shell.settings.stream_kbps;
-                let qualities = self.qualities.lock().unwrap().clone();
-                let shown = match current {
-                    None => "Automatic".to_string(),
-                    Some(k) => format!("{k} kbps copy"),
-                };
-                egui::ComboBox::from_id_salt("stream-quality").selected_text(shown).width(320.0).show_ui(ui, |ui| {
-                    if ui.selectable_label(current.is_none(), "Automatic: the original if you may have it, else the server's usual copy").clicked() {
-                        shell.act(Action::SetStreamQuality(None));
-                    }
-                    for k in qualities.iter().flatten() {
-                        if ui.selectable_label(current == Some(*k), format!("{k} kbps copy")).clicked() {
-                            shell.act(Action::SetStreamQuality(Some(*k)));
-                        }
-                    }
-                });
-                ui.end_row();
-            });
-            hint(ui, "Copies are Opus, made by the server (and kept there). A lower quality downloads less; it applies from the next track.");
-            hint(ui, "9 and 0 turn it down and up, m mutes, anywhere outside a text field.");
-
-            section(ui, "Downloads");
-            match shell.offline.clone() {
-                None => {
-                    ui.label(RichText::new("Log in to keep music on this computer.").color(P.faint));
-                }
-                Some(offline) => {
-                    let status = offline.status();
-                    let paused = if status.paused { " · stopped" } else { "" };
-                    let coming = if status.queued > 0 { format!(" · {} coming", status.queued) } else { String::new() };
-                    ui.label(format!("{} files · {}{coming}{paused}", status.files, size(status.bytes as i64)));
-                    hint(ui, "Download from an album's, playlist's or track's page. It plays from here, with or without the server, and follows the quality chosen above.");
-                    if status.failed > 0 {
-                        ui.label(RichText::new(format!("{} couldn't be fetched", status.failed)).color(P.danger));
-                    }
-                    if status.files > 0 || !offline.pins().is_empty() {
-                        ui.add_space(6.0);
-                        if widgets::chip(ui, "Remove all downloads (Shift+click)", false) && ui.input(|i| i.modifiers.shift) {
-                            offline.remove_all();
-                        }
-                    }
-                }
-            }
-
-            section(ui, "Equalizer");
-            self.equalizer(ui, shell);
-
-            section(ui, "Account");
-            let session = shell.api.session();
-            egui::Grid::new("account").num_columns(2).spacing([24.0, 10.0]).show(ui, |ui| {
-                if let Some(session) = &session {
-                    ui.label(RichText::new("Server").color(P.muted));
-                    ui.label(&session.server);
-                    ui.end_row();
-                    ui.label(RichText::new("Logged in as").color(P.muted));
-                    ui.label(&session.username);
-                    ui.end_row();
-                }
-            });
-            ui.add_space(6.0);
-            if widgets::chip(ui, "Log out", false) {
-                shell.act(Action::LogOut);
-            }
-
-            if shell.account.can("admin") {
-                section(ui, "Stored on the server");
-                match self.storage.lock().unwrap().clone() {
-                    None => {
-                        ui.label(RichText::new("Adding up…").color(P.faint));
-                    }
-                    Some(Err(err)) => {
-                        ui.label(RichText::new(format!("Couldn't ask the server: {err}")).color(P.danger));
-                    }
-                    Some(Ok(volumes)) => {
-                        egui::Grid::new("storage").num_columns(2).spacing([24.0, 10.0]).show(ui, |ui| {
-                            for volume in &volumes {
-                                let total: i64 = volume.parts.iter().map(|p| p.bytes).sum();
-                                let name = if volume.default { format!("{} (new files go here)", volume.name) } else { volume.name.clone() };
-                                ui.label(RichText::new(name).color(P.muted));
-                                ui.vertical(|ui| {
-                                    ui.label(RichText::new(size(total)).font(font(14.0, medium())));
-                                    for part in &volume.parts {
-                                        let unmeasured = if part.unmeasured > 0 { format!(" ({} not measured yet)", thousands(part.unmeasured as usize)) } else { String::new() };
-                                        ui.label(RichText::new(format!("{}: {} · {}{unmeasured}", part.kind, size(part.bytes), thousands(part.blobs as usize))).color(P.faint));
-                                    }
-                                });
-                                ui.end_row();
-                            }
-                        });
-                        hint(ui, "Audio counts tracks' current and previous files; “other” is what nothing refers to anymore. Sizes the server never recorded (older covers) are filled in by acetate measure-covers.");
-                    }
-                }
-
-                section(ui, "Mirror");
-                self.mirror.show(ui, shell);
-            }
-
-            section(ui, "Memory");
-            self.memory(ui, shell);
-
-            section(ui, "Library on this computer");
-            let catalog = shell.catalog.value.clone();
-            egui::Grid::new("library").num_columns(2).spacing([24.0, 10.0]).show(ui, |ui| {
-                if let Some(c) = &catalog {
-                    ui.label(RichText::new("Kept here").color(P.muted));
-                    ui.label(format!(
-                        "{} tracks · {} albums · {} artists · {} playlists",
-                        thousands(c.track_count()),
-                        thousands(c.album_count()),
-                        thousands(c.artists.len()),
-                        thousands(c.playlists.len())
-                    ));
-                    ui.end_row();
-                }
-                ui.label(RichText::new("State").color(P.muted));
-                ui.label(shell.library_status());
-                ui.end_row();
-                ui.label(RichText::new("Covers kept").color(P.muted));
-                let measured = *self.covers_size.lock().unwrap();
-                let mb = |bytes: u64| format!("{:.1} MB", bytes as f64 / 1_000_000.0);
-                match measured {
-                    Some([small, standard, _]) => ui.label(format!(
-                        "{} small ({}) · {} standard ({})",
-                        thousands(small.0),
-                        mb(small.1),
-                        thousands(standard.0),
-                        mb(standard.1)
-                    )),
-                    None => ui.label(RichText::new("Measuring…").color(P.faint)),
-                };
-                ui.end_row();
-                // Copies an earlier version made (one size, scaled here), no longer used.
-                if let Some([_, _, (count, bytes)]) = measured
-                    && count > 0
-                {
-                    ui.label(RichText::new("No longer used").color(P.muted));
-                    ui.label(format!(
-                        "{} covers from an earlier version ({}), in {}: safe to delete",
-                        thousands(count),
-                        mb(bytes),
-                        shell.cache_dir.join("covers").display()
-                    ));
-                    ui.end_row();
-                }
-                ui.label(RichText::new("Where").color(P.muted));
-                ui.vertical(|ui| {
-                    ui.add(egui::Label::new(RichText::new(shell.data_dir.display().to_string()).monospace().small()).selectable(true));
-                    ui.label(RichText::new("Everything: settings, the library, playlists, the mirror").color(P.faint).small());
-                    ui.add(egui::Label::new(RichText::new(shell.cache_dir.display().to_string()).monospace().small()).selectable(true));
-                    ui.label(RichText::new("Scaled covers (a cache, made again when needed)").color(P.faint).small());
-                });
-                ui.end_row();
-            });
-            self.mirror.show_move(ui, shell);
-            ui.add_space(6.0);
-            if widgets::chip(ui, "Check for changes now  F5", false) {
-                shell.act(Action::RefreshLibrary);
-            }
-            hint(ui, "The library shown is the copy kept here: it's there at once, and the server is asked for changes in the background (the server's copy wins).");
-
-            section(ui, "Links");
-            use crate::links::Handler;
-            let how = if crate::links::CAN_REGISTER { "“Open links here” sets that up" } else { "clients/desktop/install.sh sets that up" };
-            let handler = self.links_handler.lock().unwrap().clone();
-            match &handler {
-                Some(Handler::Here) => {
-                    ui.label(RichText::new("Links to tracks, albums and artists open here.").color(P.text));
-                }
-                Some(Handler::Other(other)) => {
-                    ui.label(RichText::new(format!("Links to tracks, albums and artists open in {other}, not here: {how}.")).color(P.danger));
-                }
-                Some(Handler::Nobody) => {
-                    ui.label(RichText::new(format!("Links to tracks, albums and artists don't open here yet: {how}.")).color(P.muted));
-                }
-                None => {
-                    ui.label(RichText::new("Checking…").color(P.faint));
-                }
-            }
-            if crate::links::CAN_REGISTER && matches!(handler, Some(Handler::Other(_) | Handler::Nobody)) && ui.small_button("Open links here").clicked() {
-                match crate::links::register() {
-                    Ok(()) => *self.links_handler.lock().unwrap() = Some(crate::links::handler()),
-                    Err(err) => shell.controller.report(err),
-                }
-            }
-            hint(ui, "Ctrl+L (or “Share” on a page) copies a link to the track, album or artist shown, for someone with an account here; Ctrl+Shift+L (or Shift+click “Share”) opens a popup to make a share link anyone can open: its expiry, and whether it plays the original file or a lower-quality copy. Opened by someone logged in, either one goes to the app (or the web UI, if the app doesn't take it).");
-
-            section(ui, "Keys");
-            if widgets::chip(ui, "Show every key  ?", false) {
-                shell.act(Action::ShowKeys);
-            }
-            ui.add_space(24.0);
-            ui.label(RichText::new(format!("Acetate {}", env!("CARGO_PKG_VERSION"))).color(P.faint).small());
-        });
-    }
-}
-
-impl SettingsPage {
-    /// Ten bands, an octave apart; heard as they're moved.
-    fn equalizer(&mut self, ui: &mut egui::Ui, shell: &mut Shell) {
-        use crate::playback::eq::{headroom_db, BANDS, RANGE_DB};
-        let (mut enabled, mut gains) = (shell.settings.eq_enabled, shell.settings.eq_gains);
-        let mut changed = false;
         ui.horizontal(|ui| {
-            changed |= ui.checkbox(&mut enabled, "On").changed();
-            if ui.add_enabled(gains != [0.0; 10], egui::Button::new("Flat")).clicked() {
-                gains = [0.0; 10];
-                changed = true;
-            }
-        });
-        ui.add_space(6.0);
-        ui.add_enabled_ui(enabled, |ui| {
-            ui.horizontal(|ui| {
-                for (gain, &hz) in gains.iter_mut().zip(&BANDS) {
-                    ui.vertical(|ui| {
-                        ui.set_width(52.0);
-                        ui.vertical_centered(|ui| {
-                            ui.label(RichText::new(format!("{:+.0}", *gain)).color(P.muted).small());
-                            let slider = egui::Slider::new(gain, -RANGE_DB..=RANGE_DB).vertical().show_value(false);
-                            if ui.add_sized([20.0, 140.0], slider).double_clicked() {
-                                *gain = 0.0;
-                            }
-                            let name = if hz >= 1000.0 { format!("{}k", hz / 1000.0) } else { format!("{hz}") };
-                            ui.label(RichText::new(name).color(P.faint).small());
-                        });
-                    });
+            for &tab in &tabs {
+                if widgets::chip(ui, tab.name(), tab == self.tab) {
+                    self.tab = tab;
                 }
-            });
-        });
-        if changed || (enabled, gains) != (shell.settings.eq_enabled, shell.settings.eq_gains) {
-            shell.act(Action::SetEqualizer(enabled, gains));
-        }
-        let headroom = headroom_db(&gains);
-        let note = if enabled && headroom < -0.05 { format!(" The sound is lowered by {:.0} dB to make room for the boosts, so they can't clip.", -headroom) } else { String::new() };
-        hint(ui, &format!("Gain in dB per band (Hz); double-click a band to flatten it.{note}"));
-    }
-
-    /// What the app holds: in all (measured), and its big parts.
-    fn memory(&mut self, ui: &mut egui::Ui, shell: &Shell) {
-        let mb = |bytes: u64| format!("{} MB", thousands((bytes / 1_000_000) as usize));
-        egui::Grid::new("memory").num_columns(2).spacing([24.0, 10.0]).show(ui, |ui| {
-            if let Some((now, peak)) = crate::memory::resident() {
-                ui.label(RichText::new("In use").color(P.muted));
-                ui.label(format!("{} (at most {} since it started)", mb(now), mb(peak)));
-                ui.end_row();
             }
-            if let Some(c) = &shell.catalog.value {
-                // Measured once on a real library (`catalog::measure`): about 810 bytes a
-                // track with everything.
-                ui.label(RichText::new("The library").color(P.muted));
-                ui.label(format!("about {} ({} tracks; twice that for a moment while it's refreshed)", mb(c.track_count() as u64 * 810), thousands(c.track_count())));
-                ui.end_row();
-            }
-            let (covers, cover_bytes) = shell.covers.textures();
-            ui.label(RichText::new("Covers shown").color(P.muted));
-            ui.label(format!("{} ({} images, let go when not shown for a while)", mb(cover_bytes as u64), thousands(covers)));
-            ui.end_row();
-            ui.label(RichText::new("Playing").color(P.muted));
-            let held = crate::playback::stream::HELD.load(std::sync::atomic::Ordering::Relaxed);
-            ui.label(format!("{} (what plays and what's next, each file whole)", mb(held)));
-            ui.end_row();
         });
-        if ui.small_button("Give freed memory back now").clicked() {
-            crate::memory::trim();
-            ui.ctx().request_repaint_after(std::time::Duration::from_millis(300));
-        }
-        hint(ui, "Freed memory is given back to the system after the library is refreshed, when covers are let go, and once a minute.");
+        ui.add_space(4.0);
+        egui::ScrollArea::vertical().id_salt(self.tab.name()).auto_shrink([false, false]).show(ui, |ui| match self.tab {
+            Tab::Sound => self.sound.show(ui, shell, player),
+            Tab::Computer => self.computer.show(ui, shell, &mut self.mirror),
+            Tab::Account => super::settings_account::show(ui, shell),
+            Tab::Server => self.server.show(ui, shell),
+            Tab::Mirror => self.mirror.show(ui, shell),
+            Tab::General => self.general.show(ui, shell),
+        });
     }
 }
 
-fn section(ui: &mut egui::Ui, title: &str) {
+pub fn section(ui: &mut egui::Ui, title: &str) {
     ui.add_space(18.0);
     ui.label(RichText::new(title).font(font(18.0, bold())));
     ui.add_space(8.0);
 }
 
-fn hint(ui: &mut egui::Ui, text: &str) {
+pub fn hint(ui: &mut egui::Ui, text: &str) {
     ui.add_space(4.0);
     ui.label(RichText::new(text).font(font(12.5, medium())).color(P.faint));
 }

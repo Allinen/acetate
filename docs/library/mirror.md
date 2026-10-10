@@ -72,7 +72,7 @@ can't be fetched again.
 ## Where it is
 
 Everything the app keeps is in one folder: settings, the library, playlists, and the
-mirror. **Settings, Library on this computer** shows it, and **Move this folder…** moves
+mirror. **Settings, This computer** shows it, and **Move this folder…** moves
 it, for example to a bigger disk: it says what would move and how much first. On the same
 disk it's instant; to another disk everything is copied, each file's hash checked, and only
 then removed from the old place. The app starts again from the new folder. Scaled covers
