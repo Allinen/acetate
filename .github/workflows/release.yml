@@ -203,7 +203,7 @@ jobs:
     env:
       IMAGE: ghcr.io/${{ github.repository }}
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: digests-*
           path: ${{ runner.temp }}/digests
@@ -242,13 +242,13 @@ jobs:
     steps:
       # (Only these: the run has others too, like the image's digests and the build records
       # docker/build-push-action keeps, which aren't release files.)
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: linux
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: windows
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: android
       - name: Release
