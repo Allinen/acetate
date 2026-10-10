@@ -691,7 +691,7 @@ impl Review {
                         // The mark's box, in front.
                         let mark = egui::Rect::from_min_size(rect.min + Vec2::new(8.0, (ROW - 18.0) / 2.0), Vec2::splat(18.0));
                         let on_box = |pos: Option<egui::Pos2>| pos.is_some_and(|p| mark.expand(4.0).contains(p));
-                        super::marking::paint_box(painter, mark, self.marking.contains(&t.id()), on_box(response.hover_pos()));
+                        super::marking::paint_box(painter, t.id(), mark, self.marking.contains(&t.id()), on_box(response.hover_pos()));
                         let text_left = mark.right() + 10.0 - rect.left();
                         let title = if t.title().trim().is_empty() { "(no title)" } else { t.title() };
                         let color = if playing == Some(t.id()) { P.accent } else { P.text };

@@ -407,7 +407,7 @@ impl NotImported {
                 // The mark's box (a click on it marks or unmarks).
                 let mark = egui::Rect::from_center_size(egui::pos2(rect.left() + 16.0, rect.center().y), Vec2::splat(16.0));
                 let on_box = response.hover_pos().is_some_and(|pos| mark.expand(6.0).contains(pos));
-                super::marking::paint_box(ui.painter(), mark, marked, on_box);
+                super::marking::paint_box(ui.painter(), p.id, mark, marked, on_box);
                 let painter = ui.painter();
                 widgets::text_in(painter, egui::Rect::from_min_size(rect.min + Vec2::new(34.0, 6.0), Vec2::new(rect.width() - 44.0, 18.0)), &p.uploaded_filename, font(13.5, medium()), P.text);
                 let sub = p.path.as_deref().map(folder).filter(|f| !f.is_empty()).map(|f| format!("{} · {f}", p.reason)).unwrap_or_else(|| p.reason.clone());

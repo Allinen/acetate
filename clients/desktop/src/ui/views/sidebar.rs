@@ -38,15 +38,20 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell, page: Page, username: &str) {
     let height = 36.0;
     let top = ui.cursor().top();
     let width = ui.available_width();
-    // The highlight slides to the active item.
-    // The highlight slides to the active section; on a playlist's page it fades out
-    // where it was.
+    // The highlight slides between sections. Coming back from a page without one (a
+    // playlist, settings) it fades in where the section is, not slides from where it was.
     let shown = ctx.animate_bool_with_time(egui::Id::new("sidebar-highlight-shown"), active.is_some(), 0.15);
     let last_y = egui::Id::new("sidebar-highlight-y");
+    let was_shown = egui::Id::new("sidebar-highlight-was");
     let y = match active {
-        Some(active) => ctx.animate_value_with_time(egui::Id::new("sidebar-highlight"), top + active as f32 * (height + 4.0), 0.22),
+        Some(active) => {
+            let came_back = !ctx.data(|d| d.get_temp::<bool>(was_shown)).unwrap_or(false);
+            let time = if came_back { 0.0 } else { 0.22 };
+            ctx.animate_value_with_time(egui::Id::new("sidebar-highlight"), top + active as f32 * (height + 4.0), time)
+        }
         None => ctx.data(|d| d.get_temp::<f32>(last_y)).unwrap_or(top),
     };
+    ctx.data_mut(|d| d.insert_temp(was_shown, active.is_some()));
     ctx.data_mut(|d| d.insert_temp(last_y, y));
     if shown > 0.0 {
         let pill = Rect::from_min_size(Pos2::new(ui.cursor().left(), y), Vec2::new(width, height));
@@ -141,9 +146,9 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell, page: Page, username: &str) {
 fn playlist_item(ui: &mut egui::Ui, name: &str, mine: bool, current: bool, liked: bool) -> bool {
     let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 30.0), Sense::click());
     let hover = ui.ctx().animate_bool_with_time(response.id, response.hovered(), 0.12);
-    if current {
-        ui.painter().rect_filled(rect, 7, P.surface_hi);
-    }
+    // Hover is a fainter pill, the current one a full pill (fading between).
+    let on = ui.ctx().animate_bool_with_time(response.id.with("current"), current, 0.15);
+    ui.painter().rect_filled(rect, 7, P.surface_hi.gamma_multiply((hover * 0.5).max(on)));
     let base = if mine { P.muted } else { P.faint };
     let color = if current { P.text } else { widgets::lerp(base, P.text, hover) };
     let mut left = rect.left() + 12.0;

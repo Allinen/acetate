@@ -358,6 +358,62 @@ impl Shell {
         }
     }
 
+    /// A larger copy of a row's cover, grown out of its thumbnail `thumb` below it (above, if
+    /// there's no room) while the pointer rests on it, and shrunk back into it after.
+    /// Call every frame for each row's cover.
+    pub fn cover_preview(&mut self, ui: &egui::Ui, cover: Option<Cover>, seed: Uuid, thumb: egui::Rect) {
+        const SIZE: f32 = 240.0;
+        const DWELL: f64 = 0.3;
+        let ctx = ui.ctx();
+        let id = egui::Id::new("cover-preview");
+        let now = ctx.input(|i| i.time);
+        let over = ctx.input(|i| i.pointer.hover_pos().is_some_and(|p| thumb.contains(p) && ui.clip_rect().contains(p) && !i.pointer.any_down()));
+        let mut open = false;
+        if over && cover.is_some() && !self.modal_open {
+            let (at, since) = ctx.data(|d| d.get_temp::<(Uuid, f64)>(id)).unwrap_or((seed, now));
+            let since = if at == seed { since } else { now };
+            ctx.data_mut(|d| d.insert_temp(id, (seed, since)));
+            open = now - since >= DWELL;
+            if !open {
+                ctx.request_repaint_after(std::time::Duration::from_secs_f64(DWELL - (now - since) + 0.01));
+            }
+        } else if ctx.data(|d| d.get_temp::<(Uuid, f64)>(id)).is_some_and(|(at, _)| at == seed) {
+            ctx.data_mut(|d| d.remove::<(Uuid, f64)>(id));
+        }
+        let t = covers::ease_out(ctx.animate_bool_with_time(id.with(seed), open, 0.16));
+        let Some(cover) = cover else { return };
+        if t <= 0.0 {
+            return;
+        }
+        let screen = ctx.content_rect();
+        let left = (thumb.center().x - SIZE / 2.0).clamp(screen.left() + 8.0, (screen.right() - SIZE - 8.0).max(screen.left() + 8.0));
+        let top = if thumb.bottom() + 8.0 + SIZE <= screen.bottom() - 8.0 { thumb.bottom() + 8.0 } else { thumb.top() - 8.0 - SIZE };
+        let full = egui::Rect::from_min_size(egui::pos2(left, top), egui::Vec2::splat(SIZE));
+        let rect = egui::Rect::from_min_max(thumb.min.lerp(full.min, t), thumb.max.lerp(full.max, t));
+        let (radius, size) = (4.0 + 6.0 * t, covers::CoverSize::for_rect(ctx, full));
+        let big = self.covers.get(ctx, cover, size);
+        let small = self.covers.get(ctx, cover, covers::CoverSize::Small);
+        egui::Area::new(id.with("area"))
+            .order(egui::Order::Tooltip)
+            .fixed_pos(screen.min)
+            .constrain(false)
+            .interactable(false)
+            .show(ctx, |ui| {
+                ui.painter().add(
+                    egui::Shadow { offset: [0, 10], blur: 28, spread: 0, color: egui::Color32::from_black_alpha((150.0 * t) as u8) }
+                        .as_shape(rect, radius as u8),
+                );
+                widgets::placeholder(ui.painter(), rect, radius as u8, seed);
+                // The small copy is there at once; the large one fades in over it.
+                for (texture, fade) in [small, big].into_iter().flatten() {
+                    egui::Image::from_texture(&texture)
+                        .corner_radius(radius as u8)
+                        .tint(egui::Color32::from_white_alpha((fade * t * 255.0) as u8))
+                        .paint_at(ui, rect);
+                }
+            });
+    }
+
     /// A big cover: like `cover`, and a click shows its original (see `open_original`).
     #[allow(clippy::too_many_arguments)]
     pub fn cover_with_original(&mut self, ui: &egui::Ui, cover: Option<Cover>, seed: Uuid, rect: egui::Rect, radius: u8, lift: f32) {

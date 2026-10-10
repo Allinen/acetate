@@ -503,7 +503,7 @@ impl TrackTable {
                     if boxes {
                         row.col(|ui| {
                         let (rect, response) = ui.allocate_exact_size(Vec2::splat(18.0), Sense::click());
-                        super::marking::paint_box(ui.painter(), rect.translate(Vec2::new(2.0, 0.0)), marked, response.hovered());
+                        super::marking::paint_box(ui.painter(), t.id(), rect.translate(Vec2::new(2.0, 0.0)), marked, response.hovered());
                         if response.on_hover_text("Mark (x)").clicked() {
                             boxed = Some(n);
                         }
@@ -527,6 +527,14 @@ impl TrackTable {
                                 ui.allocate_rect(cell, Sense::hover());
                                 let rect = egui::Rect::from_center_size(cell.center(), Vec2::splat(28.0));
                                 shell.cover(ui, t.cover(), t.id(), rect, 4, 0.0);
+                                shell.cover_preview(ui, t.cover(), t.id(), rect);
+                                if playing == Some(t.id()) && player.playing {
+                                    ui.painter().rect_filled(rect, 4, egui::Color32::from_black_alpha(150));
+                                    widgets::equalizer(ui.painter(), rect.center(), ctx.input(|i| i.time) as f32, !player.paused);
+                                    if !player.paused {
+                                        ctx.request_repaint();
+                                    }
+                                }
                                 // An original file's track: an amber edge (inside the cover,
                                 // so nothing clips it).
                                 if t.original_filename().is_some() {
@@ -536,9 +544,13 @@ impl TrackTable {
                             Column::Title => {
                                 // The star on the title's line, not above it.
                                 ui.horizontal(|ui| {
-                                    if shell.mark(t.id()).starred {
+                                    // Pops when starred (not when scrolled into view: a row's first
+                                    // sight starts at its state).
+                                    let starred = shell.mark(t.id()).starred;
+                                    let on = ctx.animate_bool_with_time(egui::Id::new(("row-star", t.id())), starred, 0.18);
+                                    if starred {
                                         let (rect, _) = ui.allocate_exact_size(Vec2::new(14.0, 14.0), Sense::hover());
-                                        widgets::draw_star(ui.painter(), rect.center(), 5.5, P.accent);
+                                        widgets::draw_star(ui.painter(), rect.center(), 5.5 * (1.0 + (on * std::f32::consts::PI).sin() * 0.45), P.accent);
                                     }
                                     let clicked = match &t.original_filename() {
                                         Some(name) => widgets::og_link(ui, t.title(), font(13.5, medium()), name),

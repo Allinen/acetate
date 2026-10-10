@@ -3,12 +3,12 @@
 
 use std::time::Duration;
 
-use eframe::egui::{self, Align2, Pos2, Rect, Sense, Vec2};
+use eframe::egui::{self, Align2, Pos2, Rect, RichText, Sense, Vec2};
 
 use crate::catalog::marks::Kind;
 use crate::playback::PlayerView;
 use crate::ui::theme::{font, medium, semibold, PALETTE as P};
-use crate::ui::{widgets, Action, Page, Shell};
+use crate::ui::{covers, widgets, Action, Page, Shell};
 
 pub fn show(ui: &mut egui::Ui, shell: &mut Shell, player: &PlayerView) {
     let ctx = ui.ctx().clone();
@@ -142,29 +142,15 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell, player: &PlayerView) {
         ctx.request_repaint_after(Duration::from_millis(250));
     }
 
-    // Right: the newest message for a few seconds (errors a little longer), else the
-    // queue position.
-    let error = shell.controller.error.lock().unwrap().clone().filter(|(_, at)| at.elapsed() < Duration::from_secs(8));
-    let notice = shell.playlists.notice.clone().filter(|(_, at)| at.elapsed() < Duration::from_secs(4));
-    let message = match (error, notice) {
-        (Some(e), Some(n)) if n.1 > e.1 => Some((n.0, P.accent)),
-        (Some(e), _) => Some((e.0, P.danger)),
-        (None, Some(n)) => Some((n.0, P.accent)),
-        (None, None) => None,
-    };
+    // Right: the queue position. Messages are a toast above the bar (they can be long).
+    toast(ui, shell);
     // The volume, at the far right; messages to its left.
     let volume_rect = Rect::from_min_max(Pos2::new(full.right() - 150.0, full.top()), full.right_bottom());
     volume(ui, shell, player, volume_rect);
     let messages_right = volume_rect.left() - 16.0;
     let width = (messages_right - bar.right() - 70.0).max(80.0);
     let right_rect = Rect::from_min_max(Pos2::new(messages_right - width, full.top()), Pos2::new(messages_right, full.bottom()));
-    if let Some((text, color)) = message {
-        // Gone after a few seconds: draw again then.
-        ctx.request_repaint_after(Duration::from_millis(500));
-        let galley_width = ui.painter().layout_no_wrap(text.clone(), font(12.5, medium()), color).size().x.min(width);
-        let rect = Rect::from_min_max(Pos2::new(right_rect.right() - galley_width, right_rect.top()), right_rect.max);
-        widgets::text_in(ui.painter(), rect, &text, font(12.5, medium()), color);
-    } else if current.is_some() {
+    if current.is_some() {
         // Where playback is: in the hand-made queue, or at a place in the list.
         let place = if player.current_queued { "from the queue".to_string() } else { format!("{} of {}", player.list_index + 1, player.list.len()) };
         let queued = if player.queued.is_empty() { String::new() } else { format!("  ·  {} queued", player.queued.len()) };
@@ -231,3 +217,50 @@ fn volume(ui: &mut egui::Ui, shell: &mut Shell, player: &PlayerView, rect: Rect)
     response.on_hover_text(format!("Volume {}%  (9 / 0)", (player.volume * 100.0).round()));
 }
 
+
+/// How long a message is shown (seconds): longer for a longer text, so it can be read.
+fn toast_life(text: &str, base: f32) -> f32 {
+    (base + text.chars().count() as f32 * 0.04).min(15.0)
+}
+
+/// The newest message (an error, or a notice), in a box above the player bar's right
+/// end: wrapped when long, sliding up and fading in, fading out when its time is up.
+fn toast(ui: &egui::Ui, shell: &Shell) {
+    const FADE_IN: f32 = 0.18;
+    const FADE_OUT: f32 = 0.3;
+    let ctx = ui.ctx();
+    let error = shell.controller.error.lock().unwrap().clone().map(|(text, at)| (text, at, 8.0, P.danger));
+    let notice = shell.playlists.notice.clone().map(|(text, at)| (text, at, 4.0, P.accent));
+    let newest = match (error, notice) {
+        (Some(e), Some(n)) => Some(if n.1 > e.1 { n } else { e }),
+        (e, n) => e.or(n),
+    };
+    let Some((text, at, base, color)) = newest else { return };
+    let (age, life) = (at.elapsed().as_secs_f32(), toast_life(&text, base));
+    if age >= life {
+        return;
+    }
+    let left = life - age;
+    let opacity = (left / FADE_OUT).clamp(0.0, 1.0);
+    let rise = 1.0 - covers::ease_out((age / FADE_IN).clamp(0.0, 1.0));
+    ctx.request_repaint_after(Duration::from_secs_f32(if age < FADE_IN || left < FADE_OUT { 0.016 } else { (left - FADE_OUT).min(0.5) }));
+    let screen = ctx.content_rect();
+    let max_width = (screen.width() - 212.0 - 64.0).clamp(200.0, 520.0);
+    egui::Area::new(egui::Id::new("toast"))
+        .order(egui::Order::Tooltip)
+        .interactable(false)
+        .anchor(Align2::RIGHT_BOTTOM, Vec2::new(-16.0, -(84.0 + 12.0) + rise * 10.0))
+        .show(ctx, |ui| {
+            ui.multiply_opacity(opacity * (1.0 - rise));
+            egui::Frame::NONE
+                .fill(P.surface_hi)
+                .corner_radius(10)
+                .stroke(egui::Stroke::new(1.0, P.line))
+                .shadow(egui::Shadow { offset: [0, 6], blur: 20, spread: 0, color: egui::Color32::from_black_alpha(120) })
+                .inner_margin(egui::Margin::symmetric(14, 10))
+                .show(ui, |ui| {
+                    ui.set_max_width(max_width);
+                    ui.add(egui::Label::new(RichText::new(&text).font(font(12.5, medium())).color(color)).wrap());
+                });
+        });
+}

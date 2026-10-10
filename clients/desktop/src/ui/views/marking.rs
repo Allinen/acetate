@@ -27,7 +27,7 @@ use crate::catalog::marks::Kind;
 use crate::catalog::Catalog;
 use crate::playback::PlayerView;
 use crate::ui::theme::{bold, font, semibold, PALETTE as P};
-use crate::ui::{thousands, Action, Shell};
+use crate::ui::{thousands, widgets, Action, Shell};
 
 /// Starring or rating is one request a track: up to this many at once.
 const MANY: usize = 1000;
@@ -513,12 +513,16 @@ fn show_editor(editor: &mut crate::ui::edit::editor::TrackEditor, ui: &mut egui:
 }
 
 /// The mark's box in front of a row (18×18): ticked when marked.
-pub fn paint_box(painter: &egui::Painter, rect: egui::Rect, marked: bool, hovered: bool) {
-    if marked {
-        painter.rect_filled(rect, 4, P.accent);
-        painter.text(rect.center(), egui::Align2::CENTER_CENTER, "✓", font(13.0, semibold()), P.bg);
-    } else {
-        let stroke = if hovered { P.muted } else { P.line };
-        painter.rect_stroke(rect, 4, egui::Stroke::new(1.5, stroke), egui::StrokeKind::Inside);
+pub fn paint_box(painter: &egui::Painter, id: impl std::hash::Hash + std::fmt::Debug, rect: egui::Rect, marked: bool, hovered: bool) {
+    let ctx = painter.ctx();
+    let id = egui::Id::new(("mark-box", id));
+    let on = ctx.animate_bool_with_time(id, marked, 0.12);
+    let hover = ctx.animate_bool_with_time(id.with("hover"), hovered, 0.1);
+    let stroke = widgets::lerp(P.line, P.muted, hover);
+    painter.rect_stroke(rect, 4, egui::Stroke::new(1.5, stroke.gamma_multiply(1.0 - on)), egui::StrokeKind::Inside);
+    if on > 0.0 {
+        // Grows into the box from its middle.
+        painter.rect_filled(rect.shrink((1.0 - on) * rect.width() * 0.3), 4, P.accent.gamma_multiply(on));
+        painter.text(rect.center(), egui::Align2::CENTER_CENTER, "✓", font(13.0, semibold()), P.bg.gamma_multiply(on));
     }
 }

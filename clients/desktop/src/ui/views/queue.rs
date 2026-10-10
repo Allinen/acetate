@@ -136,6 +136,17 @@ impl QueuePage {
                 scroll = scroll.vertical_scroll_offset((top - height / 3.0).max(0.0));
             }
         }
+        // A row's key: its track, and which of that track's rows (one can be queued twice).
+        let keys: Vec<Option<egui::Id>> = {
+            let mut seen = std::collections::HashMap::new();
+            rows.iter()
+                .map(|&row| {
+                    let id = item(row)?.track_id;
+                    let nth = seen.entry(id).and_modify(|n| *n += 1).or_insert(0usize);
+                    Some(egui::Id::new(("queue-row", id, *nth)))
+                })
+                .collect()
+        };
         let output = scroll.show_rows(ui, ROW, rows.len(), |ui, range| {
             ui.spacing_mut().item_spacing.y = 0.0;
             for n in range {
@@ -146,7 +157,9 @@ impl QueuePage {
                     continue;
                 }
                 let Some(item) = item(row) else { continue };
-                let rect = rect.shrink2(Vec2::new(0.0, 1.0));
+                // Rows slide to their new place when the queue changes.
+                let slide = keys[n].map_or(0.0, |key| (widgets::glide(&ctx, key, n as f32, 0.2) - n as f32) * ROW);
+                let rect = rect.shrink2(Vec2::new(0.0, 1.0)).translate(Vec2::new(0.0, slide));
                 let hover = ctx.animate_bool_with_time(response.id, response.hovered(), 0.1);
                 let fill = if Some(row) == self.selected {
                     P.surface_hi

@@ -143,6 +143,26 @@ pub fn equalizer(painter: &egui::Painter, center: Pos2, time: f32, moving: bool)
     }
 }
 
+/// `target`, eased toward from where it was when it changed (over `secs`). For things that
+/// move to a new place (a row that's been reordered). A thing not drawn for a few frames
+/// starts at its target, instead of sliding from wherever it was last seen.
+pub fn glide(ctx: &egui::Context, id: egui::Id, target: f32, secs: f32) -> f32 {
+    let (pass, now) = (ctx.cumulative_pass_nr(), ctx.input(|i| i.time));
+    let (mut from, mut to, mut start, last) = ctx.data(|d| d.get_temp::<(f32, f32, f64, u64)>(id)).unwrap_or((target, target, now, pass));
+    let at = |from: f32, to: f32, start: f64| from + (to - from) * crate::ui::covers::ease_out((((now - start) as f32) / secs).clamp(0.0, 1.0));
+    if pass.saturating_sub(last) > 3 {
+        (from, to, start) = (target, target, now);
+    } else if (target - to).abs() > 1e-3 {
+        (from, to, start) = (at(from, to, start), target, now);
+    }
+    ctx.data_mut(|d| d.insert_temp(id, (from, to, start, pass)));
+    let shown = at(from, to, start);
+    if (shown - to).abs() > 1e-3 {
+        ctx.request_repaint();
+    }
+    shown
+}
+
 pub fn lerp(a: Color32, b: Color32, t: f32) -> Color32 {
     let t = t.clamp(0.0, 1.0);
     let mix = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t) as u8;
