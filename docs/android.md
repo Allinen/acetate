@@ -46,7 +46,8 @@ certificate).
 For accounts that may change the library there's an **Edit** switch at the top of the library
 screens. While it's on, a track's long-press menu, its page and Now playing offer **Edit
 track**; while it's off nothing can change by accident. It needs the server (the changes are
-checked by it), so it does nothing offline.
+checked by it): it turns off while the server can't be reached (the chip says "Edit
+(offline)") and comes back on with the server. See [Offline](offline.md).
 
 The editor shows the track's fields as the changes will leave them (what a field was is under
 it), with the review flags that are about it. Tap a field to change it: its line is put in
@@ -117,7 +118,8 @@ follows your stars: a track you star later is fetched.
 - **Stop** pauses them (what's here stays; **Resume** goes on). Nothing is deleted unless you
   remove it: tapping "Downloaded ✓" asks first, and Settings, Downloads, **Manage…** lists
   what's kept with its size, with a Remove for each.
-- A track whose file isn't downloaded still needs the server to play.
+- A track whose file isn't downloaded still needs the server to play. Offline, such tracks
+  are dimmed and skipped; see [Offline](offline.md).
 
 The desktop app has the same Download chip and plays downloaded files (and a mirror's) from
 disk.

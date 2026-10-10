@@ -85,4 +85,5 @@ linked to a track, and play in the app. Both are added in [edit mode](editing/RE
 
 The app keeps the whole library's metadata on your computer, so browsing and searching
 don't touch the server. `F5` checks the library for changes (this also happens
-automatically).
+automatically). Without the server, what's on your computer still plays, and stars, ratings,
+plays and playlist additions wait to be sent: see [Offline](offline.md).

@@ -62,6 +62,12 @@ moving the app.
 On Linux a user service runs while you're logged in; `loginctl enable-linger` keeps it
 running after you log out.
 
+## Playing from the mirror
+
+What the mirror has plays from your disk, not the server: tracks, and extras (vocals,
+stems…). Covers are taken from it too, scaled on your computer as the server would. Offline,
+everything the mirror has plays; see [Offline](../offline.md).
+
 ## Nothing is removed unasked
 
 When the server lets a file go (trashed, purged, replaced), or you stop mirroring a volume,
