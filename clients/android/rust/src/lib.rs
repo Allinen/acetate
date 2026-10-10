@@ -1437,11 +1437,11 @@ fn sync_catalog(shared: &Arc<Shared>, load: bool) {
     tokio::spawn(async move {
         let report = |update: Update| match update {
             Update::Loaded { catalog, from_server } => {
-                if from_server {
-                    if let Some(asked) = *shared.asked.lock().unwrap() {
-                        shared.marks.lock().unwrap().catalog_arrived(asked);
-                        shared.playlists.lock().unwrap().catalog_arrived(asked);
-                    }
+                if from_server
+                    && let Some(asked) = *shared.asked.lock().unwrap()
+                {
+                    shared.marks.lock().unwrap().catalog_arrived(asked);
+                    shared.playlists.lock().unwrap().catalog_arrived(asked);
                 }
                 set_catalog(&shared, catalog);
             }
@@ -1542,12 +1542,15 @@ pub trait PlayerEngine: Send + Sync {
     fn stop(&self);
 }
 
+/// Finds where the cover of a key is kept on the device, if it is.
+type KeptCover = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
+
 /// Turns the core's calls into the engine's, with addresses and login.
 struct EngineAdapter {
     engine: Arc<dyn PlayerEngine>,
     api: Api,
     /// Where the cover of a key is kept on the device (the standard size), if it is.
-    kept_cover: Arc<dyn Fn(&str) -> Option<String> + Send + Sync>,
+    kept_cover: KeptCover,
 }
 
 impl EngineAdapter {
@@ -1693,7 +1696,7 @@ impl Playback {
     /// loaded already (a queue brought back at start), paused.
     pub fn attach(&self, engine: Arc<dyn PlayerEngine>) {
         let weak = Arc::downgrade(&self.shared);
-        let kept_cover: Arc<dyn Fn(&str) -> Option<String> + Send + Sync> = Arc::new(move |key| {
+        let kept_cover: KeptCover = Arc::new(move |key| {
             let shared = weak.upgrade()?;
             let offline = shared.offline.lock().unwrap().clone()?;
             offline.cover_path(key, "standard").map(|p| p.to_string_lossy().into_owned())
