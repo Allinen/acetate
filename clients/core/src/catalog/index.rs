@@ -489,8 +489,27 @@ impl Catalog {
                 words.extend(value.to_lowercase().split_whitespace().map(str::to_string));
             }
         }
-        let mut list = matching(&self.artist_text, &words.join(" "));
+        let typed = words.join(" ");
+        let mut list = matching(&self.artist_text, &typed);
         match sort {
+            // The name typed (or an alias that is), then names starting with it, then the
+            // rest; shorter names first within each, so "dead" comes before "deadwhatever".
+            ArtistSort::Relevance if typed.is_empty() => list.sort_by_key(|x| self.artist_name_rank[*x as usize]),
+            ArtistSort::Relevance => {
+                let key = |x: &u32| {
+                    let text = self.artist_text.get(*x);
+                    let name = text.split('\0').next().unwrap_or(text);
+                    let tier = if text.split('\0').any(|part| part == typed) {
+                        0
+                    } else if name.starts_with(&typed) {
+                        1
+                    } else {
+                        2
+                    };
+                    (tier, name.chars().count(), self.artist_name_rank[*x as usize])
+                };
+                list.sort_by_cached_key(key);
+            }
             ArtistSort::Name => list.sort_by_key(|x| self.artist_name_rank[*x as usize]),
             ArtistSort::Tracks => list.sort_by(|x, y| {
                 let (x, y) = (*x as usize, *y as usize);
@@ -553,6 +572,8 @@ pub enum AlbumSort {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArtistSort {
+    /// How well the name fits what was typed (by name when nothing was).
+    Relevance,
     Name,
     Tracks,
 }
@@ -873,6 +894,8 @@ mod tests {
         // Words anywhere in title, artists or album, all of them.
         assert_eq!(titles(&c, &c.track_list("bo fir", TrackSort::Title, false)), ["First"]);
         assert_eq!(c.artist_list("b.o.", ArtistSort::Name).len(), 1, "by alias");
+        assert_eq!(c.artist_list("b.o.", ArtistSort::Relevance), c.artist_list("b.o.", ArtistSort::Name));
+        assert_eq!(c.artist_list("", ArtistSort::Relevance), c.artist_list("", ArtistSort::Name), "by name when nothing is typed");
     }
 
     #[test]

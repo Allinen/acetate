@@ -24,7 +24,7 @@ pub struct Artists {
 
 impl Default for Artists {
     fn default() -> Self {
-        Artists { filter: String::new(), sort: ArtistSort::Name, list: Vec::new(), made_for: None, selected: 0, scroll_to: None, offset: 0.0 }
+        Artists { filter: String::new(), sort: ArtistSort::Relevance, list: Vec::new(), made_for: None, selected: 0, scroll_to: None, offset: 0.0 }
     }
 }
 
@@ -41,7 +41,7 @@ impl Artists {
                 self.scroll_to = Some(0);
             }
             ui.add_space(12.0);
-            for (label, sort) in [("Name", ArtistSort::Name), ("Most tracks", ArtistSort::Tracks)] {
+            for (label, sort) in [("Best match", ArtistSort::Relevance), ("Name", ArtistSort::Name), ("Most tracks", ArtistSort::Tracks)] {
                 if widgets::chip(ui, label, self.sort == sort) && self.sort != sort {
                     self.sort = sort;
                     remake = true;
