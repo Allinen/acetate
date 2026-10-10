@@ -79,6 +79,8 @@ When listening, you won't accidentally change something you didn't mean to; adva
 
 ## Install
 
+The user guide is at <https://allinen.github.io/acetate/> (its source is `docs/`).
+
 Acetate runs as two containers: Postgres and the server. The image is published at `ghcr.io/allinen/acetate` (amd64 and arm64), so you only need the `deploy` folder:
 
 ```sh
