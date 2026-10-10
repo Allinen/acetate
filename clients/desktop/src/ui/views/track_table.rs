@@ -10,17 +10,17 @@
 //! order); the artist only where it isn't the album's.
 //!
 //! Keys: arrows or jk move, Enter plays from there (in the order shown), `s` stars, `+`/`-`
-//! rate, `p` adds to a playlist, `/` filters. A playlist's page adds its own keys, using
+//! rate, `p` adds to a playlist, `q` queues, `/` filters (with tracks marked, `s`, `+`/`-`,
+//! `p` and `q` are for the marked ones). A playlist's page adds its own keys, using
 //! `Shown::selected`.
 //!
-//! Marking many, in edit mode (listen mode has none of it): the box in front of each row
-//! (a click), `x`, or Ctrl+click marks or unmarks one; Shift+click or Shift+↑/↓ a range,
-//! which takes the state of the row it starts from (so ranges unmark too); Ctrl+A marks
-//! everything shown; Esc clears. Marks are kept by track, so sorting and filtering don't
-//! lose them (nor leaving edit mode: they're there again when it's back). Ctrl+E (or the
-//! button) opens the change for all of them, in a popup (see `edit::editor`). Ctrl+M with
-//! two marked compares them side by side, to merge (see `merge`), in a popup too. (All of
-//! it is `marking`'s, shared with Review's list.)
+//! Marking many, in any mode: `x` or Ctrl+click marks or unmarks one; Shift+click or
+//! Shift+↑/↓ a range from the row the cursor is on; Ctrl+A marks everything shown; Esc
+//! clears. The box in front of each row shows them (in listen mode only while tracks are
+//! marked). Marks are kept by track, so sorting and filtering don't lose them. Ctrl+E (or
+//! the button) opens the change for all of them, in a popup (see `edit::editor`). In edit
+//! mode, Ctrl+M with two marked compares them side by side, to merge (see `merge`), in a
+//! popup too. (All of it is `marking`'s, shared with Review's list.)
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -198,8 +198,8 @@ pub struct TrackTable {
     scroll_to: Option<usize>,
     /// A track to select once the rows are made again (it moved).
     select_id: Option<Uuid>,
-    /// Marked tracks and the tools for them (edit mode; Ctrl+E on the selected track
-    /// with nothing marked, in listen mode too).
+    /// Marked tracks and the tools for them (Ctrl+E on the selected track with nothing
+    /// marked).
     marking: super::marking::Marking,
 }
 
@@ -261,6 +261,7 @@ impl TrackTable {
     /// Selects the shown row `n`.
     pub fn select(&mut self, n: usize) {
         self.selected = n;
+        self.marking.cursor_at(n);
         self.scroll_to = Some(n);
     }
 
@@ -270,8 +271,7 @@ impl TrackTable {
         self.select_id = Some(id);
     }
 
-    /// The change popup for these tracks: one alone (a quick fix, listen mode too), or
-    /// several marked (edit mode).
+    /// The change popup for these tracks: one alone (a quick fix), or several marked.
     pub fn edit_tracks(&mut self, ids: Vec<Uuid>) {
         self.marking.edit(ids);
     }
@@ -314,20 +314,19 @@ impl TrackTable {
         {
             self.selected = n;
             self.scroll_to = Some(n);
+            self.marking.cursor_at(n);
         }
 
-        // ---- Marking (edit mode only) ----
-        let marking = shell.edit_mode;
+        // ---- Marking ----
         let order = &self.order;
         let id_at = |n: usize| order.get(n).map(|&row| catalog.track_at(rows.track(row)).id());
-        if !marking {
+        if !shell.edit_mode {
             self.marking.close_popups();
         }
         self.marking.popups(&ctx, shell, player, order.len(), id_at, options.album.map(|a| a.0));
         let typing = ctx.egui_wants_keyboard_input();
-        // Ctrl+E with nothing marked (or outside edit mode): the popup for the selected
-        // track alone, a quick fix.
-        if options.keys && !self.marking.popup_open() && !typing && !shell.palette_open && (!marking || self.marking.is_empty()) && shell.account.can("edit_metadata") {
+        // Ctrl+E with nothing marked: the popup for the selected track alone, a quick fix.
+        if options.keys && !self.marking.popup_open() && !typing && !shell.palette_open && self.marking.is_empty() && shell.account.can("edit_metadata") {
             let id = id_at(self.selected);
             if let Some(id) = id
                 && ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::E))
@@ -335,13 +334,13 @@ impl TrackTable {
                 self.marking.open_quick(id);
             }
         }
-        if marking && options.keys {
+        if options.keys {
             self.marking.keys(&ctx, shell, self.selected, order.len(), id_at);
         }
-        if marking {
-            self.marking.bar(ui, shell, catalog, order.len(), id_at, options.key);
-        }
+        self.marking.bar(ui, shell, catalog, order.len(), id_at, options.key);
         let popup = self.marking.popup_open();
+        // The marks' boxes: in edit mode, and in listen mode while tracks are marked.
+        let boxes = shell.edit_mode || !self.marking.is_empty();
 
         // ---- Keys for the row under the cursor ----
         // (At most a window's worth: in a page that scrolls, the room below is endless.)
@@ -350,15 +349,32 @@ impl TrackTable {
         // (The popup takes the keys while it's open.)
         let len = if popup || !options.keys { 0 } else { self.order.len() };
         let moved = widgets::move_selection(&ctx, &mut self.selected, len, 1, visible);
+        let order = &self.order;
+        let id_at = |n: usize| order.get(n).map(|&row| catalog.track_at(rows.track(row)).id());
         if moved.moved {
             self.scroll_to = Some(self.selected);
-            // Shift+↑/↓ (edit mode): the rows passed over take the starting row's state.
-            if marking && ctx.input(|i| i.modifiers.shift) {
-                let order = &self.order;
-                self.marking.range_to(before, self.selected, |n| order.get(n).map(|&row| catalog.track_at(rows.track(row)).id()));
+            // Shift+↑/↓: a range from where it starts; a plain move is where ranges start.
+            if ctx.input(|i| i.modifiers.shift) {
+                self.marking.range_to(before, self.selected, id_at);
+            } else {
+                self.marking.cursor_at(self.selected);
             }
         }
-        if let Some(&row) = self.order.get(self.selected) {
+        // With tracks marked, the keys for a track are for the marked ones.
+        if !self.marking.is_empty() {
+            if moved.star {
+                self.marking.star(shell);
+            }
+            if moved.rate_by != 0 {
+                self.marking.rate_by(shell, moved.rate_by);
+            }
+            if moved.add {
+                self.marking.add(shell, order.len(), id_at);
+            }
+            if let Some(next) = moved.queue {
+                self.marking.queue(shell, catalog, next, order.len(), id_at);
+            }
+        } else if let Some(&row) = self.order.get(self.selected) {
             let id = catalog.track_at(rows.track(row)).id();
             if moved.star {
                 shell.act(Action::ToggleStar(Kind::Track, id));
@@ -372,6 +388,9 @@ impl TrackTable {
             if let Some(next) = moved.queue {
                 shell.act(Action::Enqueue { tracks: vec![rows.track(row)], next });
             }
+        }
+        if let Some(&row) = self.order.get(self.selected) {
+            let id = catalog.track_at(rows.track(row)).id();
             if moved.info {
                 shell.act(Action::Go(crate::ui::Page::Track(id)));
             }
@@ -401,7 +420,7 @@ impl TrackTable {
             // All of it: its height isn't capped (the page around it scrolls).
             builder = builder.max_scroll_height(f32::INFINITY);
         }
-        if marking {
+        if boxes {
             builder = builder.column(Width::exact(26.0));
         }
         for c in &columns {
@@ -418,7 +437,7 @@ impl TrackTable {
         builder
             // 2 px more than the labels need: a little air above the first row.
             .header(28.0, |mut header| {
-                if marking {
+                if boxes {
                     header.col(|_| {});
                 }
                 for c in &columns {
@@ -469,7 +488,7 @@ impl TrackTable {
                                 let at = ui.max_rect().left_center() + Vec2::new(2.0, 4.0);
                                 painter.text(at, egui::Align2::LEFT_CENTER, format!("Disc {disc}"), font(12.5, semibold()), P.muted);
                             });
-                            for _ in columns.iter().skip(if marking { 0 } else { 1 }) {
+                            for _ in columns.iter().skip(if boxes { 0 } else { 1 }) {
                                 row.col(|_| {});
                             }
                             return;
@@ -480,8 +499,8 @@ impl TrackTable {
                     row.set_selected(n == self.selected);
                     let marked = self.marking.contains(&t.id());
                     let color = if playing == Some(t.id()) { P.accent } else { P.text };
-                    // The mark's box (edit mode): a click (un)marks the row.
-                    if marking {
+                    // The mark's box: a click (un)marks the row.
+                    if boxes {
                         row.col(|ui| {
                         let (rect, response) = ui.allocate_exact_size(Vec2::splat(18.0), Sense::click());
                         super::marking::paint_box(ui.painter(), rect.translate(Vec2::new(2.0, 0.0)), marked, response.hovered());
@@ -608,10 +627,7 @@ impl TrackTable {
             self.marking.toggle(n, id_at);
             self.selected = n;
         } else if let Some(n) = clicked {
-            // (Listen mode: a click only moves the cursor.)
-            if marking {
-                self.marking.click(n, self.selected, modifiers, id_at);
-            }
+            self.marking.click(n, self.selected, modifiers, id_at);
             self.selected = n;
         }
         if let Some(n) = double {
@@ -638,6 +654,8 @@ impl TrackTable {
         self.order = catalog.order_tracks(rows, &self.filter, self.sort, self.descending);
         self.made_for = Some(version);
         self.selected = self.selected.min(self.order.len().saturating_sub(1));
+        // The rows moved: ranges start from the cursor.
+        self.marking.cursor_at(self.selected);
         // Disc names between discs: an album's, in its own order, when it has several.
         let own_order = self.sort == TrackSort::Natural && !self.descending;
         let discs = options.album.filter(|_| own_order).map(|(album, _)| AlbumNumbers::new(catalog, rows, album, options.places));

@@ -35,6 +35,13 @@ in order, words anywhere. `Enter` opens it (a track: plays it, then the rest of 
 All lists work the same way: arrows or `h j k l` to move, `Enter` to open or play from
 here, `i` for a track's page, and `/` to [filter](searching.md) the list.
 
+In a track list, mark several tracks to do something to all of them: `x` or `Ctrl+click`
+marks one, `Shift+click` (or `Shift+↑`/`↓`) marks everything from the track the cursor is on,
+`Ctrl+A` marks all shown, `Esc` clears. While tracks are marked, `s` stars them all (or
+unstars them, if all were starred), `+`/`−` rate them, `p` adds them to a playlist, and `q`
+queues them (`Shift+Q`: first). With the `edit_metadata` permission, `Ctrl+E` edits them
+together; [edit mode](editing/README.md) adds merging and the other editing tools.
+
 ## Playlists
 
 Make one from the `+` in the sidebar, or with `p` on anything. Inside a playlist:

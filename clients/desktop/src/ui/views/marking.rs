@@ -1,17 +1,21 @@
-//! Marking many tracks in a list and changing them all at once: the marks, their keys,
-//! the bar of tools for the marked tracks, and those tools' popups. Every list that marks
-//! tracks uses this (the track tables in edit mode, Review's list), so they work alike.
+//! Marking many tracks in a list and doing something to them all at once: the marks,
+//! their keys, the bar of tools for the marked tracks, and those tools' popups. Every list
+//! that marks tracks uses this (the track tables, Review's list), so they work alike.
 //!
 //! A list gives its rows as positions shown (0..len) and `id_at`, the track at one. The
 //! box in front of each row (`paint_box`), `x`, or Ctrl+click marks or unmarks one;
-//! Shift+click or Shift+↑/↓ a range, which takes the state of the row it starts from (so
-//! ranges unmark too); Ctrl+A marks everything shown; Esc clears (all of them, shown or
-//! not; after a change was applied to them too). Marks are kept by track, so sorting and
-//! filtering don't lose them. Ctrl+E (or the button) opens the
-//! change for all of them, in a popup (see `edit::editor`); or, on a page that shows it
-//! in place (`change_in_place`: Review, instead of its one track's form), Ctrl+E puts
-//! the cursor in it. Ctrl+M with two marked compares them side by side, to merge (see
-//! `merge`), in a popup.
+//! Shift+click or Shift+↑/↓ a range from where it starts: the row the cursor was on (moved
+//! there or clicked), which marks, or a row just (un)marked by itself, whose state the
+//! range takes (so ranges unmark too). Ctrl+A marks everything shown; Esc clears (all of
+//! them, shown or not; after a change was applied to them too). Marks are kept by track,
+//! so sorting and filtering don't lose them.
+//!
+//! In any mode: star them all (`star`), add them to a playlist, queue them, and Ctrl+E (or
+//! the button) opens the change for all of them, in a popup (see `edit::editor`); or, on a
+//! page that shows it in place (`change_in_place`: Review, instead of its one track's
+//! form), Ctrl+E puts the cursor in it. In edit mode (`tools`) the editing tools too:
+//! Ctrl+M with two marked compares them side by side, to merge (see `merge`), in a popup;
+//! groupings, credited as, original files.
 
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
@@ -19,18 +23,22 @@ use std::sync::{Arc, Mutex};
 use eframe::egui::{self, RichText, Vec2};
 use uuid::Uuid;
 
+use crate::catalog::marks::Kind;
 use crate::catalog::Catalog;
 use crate::playback::PlayerView;
 use crate::ui::theme::{bold, font, semibold, PALETTE as P};
 use crate::ui::{thousands, Action, Shell};
 
+/// Starring or rating is one request a track: up to this many at once.
+const MANY: usize = 1000;
+
 #[derive(Default)]
 pub struct Marking {
     /// Marked tracks (by id: sorting and filtering keep them).
     marked: HashSet<Uuid>,
-    /// Where a range starts (a row shown): Shift+click and Shift+↑/↓ give the range
-    /// this row's state.
-    anchor: Option<usize>,
+    /// Where a range starts (a row shown), and whether the range marks (or unmarks):
+    /// Shift+click and Shift+↑/↓ go from here.
+    anchor: Option<(usize, bool)>,
     /// Changing the marked tracks, and whether its popup is open.
     bulk: crate::ui::edit::editor::TrackEditor,
     bulk_open: bool,
@@ -78,6 +86,12 @@ impl Marking {
         !self.marked.is_empty() || self.merge.is_some()
     }
 
+    /// The editing tools are offered (merging, groupings, credited as…): in edit mode, and
+    /// on Review (all of it is editing).
+    fn tools(&self, shell: &Shell) -> bool {
+        shell.edit_mode || self.in_place
+    }
+
     /// The marked tracks, in the order shown (marked ones not shown last).
     pub fn ordered(&self, len: usize, id_at: impl Fn(usize) -> Option<Uuid>) -> Vec<Uuid> {
         let shown: Vec<Uuid> = (0..len).filter_map(id_at).filter(|id| self.marked.contains(id)).collect();
@@ -86,21 +100,28 @@ impl Marking {
         shown.into_iter().chain(hidden).collect()
     }
 
-    /// Marks or unmarks one shown row; it becomes where ranges start.
+    /// Marks or unmarks one shown row; it becomes where ranges start, and they do as it
+    /// did (mark, or unmark).
     pub fn toggle(&mut self, n: usize, id_at: impl Fn(usize) -> Option<Uuid>) {
+        let mut on = false;
         if let Some(id) = id_at(n)
             && !self.marked.remove(&id)
         {
             self.marked.insert(id);
+            on = true;
         }
-        self.anchor = Some(n);
+        self.anchor = Some((n, on));
     }
 
-    /// The rows from the anchor (or `from`) to `to` get the anchor row's state: marked,
-    /// or (starting from an unmarked one after a click on it) unmarked.
+    /// The cursor is on row `n` (moved there, or clicked): ranges start here, and mark.
+    pub fn cursor_at(&mut self, n: usize) {
+        self.anchor = Some((n, true));
+    }
+
+    /// The rows from the anchor (or `from`) to `to` are marked, or (the anchor was a row
+    /// just unmarked) unmarked.
     pub fn range_to(&mut self, from: usize, to: usize, id_at: impl Fn(usize) -> Option<Uuid>) {
-        let start = self.anchor.unwrap_or(from);
-        let on = self.anchor.is_none() || id_at(start).is_some_and(|id| self.marked.contains(&id));
+        let (start, on) = self.anchor.unwrap_or((from, true));
         for n in start.min(to)..=start.max(to) {
             if let Some(id) = id_at(n) {
                 if on {
@@ -110,11 +131,11 @@ impl Marking {
                 }
             }
         }
-        self.anchor = Some(start);
+        self.anchor = Some((start, on));
     }
 
     /// A click on row `n` (`selected` before it): Ctrl+click marks or unmarks it,
-    /// Shift+click gives the range from where it started that row's state, a plain click
+    /// Shift+click marks the range from where it starts (see `range_to`), a plain click
     /// is where ranges start.
     pub fn click(&mut self, n: usize, selected: usize, modifiers: egui::Modifiers, id_at: impl Fn(usize) -> Option<Uuid>) {
         if modifiers.command {
@@ -122,7 +143,7 @@ impl Marking {
         } else if modifiers.shift {
             self.range_to(selected, n, id_at);
         } else {
-            self.anchor = Some(n);
+            self.cursor_at(n);
         }
     }
 
@@ -131,11 +152,8 @@ impl Marking {
         self.anchor = None;
     }
 
-    /// The tools' popups close (leaving edit mode); a quick fix of one track stays.
+    /// The editing tools' popups close (leaving edit mode); the change (Ctrl+E) stays.
     pub fn close_popups(&mut self) {
-        if self.quick.is_none() {
-            self.bulk_open = false;
-        }
         self.merge = None;
         self.credited_as = None;
         self.mark_og = None;
@@ -194,7 +212,7 @@ impl Marking {
     /// The marked tracks' tools, as the editor's line offers them (verbs).
     fn verbs(&self, shell: &Shell) -> Vec<crate::ui::edit::editor::Verb> {
         use crate::ui::edit::editor::Verb;
-        if self.quick.is_some() {
+        if self.quick.is_some() || !self.tools(shell) {
             return Vec::new();
         }
         let mut verbs = vec![Verb::CreditedAs];
@@ -286,13 +304,15 @@ impl Marking {
 
     /// The keys, for a list that has them (and no popup or text field does): `x` marks
     /// the `selected` row, Ctrl+A everything shown, Esc clears, Ctrl+E changes the marked
-    /// tracks, Ctrl+M merges the two marked (in a text field too, as on the track page).
+    /// tracks, Ctrl+M merges the two marked (edit mode; in a text field too, as on the
+    /// track page). The list's own keys for a track (s, p, q…) go to `star`, `add`… while
+    /// tracks are marked.
     pub fn keys(&mut self, ctx: &egui::Context, shell: &mut Shell, selected: usize, len: usize, id_at: impl Fn(usize) -> Option<Uuid> + Copy) {
         if shell.palette_open {
             return;
         }
         // Ctrl+M: the two marked tracks side by side, to merge (again: close).
-        if !self.bulk_open && self.takes_ctrl_m() && ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::M)) {
+        if !self.bulk_open && self.tools(shell) && self.takes_ctrl_m() && ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::M)) {
             if self.merge.is_some() {
                 self.merge = None;
             } else {
@@ -314,7 +334,7 @@ impl Marking {
                 i.key_pressed(egui::Key::X) && i.modifiers.is_none(),
                 i.consume_key(egui::Modifiers::COMMAND, egui::Key::A),
                 !self.marked.is_empty() && (!self.bulk.has_changes() || self.bulk.applied()) && i.consume_key(egui::Modifiers::NONE, egui::Key::Escape),
-                !self.marked.is_empty() && i.consume_key(egui::Modifiers::COMMAND, egui::Key::E),
+                !self.marked.is_empty() && shell.account.can("edit_metadata") && i.consume_key(egui::Modifiers::COMMAND, egui::Key::E),
             )
         });
         if toggle {
@@ -334,6 +354,45 @@ impl Marking {
         }
     }
 
+    /// Stars the marked tracks; all of them starred already: unstars them.
+    pub fn star(&self, shell: &mut Shell) {
+        // One request a track: not for the whole library at once.
+        if self.marked.len() > MANY {
+            let text = format!("Starring is for up to {} tracks at once ({} marked).", thousands(MANY), thousands(self.marked.len()));
+            shell.playlists.notice = Some((text, std::time::Instant::now()));
+            return;
+        }
+        let on = !self.marked.iter().all(|id| shell.mark(*id).starred);
+        for &id in &self.marked {
+            if shell.mark(id).starred != on {
+                shell.act(Action::ToggleStar(Kind::Track, id));
+            }
+        }
+    }
+
+    /// The marked tracks rated half a star up (or down, `by` -1).
+    pub fn rate_by(&self, shell: &mut Shell, by: i16) {
+        if self.marked.len() > MANY {
+            let text = format!("Rating is for up to {} tracks at once ({} marked).", thousands(MANY), thousands(self.marked.len()));
+            shell.playlists.notice = Some((text, std::time::Instant::now()));
+            return;
+        }
+        for &id in &self.marked {
+            shell.act(Action::RateBy(Kind::Track, id, by));
+        }
+    }
+
+    /// The marked tracks added to a playlist (chosen in the palette), in the order shown.
+    pub fn add(&self, shell: &mut Shell, len: usize, id_at: impl Fn(usize) -> Option<Uuid>) {
+        shell.act(Action::AddToPlaylist(self.ordered(len, id_at)));
+    }
+
+    /// The marked tracks queued, in the order shown: at the end, or (`next`) first.
+    pub fn queue(&self, shell: &mut Shell, catalog: &Catalog, next: bool, len: usize, id_at: impl Fn(usize) -> Option<Uuid>) {
+        let tracks = self.ordered(len, id_at).into_iter().filter_map(|id| catalog.track_index(id)).collect();
+        shell.act(Action::Enqueue { tracks, next });
+    }
+
     /// While tracks are marked: how many, and the tools for them (a row). `salt`: the
     /// list's own (pages with several lists).
     pub fn bar(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: &Catalog, len: usize, id_at: impl Fn(usize) -> Option<Uuid> + Copy, salt: &str) {
@@ -342,10 +401,26 @@ impl Marking {
         }
         // Esc clears the marks (`keys`), not leaving the page.
         shell.form_dirty = true;
-        ui.horizontal(|ui| {
+        let tools = self.tools(shell);
+        ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new(format!("{} marked", thousands(self.marked.len()))).font(font(13.0, semibold())).color(P.accent));
-            if !self.in_place && ui.button(format!("Change {} tracks…  (Ctrl+E)", thousands(self.marked.len()))).clicked() {
+            // In any mode.
+            let starred = self.marked.iter().all(|id| shell.mark(*id).starred);
+            if ui.button(if starred { "Unstar  (s)" } else { "Star  (s)" }).clicked() {
+                self.star(shell);
+            }
+            if ui.button("Add to a playlist…  (p)").clicked() {
+                self.add(shell, len, id_at);
+            }
+            if ui.button("Queue  (q)").on_hover_text("At the end of the queue (Shift+Q: first)").clicked() {
+                self.queue(shell, catalog, false, len, id_at);
+            }
+            if !self.in_place && shell.account.can("edit_metadata") && ui.button(format!("Change {} tracks…  (Ctrl+E)", thousands(self.marked.len()))).clicked() {
                 self.open_bulk();
+            }
+            if !tools {
+                ui.label(RichText::new("the box, x or Ctrl+click (un)marks · Shift+↑/↓ or Shift+click a range · Ctrl+A all shown · Esc clear").color(P.faint).small());
+                return;
             }
             // Put them all in a grouping (a collective, an era…), in one go.
             if !catalog.groupings.is_empty() {
@@ -387,7 +462,7 @@ impl Marking {
                 let marked = self.ordered(len, id_at);
                 self.merge = Some(super::merge::MergeView::new(marked[0], marked[1]).in_popup());
             }
-            ui.label(RichText::new("the box or x (un)marks · Shift+↑/↓ or Shift+click a range · Ctrl+A all shown · Esc clear").color(P.faint).small());
+            ui.label(RichText::new("the box, x or Ctrl+click (un)marks · Shift+↑/↓ or Shift+click a range · Ctrl+A all shown · Esc clear").color(P.faint).small());
         });
         ui.add_space(4.0);
     }

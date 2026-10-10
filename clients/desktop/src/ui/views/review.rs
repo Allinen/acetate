@@ -612,10 +612,12 @@ impl Review {
             let to = self.selected.and_then(|id| self.position(catalog, id)).unwrap_or(at);
             let entries = &self.entries;
             self.marking.range_to(at, to, |n| entries.get(n).map(|e| catalog.track_at(e.track).id()));
-        } else if key(Key::J) || key(Key::ArrowDown) {
-            self.step(shell, catalog, 1);
-        } else if key(Key::K) || key(Key::ArrowUp) {
-            self.step(shell, catalog, -1);
+        } else if key(Key::J) || key(Key::ArrowDown) || key(Key::K) || key(Key::ArrowUp) {
+            self.step(shell, catalog, if key(Key::J) || key(Key::ArrowDown) { 1 } else { -1 });
+            // Ranges start from the cursor.
+            if let Some(n) = self.selected.and_then(|id| self.position(catalog, id)) {
+                self.marking.cursor_at(n);
+            }
         } else if key(Key::U) {
             self.step(shell, catalog, 1);
         } else if key(Key::D)

@@ -28,10 +28,10 @@ the editor in either mode, for a quick fix.)
 ## Many at once
 
 Mark tracks with `x` (or `Ctrl+click`, `Shift+click` for a range, `Ctrl+A` for all shown),
-then `Ctrl+E` edits all marked at once. The editor shows how many tracks differ in each
+then `Ctrl+E` edits all marked at once (in listen mode too). The editor shows how many tracks differ in each
 field, and previews every change before you apply it.
 
-Other bulk tools act on the marked tracks: *Credited as…* (credit an artist under another of
+In edit mode, other bulk tools act on the marked tracks: *Credited as…* (credit an artist under another of
 their names, or fix a name that was really someone else's, on tracks and albums together),
 *Mark as original files…*, and [merging](merging.md). Each previews exactly what will change,
 and nothing happens until you press the button.

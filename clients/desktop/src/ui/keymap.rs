@@ -16,7 +16,7 @@ pub const GROUPS: &[(&str, &[Binding])] = &[
             ("Ctrl+K", "command palette: find anything, run a command"),
             ("Ctrl+1 … 6", "albums, artists, tracks, now playing, queue, review"),
             ("1 … 6", "the same, outside a text field"),
-            ("Ctrl+,", "settings"),
+            ("Ctrl+,", "settings (h / l or the arrows: next tab)"),
             ("Ctrl+L", "copy a link to the track, album or artist shown (for someone with an account)"),
             ("Ctrl+Shift+L", "share link popup for the track or album shown (anyone can open it)"),
             ("right-click a track or album", "Share (Shift+click: share link popup)"),
@@ -70,14 +70,15 @@ pub const GROUPS: &[(&str, &[Binding])] = &[
         ],
     ),
     (
-        "Marking many (any track list, edit mode)",
+        "Marking many (any track list, any mode)",
         &[
             ("x, Ctrl+click  or  the box", "mark or unmark one"),
-            ("Shift+↑/↓  or  Shift+click", "a range, as the row it starts from (marked or not)"),
+            ("Shift+↑/↓  or  Shift+click", "mark a range, from the row the cursor is on (from a row just unmarked: unmark)"),
             ("Ctrl+A", "mark everything shown"),
             ("Esc", "clear the marks"),
+            ("s  /  + −  /  p  /  q, Shift+Q", "star (all starred: unstar)  /  rate  /  add to a playlist  /  queue the marked tracks"),
             ("Ctrl+E", "change the marked tracks (the editor, below; none marked: the selected one)"),
-            ("Ctrl+M", "two marked: merge them (a popup, the merge keys below)"),
+            ("Ctrl+M", "edit mode, two marked: merge them (a popup, the merge keys below)"),
         ],
     ),
     (
