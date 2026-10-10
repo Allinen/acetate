@@ -166,6 +166,9 @@ jobs:
         run: echo "IMAGE=${IMAGE,,}" >> "$GITHUB_ENV"
       - id: build
         uses: docker/build-push-action@v6
+        env:
+          # No build record kept as an artifact of the run (nothing reads it).
+          DOCKER_BUILD_RECORD_UPLOAD: "false"
         with:
           context: .
           platforms: ${{ matrix.platform }}
@@ -237,9 +240,17 @@ jobs:
     permissions:
       contents: write
     steps:
+      # (Only these: the run has others too, like the image's digests and the build records
+      # docker/build-push-action keeps, which aren't release files.)
       - uses: actions/download-artifact@v4
         with:
-          merge-multiple: true
+          name: linux
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows
+      - uses: actions/download-artifact@v4
+        with:
+          name: android
       - name: Release
         env:
           GH_TOKEN: ${{ github.token }}
