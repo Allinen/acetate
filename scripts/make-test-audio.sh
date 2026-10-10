@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# Generates a handful of short, tagged test files in ./test-audio using ffmpeg.
+# Generates a handful of short, tagged test files in ./test-audio using ffmpeg. They are
+# committed (the tests read them, and ffmpeg's output isn't byte for byte the same twice):
+# this is how they were made, and how to make more. Other files in test-audio/ (your own
+# music for a dev library) go in .git/info/exclude.
 # Each "song" is a few seconds of sine wave at a different pitch.
 set -euo pipefail
 

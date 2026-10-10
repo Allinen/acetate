@@ -63,8 +63,6 @@ jobs:
           sudo apt-get install -y ffmpeg
           rustup toolchain install stable --profile minimal
       - uses: Swatinem/rust-cache@v2
-      # The audio the tests import (test-audio/ isn't in the repository).
-      - run: scripts/make-test-audio.sh
       - run: cargo test --locked
 
   clients:
@@ -74,13 +72,11 @@ jobs:
       - name: Toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y libasound2-dev pkg-config ffmpeg
+          sudo apt-get install -y libasound2-dev pkg-config
           rustup toolchain install stable --profile minimal
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: clients
-      # The audio some tests play (test-audio/ isn't in the repository).
-      - run: scripts/make-test-audio.sh
       - run: cargo test --workspace --locked
         working-directory: clients
 
