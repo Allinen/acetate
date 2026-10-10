@@ -431,8 +431,11 @@ impl Marking {
         self.bar_contents(&mut inner, shell, catalog, len, id_at, salt, tools);
         let height = inner.min_rect().height();
         ui.ctx().data_mut(|d| d.insert_temp(id.with("height"), height));
+        // (The gap below it shrinks with it too: the layout's own would be gone at once.)
+        let gap = std::mem::take(&mut ui.spacing_mut().item_spacing.y);
         ui.allocate_space(Vec2::new(width, height * t));
-        ui.add_space(4.0 * t);
+        ui.add_space((4.0 + gap) * t);
+        ui.spacing_mut().item_spacing.y = gap;
     }
 
     #[allow(clippy::too_many_arguments)]
