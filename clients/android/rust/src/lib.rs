@@ -955,7 +955,7 @@ impl Core {
                 TrackOrder::Length => TrackSort::Length,
                 TrackOrder::Plays => TrackSort::Plays,
             };
-            let rows = TrackRows { tracks: None, added: None };
+            let rows = TrackRows { tracks: None, added: None, faded: None };
             let list = catalog
                 .as_deref()
                 .map(|catalog| catalog.order_tracks(&rows, &filter, sort, descending).into_iter().map(|i| i as u32).collect())
@@ -1261,7 +1261,7 @@ impl Core {
             // Places in the catalog of the ones that are there (a track gone is left out).
             let (places, at): (Vec<u32>, Vec<u64>) =
                 ids.iter().enumerate().filter_map(|(n, id)| Some((catalog.track_index(parse_id(id)?)?, n as u64))).unzip();
-            let rows = TrackRows { tracks: Some(&places), added: None };
+            let rows = TrackRows { tracks: Some(&places), added: None, faded: None };
             catalog.order_tracks(&rows, &filter, TrackSort::Natural, false).into_iter().map(|row| at[row]).collect()
         })
         .await

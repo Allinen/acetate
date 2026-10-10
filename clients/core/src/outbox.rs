@@ -33,7 +33,14 @@ pub enum Change {
     Rate { kind: String, id: Uuid, name: String, rating: i16, from: i16 },
     /// `at`: seconds since 1970.
     Play { track: Uuid, at: u64, key: Uuid },
-    Add { playlist: Uuid, name: String, tracks: Vec<Uuid> },
+    /// `at`: before the playlist's `at`-th entry (None: at the end).
+    Add {
+        playlist: Uuid,
+        name: String,
+        tracks: Vec<Uuid>,
+        #[serde(default)]
+        at: Option<usize>,
+    },
 }
 
 impl Change {
@@ -238,8 +245,8 @@ impl Outbox {
                 self.api.played(*track, Some((*at, *key))).await?;
                 vec![Sent::Marked(*track)]
             }
-            Change::Add { playlist, name, tracks } => {
-                let body = serde_json::json!({ "tracks": tracks });
+            Change::Add { playlist, name, tracks, at } => {
+                let body = serde_json::json!({ "tracks": tracks, "at": at });
                 self.api.send(Method::POST, &format!("/api/playlists/{playlist}/entries"), Some(body)).await?;
                 vec![Sent::Notice(format!("Added {} to “{name}”", count(tracks.len()))), Sent::Playlist(*playlist)]
             }
@@ -267,7 +274,7 @@ fn refused(change: &Change, err: &ApiError) -> Vec<Sent> {
             vec![Sent::Unrate { id: *id, rating: *from }, Sent::Notice(format!("Couldn't rate “{name}”: {err}"))]
         }
         Change::Play { .. } => vec![Sent::Notice(format!("Couldn't count a play: {err}"))],
-        Change::Add { playlist, name, tracks } => {
+        Change::Add { playlist, name, tracks, .. } => {
             let why = match err.status {
                 Some(404) => format!("“{name}” isn't there anymore, so {} couldn't be added to it.", count(tracks.len())),
                 Some(403) => format!("“{name}” isn't yours to change anymore, so {} couldn't be added to it.", count(tracks.len())),
@@ -416,7 +423,7 @@ mod tests {
         let outbox = r.outbox();
         outbox.push(star(1, true, false));
         settle(&outbox);
-        outbox.push(Change::Add { playlist: Uuid::from_u128(5), name: "Mix".into(), tracks: vec![Uuid::from_u128(1)] });
+        outbox.push(Change::Add { playlist: Uuid::from_u128(5), name: "Mix".into(), tracks: vec![Uuid::from_u128(1)], at: None });
         settle(&outbox);
         assert!(outbox.is_empty());
         let sent = outbox.take();

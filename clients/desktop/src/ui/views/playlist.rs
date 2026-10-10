@@ -221,12 +221,18 @@ impl PlaylistPage {
         let options = Options { key: "playlist", columns: PLAYLIST_COLUMNS, added: Some("Added"), filter_hint: Some("Filter this playlist: words, or artist:… year:…"), album: None, places: None, keys: true, scroll: true };
         let shown = self.table.show(ui, shell, catalog, &rows, version(shell.generation, &entries), player, &options);
 
-        // `p` on faded rows: back into the playlist (at its end), and no longer faded.
+        // `p` on faded rows: back into the playlist, each where it was, and no longer faded.
         if !shown.restore.is_empty() && detail.mine {
-            let back: Vec<Uuid> = shown.restore.iter().map(|&row| list[places[row]].0.track_id).collect();
-            let gone: Vec<Uuid> = shown.restore.iter().map(|&row| entries[row]).collect();
+            let mut back: Vec<usize> = shown.restore.iter().map(|&row| places[row]).collect();
+            back.sort_unstable();
+            let gone: Vec<Uuid> = back.iter().map(|&n| list[n].0.id).collect();
+            for &n in &back {
+                // Its place among the entries the server has: those before it, with the ones
+                // put back before this one.
+                let at = list[..n].iter().filter(|(e, faded)| !faded || gone.contains(&e.id)).count();
+                shell.playlists.add_at(id, detail.name.clone(), vec![list[n].0.track_id], Some(at));
+            }
             self.removed.retain(|(_, e)| !gone.contains(&e.id));
-            shell.playlists.add(id, detail.name.clone(), back);
             self.table.clear_marks();
         }
         // Keys for your own playlist (outside text fields).

@@ -354,13 +354,21 @@ impl Playlists {
     /// Adds tracks at the end: shown at once (waiting), sent through the outbox (now, or
     /// when the server is back). It answers with a notice and the playlist fetched again.
     pub fn add(&mut self, id: Uuid, name: String, tracks: Vec<Uuid>) {
+        self.add_at(id, name, tracks, None);
+    }
+
+    /// `add`, before the playlist's `at`-th entry (None: at the end).
+    pub fn add_at(&mut self, id: Uuid, name: String, tracks: Vec<Uuid>, at: Option<usize>) {
         let Some(outbox) = self.outbox.clone() else { return };
-        let added = tracks.iter().map(|&track_id| Entry { id: Uuid::new_v4(), track_id, added_at: String::new(), waiting: true });
-        self.change_locally(id, |d| d.entries.extend(added));
+        let added: Vec<Entry> = tracks.iter().map(|&track_id| Entry { id: Uuid::new_v4(), track_id, added_at: String::new(), waiting: true }).collect();
+        self.change_locally(id, |d| {
+            let at = at.unwrap_or(d.entries.len()).min(d.entries.len());
+            d.entries.splice(at..at, added);
+        });
         if let Some(detail) = self.details.get(&id).and_then(|c| c.value.clone()) {
             self.keep(id, &detail);
         }
-        outbox.push(crate::outbox::Change::Add { playlist: id, name, tracks });
+        outbox.push(crate::outbox::Change::Add { playlist: id, name, tracks, at });
     }
 
     /// Removes entries (shown at once).
