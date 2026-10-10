@@ -343,7 +343,9 @@ impl TrackTable {
         self.marking.bar(ui, shell, catalog, order.len(), id_at, options.key);
         let popup = self.marking.popup_open();
         // The marks' boxes: in edit mode, and in listen mode while tracks are marked.
-        let boxes = shell.edit_mode || !self.marking.is_empty();
+        // The column slides open and shut (the rows slide with it).
+        let boxes_open = widgets::glide(&ctx, egui::Id::new(("mark-column", options.key)), if shell.edit_mode || !self.marking.is_empty() { 1.0 } else { 0.0 }, 0.18);
+        let boxes = boxes_open > 0.0;
         if !self.marking.is_empty() && !self.had_marks {
             self.marking.boxes_appear(&ctx);
         }
@@ -428,7 +430,7 @@ impl TrackTable {
             builder = builder.max_scroll_height(f32::INFINITY);
         }
         if boxes {
-            builder = builder.column(Width::exact(26.0));
+            builder = builder.column(Width::exact(26.0 * boxes_open));
         }
         for c in &columns {
             builder = builder.column(c.width());

@@ -474,7 +474,7 @@ pub fn chip_morph(ui: &mut egui::Ui, id: &str, text: &str, active: bool) -> egui
 }
 
 fn chip_inner(ui: &mut egui::Ui, morph: Option<egui::Id>, text: &str, active: bool) -> egui::Response {
-    const FADE: f64 = 0.12;
+    const FADE: f64 = 0.18;
     let ctx = ui.ctx().clone();
     let font = super::theme::font(12.5, super::theme::medium());
     let galley = ui.painter().layout_no_wrap(text.to_string(), font.clone(), P.text);
@@ -505,11 +505,13 @@ fn chip_inner(ui: &mut egui::Ui, morph: Option<egui::Id>, text: &str, active: bo
     // Clipped to the pill: while it's still growing, the text doesn't stick out.
     let painter = ui.painter().with_clip_rect(rect);
     match old {
+        // The new text comes up from below and pushes the old one up out of the pill.
         Some((before, t)) => {
-            let t = t as f32;
+            let t = crate::ui::covers::ease_out(t as f32);
+            let rise = rect.height() * t;
             let old_galley = ui.painter().layout_no_wrap(before, font, color);
-            painter.galley(rect.center() - old_galley.size() / 2.0, old_galley, color.gamma_multiply(1.0 - t));
-            painter.galley(rect.center() - galley.size() / 2.0, galley, color.gamma_multiply(t));
+            painter.galley(rect.center() - old_galley.size() / 2.0 - Vec2::new(0.0, rise), old_galley, color);
+            painter.galley(rect.center() - galley.size() / 2.0 + Vec2::new(0.0, rect.height() - rise), galley, color);
         }
         None => {
             painter.galley(rect.center() - galley.size() / 2.0, galley, color);

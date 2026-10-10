@@ -55,6 +55,9 @@ pub struct Marking {
     mark_og: Option<super::mark_og::MarkOg>,
     /// Marked tracks being put in a grouping: the server's answer (how many, or why not).
     grouping_answer: Arc<Mutex<Option<Result<String, String>>>>,
+    /// How many were marked when the bar was last shown (it's drawn a moment after they're
+    /// cleared, going away).
+    last_count: usize,
 }
 
 impl Marking {
@@ -404,20 +407,27 @@ impl Marking {
     /// While tracks are marked: how many, and the tools for them (a row). `salt`: the
     /// list's own (pages with several lists).
     pub fn bar(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: &Catalog, len: usize, id_at: impl Fn(usize) -> Option<Uuid> + Copy, salt: &str) {
-        if self.marked.is_empty() {
+        // It's pulled down from behind what's above when the first track is marked, the
+        // rows below sliding with it, and pulled up again when the marks are cleared.
+        let id = egui::Id::new(("marking-bar", salt));
+        let t = widgets::glide(ui.ctx(), id, if self.marked.is_empty() { 0.0 } else { 1.0 }, 0.18);
+        if self.marked.is_empty() && t <= 0.0 {
             return;
         }
-        // Esc clears the marks (`keys`), not leaving the page.
-        shell.form_dirty = true;
+        if !self.marked.is_empty() {
+            // Esc clears the marks (`keys`), not leaving the page.
+            shell.form_dirty = true;
+            self.last_count = self.marked.len();
+        }
         let tools = self.tools(shell);
-        // It's pulled down from behind what's above when the first track is marked, the
-        // rows below sliding with it (when the marks clear it's gone at once: Esc).
-        let id = egui::Id::new(("marking-bar", salt));
-        let t = widgets::appear(ui.ctx(), id, 0.18);
         let full = ui.ctx().data(|d| d.get_temp::<f32>(id.with("height"))).unwrap_or(30.0);
         let (top, width) = (ui.cursor().min, ui.available_width());
         let mut inner = ui.new_child(egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(top - Vec2::new(0.0, (1.0 - t) * full), Vec2::new(width, 1000.0))));
         inner.set_clip_rect(egui::Rect::from_min_size(top, Vec2::new(width, full * t)).intersect(ui.clip_rect()));
+        // (Going away, it shows what it did, and can't be used.)
+        if self.marked.is_empty() {
+            inner.disable();
+        }
         self.bar_contents(&mut inner, shell, catalog, len, id_at, salt, tools);
         let height = inner.min_rect().height();
         ui.ctx().data_mut(|d| d.insert_temp(id.with("height"), height));
@@ -428,7 +438,7 @@ impl Marking {
     #[allow(clippy::too_many_arguments)]
     fn bar_contents(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: &Catalog, len: usize, id_at: impl Fn(usize) -> Option<Uuid> + Copy, salt: &str, tools: bool) {
         ui.horizontal_wrapped(|ui| {
-            ui.label(RichText::new(format!("{} marked", thousands(self.marked.len()))).font(font(13.0, semibold())).color(P.accent));
+            ui.label(RichText::new(format!("{} marked", thousands(self.last_count))).font(font(13.0, semibold())).color(P.accent));
             // In any mode.
             let starred = self.marked.iter().all(|id| shell.mark(*id).starred);
             if ui.button(if starred { "Unstar  (s)" } else { "Star  (s)" }).clicked() {
@@ -440,7 +450,7 @@ impl Marking {
             if ui.button("Queue  (q)").on_hover_text("At the end of the queue (Shift+Q: first)").clicked() {
                 self.queue(shell, catalog, false, len, id_at);
             }
-            if !self.in_place && shell.account.can("edit_metadata") && ui.button(format!("Change {} tracks…  (Ctrl+E)", thousands(self.marked.len()))).clicked() {
+            if !self.in_place && shell.account.can("edit_metadata") && ui.button(format!("Change {} tracks…  (Ctrl+E)", thousands(self.last_count))).clicked() {
                 self.open_bulk();
             }
             if !tools {
@@ -483,7 +493,7 @@ impl Marking {
             if shell.account.can("edit_files") && ui.button("Mark as original files…").on_hover_text("Their files are original files (og files) whose tags didn't say so").clicked() {
                 self.mark_og = Some(super::mark_og::MarkOg::open(shell, self.ordered(len, id_at)));
             }
-            if self.marked.len() == 2 && ui.button("Merge the two…  (Ctrl+M)").clicked() {
+            if self.last_count == 2 && ui.button("Merge the two…  (Ctrl+M)").clicked() {
                 let marked = self.ordered(len, id_at);
                 self.merge = Some(super::merge::MergeView::new(marked[0], marked[1]).in_popup());
             }
