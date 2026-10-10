@@ -16,7 +16,9 @@ impl Listener for Events {
 }
 
 /// A server that answers every request with a 404: reachable (so the core stays online),
-/// with nothing to give. Started once for all the tests.
+/// with nothing to give. Reads are answered at once; a change (a star, a rating) after a
+/// second, so a test can see what the app shows meanwhile, before the server refuses it.
+/// Started once for all the tests.
 static SERVER: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
     use std::io::{Read, Write};
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -26,7 +28,13 @@ static SERVER: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
             std::thread::spawn(move || {
                 let mut stream = stream;
                 let mut buf = [0u8; 4096];
-                while stream.read(&mut buf).is_ok_and(|n| n > 0) {
+                while let Ok(n) = stream.read(&mut buf) {
+                    if n == 0 {
+                        break;
+                    }
+                    if !buf[..n].starts_with(b"GET ") {
+                        std::thread::sleep(Duration::from_secs(1));
+                    }
                     if stream.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n").is_err() {
                         break;
                     }
