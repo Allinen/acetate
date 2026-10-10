@@ -140,7 +140,7 @@ impl MirrorSection {
                     ui.horizontal(|ui| {
                         ui.add(egui::Label::new(RichText::new(look.folder.display().to_string()).monospace().small()).selectable(true));
                         ui.label(RichText::new(format!("has the server's {}", look.server_folder)).color(P.faint).small());
-                        if ui.small_button("✕").on_hover_text("Don't look here").clicked() {
+                        if ui.small_button("×").on_hover_text("Don't look here").clicked() {
                             gone = Some(i);
                         }
                     });

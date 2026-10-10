@@ -275,7 +275,7 @@ fn toast(ui: &egui::Ui, shell: &mut Shell) {
                         if label.clicked() {
                             shell.messages.open = true;
                         }
-                        let close = ui.add(egui::Button::new(RichText::new("✕").font(font(12.0, medium())).color(P.muted)).frame(false));
+                        let close = ui.add(egui::Button::new(RichText::new("×").font(font(12.0, medium())).color(P.muted)).frame(false));
                         if close.on_hover_text("Dismiss").clicked() {
                             shell.messages.dismissed = Some(at);
                         }
