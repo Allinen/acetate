@@ -447,7 +447,7 @@ impl TrackTable {
         }
         // The marks' boxes are in the first column's cell, which is that much wider (not a
         // column of their own: the gap between columns would jump when it goes).
-        let box_room = 26.0 * boxes_open;
+        let box_room = 30.0 * boxes_open;
         for (n, c) in columns.iter().enumerate() {
             builder = builder.column(if n == 0 { c.width_plus(box_room) } else { c.width() });
         }
@@ -528,7 +528,10 @@ impl TrackTable {
                         row.col(|ui| {
                             // The mark's box, in front of the first column: a click (un)marks the row.
                             if idx == 0 && boxes {
+                                // (No gap after it, the content's place is the header's: it'd jump at the end.)
+                                let gap = std::mem::take(&mut ui.spacing_mut().item_spacing.x);
                                 let (room, response) = ui.allocate_exact_size(Vec2::new(box_room, 18.0), Sense::click());
+                                ui.spacing_mut().item_spacing.x = gap;
                                 let rect = egui::Rect::from_min_size(room.min + Vec2::new(2.0, 0.0), Vec2::splat(18.0));
                                 super::marking::paint_box(&ui.painter().with_clip_rect(room), t.id(), rect, marked, response.hovered());
                                 if response.on_hover_text("Mark (x)").clicked() {
