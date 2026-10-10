@@ -35,7 +35,8 @@ cargo test --quiet
 echo "== version"
 scripts/versions.py --set "$version"
 git add -A
-git commit -q -m "release: $version"
+# (Nothing to commit when the version is the one already there: the first release.)
+git diff --cached --quiet || git commit -q -m "release: $version"
 git tag -a "$tag" -m "Acetate $version"
 
 echo
