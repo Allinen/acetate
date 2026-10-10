@@ -129,6 +129,38 @@ async fn an_edit_is_in_the_next_delta_and_only_it(_: PgPoolOptions, connect: PgC
 }
 
 #[sqlx::test]
+async fn lyrics_are_in_the_catalog_and_a_lyric_changed_is_its_track_changed(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
+    let lib = setup(connect).await?;
+    let since = version(&lib).await?;
+    let insert = "INSERT INTO lyrics (track_id, source, body, is_synced, language) VALUES ($1, 'manual', $2, $3, $4) RETURNING id";
+    let synced: Uuid = sqlx::query_scalar(insert).bind(lib.v).bind("[00:01.00]la").bind(true).bind("en").fetch_one(&lib.owner).await?;
+    let hidden: Uuid = sqlx::query_scalar(insert).bind(lib.h).bind("hidden words").bind(false).bind(None::<String>).fetch_one(&lib.owner).await?;
+    let c = changes(&lib, lib.carol, since).await?;
+    assert!(c.tracks.contains(&lib.v) && !c.everything, "a lyric added: its track changed");
+
+    // Only what the user may see: carol doesn't see H, nor its lyrics.
+    let lyrics = |user: Uuid, ids: Option<Vec<Uuid>>| {
+        let app = lib.app.clone();
+        async move {
+            let mut tx = db::begin(&app, Some(user)).await?;
+            let rows: Vec<Vec<Value>> = serde_json::from_str(&db::library::lyrics_json(&mut tx, ids.as_deref()).await?)?;
+            anyhow::Ok(rows)
+        }
+    };
+    let rows = lyrics(lib.carol, None).await?;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0], serde_json::json!([lib.v, synced, "en", false, true, "[00:01.00]la"]).as_array().unwrap().clone());
+    assert_eq!(lyrics(lib.alice, None).await?.len(), 2, "alice (admin) sees H's too");
+
+    // Removed: left out, and a change of its track.
+    let since = version(&lib).await?;
+    sqlx::query("UPDATE lyrics SET removed = true WHERE id = $1").bind(hidden).execute(&lib.owner).await?;
+    assert!(changes(&lib, lib.alice, since).await?.tracks.contains(&lib.h));
+    assert!(lyrics(lib.alice, Some(vec![lib.h])).await?.is_empty(), "the delta for H: none (the client drops what it had)");
+    Ok(())
+}
+
+#[sqlx::test]
 async fn a_merge_is_removed_and_a_restricted_track_is_gone_in_the_delta(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
     let lib = setup(connect).await?;
     let since = version(&lib).await?;

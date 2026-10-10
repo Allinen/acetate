@@ -10,7 +10,7 @@ use serde_json::value::RawValue;
 use uuid::Uuid;
 
 /// The catalog format this client reads (the server's `FORMAT`).
-pub const FORMAT: u32 = 9;
+pub const FORMAT: u32 = 10;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -223,6 +223,18 @@ pub struct Issues(pub Uuid, pub Vec<(Uuid, String)>);
 
 pub(super) const ISSUE_COLUMNS: &[&str] = &["track_id", "flags"];
 
+/// A lyric: its track, id, language, whether it's official and synced, and its text.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Lyric(pub Uuid, pub Uuid, pub Option<String>, pub bool, pub bool, pub String);
+
+impl Lyric {
+    pub fn as_lyric(&self) -> (Uuid, super::lyrics::Lyric<'_>) {
+        (self.0, super::lyrics::Lyric { id: self.1, language: self.2.as_deref(), is_official: self.3, is_synced: self.4, body: &self.5 })
+    }
+}
+
+pub(super) const LYRIC_COLUMNS: &[&str] = &["track_id", "id", "language", "is_official", "is_synced", "body"];
+
 // Every column is read (rows are arrays in column order); not all are shown yet.
 #[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -272,6 +284,9 @@ pub struct Raw {
     pub annotations: Part<Annotation>,
     /// Tracks' open review flags.
     pub issues: Part<Issues>,
+    /// Lyrics (a delta: the changed tracks', all of them; none for a track: it has none).
+    #[serde(default)]
+    pub lyrics: Part<Lyric>,
     /// Every grouping (a delta has them all too: there are few).
     pub groupings: Part<Grouping>,
     /// Extras (a delta: the changed ones).
@@ -308,6 +323,8 @@ pub struct Base<'a> {
     pub artists: Part<Artist>,
     pub annotations: Part<Annotation>,
     pub issues: Part<Issues>,
+    #[serde(default)]
+    pub lyrics: Part<Lyric>,
     pub groupings: Part<Grouping>,
     #[serde(default)]
     pub extras: Part<Extra>,
@@ -340,6 +357,9 @@ pub fn parse_base(body: &[u8]) -> anyhow::Result<Base<'_>> {
     check_columns("artists", &base.artists.columns, ARTIST_COLUMNS)?;
     check_columns("annotations", &base.annotations.columns, ANNOTATION_COLUMNS)?;
     check_columns("issues", &base.issues.columns, ISSUE_COLUMNS)?;
+    if !base.lyrics.columns.is_empty() {
+        check_columns("lyrics", &base.lyrics.columns, LYRIC_COLUMNS)?;
+    }
     check_columns("groupings", &base.groupings.columns, GROUPING_COLUMNS)?;
     if !base.extras.columns.is_empty() {
         check_columns("extras", &base.extras.columns, EXTRA_COLUMNS)?;
@@ -358,6 +378,9 @@ pub fn parse(body: &[u8]) -> anyhow::Result<Raw> {
     check_columns("artists", &raw.artists.columns, ARTIST_COLUMNS)?;
     check_columns("annotations", &raw.annotations.columns, ANNOTATION_COLUMNS)?;
     check_columns("issues", &raw.issues.columns, ISSUE_COLUMNS)?;
+    if !raw.lyrics.columns.is_empty() {
+        check_columns("lyrics", &raw.lyrics.columns, LYRIC_COLUMNS)?;
+    }
     check_columns("groupings", &raw.groupings.columns, GROUPING_COLUMNS)?;
     if !raw.extras.columns.is_empty() {
         check_columns("extras", &raw.extras.columns, EXTRA_COLUMNS)?;

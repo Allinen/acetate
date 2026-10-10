@@ -12,6 +12,7 @@ mod flat;
 #[cfg(test)]
 mod measure;
 pub mod index;
+pub mod lyrics;
 pub mod marks;
 pub mod model;
 pub mod query;

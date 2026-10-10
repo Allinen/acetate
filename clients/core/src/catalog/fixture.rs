@@ -1,12 +1,12 @@
 //! A small catalog for tests that need every kind of thing in it: credits with an alias,
-//! a track on two albums, a grouping, an extra, annotations, issues, playlists.
+//! a track on two albums, a grouping, an extra, annotations, issues, lyrics, playlists.
 
 use super::index::Catalog;
 use super::model;
 
 pub fn sample_json() -> String {
     serde_json::json!({
-        "format": 9,
+        "format": model::FORMAT,
         "version": "7:7:",
         "tracks": {"columns": ["id", "title", "artist_display", "credits", "albums", "duration_ms", "file_id", "cover_id", "cover_key",
                                 "release_date", "year", "status", "genres", "created_at", "is_restricted", "codec", "groupings", "platforms", "original_filename", "bitrate", "sample_rate", "sha256"],
@@ -35,6 +35,11 @@ pub fn sample_json() -> String {
                         "rows": [["track", "00000000-0000-7000-8000-000000000002", 5, "2026-01-01", 8, "2026-02-02"]]},
         "issues": {"columns": ["track_id", "flags"], "rows": [
             ["00000000-0000-7000-8000-000000000001", [["00000000-0000-7000-8000-0000000000e1", "fix_later"], ["00000000-0000-7000-8000-0000000000e2", "missing_cover"]]]
+        ]},
+        "lyrics": {"columns": ["track_id", "id", "language", "is_official", "is_synced", "body"], "rows": [
+            ["00000000-0000-7000-8000-000000000001", "00000000-0000-7000-8000-000000000111", "en", false, true, "[00:01.00]one"],
+            ["00000000-0000-7000-8000-000000000001", "00000000-0000-7000-8000-000000000112", null, true, false, "ein \u{e4}"],
+            ["00000000-0000-7000-8000-000000000003", "00000000-0000-7000-8000-000000000113", "en", false, false, "three"]
         ]},
         "groupings": {"columns": ["id", "kind", "name", "track_count", "album_count", "artists"], "rows": [
             ["00000000-0000-7000-8000-0000000000d1", "era", "Early", 1, 1, ["00000000-0000-7000-8000-0000000000a1"]]

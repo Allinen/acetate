@@ -45,6 +45,11 @@ pub struct Str {
 
 impl Str {
     pub const NONE: Str = Str { start: 0, len: u32::MAX };
+
+    /// Whether it's within a text of `len` bytes.
+    pub(super) fn fits(self, len: usize) -> bool {
+        (self.start as usize).checked_add(self.len as usize).is_some_and(|end| end <= len)
+    }
 }
 
 #[derive(Default)]

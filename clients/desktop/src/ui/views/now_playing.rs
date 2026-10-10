@@ -48,8 +48,13 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell, player: &PlayerView, spectrum:
     // without, the title sits in the middle, beside the cover.
     // (A file that didn't import isn't a track: no details, marks or lyrics.)
     let is_track = item.source == crate::playback::AudioSource::File;
-    let detail = if is_track { shell.track_details.get(item.track_id).value.clone() } else { None };
-    let lyrics = detail.as_ref().and_then(|d| d.lyrics.iter().find(|l| l.is_synced).or(d.lyrics.first()).cloned());
+    // (From the catalog, offline too, unless the server just sent fresher ones.)
+    let lyrics = if is_track {
+        let all = crate::details::lyrics_to_show(shell.catalog.value.as_deref(), shell.track_details.get(item.track_id), item.track_id);
+        all.iter().find(|l| l.is_synced).or(all.first()).cloned()
+    } else {
+        None
+    };
     let middle = if lyrics.is_some() { cover_rect.top() + 52.0 } else { cover_rect.center().y };
     super::playing_links(
         ui,

@@ -87,6 +87,7 @@ fn where_memory_goes() {
         artists: model::Part::default(),
         annotations: model::Part::default(),
         issues: model::Part::default(),
+        lyrics: model::Part::default(),
         groupings: model::Part::default(),
         extras: model::Part::default(),
         playlists: Vec::new(),

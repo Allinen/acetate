@@ -37,6 +37,8 @@ pub struct Catalog {
     /// Each track's open review flags: (flag id, kind), in the order to show them. Only
     /// tracks with any.
     pub issues: HashMap<Uuid, Vec<(Uuid, String)>>,
+    /// Every track's lyrics (see `lyrics`).
+    pub lyrics: super::lyrics::Lyrics,
     /// Collectives, eras, projects…, by name.
     pub groupings: Vec<Grouping>,
     /// Extras (vocals, stems…: not tracks), not taken off.
@@ -287,6 +289,7 @@ impl Catalog {
             ("by id", map(&self.track_by_id) + map(&self.album_by_id) + map(&self.artist_by_id)),
             ("lists", self.album_tracks.bytes() + self.artist_tracks.bytes() + self.artist_albums.bytes() + self.grouping_tracks.bytes() + self.grouping_albums.bytes()),
             ("sort ranks", ranks.iter().map(|r| r.len() * 4).sum()),
+            ("lyrics", self.lyrics.bytes()),
         ];
         parts.extend(self.pools.bytes());
         parts
@@ -661,6 +664,11 @@ pub struct Merger<'a> {
     extras: Rows<model::Extra>,
     annotations: HashMap<Uuid, model::Annotation>,
     issues: HashMap<Uuid, Vec<(Uuid, String)>>,
+    /// Lyrics that came (whole, or in deltas), and whether the old catalog's are kept but
+    /// for the tracks in `lyrics_replaced` (changed since: theirs came again, or none did).
+    lyrics: Vec<model::Lyric>,
+    keep_old_lyrics: bool,
+    lyrics_replaced: std::collections::HashSet<Uuid>,
     groupings: Vec<model::Grouping>,
     playlists: Vec<model::Playlist>,
 }
@@ -679,6 +687,9 @@ impl<'a> Merger<'a> {
             extras: Rows::new(base.extras.rows, |e| e.id),
             annotations: base.annotations.rows.into_iter().map(|a| (a.id, a)).collect(),
             issues: base.issues.rows.into_iter().map(|i| (i.0, i.1)).collect(),
+            lyrics: base.lyrics.rows,
+            keep_old_lyrics: false,
+            lyrics_replaced: Default::default(),
             groupings: base.groupings.rows,
             playlists: base.playlists,
         })
@@ -694,6 +705,9 @@ impl<'a> Merger<'a> {
             extras: Rows::new(raw.extras.rows, |e| e.id),
             annotations: raw.annotations.rows.into_iter().map(|a| (a.id, a)).collect(),
             issues: raw.issues.rows.into_iter().map(|i| (i.0, i.1)).collect(),
+            lyrics: raw.lyrics.rows,
+            keep_old_lyrics: false,
+            lyrics_replaced: Default::default(),
             groupings: raw.groupings.rows,
             playlists: raw.playlists,
         }
@@ -712,6 +726,9 @@ impl<'a> Merger<'a> {
             extras: Rows::new(c.extras.clone(), |e| e.id),
             annotations: c.annotations.clone(),
             issues: c.issues.clone(),
+            lyrics: Vec::new(),
+            keep_old_lyrics: true,
+            lyrics_replaced: Default::default(),
             groupings: c.groupings.clone(),
             playlists: c.playlists.clone(),
         }
@@ -719,6 +736,11 @@ impl<'a> Merger<'a> {
 
     pub fn add(&mut self, delta: model::Raw) {
         let removed = &delta.removed;
+        // A changed (or removed) track's lyrics are the ones in the delta, if any.
+        let changed: std::collections::HashSet<Uuid> = delta.tracks.rows.iter().map(|t| t.id).chain(removed.tracks.iter().copied()).collect();
+        self.lyrics.retain(|l| !changed.contains(&l.0));
+        self.lyrics.extend(delta.lyrics.rows);
+        self.lyrics_replaced.extend(changed);
         self.tracks.apply(delta.tracks.rows.into_iter().map(keyed(|t: &model::Track| t.id)).collect(), &removed.tracks, |r| r.0);
         self.albums.apply(delta.albums.rows.into_iter().map(keyed(|a: &model::Album| a.id)).collect(), &removed.albums, |r| r.0);
         self.artists.apply(delta.artists.rows, &removed.artists, |a| a.id);
@@ -782,6 +804,11 @@ impl<'a> Merger<'a> {
             playlists: self.playlists,
             annotations: self.annotations,
             issues: self.issues.into_iter().filter(|i| !i.1.is_empty()).collect(),
+            lyrics: {
+                let kept = old.filter(|_| self.keep_old_lyrics).into_iter().flat_map(|c| c.lyrics.all());
+                let replaced = &self.lyrics_replaced;
+                super::lyrics::Lyrics::build(kept.filter(|(t, _)| !replaced.contains(t)).chain(self.lyrics.iter().map(model::Lyric::as_lyric)))
+            },
             groupings: self.groupings,
             extras: self.extras.finish().into_iter().filter(|e| !e.hidden).collect(),
             extra_text: Texts::default(),
@@ -837,7 +864,7 @@ mod tests {
     fn catalog() -> Catalog {
         // Two albums; track 3 is on both, first on "B" (its main one).
         let body = serde_json::json!({
-            "format": 9,
+            "format": 10,
             "tracks": {"columns": ["id", "title", "artist_display", "credits", "albums", "duration_ms", "file_id", "cover_id", "cover_key",
                                     "release_date", "year", "status", "genres", "created_at", "is_restricted", "codec", "groupings", "platforms", "original_filename", "bitrate", "sample_rate", "sha256"],
                        "rows": [
@@ -919,7 +946,7 @@ mod tests {
             serde_json::json!([t(n), title, "Ann", [], album, 1000, "00000000-0000-7000-8000-0000000000f9", null, null, null, null, "released", [], "", false, "flac"])
         };
         let delta = serde_json::json!({
-            "format": 9, "delta": true, "version": "10:20:",
+            "format": 10, "delta": true, "version": "10:20:",
             "tracks": {"columns": [], "rows": [track(1, "Second (edited)"), track(4, "Fourth")]},
             "albums": {"columns": [], "rows": []},
             "artists": {"columns": [], "rows": []},
@@ -957,7 +984,7 @@ mod tests {
 
     #[test]
     fn unknown_columns_ask_for_an_update() {
-        let body = br#"{"format": 10}"#;
+        let body = br#"{"format": 11}"#;
         let err = model::parse(body).err().unwrap().to_string();
         assert!(err.contains("update the app"), "{err}");
     }
@@ -1009,6 +1036,7 @@ mod bench {
             artists: model::Part { columns: Vec::new(), rows: Vec::new() },
             annotations: model::Part { columns: Vec::new(), rows: Vec::new() },
             issues: model::Part { columns: Vec::new(), rows: Vec::new() },
+            lyrics: model::Part::default(),
             groupings: model::Part { columns: Vec::new(), rows: Vec::new() },
             extras: model::Part::default(),
             playlists: Vec::new(),

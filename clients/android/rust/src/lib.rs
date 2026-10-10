@@ -1197,16 +1197,10 @@ impl Core {
     /// has none; `Change::Details` says when they came.
     pub fn lyrics(&self, track: String) -> Option<LyricsView> {
         let id = parse_id(&track)?;
-        let detail = {
-            let mut details = self.shared.track_details.lock().unwrap();
-            let cached = details.get(id);
-            if cached.value.is_none() {
-                log::info!("details of {id}: not there yet (refreshing {}, error {:?})", cached.refreshing, cached.error);
-            }
-            cached.value.clone()?
-        };
-        log::info!("details of {id}: {} lyrics entries", detail.lyrics.len());
-        let lyrics = detail.lyrics.iter().find(|l| l.is_synced).or(detail.lyrics.first())?;
+        let catalog = self.shared.catalog();
+        // (From the catalog, offline too, unless the server just sent fresher ones.)
+        let all = acetate_core::details::lyrics_to_show(catalog.as_deref(), self.shared.track_details.lock().unwrap().get(id), id);
+        let lyrics = all.iter().find(|l| l.is_synced).or(all.first())?;
         Some(lyrics_view(lyrics))
     }
 

@@ -167,7 +167,7 @@ cargo run -- serve                   # runs migrations, serves on 127.0.0.1:3000
 `sqlx::query!` checks SQL against the live database at compile time, so Postgres must be running to build.
 Reset the dev database with `scripts/reset-dev-db.sh`: empties it, reapplies the migrations and creates the user `admin` (password `adminadmin`); `--with-audio` also imports `./test-audio`. It only touches local databases whose name ends in `_dev`, `_test` or `_scratch` (so never the real library, e.g. `acetate`), and works while psql or the server is connected (restart the server afterwards).
 
-Bring a local database up to date with `scripts/migrate-db.sh` (after pulling new migrations, say): it applies the migrations that haven't run yet and nothing else. A plain `cargo build` fails while the database is behind (sqlx checks the queries against it); the script builds against the checked-in query cache (`.sqlx`) instead. `acetate migrate` does the same with a built binary.
+Bring a local database up to date with `scripts/migrate-db.sh` (after pulling new migrations, say): it applies the migrations that haven't run yet and nothing else. A plain `cargo build` fails while the database is behind (sqlx checks the queries against it); the script uses `sqlx migrate run` when sqlx-cli is installed, else builds against the checked-in query cache (`.sqlx`). `acetate migrate` does the same with a built binary.
 
 ## License
 [GPL-3.0](LICENSE)

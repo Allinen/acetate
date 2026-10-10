@@ -348,6 +348,36 @@ pub struct Lyrics {
     pub revisions: Option<Vec<LyricsRevision>>,
 }
 
+impl Lyrics {
+    /// A lyric from the catalog, to show (not to edit from: it has no revision).
+    pub fn from_catalog(l: &crate::catalog::lyrics::Lyric) -> Lyrics {
+        Lyrics {
+            id: l.id,
+            is_official: l.is_official,
+            is_synced: l.is_synced,
+            language: l.language.map(str::to_string),
+            source: String::new(),
+            body: l.body.to_string(),
+            revision_id: Uuid::nil(),
+            revisions: None,
+        }
+    }
+}
+
+/// A track's lyrics to show: from its details if the server sent them in this session
+/// (the freshest: just edited, say), else from the catalog (every track's, offline too),
+/// else from the details kept on disk.
+pub fn lyrics_to_show(catalog: Option<&crate::catalog::Catalog>, detail: &crate::catalog::Cached<TrackDetail>, track: Uuid) -> Vec<Lyrics> {
+    if let (Some(d), Some(_)) = (&detail.value, detail.confirmed_at) {
+        return d.lyrics.clone();
+    }
+    let from_catalog: Vec<Lyrics> = catalog.map(|c| c.lyrics.of(track).map(|l| Lyrics::from_catalog(&l)).collect()).unwrap_or_default();
+    if !from_catalog.is_empty() {
+        return from_catalog;
+    }
+    detail.value.as_ref().map(|d| d.lyrics.clone()).unwrap_or_default()
+}
+
 /// A revision of a lyrics entry: its data (`body`, `is_official`, `language`) then.
 #[derive(Debug, Clone, Deserialize)]
 pub struct LyricsRevision {
@@ -612,6 +642,22 @@ impl<T: DeserializeOwned + Send + Sync + 'static> Details<T> {
 
     fn path(&self, id: Uuid) -> Option<PathBuf> {
         self.dir.as_ref().map(|d| d.join(format!("{}-{id}.json", self.kind)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lyrics_show_from_the_catalog_without_details() {
+        let catalog = crate::catalog::fixture::sample();
+        let track = Uuid::from_u128(0x0000_0000_0000_7000_8000_0000_0000_0001);
+        let shown = lyrics_to_show(Some(&catalog), &Default::default(), track);
+        let bodies: Vec<&str> = shown.iter().map(|l| l.body.as_str()).collect();
+        assert_eq!(bodies, ["ein \u{e4}", "[00:01.00]one"], "official first");
+        assert!(shown[1].is_synced && shown[1].language.as_deref() == Some("en"));
+        assert!(lyrics_to_show(None, &Default::default(), track).is_empty());
     }
 }
 

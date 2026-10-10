@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT COALESCE(json_agg(json_build_array(l.track_id, l.id, l.language, l.is_official, l.is_synced, l.body)\n                                 ORDER BY l.track_id, l.is_official DESC, l.id), '[]'::json)::text AS \"rows!\"\n        FROM lyrics l\n        JOIN tracks t ON t.id = l.track_id\n        WHERE NOT l.removed AND t.merged_into IS NULL AND ($1::uuid[] IS NULL OR l.track_id = ANY($1))\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "rows!",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "UuidArray"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "04413d4cb4b144774e63526c395a558b16aa66afe6a217707029d0fde5a6abeb"
+}

@@ -88,6 +88,27 @@ pub const ARTIST_COLUMNS: &[&str] = &["id", "name", "disambiguation", "aliases",
 /// track, `[]` when it has none anymore.
 pub const ISSUE_COLUMNS: &[&str] = &["track_id", "flags"];
 
+/// Lyrics, for clients to have them offline: one row per lyric (not removed), ordered by
+/// track. The whole catalog has every one; a delta, those of the changed tracks (a changed
+/// track with none has no rows: the client drops what it had).
+pub const LYRIC_COLUMNS: &[&str] = &["track_id", "id", "language", "is_official", "is_synced", "body"];
+
+/// The lyrics of the tracks (all, or these ones), see `LYRIC_COLUMNS`.
+pub async fn lyrics_json(conn: &mut PgConnection, ids: Option<&[Uuid]>) -> sqlx::Result<String> {
+    sqlx::query_scalar!(
+        r#"
+        SELECT COALESCE(json_agg(json_build_array(l.track_id, l.id, l.language, l.is_official, l.is_synced, l.body)
+                                 ORDER BY l.track_id, l.is_official DESC, l.id), '[]'::json)::text AS "rows!"
+        FROM lyrics l
+        JOIN tracks t ON t.id = l.track_id
+        WHERE NOT l.removed AND t.merged_into IS NULL AND ($1::uuid[] IS NULL OR l.track_id = ANY($1))
+        "#,
+        ids as Option<&[Uuid]>
+    )
+    .fetch_one(conn)
+    .await
+}
+
 /// The current user's annotations. `kind`: "track", "album" or "artist".
 pub const ANNOTATION_COLUMNS: &[&str] = &["kind", "id", "play_count", "last_played_at", "rating", "starred_at"];
 

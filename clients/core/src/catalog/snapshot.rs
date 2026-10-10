@@ -23,6 +23,7 @@ use uuid::Uuid;
 
 use super::flat::{Col, Flat, Mapping};
 use super::index::{Catalog, Lists};
+use super::lyrics::{LyricRow, Lyrics};
 use super::model::{self, Credit, Membership, Role};
 use super::rows::{AlbumRow, Pools, Span, TrackRow};
 use super::text::{Str, Text, Texts, Utf8};
@@ -30,7 +31,7 @@ use super::text::{Str, Text, Texts, Utf8};
 const MAGIC: &[u8; 8] = b"ACETSNAP";
 
 /// Changes with what's stored and how.
-const FORMAT: u32 = 2;
+const FORMAT: u32 = 3;
 
 /// A credit as stored: its alias (if any) is in the aliases section.
 #[derive(Clone, Copy)]
@@ -98,7 +99,7 @@ fn fingerprint() -> u64 {
     for n in [
         size_of::<TrackRow>(), align_of::<TrackRow>(), size_of::<AlbumRow>(), align_of::<AlbumRow>(),
         size_of::<MembershipRow>(), align_of::<MembershipRow>(), size_of::<CreditRow>(), align_of::<CreditRow>(),
-        size_of::<Span>(), size_of::<Str>(),
+        size_of::<Span>(), size_of::<Str>(), size_of::<LyricRow>(), align_of::<LyricRow>(),
     ] {
         bytes.extend((n as u64).to_le_bytes());
     }
@@ -146,7 +147,7 @@ impl<W: Write> Writer<W> {
 }
 
 /// The sections, in order. Reading mirrors this.
-const SECTIONS: usize = 34;
+const SECTIONS: usize = 36;
 
 impl Catalog {
     /// Writes this catalog to `path` (a temporary name; the caller renames it into place).
@@ -211,6 +212,8 @@ impl Catalog {
         ] {
             w.col(rank)?;
         }
+        w.col(&self.lyrics.rows)?;
+        w.col(&self.lyrics.text.buffer.0)?;
         anyhow::ensure!(w.table.len() == SECTIONS, "the snapshot has {} sections, not {SECTIONS}", w.table.len());
 
         let mut head = Vec::with_capacity(HEADER + table_len);
@@ -312,6 +315,11 @@ impl Catalog {
         let (track_text, album_text, artist_text, extra_text) = (texts()?, texts()?, texts()?, texts()?);
         let (track_title_rank, track_artist_rank, album_title_rank, album_artist_rank, artist_name_rank, track_newest_rank, track_album_rank) =
             (col!(u32), col!(u32), col!(u32), col!(u32), col!(u32), col!(u32), col!(u32));
+        let lyric_rows = col!(LyricRow);
+        let lyrics = Lyrics { rows: lyric_rows, text: Text { buffer: Utf8::checked(col!(u8)).context("lyrics that aren't text")? } };
+        // (A lyric pointing past the text would panic when read.)
+        let text_len = lyrics.text.buffer.0.len();
+        anyhow::ensure!(lyrics.rows.iter().all(|r| r.in_text(text_len)), "lyrics out of their text");
 
         // What the columns have to agree on, or indexing would run off their ends.
         let (n_tracks, n_albums, n_artists, n_groupings) = (tracks.len(), albums.len(), meta.artists.len(), meta.groupings.len());
@@ -339,6 +347,7 @@ impl Catalog {
             playlists: meta.playlists,
             annotations: meta.annotations.into_iter().map(|a| (a.id, a)).collect(),
             issues: meta.issues.into_iter().map(|i| (i.0, i.1)).collect(),
+            lyrics,
             groupings: meta.groupings,
             extras: meta.extras,
             extra_text,
@@ -430,6 +439,7 @@ mod tests {
         notes.sort();
         out.extend(notes);
         out.push(format!("{:?} {:?} {:?}", c.issues, c.playlists, c.extras));
+        out.push(format!("{:?}", c.lyrics.all().collect::<Vec<_>>()));
         out
     }
 
@@ -459,8 +469,16 @@ mod tests {
         delta["version"] = "8:8:".into();
         delta["delta"] = true.into();
         delta["removed"] = serde_json::json!({"tracks": ["00000000-0000-7000-8000-000000000003"]});
+        // The first track changed: its lyrics are the delta's (one, of the two it had).
+        let sample_rows: serde_json::Value = serde_json::from_str(&super::super::fixture::sample_json()).unwrap();
+        delta["tracks"]["rows"] = serde_json::json!([sample_rows["tracks"]["rows"][0]]);
+        delta["lyrics"]["rows"] = serde_json::json!([["00000000-0000-7000-8000-000000000001", "00000000-0000-7000-8000-000000000119", "fi", false, false, "uusi"]]);
         let applied = mapped.apply(model::parse(delta.to_string().as_bytes()).unwrap());
         assert_eq!(applied.track_count(), 2);
+        let bodies = |track: u128| applied.lyrics.of(Uuid::from_u128(0x0000_0000_0000_7000_8000_0000_0000_0000 | track)).map(|l| l.body.to_string()).collect::<Vec<_>>();
+        assert_eq!(bodies(1), ["uusi"]);
+        assert!(bodies(3).is_empty(), "a removed track's are gone");
+        assert_eq!(bodies(2), Vec::<String>::new());
         assert_eq!(applied.version.as_deref(), Some("8:8:"));
         // And the result can be kept and opened again.
         assert_eq!(describe(&snapshot_of(&applied, dir.path())), describe(&applied));

@@ -5,9 +5,9 @@
 #   scripts/migrate-db.sh
 #
 # Uses DATABASE_URL (from the environment or .env) and refuses anything that isn't on this
-# machine (a server applies its own migrations when it starts). Builds against the query
-# cache checked in (.sqlx), so it works while the database is still behind: a plain
-# `cargo build` checks the queries against the database and fails until it's migrated.
+# machine (a server applies its own migrations when it starts). Uses sqlx-cli if it's
+# installed, else builds against the query cache checked in (.sqlx): a plain `cargo build`
+# checks the queries against the database and fails until it's migrated.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -35,6 +35,13 @@ case "$db_host" in
     *) echo "refusing to migrate a database on $db_host (only local ones)" >&2; exit 1 ;;
 esac
 
-SQLX_OFFLINE=true cargo build -q
 echo "migrating database '$db_name'..."
-./target/debug/acetate migrate
+# sqlx-cli needs only the migration files; without it, the server is built (against the
+# query cache, which a query new in the working tree isn't in yet: then install sqlx-cli,
+# `cargo install sqlx-cli --no-default-features --features postgres`).
+if command -v sqlx >/dev/null; then
+    sqlx migrate run
+else
+    SQLX_OFFLINE=true cargo build -q
+    ./target/debug/acetate migrate
+fi

@@ -16,7 +16,9 @@
 //!
 //! Both have `issues`: each track's open review flags (see `db::library::ISSUE_COLUMNS`),
 //! so a client can list what needs a look without asking for every flag. (A part of its
-//! own rather than a track column: clients that don't know it just skip it.)
+//! own rather than a track column: clients that don't know it just skip it.) And
+//! `lyrics` (see `db::library::LYRIC_COLUMNS`): every track's, so clients have them
+//! offline; in a delta, the changed tracks'.
 
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
@@ -27,10 +29,10 @@ use sha2::{Digest, Sha256};
 use super::{AppError, AppState};
 use crate::auth::CurrentUser;
 use crate::db;
-use crate::db::library::{ALBUM_COLUMNS, ANNOTATION_COLUMNS, ARTIST_COLUMNS, EXTRA_COLUMNS, GROUPING_COLUMNS, ISSUE_COLUMNS, TRACK_COLUMNS};
+use crate::db::library::{ALBUM_COLUMNS, ANNOTATION_COLUMNS, ARTIST_COLUMNS, EXTRA_COLUMNS, GROUPING_COLUMNS, ISSUE_COLUMNS, LYRIC_COLUMNS, TRACK_COLUMNS};
 
 /// Bumped when the format changes in a way old clients can't read.
-const FORMAT: u32 = 9;
+const FORMAT: u32 = 10;
 
 #[derive(Debug, Deserialize)]
 pub struct CatalogParams {
@@ -60,6 +62,7 @@ pub async fn catalog(
             let artists = db::library::artists_json(&mut tx, Some(&changes.artists)).await?;
             let annotations = db::library::annotations_json(&mut tx, Some(&changes.annotations)).await?;
             let issues = db::library::issues_json(&mut tx, Some(&changes.tracks)).await?;
+            let lyrics = db::library::lyrics_json(&mut tx, Some(&changes.tracks)).await?;
             let (mut gone_tracks, mut gone_albums, gone_artists) =
                 db::library::merged(&mut tx, &changes.tracks, &changes.albums, &changes.artists).await?;
             // Changed ones the user can't see anymore (restricted, turned into extras).
@@ -87,12 +90,13 @@ pub async fn catalog(
                 "tracks": gone_tracks, "albums": gone_albums, "artists": gone_artists, "annotations": cleared, "extras": gone_extras,
             });
             let body = format!(
-                r#"{{"format":{FORMAT},"delta":true,"version":"{version}","tracks":{},"albums":{},"artists":{},"annotations":{},"issues":{},"groupings":{},"extras":{},"playlists":{playlists},"removed":{removed}}}"#,
+                r#"{{"format":{FORMAT},"delta":true,"version":"{version}","tracks":{},"albums":{},"artists":{},"annotations":{},"issues":{},"lyrics":{},"groupings":{},"extras":{},"playlists":{playlists},"removed":{removed}}}"#,
                 part(TRACK_COLUMNS, &tracks)?,
                 part(ALBUM_COLUMNS, &albums)?,
                 part(ARTIST_COLUMNS, &artists)?,
                 part(ANNOTATION_COLUMNS, &annotations)?,
                 part(ISSUE_COLUMNS, &issues)?,
+                part(LYRIC_COLUMNS, &lyrics)?,
                 part(GROUPING_COLUMNS, &groupings)?,
                 part(EXTRA_COLUMNS, &extras)?,
             );
@@ -105,6 +109,7 @@ pub async fn catalog(
     let artists = db::library::artists_json(&mut tx, None).await?;
     let annotations = db::library::annotations_json(&mut tx, None).await?;
     let issues = db::library::issues_json(&mut tx, None).await?;
+    let lyrics = db::library::lyrics_json(&mut tx, None).await?;
     let playlists = serde_json::to_string(&db::playlists::list(&mut tx, false).await?)?;
     let groupings = db::library::groupings_json(&mut tx).await?;
     let extras = db::library::extras_json(&mut tx, None).await?;
@@ -113,12 +118,13 @@ pub async fn catalog(
     // The parts are JSON already (built by Postgres), so they're put together as text
     // instead of being parsed and serialized again.
     let body = format!(
-        r#"{{"format":{FORMAT},"delta":false,"version":"{version}","tracks":{},"albums":{},"artists":{},"annotations":{},"issues":{},"groupings":{},"extras":{},"playlists":{playlists}}}"#,
+        r#"{{"format":{FORMAT},"delta":false,"version":"{version}","tracks":{},"albums":{},"artists":{},"annotations":{},"issues":{},"lyrics":{},"groupings":{},"extras":{},"playlists":{playlists}}}"#,
         part(TRACK_COLUMNS, &tracks)?,
         part(ALBUM_COLUMNS, &albums)?,
         part(ARTIST_COLUMNS, &artists)?,
         part(ANNOTATION_COLUMNS, &annotations)?,
         part(ISSUE_COLUMNS, &issues)?,
+        part(LYRIC_COLUMNS, &lyrics)?,
         part(GROUPING_COLUMNS, &groupings)?,
         part(EXTRA_COLUMNS, &extras)?,
     );

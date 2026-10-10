@@ -1267,7 +1267,7 @@ mod tests {
         let (ann, bo, cy) = ("00000000-0000-7000-8000-0000000000a1", "00000000-0000-7000-8000-0000000000a2", "00000000-0000-7000-8000-0000000000a3");
         let song = "00000000-0000-7000-8000-0000000000b1";
         let body = serde_json::json!({
-            "format": 9,
+            "format": 10,
             "tracks": {"columns": ["id", "title", "artist_display", "credits", "albums", "duration_ms", "file_id", "cover_id", "cover_key",
                                     "release_date", "year", "status", "genres", "created_at", "is_restricted", "codec", "groupings", "platforms", "original_filename", "bitrate", "sample_rate", "sha256"],
                        "rows": [[song, "Glass: Harbor", "Ann, Cy", [[ann, "primary", null], [cy, "primary", null], [bo, "producer", null], [cy, "producer", null]], [], 1000,
