@@ -464,16 +464,16 @@ pub fn appear(ctx: &egui::Context, id: egui::Id, secs: f32) -> f32 {
 /// A small pill button with text; `active` fills it with the accent's soft color (fading
 /// between the two).
 pub fn chip(ui: &mut egui::Ui, text: &str, active: bool) -> bool {
-    chip_inner(ui, None, text, active)
+    chip_inner(ui, None, text, active).clicked()
 }
 
 /// `chip` whose text can change (it's the same button): the old text fades into the new
 /// and the pill grows or shrinks to fit. `id` names it.
-pub fn chip_morph(ui: &mut egui::Ui, id: &str, text: &str, active: bool) -> bool {
+pub fn chip_morph(ui: &mut egui::Ui, id: &str, text: &str, active: bool) -> egui::Response {
     chip_inner(ui, Some(egui::Id::new(("chip-morph", id))), text, active)
 }
 
-fn chip_inner(ui: &mut egui::Ui, morph: Option<egui::Id>, text: &str, active: bool) -> bool {
+fn chip_inner(ui: &mut egui::Ui, morph: Option<egui::Id>, text: &str, active: bool) -> egui::Response {
     const FADE: f64 = 0.12;
     let ctx = ui.ctx().clone();
     let font = super::theme::font(12.5, super::theme::medium());
@@ -502,18 +502,20 @@ fn chip_inner(ui: &mut egui::Ui, morph: Option<egui::Id>, text: &str, active: bo
         ui.painter().rect_stroke(rect, 13, Stroke::new(1.0, P.line.gamma_multiply(1.0 - on)), egui::StrokeKind::Inside);
     }
     let color = lerp(lerp(P.muted, P.text, hover), P.accent, on);
+    // Clipped to the pill: while it's still growing, the text doesn't stick out.
+    let painter = ui.painter().with_clip_rect(rect);
     match old {
         Some((before, t)) => {
             let t = t as f32;
             let old_galley = ui.painter().layout_no_wrap(before, font, color);
-            ui.painter().galley(rect.center() - old_galley.size() / 2.0, old_galley, color.gamma_multiply(1.0 - t));
-            ui.painter().galley(rect.center() - galley.size() / 2.0, galley, color.gamma_multiply(t));
+            painter.galley(rect.center() - old_galley.size() / 2.0, old_galley, color.gamma_multiply(1.0 - t));
+            painter.galley(rect.center() - galley.size() / 2.0, galley, color.gamma_multiply(t));
         }
         None => {
-            ui.painter().galley(rect.center() - galley.size() / 2.0, galley, color);
+            painter.galley(rect.center() - galley.size() / 2.0, galley, color);
         }
     }
-    response.clicked()
+    response
 }
 
 /// A five-pointed star at `center`, `r` to its points, drawn as triangles around its

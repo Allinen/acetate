@@ -183,29 +183,7 @@ pub fn playing_links(
     let catalog = shell.catalog.value.clone();
     let t = catalog.as_deref().and_then(|c| c.track(track));
     let layout = egui::Layout::left_to_right(egui::Align::Center);
-    // A new track's text fades in over the old one fading out (quickly), where this is drawn.
-    let ctx = ui.ctx().clone();
-    let fade_id = egui::Id::new(("playing-links", title_rect.min.x as i32, title_rect.min.y as i32));
-    let now = ctx.input(|i| i.time);
-    type Shown = (uuid::Uuid, String, String, Option<(String, String)>, f64);
-    let (mut shown_track, mut shown_title, mut shown_artist, mut before, mut since) =
-        ctx.data(|d| d.get_temp::<Shown>(fade_id)).unwrap_or((track, title.to_string(), artist.to_string(), None, f64::NEG_INFINITY));
-    if shown_track != track {
-        before = Some((shown_title, shown_artist));
-        (shown_track, shown_title, shown_artist, since) = (track, title.to_string(), artist.to_string(), now);
-    }
-    let fade = (((now - since) / 0.15) as f32).clamp(0.0, 1.0);
-    if fade >= 1.0 {
-        before = None;
-    }
-    ctx.data_mut(|d| d.insert_temp(fade_id, (shown_track, shown_title, shown_artist, before.clone(), since)));
-    if let Some((old_title, old_artist)) = before {
-        ctx.request_repaint();
-        super::widgets::text_in(ui.painter(), title_rect, &old_title, title_font.clone(), P.text.gamma_multiply(1.0 - fade));
-        super::widgets::text_in(ui.painter(), artist_rect, &old_artist, artist_font.clone(), P.muted.gamma_multiply(1.0 - fade));
-    }
     let mut title_ui = ui.new_child(egui::UiBuilder::new().max_rect(title_rect).layout(layout));
-    title_ui.multiply_opacity(fade);
     match t {
         Some(t) => {
             // An original file's track: its title as in track lists (amber, a wave on hover).
@@ -222,7 +200,6 @@ pub fn playing_links(
         }
     }
     let mut artist_ui = ui.new_child(egui::UiBuilder::new().max_rect(artist_rect).layout(layout));
-    artist_ui.multiply_opacity(fade);
     match (t, catalog.as_deref()) {
         (Some(t), Some(c)) => artist_links(&mut artist_ui, shell, c, t.credits(), artist, artist_font, P.muted),
         _ => {

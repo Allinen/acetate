@@ -366,18 +366,24 @@ impl Shell {
     pub fn cover_preview(&mut self, ui: &egui::Ui, cover: Option<Cover>, seed: Uuid, thumb: egui::Rect) {
         const SIZE: f32 = 240.0;
         const DWELL: f64 = 0.3;
+        const GRACE: f64 = 0.25;
         let ctx = ui.ctx();
         let id = egui::Id::new("cover-preview");
         let now = ctx.input(|i| i.time);
         let over = ctx.input(|i| i.pointer.hover_pos().is_some_and(|p| thumb.contains(p) && ui.clip_rect().contains(p) && !i.pointer.any_down()));
         let mut open = false;
-        if over && cover.is_some() && !self.modal_open {
+        if over && let Some(cover) = cover.filter(|_| !self.modal_open) {
             let (at, since) = ctx.data(|d| d.get_temp::<(Uuid, f64)>(id)).unwrap_or((seed, now));
             let since = if at == seed { since } else { now };
             ctx.data_mut(|d| d.insert_temp(id, (seed, since)));
-            open = now - since >= DWELL;
-            if !open {
-                ctx.request_repaint_after(std::time::Duration::from_secs_f64(DWELL - (now - since) + 0.01));
+            // Both copies are asked for from the first moment, so they're there when it opens.
+            let size = covers::CoverSize::for_rect(ctx, egui::Rect::from_min_size(thumb.min, egui::Vec2::splat(SIZE)));
+            let loaded = self.covers.get(ctx, cover, size).is_some() || self.covers.get(ctx, cover, covers::CoverSize::Small).is_some();
+            // It opens once the cover is there; if it's slow, the placeholder shows after a grace
+            // period (not a flash of it before the image).
+            open = now - since >= DWELL && (loaded || now - since >= DWELL + GRACE);
+            if now - since < DWELL + GRACE {
+                ctx.request_repaint_after(std::time::Duration::from_millis(30));
             }
         } else if ctx.data(|d| d.get_temp::<(Uuid, f64)>(id)).is_some_and(|(at, _)| at == seed) {
             ctx.data_mut(|d| d.remove::<(Uuid, f64)>(id));

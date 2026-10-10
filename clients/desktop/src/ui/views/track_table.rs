@@ -556,9 +556,13 @@ impl TrackTable {
                                     let starred = shell.mark(t.id()).starred;
                                     let on = ctx.animate_bool_with_time(egui::Id::new(("row-star", t.id())), starred, 0.18);
                                     if on > 0.0 {
-                                        let (rect, _) = ui.allocate_exact_size(Vec2::new(14.0 * on, 14.0), Sense::hover());
+                                        // The gap to the title shrinks with the star (not all at once).
+                                        let gap = ui.spacing().item_spacing.x;
+                                        ui.spacing_mut().item_spacing.x = 0.0;
+                                        let (rect, _) = ui.allocate_exact_size(Vec2::new((14.0 + gap) * on, 14.0), Sense::hover());
+                                        ui.spacing_mut().item_spacing.x = gap;
                                         let pop = if starred { 1.0 + (on * std::f32::consts::PI).sin() * 0.45 } else { on };
-                                        widgets::draw_star(ui.painter(), rect.center(), 5.5 * pop, P.accent.gamma_multiply(on));
+                                        widgets::draw_star(ui.painter(), egui::pos2(rect.left() + 7.0 * on, rect.center().y), 5.5 * pop, P.accent.gamma_multiply(on));
                                     }
                                     let clicked = match &t.original_filename() {
                                         Some(name) => widgets::og_link(ui, t.title(), font(13.5, medium()), name),

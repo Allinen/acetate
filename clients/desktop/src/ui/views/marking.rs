@@ -410,13 +410,19 @@ impl Marking {
         // Esc clears the marks (`keys`), not leaving the page.
         shell.form_dirty = true;
         let tools = self.tools(shell);
-        // It fades in when the first track is marked (when it goes, it's gone: Esc).
-        let shown = widgets::appear(ui.ctx(), egui::Id::new(("marking-bar", salt)), 0.15);
-        ui.scope(|ui| {
-            ui.multiply_opacity(shown);
-            self.bar_contents(ui, shell, catalog, len, id_at, salt, tools);
-        });
-        ui.add_space(4.0);
+        // It's pulled down from behind what's above when the first track is marked, the
+        // rows below sliding with it (when the marks clear it's gone at once: Esc).
+        let id = egui::Id::new(("marking-bar", salt));
+        let t = widgets::appear(ui.ctx(), id, 0.18);
+        let full = ui.ctx().data(|d| d.get_temp::<f32>(id.with("height"))).unwrap_or(30.0);
+        let (top, width) = (ui.cursor().min, ui.available_width());
+        let mut inner = ui.new_child(egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(top - Vec2::new(0.0, (1.0 - t) * full), Vec2::new(width, 1000.0))));
+        inner.set_clip_rect(egui::Rect::from_min_size(top, Vec2::new(width, full * t)).intersect(ui.clip_rect()));
+        self.bar_contents(&mut inner, shell, catalog, len, id_at, salt, tools);
+        let height = inner.min_rect().height();
+        ui.ctx().data_mut(|d| d.insert_temp(id.with("height"), height));
+        ui.allocate_space(Vec2::new(width, height * t));
+        ui.add_space(4.0 * t);
     }
 
     #[allow(clippy::too_many_arguments)]
