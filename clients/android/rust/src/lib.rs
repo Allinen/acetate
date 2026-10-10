@@ -92,6 +92,8 @@ pub enum Change {
     Account,
     /// An edit's state moved (loaded, previewed, applied): read it again.
     Editor,
+    /// The server went away or came back (`connection`).
+    Connection,
 }
 
 /// Kotlin code the core calls, from any thread.
@@ -108,6 +110,14 @@ pub trait Listener: Send + Sync {
 pub struct SessionInfo {
     pub server: String,
     pub username: String,
+}
+
+/// Whether the server can be reached.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct ConnectionInfo {
+    pub offline: bool,
+    /// Since when it's offline (milliseconds since 1970).
+    pub since_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, uniffi::Record)]
@@ -626,7 +636,41 @@ impl Core {
         // What's downloaded plays from the device.
         let weak = Arc::downgrade(&shared);
         shared.player.set_local(Arc::new(move |sha| weak.upgrade()?.offline.lock().unwrap().as_ref()?.local_path(sha)));
+        // The server going away is shown; its coming back sends what waited, and asks what
+        // changed meanwhile.
+        let (mut connection, weak) = (shared.api.watch_connection(), Arc::downgrade(&shared));
+        runtime.spawn(async move {
+            let mut offline = false;
+            while connection.changed().await.is_ok() {
+                let Some(shared) = weak.upgrade() else { return };
+                let now = connection.borrow_and_update().is_offline();
+                if offline && !now && shared.api.session().is_some() {
+                    shared.player.send_unsent();
+                    shared.account.lock().unwrap().fetch(&shared.api, &tokio::runtime::Handle::current(), &shared.account_wake);
+                    sync_catalog(&shared, false);
+                    refresh_offline(&shared);
+                }
+                offline = now;
+                shared.listener.changed(Change::Connection);
+            }
+        });
         Arc::new(Core { data_dir, shared, runtime })
+    }
+
+    /// Whether the server can be reached, as of the last request.
+    pub fn connection(&self) -> ConnectionInfo {
+        match self.shared.api.connection() {
+            acetate_core::api::Connection::Online => ConnectionInfo { offline: false, since_ms: None },
+            acetate_core::api::Connection::Offline { since } => ConnectionInfo {
+                offline: true,
+                since_ms: since.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_millis() as u64),
+            },
+        }
+    }
+
+    /// While offline: asks the server now (the user asked to, or the network changed).
+    pub fn try_now(&self) {
+        self.shared.api.try_now();
     }
 
     /// Who's logged in (kept between runs), if anyone.
@@ -707,41 +751,22 @@ impl Core {
                 Err(err) => log::warn!("couldn't open the downloads: {err:#}"),
             }
             self.shared.player.keep_listens(self.data_dir.join(format!("unsent-{key}.json")));
+            // What the account may do, as kept (it may be offline), then as the server says.
+            let mut account = self.shared.account.lock().unwrap();
+            *account = acetate_core::account::Account::open(Some(self.data_dir.join(format!("me-{key}.json"))));
+            account.fetch(&self.shared.api, self.runtime.handle(), &self.shared.account_wake);
+            drop(account);
+            self.shared.listener.changed(Change::Account);
             *keeping = Some(key);
         } else {
             // Back to the front: the connection may be back.
             self.shared.player.send_unsent();
         }
         drop(keeping);
-        {
-            let mut account = self.shared.account.lock().unwrap();
-            if account.me.is_none() {
-                account.fetch(&self.shared.api, self.runtime.handle(), &self.shared.account_wake);
-            }
-        }
-        let shared = self.shared.clone();
-        *shared.asked.lock().unwrap() = Some(Instant::now());
-        set_sync(&shared, |s| {
-            s.refreshing = true;
-            s.error = None;
-        });
-        self.runtime.spawn(async move {
-            let report = |update: Update| match update {
-                Update::Loaded { catalog, from_server } => {
-                    if from_server {
-                        if let Some(asked) = *shared.asked.lock().unwrap() {
-                            shared.marks.lock().unwrap().catalog_arrived(asked);
-                            shared.playlists.lock().unwrap().catalog_arrived(asked);
-                        }
-                    }
-                    set_catalog(&shared, catalog);
-                }
-                Update::Unchanged => {}
-                Update::Failed(message) => set_sync(&shared, |s| s.error = Some(message)),
-            };
-            store::load_and_refresh(store, shared.api.clone(), report).await;
-            set_sync(&shared, |s| s.refreshing = false);
-        });
+        // Back to the front: the server may be back too.
+        self.shared.api.try_now();
+        let _guard = self.runtime.enter();
+        sync_catalog(&self.shared, true);
     }
 
     pub fn sync_state(&self) -> SyncState {
@@ -1397,6 +1422,39 @@ impl Core {
 
 async fn blocking<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> T {
     tokio::task::spawn_blocking(work).await.expect("list work doesn't panic")
+}
+
+/// Asks the server what changed in the catalog (in the background, on the current
+/// runtime). `load`: shows the copy on disk first.
+fn sync_catalog(shared: &Arc<Shared>, load: bool) {
+    let Some(store) = shared.store.lock().unwrap().clone() else { return };
+    let shared = shared.clone();
+    *shared.asked.lock().unwrap() = Some(Instant::now());
+    set_sync(&shared, |s| {
+        s.refreshing = true;
+        s.error = None;
+    });
+    tokio::spawn(async move {
+        let report = |update: Update| match update {
+            Update::Loaded { catalog, from_server } => {
+                if from_server {
+                    if let Some(asked) = *shared.asked.lock().unwrap() {
+                        shared.marks.lock().unwrap().catalog_arrived(asked);
+                        shared.playlists.lock().unwrap().catalog_arrived(asked);
+                    }
+                }
+                set_catalog(&shared, catalog);
+            }
+            Update::Unchanged => {}
+            Update::Failed(message) => set_sync(&shared, |s| s.error = Some(message)),
+        };
+        if load {
+            store::load_and_refresh(store, shared.api.clone(), report).await;
+        } else {
+            store::refresh(&store, &shared.api, shared.catalog(), &report).await;
+        }
+        set_sync(&shared, |s| s.refreshing = false);
+    });
 }
 
 fn set_sync(shared: &Shared, change: impl FnOnce(&mut SyncState)) {

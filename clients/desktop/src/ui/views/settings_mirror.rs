@@ -542,11 +542,9 @@ impl MirrorSection {
 /// "just now", "5 minutes ago", "3 hours ago" (`at`: seconds since 1970).
 fn ago(at: i64) -> String {
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(at);
-    match (now - at).max(0) {
-        s if s < 90 => "just now".to_string(),
-        s if s < 5400 => format!("{} minutes ago", (s + 30) / 60),
-        s if s < 172_800 => format!("{} hours ago", (s + 1800) / 3600),
-        s => format!("{} days ago", s / 86_400),
+    match widgets::how_long((now - at).max(0) as u64) {
+        Some(span) => format!("{span} ago"),
+        None => "just now".to_string(),
     }
 }
 

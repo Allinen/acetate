@@ -32,6 +32,14 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.getValue
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.background
 
 @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
@@ -58,6 +66,7 @@ fun Root(model: Model) {
             }
             // The keyboard takes the place of the bars while typing.
             if (!WindowInsets.isImeVisible) {
+                if (model.connection.offline) OfflineBar(model)
                 if (model.player.current != null) MiniPlayer(model)
                 BottomBar(model)
             }
@@ -157,5 +166,32 @@ private fun TabIcon(tab: Int, color: Color) {
                 drawLine(color, Offset(w * 0.15f, w * (0.25f + i * 0.25f)), Offset(w * 0.85f, w * (0.25f + i * 0.25f)), line.width, StrokeCap.Round)
             }
         }
+    }
+}
+
+/** The server can't be reached: for how long, and a way to ask it now. */
+@Composable
+private fun OfflineBar(model: Model) {
+    // Read again every half minute, for the "for how long".
+    var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            kotlinx.coroutines.delay(30_000)
+            now = System.currentTimeMillis()
+        }
+    }
+    val minutes = model.connection.sinceMs?.let { (now - it.toLong()) / 60_000 } ?: 0
+    val text = when {
+        minutes < 2 -> "Offline"
+        minutes < 90 -> "Offline for $minutes minutes"
+        minutes < 48 * 60 -> "Offline for ${(minutes + 30) / 60} hours"
+        else -> "Offline for ${minutes / (24 * 60)} days"
+    }
+    Row(
+        Modifier.fillMaxWidth().background(Palette.sidebar).padding(16.dp, 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(text, color = Palette.danger, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+        TextButton({ model.core.tryNow() }) { Text("Try now", color = Palette.muted) }
     }
 }

@@ -122,6 +122,15 @@ impl InApp {
         self.snapshot_at = None;
     }
 
+    /// The server is back: a mirror that was waiting to try again (it couldn't reach it)
+    /// tries now. Paused or busy, it's left alone.
+    pub fn server_back(&self) {
+        let idle = self.status().is_some_and(|s| s.doing == super::Doing::Idle);
+        if idle && self.is_enabled() && !self.paused.load(Relaxed) {
+            self.send(Command::Restart);
+        }
+    }
+
     /// Mirroring is on: the pages have no use for a "Download" then (the files are here).
     pub fn is_enabled(&self) -> bool {
         self.enabled.load(Relaxed)

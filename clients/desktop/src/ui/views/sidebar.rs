@@ -139,6 +139,23 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell, page: Page, username: &str) {
         if status.on_hover_text("F5: check for changes now").clicked() {
             shell.act(Action::RefreshLibrary);
         }
+        // The server can't be reached: since when, and a way to ask it now.
+        if let acetate_core::api::Connection::Offline { since } = shell.connection {
+            let how_long = since.elapsed().ok().and_then(|d| widgets::how_long(d.as_secs()));
+            let text = match how_long {
+                Some(how_long) => format!("Offline for {how_long}"),
+                None => "Offline".to_string(),
+            };
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(text).color(P.danger).font(font(12.5, medium())))
+                    .on_hover_text("The server can't be reached. What's kept here still plays; it's asked again now and then.");
+                if ui.add(egui::Button::new(RichText::new("Try now").color(P.muted).small()).frame(false)).clicked() {
+                    shell.api.try_now();
+                }
+            });
+            ui.ctx().request_repaint_after(std::time::Duration::from_secs(30));
+        }
     });
 }
 

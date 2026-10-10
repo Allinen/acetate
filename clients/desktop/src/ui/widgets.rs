@@ -176,6 +176,16 @@ pub fn lerp(a: Color32, b: Color32, t: f32) -> Color32 {
     Color32::from_rgba_unmultiplied(mix(a.r(), b.r()), mix(a.g(), b.g()), mix(a.b(), b.b()), mix(a.a(), b.a()))
 }
 
+/// "5 minutes", "3 hours", "2 days" (None: under a minute and a half).
+pub fn how_long(seconds: u64) -> Option<String> {
+    Some(match seconds {
+        s if s < 90 => return None,
+        s if s < 5400 => format!("{} minutes", (s + 30) / 60),
+        s if s < 172_800 => format!("{} hours", (s + 1800) / 3600),
+        s => format!("{} days", s / 86_400),
+    })
+}
+
 pub fn clock(d: Duration) -> String {
     let s = d.as_secs();
     if s >= 3600 { format!("{}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60) } else { format!("{}:{:02}", s / 60, s % 60) }

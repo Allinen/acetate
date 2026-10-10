@@ -34,6 +34,13 @@ class AcetateApp : Application() {
         model = Model(filesDir.path)
         model.context = this
         model.quality = Quality(this, model)
+        // A network coming up may be the way to the server: it's asked at once, not at
+        // the probe's next turn.
+        getSystemService(android.net.ConnectivityManager::class.java).registerDefaultNetworkCallback(
+            object : android.net.ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: android.net.Network) = model.core.tryNow()
+            },
+        )
     }
 }
 
@@ -45,6 +52,10 @@ class Model(dataDir: String) : Listener {
     var session by mutableStateOf<SessionInfo?>(core.session())
         private set
     var sync by mutableStateOf(core.syncState())
+        private set
+
+    /** Whether the server can be reached, as of the last [Change.CONNECTION]. */
+    var connection by mutableStateOf(core.connection())
         private set
 
     /** Pages opened from the library, the last on top (back pops it). */
@@ -183,6 +194,7 @@ class Model(dataDir: String) : Listener {
                     if (!core.canEdit()) editMode = false
                 }
                 Change.EDITOR -> editorVersion++
+                Change.CONNECTION -> connection = core.connection()
                 Change.CATALOG -> {
                     catalogVersion++
                     // For measuring (adb logcat -s Acetate): how long from the process starting.

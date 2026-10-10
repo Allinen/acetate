@@ -1,15 +1,19 @@
 //! Who's logged in and what they may do (`GET /api/auth/me`), and the server's fixed
 //! lists (`GET /api/vocab`: statuses, credit roles, album kinds, relation kinds; and
 //! `GET /api/source-shapes`), which edit forms choose from. Fetched after logging in (and at start), in the background.
+//!
+//! `me` is kept on disk too (`me-<key>.json`, per server and user), so an app started
+//! offline still knows what its user may do; the server's answer replaces it.
 
 use std::collections::HashSet;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::api::Api;
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Me {
     pub permissions: HashSet<String>,
 }
@@ -97,17 +101,30 @@ pub struct RelationKind {
 pub struct Account {
     pub me: Option<Me>,
     pub vocab: Option<Arc<Vocab>>,
+    /// Where `me` is kept.
+    file: Option<PathBuf>,
     arrived: Arc<Mutex<Option<(Option<Me>, Option<Vocab>)>>>,
 }
 
 impl Account {
-    /// Asks the server (again, after a login).
+    /// Whose account this is: `me` as kept in `file` (None: logged out), until the server
+    /// says.
+    pub fn open(file: Option<PathBuf>) -> Account {
+        let me = file.as_ref().and_then(|f| std::fs::read(f).ok()).and_then(|bytes| serde_json::from_slice(&bytes).ok());
+        Account { me, file, ..Account::default() }
+    }
+
+    /// Asks the server (again: at start, after a login, when it's back online). What's
+    /// known stays until the answer; no answer keeps it.
     pub fn fetch(&mut self, api: &Api, runtime: &tokio::runtime::Handle, waker: &crate::Waker) {
-        self.me = None;
-        self.vocab = None;
-        let (api, arrived, waker) = (api.clone(), self.arrived.clone(), waker.clone());
+        let (api, arrived, waker, file) = (api.clone(), self.arrived.clone(), waker.clone(), self.file.clone());
         runtime.spawn(async move {
             let me = api.send_json::<Me>(reqwest::Method::GET, "/api/auth/me", None).await.ok();
+            if let (Some(me), Some(file)) = (&me, &file)
+                && let Err(err) = std::fs::write(file, serde_json::to_vec(me).unwrap_or_default())
+            {
+                eprintln!("couldn't keep what the account may do: {err}");
+            }
             let mut vocab = api.send_json::<Vocab>(reqwest::Method::GET, "/api/vocab", None).await.ok();
             if let Some(vocab) = vocab.as_mut() {
                 vocab.source_shapes = api.send_json(reqwest::Method::GET, "/api/source-shapes", None).await.unwrap_or_default();
@@ -120,15 +137,18 @@ impl Account {
     /// Takes in what arrived. Call once per frame.
     pub fn poll(&mut self) {
         if let Some((me, vocab)) = self.arrived.lock().unwrap().take() {
-            self.me = me;
-            self.vocab = vocab.map(Arc::new);
+            if me.is_some() {
+                self.me = me;
+            }
+            if let Some(vocab) = vocab {
+                self.vocab = Some(Arc::new(vocab));
+            }
         }
     }
 
     /// Asks for the vocabulary again (e.g. a kind of flag was made), keeping who's logged
     /// in.
     pub fn refresh_vocab(&mut self, api: &Api, runtime: &tokio::runtime::Handle, waker: &crate::Waker) {
-        let me = self.me.clone();
         let (api, arrived, waker) = (api.clone(), self.arrived.clone(), waker.clone());
         runtime.spawn(async move {
             let mut vocab = api.send_json::<Vocab>(reqwest::Method::GET, "/api/vocab", None).await.ok();
@@ -136,7 +156,7 @@ impl Account {
                 vocab.source_shapes = api.send_json(reqwest::Method::GET, "/api/source-shapes", None).await.unwrap_or_default();
             }
             if vocab.is_some() {
-                *arrived.lock().unwrap() = Some((me, vocab));
+                *arrived.lock().unwrap() = Some((None, vocab));
                 waker.changed();
             }
         });
@@ -144,5 +164,26 @@ impl Account {
 
     pub fn can(&self, permission: &str) -> bool {
         self.me.as_ref().is_some_and(|me| me.can(permission))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn what_the_account_may_do_is_kept_for_the_next_start() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("me-x.json");
+        std::fs::write(&file, br#"{"permissions":["admin"]}"#).unwrap();
+        let account = Account::open(Some(file.clone()));
+        assert!(account.can("edit_metadata"));
+        // Logged out: nothing.
+        assert!(!Account::open(None).can("edit_metadata"));
+        // An answer that didn't come keeps what's known.
+        let mut account = account;
+        *account.arrived.lock().unwrap() = Some((None, None));
+        account.poll();
+        assert!(account.can("admin"));
     }
 }

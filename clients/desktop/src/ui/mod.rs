@@ -152,6 +152,8 @@ pub struct Shell {
     pub settings: crate::settings::Settings,
     /// Who's logged in, what they may do, and the server's fixed lists.
     pub account: crate::account::Account,
+    /// Whether the server could be reached, as of the last frame (see `api::Connection`).
+    pub connection: acetate_core::api::Connection,
     /// Pages show their editors (only with `edit_metadata`).
     pub edit_mode: bool,
     /// Open review flags (the Review page's list).
@@ -630,6 +632,8 @@ impl Shell {
         self.grouping_details.reset(Some(details));
         self.catalog = Cached { refreshing: true, ..Cached::default() };
         self.refresh_asked = Some(Instant::now());
+        // What the account may do, as kept (it may be offline), then as the server says.
+        self.account = crate::account::Account::open(Some(self.data_dir.join(format!("me-{}.json", store::key(&session)))));
         self.account.fetch(&self.api, self.runtime.handle(), &self.waker);
         self.edit_mode = false;
         self.track_editors.clear();
@@ -641,6 +645,19 @@ impl Shell {
             let _ = sender.send(update);
             ctx.request_repaint();
         }));
+    }
+
+    /// Notices the server going away or coming back. Back: the library is asked what
+    /// changed, the account what it may do, and the mirror tries again.
+    fn follow_connection(&mut self) {
+        let now = self.api.connection();
+        let back = self.connection.is_offline() && !now.is_offline();
+        self.connection = now;
+        if back {
+            self.act(Action::RefreshLibrary);
+            self.account.fetch(&self.api, self.runtime.handle(), &self.waker);
+            self.mirror.server_back();
+        }
     }
 
     fn refresh_library(&mut self, ctx: &egui::Context) {
@@ -776,6 +793,13 @@ impl App {
         let api = Api::new(data_dir.clone());
         let controller = runtime.block_on(async { Controller::new(api.clone(), cc.egui_ctx.clone()) });
         runtime.spawn(controller.clone().monitor());
+        // The server going away or coming back is shown at once.
+        let (mut connection, repaint) = (api.watch_connection(), cc.egui_ctx.clone());
+        runtime.spawn(async move {
+            while connection.changed().await.is_ok() {
+                repaint.request_repaint();
+            }
+        });
         controller.attach_media_keys(runtime.handle().clone(), cache_dir.clone(), window_handle(cc));
         let covers = Covers::new(api.clone(), runtime.handle().clone(), cache_dir.clone());
         let waker: acetate_core::Waker = Arc::new(Repaint(cc.egui_ctx.clone()));
@@ -795,6 +819,7 @@ impl App {
             logo: widgets::logo_texture(&cc.egui_ctx),
             settings: crate::settings::Settings::load(&data_dir),
             account: crate::account::Account::default(),
+            connection: acetate_core::api::Connection::Online,
             edit_mode: false,
             picker: edit::Picker::default(),
             flags: Default::default(),
@@ -1189,6 +1214,8 @@ impl App {
                     let c = self.shell.controller.clone();
                     self.shell.runtime.spawn(async move { c.stop().await });
                     self.shell.catalog = Cached::default();
+                    self.shell.account = Default::default();
+                    self.shell.connection = acetate_core::api::Connection::Online;
                     self.shell.marks.clear();
                     self.shell.offline = None;
                     self.shell.playlists.reset(None);
@@ -1397,6 +1424,7 @@ impl eframe::App for App {
         self.shell.take_mark_answers();
         self.shell.playlists.poll();
         self.shell.account.poll();
+        self.shell.follow_connection();
         // Admins: the mirror is opened (it runs if it's turned on).
         if self.shell.account.can("admin") {
             let shell = &mut self.shell;

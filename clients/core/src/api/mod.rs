@@ -8,10 +8,16 @@
 //! sentence for a person: the server's own `message` when it answered, else ours (it
 //! couldn't be reached, the connection dropped). A 401 on any request also marks the
 //! session as ended, for the app to go back to the login screen.
+//!
+//! The connection to the session's server is shared too (`Connection`): a request that
+//! can't connect makes it `Offline`, and from then on requests fail at once (`offline`)
+//! instead of each waiting to time out, while a probe asks the server now and then (and
+//! at once on `try_now`). Any answer makes it `Online` again.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 use std::sync::{Arc, RwLock};
+use std::time::{Duration, SystemTime};
 
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -36,7 +42,8 @@ pub struct ApiError {
     /// The HTTP status, if the server answered.
     pub status: Option<u16>,
     /// The server's error code (`not_found`, `stale`…), or ours: `unreachable`,
-    /// `unexpected` (an answer this app can't read). For acting on (edit mode: offer to
+    /// `offline` (not sent: the server couldn't be reached a moment ago), `unexpected` (an
+    /// answer this app can't read). For acting on (edit mode: offer to
     /// reload on `stale`), not for showing.
     pub code: String,
     pub message: String,
@@ -108,6 +115,24 @@ impl std::fmt::Display for AddressCheck {
     }
 }
 
+/// Whether the session's server can be reached.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Connection {
+    Online,
+    /// A request couldn't connect, at `since`; nothing has answered since.
+    Offline { since: SystemTime },
+}
+
+impl Connection {
+    pub fn is_offline(&self) -> bool {
+        matches!(self, Connection::Offline { .. })
+    }
+}
+
+/// How long the probe waits before asking the server, the first time and at most.
+const PROBE_FIRST: Duration = Duration::from_secs(5);
+const PROBE_MOST: Duration = Duration::from_secs(60);
+
 #[derive(Clone)]
 pub struct Api {
     client: reqwest::Client,
@@ -115,6 +140,11 @@ pub struct Api {
     session: Arc<RwLock<Option<Session>>>,
     /// A request was refused as not logged in: the session ended.
     expired: Arc<AtomicBool>,
+    connection: Arc<tokio::sync::watch::Sender<Connection>>,
+    /// Wakes the probe (`try_now`).
+    probe_now: Arc<tokio::sync::Notify>,
+    /// The probe's first wait (shorter in tests).
+    probe_first: Duration,
 }
 
 impl Api {
@@ -126,7 +156,8 @@ impl Api {
             // The catalog comes compressed (tens of MB otherwise).
             .zstd(true)
             .gzip(true)
-            .connect_timeout(std::time::Duration::from_secs(10))
+            // A server on the LAN answers well inside this; one that doesn't is away.
+            .connect_timeout(Duration::from_secs(4))
             .build()
             .expect("an HTTP client");
         Api {
@@ -134,6 +165,65 @@ impl Api {
             session_file: Arc::new(session_file),
             session: Arc::new(RwLock::new(session)),
             expired: Arc::default(),
+            connection: Arc::new(tokio::sync::watch::Sender::new(Connection::Online)),
+            probe_now: Arc::default(),
+            probe_first: PROBE_FIRST,
+        }
+    }
+
+    /// Whether the server can be reached, as of the last request.
+    pub fn connection(&self) -> Connection {
+        *self.connection.borrow()
+    }
+
+    /// Changes of `connection`, for waking whoever shows it or acts on its coming back.
+    pub fn watch_connection(&self) -> tokio::sync::watch::Receiver<Connection> {
+        self.connection.subscribe()
+    }
+
+    /// While offline: asks the server now instead of at the probe's next turn (the user
+    /// asked to, or the system says the network changed).
+    pub fn try_now(&self) {
+        if self.connection().is_offline() {
+            self.probe_now.notify_one();
+        }
+    }
+
+    fn set_connection(&self, to: Connection) {
+        let changed = self.connection.send_if_modified(|now| {
+            if now.is_offline() == to.is_offline() {
+                return false;
+            }
+            *now = to;
+            true
+        });
+        if changed && to.is_offline() {
+            tokio::spawn(self.clone().probe());
+        }
+    }
+
+    /// While offline: asks the server who's logged in, after 5 s, then less and less often
+    /// (up to a minute), until it answers.
+    async fn probe(self) {
+        let mut wait = self.probe_first;
+        loop {
+            tokio::select! {
+                _ = tokio::time::sleep(wait) => {}
+                _ = self.probe_now.notified() => {}
+            }
+            let Some(session) = self.session() else {
+                self.set_connection(Connection::Online);
+                return;
+            };
+            if !self.connection().is_offline() {
+                return;
+            }
+            let request = self.client.get(format!("{}/api/auth/me", session.server)).bearer_auth(&session.token);
+            let _ = self.go(request, &session.server).await;
+            if !self.connection().is_offline() {
+                return;
+            }
+            wait = (wait * 2).min(PROBE_MOST);
         }
     }
 
@@ -268,6 +358,7 @@ impl Api {
 
     pub fn logout(&self) {
         *self.session.write().unwrap() = None;
+        self.connection.send_replace(Connection::Online);
         let _ = std::fs::remove_file(&*self.session_file);
     }
 
@@ -280,6 +371,19 @@ impl Api {
     }
 
     fn request(&self, method: reqwest::Method, path: &str) -> Result<(reqwest::RequestBuilder, String), ApiError> {
+        if let Connection::Offline { .. } = self.connection() {
+            return Err(ApiError {
+                status: None,
+                code: "offline".into(),
+                message: "Offline: the server can't be reached (it's tried again now and then).".into(),
+                extra_id: None,
+            });
+        }
+        self.request_anyway(method, path)
+    }
+
+    /// A request even while offline (the catalog refresh: asked for, or every few minutes).
+    fn request_anyway(&self, method: reqwest::Method, path: &str) -> Result<(reqwest::RequestBuilder, String), ApiError> {
         let session = self.session().ok_or_else(|| ApiError {
             status: None,
             code: "unauthorized".into(),
@@ -291,8 +395,18 @@ impl Api {
     }
 
     /// Sends a request: its response if it succeeded, else why not, in words.
+    /// A request to the session's server tells whether it can be reached: an answer (any)
+    /// that it can, failing to connect that it can't.
     async fn go(&self, request: reqwest::RequestBuilder, server: &str) -> Result<reqwest::Response, ApiError> {
-        let response = request.send().await.map_err(|err| unreachable(&err, server))?;
+        let sent = request.send().await;
+        if self.session().is_some_and(|s| s.server == server) {
+            match &sent {
+                Ok(_) => self.set_connection(Connection::Online),
+                Err(err) if err.is_connect() || err.is_timeout() => self.set_connection(Connection::Offline { since: SystemTime::now() }),
+                Err(_) => {}
+            }
+        }
+        let response = sent.map_err(|err| unreachable(&err, server))?;
         let status = response.status();
         if status.is_success() || status == reqwest::StatusCode::NOT_MODIFIED {
             return Ok(response);
@@ -396,7 +510,7 @@ impl Api {
     /// only what changed since (a delta); with its ETag, an unchanged library costs the
     /// server no body to send.
     pub async fn catalog(&self, etag: Option<&str>, since: Option<&str>) -> Result<CatalogResponse, ApiError> {
-        let (mut request, server) = self.request(reqwest::Method::GET, "/api/catalog")?;
+        let (mut request, server) = self.request_anyway(reqwest::Method::GET, "/api/catalog")?;
         if let Some(since) = since {
             request = request.query(&[("since", since)]);
         }
@@ -569,6 +683,55 @@ mod tests {
         // A refusal isn't the session ending.
         let (_, api, _dir) = check(id, "401 Unauthorized", serde_json::json!({}));
         assert!(!api.take_expired());
+    }
+
+    /// An address where nothing answers (connecting is refused).
+    fn refused() -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        format!("http://{}", listener.local_addr().unwrap())
+    }
+
+    #[test]
+    fn a_server_that_cant_be_reached_makes_it_offline_until_it_answers() {
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let away = refused();
+        let (_dir, mut api) = api_of(Uuid::new_v4(), &away);
+        api.probe_first = Duration::from_millis(50);
+        runtime.block_on(async {
+            let err = api.send(reqwest::Method::GET, "/api/vocab", None).await.unwrap_err();
+            assert_eq!(err.code, "unreachable");
+            assert!(api.connection().is_offline());
+            // While offline, requests fail at once, without trying.
+            let started = std::time::Instant::now();
+            let err = api.send(reqwest::Method::GET, "/api/vocab", None).await.unwrap_err();
+            assert_eq!(err.code, "offline");
+            assert!(started.elapsed() < Duration::from_millis(20));
+            // The catalog is asked all the same.
+            assert_eq!(api.catalog(None, None).await.err().unwrap().code, "unreachable");
+            // The probe keeps asking, and the server is back (at the same address, here
+            // another one): online again.
+            let mut changes = api.watch_connection();
+            let back = answering("200 OK", "{}".into());
+            api.session.write().unwrap().as_mut().unwrap().server = back;
+            tokio::time::timeout(Duration::from_secs(5), changes.wait_for(|c| !c.is_offline())).await.unwrap().unwrap();
+            api.send(reqwest::Method::GET, "/api/vocab", None).await.unwrap();
+        });
+    }
+
+    #[test]
+    fn trying_now_asks_without_waiting_for_the_probe() {
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let (_dir, mut api) = api_of(Uuid::new_v4(), &refused());
+        api.probe_first = Duration::from_secs(3600);
+        runtime.block_on(async {
+            let _ = api.send(reqwest::Method::GET, "/api/vocab", None).await;
+            assert!(api.connection().is_offline());
+            api.session.write().unwrap().as_mut().unwrap().server = answering("404 Not Found", "{}".into());
+            api.try_now();
+            // Any answer, an error too, is the server being there.
+            let mut changes = api.watch_connection();
+            tokio::time::timeout(Duration::from_secs(5), changes.wait_for(|c| !c.is_offline())).await.unwrap().unwrap();
+        });
     }
 
     #[test]
