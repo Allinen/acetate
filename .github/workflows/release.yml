@@ -50,7 +50,7 @@ jobs:
           workspaces: clients
       - name: Build and pack
         run: clients/desktop/package-linux.sh
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: linux
           path: clients/target/linux/Acetate-linux-x86_64.tar.gz
@@ -70,7 +70,7 @@ jobs:
           workspaces: clients
       - name: Build and pack
         run: clients/desktop/package-windows.sh
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: windows
           path: clients/target/windows/Acetate-windows-x86_64.zip
@@ -131,7 +131,7 @@ jobs:
           certs=$("$apksigner" verify --print-certs clients/android/app/build/outputs/apk/release/app-release.apk)
           echo "$certs"
           ! grep -qi "Android Debug" <<< "$certs" || { echo "::error::signed with the debug key"; exit 1; }
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: android
           path: clients/android/app/build/outputs/apk/release/app-release.apk
@@ -186,7 +186,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/digests"
           digest="${{ steps.build.outputs.digest }}"
           touch "$RUNNER_TEMP/digests/${digest#sha256:}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: github.ref_type == 'tag'
         with:
           name: digests-${{ strategy.job-index }}
