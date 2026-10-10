@@ -109,6 +109,8 @@ impl SettingsPage {
             }
         });
         ui.add_space(4.0);
+        // The tab's page fades in when switched to.
+        ui.multiply_opacity(widgets::appear(ui.ctx(), egui::Id::new(("settings-tab", self.tab.name())), 0.12));
         egui::ScrollArea::vertical().id_salt(self.tab.name()).auto_shrink([false, false]).show(ui, |ui| match self.tab {
             Tab::Sound => self.sound.show(ui, shell, player),
             Tab::Computer => self.computer.show(ui, shell, &mut self.mirror),

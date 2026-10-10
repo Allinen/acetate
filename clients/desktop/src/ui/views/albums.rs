@@ -104,10 +104,11 @@ impl Albums {
                         let hover = ctx.animate_bool_with_time(response.id, response.hovered(), 0.16);
                         let cover_rect = Rect::from_min_size(rect.min - Vec2::new(0.0, hover * 5.0), Vec2::splat(card));
                         shell.cover(ui, album.cover(), album.id(), cover_rect, 10, hover);
-                        if shell.mark(album.id()).starred {
+                        let star = ctx.animate_bool_with_time(egui::Id::new(("album-star", album.id())), shell.mark(album.id()).starred, 0.18);
+                        if star > 0.0 {
                             let badge = cover_rect.left_top() + Vec2::splat(18.0);
-                            ui.painter().circle_filled(badge, 12.0, Color32::from_black_alpha(140));
-                            widgets::draw_star(ui.painter(), badge, 7.0, P.accent);
+                            ui.painter().circle_filled(badge, 12.0 * star, Color32::from_black_alpha((140.0 * star) as u8));
+                            widgets::draw_star(ui.painter(), badge, 7.0 * star, P.accent.gamma_multiply(star));
                         }
                         if n == self.selected {
                             ui.painter().rect_stroke(cover_rect.expand(3.0), 12, Stroke::new(2.0, P.accent), StrokeKind::Outside);

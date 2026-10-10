@@ -447,20 +447,72 @@ pub fn share_menu(response: &egui::Response, shell: &mut crate::ui::Shell, targe
     });
 }
 
-/// A small pill button with text; `active` fills it with the accent's soft color.
-pub fn chip(ui: &mut egui::Ui, text: &str, active: bool) -> bool {
-    let font = super::theme::font(12.5, super::theme::medium());
-    let galley = ui.painter().layout_no_wrap(text.to_string(), font, P.text);
-    let size = Vec2::new(galley.size().x + 22.0, 26.0);
-    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
-    let hover = ui.ctx().animate_bool_with_time(response.id, response.hovered(), 0.1);
-    let fill = if active { P.accent_soft } else { lerp(P.bg, P.surface, hover) };
-    ui.painter().rect_filled(rect, 13, fill);
-    if !active {
-        ui.painter().rect_stroke(rect, 13, Stroke::new(1.0, P.line), egui::StrokeKind::Inside);
+/// 0 to 1 (eased) over `secs` since `id` started being drawn: it starts again when it
+/// wasn't drawn for a few frames (a popup opened again, a tab switched back to).
+pub fn appear(ctx: &egui::Context, id: egui::Id, secs: f32) -> f32 {
+    let (pass, now) = (ctx.cumulative_pass_nr(), ctx.input(|i| i.time));
+    let (start, last) = ctx.data(|d| d.get_temp::<(f64, u64)>(id)).unwrap_or((now, pass));
+    let start = if pass.saturating_sub(last) > 3 { now } else { start };
+    ctx.data_mut(|d| d.insert_temp(id, (start, pass)));
+    let t = (((now - start) as f32) / secs).clamp(0.0, 1.0);
+    if t < 1.0 {
+        ctx.request_repaint();
     }
-    let color = if active { P.accent } else { lerp(P.muted, P.text, hover) };
-    ui.painter().galley(rect.center() - galley.size() / 2.0, galley, color);
+    crate::ui::covers::ease_out(t)
+}
+
+/// A small pill button with text; `active` fills it with the accent's soft color (fading
+/// between the two).
+pub fn chip(ui: &mut egui::Ui, text: &str, active: bool) -> bool {
+    chip_inner(ui, None, text, active)
+}
+
+/// `chip` whose text can change (it's the same button): the old text fades into the new
+/// and the pill grows or shrinks to fit. `id` names it.
+pub fn chip_morph(ui: &mut egui::Ui, id: &str, text: &str, active: bool) -> bool {
+    chip_inner(ui, Some(egui::Id::new(("chip-morph", id))), text, active)
+}
+
+fn chip_inner(ui: &mut egui::Ui, morph: Option<egui::Id>, text: &str, active: bool) -> bool {
+    const FADE: f64 = 0.12;
+    let ctx = ui.ctx().clone();
+    let font = super::theme::font(12.5, super::theme::medium());
+    let galley = ui.painter().layout_no_wrap(text.to_string(), font.clone(), P.text);
+    let mut width = galley.size().x + 22.0;
+    // The text shown, the one it replaced, and when it changed.
+    let mut old: Option<(String, f64)> = None;
+    if let Some(id) = morph {
+        width = glide(&ctx, id.with("width"), width, FADE as f32);
+        let now = ctx.input(|i| i.time);
+        let (mut shown, mut before, mut since) = ctx.data(|d| d.get_temp::<(String, String, f64)>(id)).unwrap_or((text.to_string(), String::new(), f64::NEG_INFINITY));
+        if shown != text {
+            (before, shown, since) = (shown, text.to_string(), now);
+        }
+        ctx.data_mut(|d| d.insert_temp(id, (shown, before.clone(), since)));
+        if now - since < FADE {
+            ctx.request_repaint();
+            old = Some((before, (now - since) / FADE));
+        }
+    }
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, 26.0), Sense::click());
+    let hover = ctx.animate_bool_with_time(response.id, response.hovered(), 0.1);
+    let on = ctx.animate_bool_with_time(response.id.with("active"), active, 0.15);
+    ui.painter().rect_filled(rect, 13, lerp(lerp(P.bg, P.surface, hover), P.accent_soft, on));
+    if on < 1.0 {
+        ui.painter().rect_stroke(rect, 13, Stroke::new(1.0, P.line.gamma_multiply(1.0 - on)), egui::StrokeKind::Inside);
+    }
+    let color = lerp(lerp(P.muted, P.text, hover), P.accent, on);
+    match old {
+        Some((before, t)) => {
+            let t = t as f32;
+            let old_galley = ui.painter().layout_no_wrap(before, font, color);
+            ui.painter().galley(rect.center() - old_galley.size() / 2.0, old_galley, color.gamma_multiply(1.0 - t));
+            ui.painter().galley(rect.center() - galley.size() / 2.0, galley, color.gamma_multiply(t));
+        }
+        None => {
+            ui.painter().galley(rect.center() - galley.size() / 2.0, galley, color);
+        }
+    }
     response.clicked()
 }
 

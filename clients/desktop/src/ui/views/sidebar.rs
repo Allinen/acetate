@@ -110,7 +110,7 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell, page: Page, username: &str) {
     ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
         if shell.account.can("edit_metadata") {
             let label = if shell.edit_mode { "Editing  ·  e to stop" } else { "Edit mode  e" };
-            if widgets::chip(ui, label, shell.edit_mode) {
+            if widgets::chip_morph(ui, "edit-mode", label, shell.edit_mode) {
                 shell.act(Action::ToggleEditMode);
             }
             ui.add_space(6.0);

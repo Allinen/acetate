@@ -410,6 +410,17 @@ impl Marking {
         // Esc clears the marks (`keys`), not leaving the page.
         shell.form_dirty = true;
         let tools = self.tools(shell);
+        // It fades in when the first track is marked (when it goes, it's gone: Esc).
+        let shown = widgets::appear(ui.ctx(), egui::Id::new(("marking-bar", salt)), 0.15);
+        ui.scope(|ui| {
+            ui.multiply_opacity(shown);
+            self.bar_contents(ui, shell, catalog, len, id_at, salt, tools);
+        });
+        ui.add_space(4.0);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn bar_contents(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: &Catalog, len: usize, id_at: impl Fn(usize) -> Option<Uuid> + Copy, salt: &str, tools: bool) {
         ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new(format!("{} marked", thousands(self.marked.len()))).font(font(13.0, semibold())).color(P.accent));
             // In any mode.
@@ -472,7 +483,6 @@ impl Marking {
             }
             ui.label(RichText::new("the box, x or Ctrl+click (un)marks · Shift+↑/↓ or Shift+click a range · Ctrl+A all shown · Esc clear").color(P.faint).small());
         });
-        ui.add_space(4.0);
     }
 
     /// The merge popup, while it's open; closes it when the merge view is done. A merged

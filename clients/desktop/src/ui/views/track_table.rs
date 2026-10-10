@@ -551,13 +551,14 @@ impl TrackTable {
                             Column::Title => {
                                 // The star on the title's line, not above it.
                                 ui.horizontal(|ui| {
-                                    // Pops when starred (not when scrolled into view: a row's first
-                                    // sight starts at its state).
+                                    // Pops in when starred and shrinks away when unstarred (a row's first
+                                    // sight starts at its state: scrolling doesn't animate).
                                     let starred = shell.mark(t.id()).starred;
                                     let on = ctx.animate_bool_with_time(egui::Id::new(("row-star", t.id())), starred, 0.18);
-                                    if starred {
-                                        let (rect, _) = ui.allocate_exact_size(Vec2::new(14.0, 14.0), Sense::hover());
-                                        widgets::draw_star(ui.painter(), rect.center(), 5.5 * (1.0 + (on * std::f32::consts::PI).sin() * 0.45), P.accent);
+                                    if on > 0.0 {
+                                        let (rect, _) = ui.allocate_exact_size(Vec2::new(14.0 * on, 14.0), Sense::hover());
+                                        let pop = if starred { 1.0 + (on * std::f32::consts::PI).sin() * 0.45 } else { on };
+                                        widgets::draw_star(ui.painter(), rect.center(), 5.5 * pop, P.accent.gamma_multiply(on));
                                     }
                                     let clicked = match &t.original_filename() {
                                         Some(name) => widgets::og_link(ui, t.title(), font(13.5, medium()), name),
