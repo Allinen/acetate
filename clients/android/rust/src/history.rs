@@ -175,3 +175,30 @@ impl Core {
             .map_err(|e| failed("unexpected", &e.to_string()))?
     }
 }
+
+/// One of the messages the app showed.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct PastMessage {
+    pub text: String,
+    /// "now", "3 min ago".
+    pub ago: String,
+    pub error: bool,
+}
+
+#[uniffi::export]
+impl Core {
+    /// Keeps what the app just told the user, to be read again in `messages`.
+    pub fn note(&self, text: String, error: bool) {
+        self.shared.messages.lock().unwrap().record(&text, std::time::Instant::now(), error);
+    }
+
+    /// The last hundred, newest first.
+    pub fn messages(&self) -> Vec<PastMessage> {
+        let log = self.shared.messages.lock().unwrap();
+        log.list
+            .iter()
+            .rev()
+            .map(|m| PastMessage { text: m.text.clone(), ago: acetate_core::messages::ago(m.at), error: m.error })
+            .collect()
+    }
+}

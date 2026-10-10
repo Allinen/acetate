@@ -104,7 +104,14 @@ class Model(dataDir: String) : Listener {
         private set
 
     /** Something to tell the user once (a change that failed); the screen clears it. */
-    var notice by mutableStateOf<String?>(null)
+    var notice: String?
+        get() = noticeText
+        set(value) {
+            noticeText = value
+            // Kept in the core, to read again (Settings -> Earlier messages).
+            if (value != null) core.note(value, false)
+        }
+    private var noticeText by mutableStateOf<String?>(null)
 
     val playback = core.playback()
 
@@ -267,4 +274,5 @@ sealed interface Page {
     data object Liked : Page
     data object Downloads : Page
     data object Changes : Page
+    data object Messages : Page
 }

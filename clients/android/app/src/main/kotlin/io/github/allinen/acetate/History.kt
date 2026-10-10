@@ -166,3 +166,23 @@ fun ChangesScreen(model: Model) {
         }
     }
 }
+
+/** What the app said in snackbars lately (the last hundred, newest first); the text can be selected. */
+@Composable
+fun MessagesScreen(model: Model) {
+    val list = remember { model.core.messages() }
+    PageScaffold(model, "Earlier messages") { modifier ->
+        androidx.compose.foundation.text.selection.SelectionContainer {
+            LazyColumn(modifier) {
+                if (list.isEmpty()) item { Column(Modifier.padding(16.dp)) { Muted("None yet.") } }
+                items(list.size) { i ->
+                    val m = list[i]
+                    Column(Modifier.fillMaxWidth().padding(16.dp, 6.dp)) {
+                        Muted(m.ago)
+                        Text(m.text, color = if (m.error) Palette.danger else Palette.text)
+                    }
+                }
+            }
+        }
+    }
+}

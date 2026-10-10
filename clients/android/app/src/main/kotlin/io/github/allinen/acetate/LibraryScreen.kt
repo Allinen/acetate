@@ -124,6 +124,7 @@ private fun SettingsDialog(model: Model, close: () -> Unit) {
                 if (model.core.canViewHistory()) {
                     TextButton({ close(); model.pages.add(Page.Changes) }) { Text("What changed lately") }
                 }
+                TextButton({ close(); model.pages.add(Page.Messages) }) { Text("Earlier messages") }
                 val q = model.quality
                 QualityChoice("Quality on Wi-Fi", q.unmetered, q::chooseUnmetered)
                 Spacer(Modifier.height(12.dp))

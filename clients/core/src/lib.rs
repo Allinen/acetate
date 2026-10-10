@@ -10,6 +10,7 @@
 //! - `details`: everything about one track, album or artist, for their pages.
 //! - `lyrics`: synced lyrics (LRC).
 //! - `memory`: how much memory the app holds, and giving freed memory back.
+//! - `messages`: the toasts and snackbars shown, kept to read again.
 //! - `playback`: the queue, and the view of the player a UI draws from.
 //! - `outbox`: stars, ratings, plays and playlist additions, kept until the server has them.
 //! - `playlists`: playlists, kept locally like the catalog.
@@ -34,6 +35,7 @@ pub mod offline;
 pub mod outbox;
 pub mod lyrics;
 pub mod memory;
+pub mod messages;
 pub mod playback;
 pub mod playlists;
 pub mod resume;

@@ -98,6 +98,8 @@ In **Settings**:
 - **Quality on Wi-Fi / on mobile data.** The original, or a copy the server makes (320, 192,
   128, 96 kbps). The choice applies to what plays next, and changes by itself as the
   connection does. The default is the original on Wi-Fi and 128 kbps on mobile data.
+- **Earlier messages:** the last hundred things the app told you in a snackbar, newest
+  first, with the text selectable, for the ones that vanished before you read them.
 - **Output level:** lowers the app's own volume below the phone's (for headphones that are
   loud even at the lowest step).
 - **Lyrics timing:** moves the lyrics earlier or later. A Bluetooth headset delays the sound

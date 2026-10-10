@@ -580,6 +580,8 @@ struct Shared {
     /// When the catalog was last asked of the server.
     asked: Mutex<Option<Instant>>,
     listener: Arc<dyn Listener>,
+    /// What the app showed the user in words, to read again.
+    messages: Mutex<acetate_core::messages::Log>,
 }
 
 impl Shared {
@@ -638,6 +640,7 @@ impl Core {
             downloads_allowed: std::sync::atomic::AtomicBool::new(true),
             asked: Mutex::new(None),
             listener,
+            messages: Default::default(),
         });
         // What's downloaded plays from the device.
         let notices = shared.listener.clone();

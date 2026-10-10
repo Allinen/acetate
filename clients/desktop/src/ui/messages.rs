@@ -5,21 +5,14 @@ use std::time::Instant;
 
 use eframe::egui::{self, Align2, Color32, Key, Modifiers, Pos2, RichText, Sense, Shadow};
 
+use acetate_core::messages::{ago, Log};
+
 use super::theme::{bold, font, medium, PALETTE as P};
-
-/// How many are kept.
-const KEPT: usize = 100;
-
-pub struct Message {
-    pub text: String,
-    pub at: Instant,
-    pub error: bool,
-}
 
 #[derive(Default)]
 pub struct Messages {
     /// Oldest first.
-    pub list: Vec<Message>,
+    pub log: Log,
     pub open: bool,
     /// The toast made at this time or before is cleared (the x).
     pub dismissed: Option<Instant>,
@@ -31,13 +24,7 @@ pub struct Messages {
 impl Messages {
     /// Keeps a message the toast is showing, once (by when it was made).
     pub fn record(&mut self, text: &str, at: Instant, error: bool) {
-        if self.list.iter().rev().take(8).any(|m| m.at == at) {
-            return;
-        }
-        self.list.push(Message { text: text.to_string(), at, error });
-        if self.list.len() > KEPT {
-            self.list.remove(0);
-        }
+        self.log.record(text, at, error);
     }
 
     /// The list, newest first, while open; Esc, Alt+M or a click outside closes it.
@@ -73,11 +60,11 @@ impl Messages {
                         ui.set_min_height((screen.height() - 140.0).max(120.0));
                         ui.label(RichText::new("Earlier messages").font(font(20.0, bold())));
                         ui.add_space(10.0);
-                        if self.list.is_empty() {
+                        if self.log.list.is_empty() {
                             ui.label(RichText::new("None yet.").font(font(13.0, medium())).color(P.muted));
                         }
                         egui::ScrollArea::vertical().max_height((screen.height() - 140.0).max(120.0)).show(ui, |ui| {
-                            for m in self.list.iter().rev() {
+                            for m in self.log.list.iter().rev() {
                                 ui.horizontal_top(|ui| {
                                     ui.add_sized([64.0, 16.0], egui::Label::new(RichText::new(ago(m.at)).font(font(11.5, medium())).color(P.faint)));
                                     let color = if m.error { P.danger } else { P.text };
@@ -88,15 +75,5 @@ impl Messages {
                         });
                     });
             });
-    }
-}
-
-fn ago(at: Instant) -> String {
-    let s = at.elapsed().as_secs();
-    match s {
-        0..=4 => "now".into(),
-        5..=59 => format!("{s}s ago"),
-        60..=3599 => format!("{} min ago", s / 60),
-        _ => format!("{} h ago", s / 3600),
     }
 }
