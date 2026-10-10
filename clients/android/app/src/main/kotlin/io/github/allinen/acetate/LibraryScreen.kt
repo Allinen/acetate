@@ -68,7 +68,7 @@ fun LibraryScreen(model: Model) {
             }
             1 -> {
                 var view by remember { mutableStateOf<ArtistView?>(null) }
-                LaunchedEffect(model.catalogVersion, filter) { view = model.core.artists(filter, ArtistOrder.NAME) }
+                LaunchedEffect(model.catalogVersion, filter) { view = model.core.artists(filter, ArtistOrder.RELEVANCE) }
                 view?.let { ArtistList(model, it) }
             }
             2 -> {

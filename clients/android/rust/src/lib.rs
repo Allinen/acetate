@@ -420,6 +420,8 @@ pub enum AlbumOrder {
 
 #[derive(Debug, Clone, Copy, uniffi::Enum)]
 pub enum ArtistOrder {
+    /// The name typed first, then names starting with it, then the rest (by name when nothing is typed).
+    Relevance,
     Name,
     Tracks,
 }
@@ -959,6 +961,7 @@ impl Core {
         let catalog = self.shared.catalog();
         blocking(move || {
             let sort = match order {
+                ArtistOrder::Relevance => ArtistSort::Relevance,
                 ArtistOrder::Name => ArtistSort::Name,
                 ArtistOrder::Tracks => ArtistSort::Tracks,
             };
