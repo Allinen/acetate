@@ -167,7 +167,7 @@ impl GroupingPage {
             } else if !tracks.is_empty() {
                 ui.label(RichText::new(format!("Tracks  {}", thousands(tracks.len()))).font(font(18.0, bold())));
                 ui.add_space(8.0);
-                let rows = TrackRows { tracks: Some(&tracks), added: None };
+                let rows = TrackRows { tracks: Some(&tracks), added: None, faded: None };
                 let options = Options {
                     key: "grouping",
                     columns: super::tracks::LIBRARY_COLUMNS,

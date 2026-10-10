@@ -406,7 +406,7 @@ impl Catalog {
     /// All tracks, filtered and sorted (the tests' and timing's shorthand).
     #[cfg(test)]
     pub fn track_list(&self, filter: &str, sort: TrackSort, descending: bool) -> Vec<u32> {
-        let rows = TrackRows { tracks: None, added: None };
+        let rows = TrackRows { tracks: None, added: None, faded: None };
         self.order_tracks(&rows, filter, sort, descending).into_iter().map(|i| i as u32).collect()
     }
 
@@ -549,9 +549,16 @@ pub fn album_order(a: (Option<i16>, Option<i16>), a_title: &str, b: (Option<i16>
 pub struct TrackRows<'a> {
     pub tracks: Option<&'a [u32]>,
     pub added: Option<&'a [String]>,
+    /// Rows shown faded, one flag each (a playlist's tracks just taken out, an unstarred
+    /// liked song): still there to see, and `p` brings them back.
+    pub faded: Option<&'a [bool]>,
 }
 
 impl TrackRows<'_> {
+    pub fn is_faded(&self, row: usize) -> bool {
+        self.faded.is_some_and(|f| f.get(row).copied().unwrap_or(false))
+    }
+
     pub fn len(&self, catalog: &Catalog) -> usize {
         self.tracks.map(<[u32]>::len).unwrap_or(catalog.track_count())
     }

@@ -76,7 +76,7 @@ impl Search {
             }
             None => Vec::new(),
         };
-        let rows = TrackRows { tracks: None, added: None };
+        let rows = TrackRows { tracks: None, added: None, faded: None };
         let tracks = catalog.order_tracks(&rows, text, TrackSort::Added, false).into_iter().take(limit).map(|i| (i as u32, 0)).collect();
         // (Keys are about tracks, albums and artists: no extras.)
         Hits { artists, albums, tracks, extras: Vec::new() }

@@ -349,7 +349,7 @@ impl ArtistPage {
                         keys: true,
                         scroll: true,
                     };
-                    let track_rows = TrackRows { tracks: Some(rows), added: None };
+                    let track_rows = TrackRows { tracks: Some(rows), added: None, faded: None };
                     ui.push_id(key, |ui| table.show(ui, shell, catalog, &track_rows, version, player, &options));
                 }
             }
@@ -615,7 +615,7 @@ impl ArtistPage {
                 // As tall as its few rows: the page scrolls, never the list.
                 let options = Options { key, columns: super::tracks::LIBRARY_COLUMNS, added: None, filter_hint: None, album: None, places: None, keys: self.active == n, scroll: false };
                 let preview = &rows[..rows.len().min(PREVIEW_ROWS)];
-                let track_rows = TrackRows { tracks: Some(preview), added: None };
+                let track_rows = TrackRows { tracks: Some(preview), added: None, faded: None };
                 let shown = ui.push_id(key, |ui| self.previews[n].show(ui, shell, catalog, &track_rows, version, player, &options)).inner;
                 if shown.clicked {
                     self.active = n;

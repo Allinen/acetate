@@ -334,7 +334,7 @@ impl AlbumPage {
                 ui.label(RichText::new("No tracks you can see").color(P.muted));
                 return;
             }
-            let rows = TrackRows { tracks: Some(tracks), added: None };
+            let rows = TrackRows { tracks: Some(tracks), added: None, faded: None };
             // Its notes, folded under their titles (above the tracks: they're short to pass).
             if let Some(d) = shell.album_details.get(id).value.clone()
                 && crate::ui::edit::notes::NotesView::worth_showing(shell, &d.notes)

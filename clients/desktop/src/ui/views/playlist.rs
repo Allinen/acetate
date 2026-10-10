@@ -16,7 +16,9 @@ use uuid::Uuid;
 use super::album::play_button;
 use super::track_table::{count_and_length, Options, TrackTable, Column};
 use crate::catalog::index::{TrackRows, TrackSort};
+use crate::catalog::marks::Kind;
 use crate::catalog::Catalog;
+use acetate_core::playlists::Entry;
 use crate::playback::PlayerView;
 use crate::ui::theme::{bold, font, medium, semibold, PALETTE as P};
 use crate::ui::{widgets, Action, Shell};
@@ -32,6 +34,9 @@ pub struct PlaylistPage {
     /// One unstarred meanwhile stays where it was (unstarred), so starring it again is one
     /// key away; it's gone the next time the page opens.
     liked_seen: std::collections::HashMap<Uuid, String>,
+    /// Entries taken out since the page opened, each with its place in the list then: still
+    /// shown, faded, until the page is opened again (`p` on them puts them back).
+    removed: Vec<(usize, Entry)>,
 }
 
 /// A playlist's columns: its own order first (and which show to start with).
@@ -51,7 +56,7 @@ const PLAYLIST_COLUMNS: &[(Column, bool)] = &[
 
 impl Default for PlaylistPage {
     fn default() -> Self {
-        PlaylistPage { table: TrackTable::new(TrackSort::Natural), history: false, confirm_trash: false, describing: None, liked_seen: Default::default() }
+        PlaylistPage { table: TrackTable::new(TrackSort::Natural), history: false, confirm_trash: false, describing: None, liked_seen: Default::default(), removed: Vec::new() }
     }
 }
 
@@ -76,7 +81,9 @@ impl PlaylistPage {
             (tracks, starred) = all.into_iter().unzip();
         }
         header(ui, "LIKED SONGS", "Liked songs", &facts);
-        let rows = TrackRows { tracks: Some(&tracks), added: Some(&starred) };
+        // Unstarred since the page opened: faded, still in their place.
+        let faded: Vec<bool> = tracks.iter().map(|&t| !shell.mark(catalog.track_at(t).id()).starred).collect();
+        let rows = TrackRows { tracks: Some(&tracks), added: Some(&starred), faded: Some(&faded) };
         let (play_rect, _) = ui.allocate_exact_size(Vec2::new(116.0, 42.0), Sense::hover());
         if play_button(ui, "liked-play", play_rect) && !tracks.is_empty() {
             shell.act(Action::Play { tracks: self.table.tracks(&rows), start: 0 });
@@ -84,7 +91,24 @@ impl PlaylistPage {
         ui.horizontal(|ui| widgets::download_chip(ui, shell, "liked", "", "Liked songs"));
         ui.add_space(16.0);
         let options = Options { key: "liked", columns: PLAYLIST_COLUMNS, added: Some("Starred"), filter_hint: Some("Filter liked songs: words, or artist:… year:…"), album: None, places: None, keys: true, scroll: true };
-        self.table.show(ui, shell, catalog, &rows, version(shell.generation, &tracks), player, &options);
+        let shown = self.table.show(ui, shell, catalog, &rows, version(shell.generation, &tracks), player, &options);
+        // Shift+P unstars the marked tracks (or the selected one); `p` on faded ones stars them again.
+        let target = |rows: Vec<usize>, starred: bool| -> Vec<Uuid> {
+            rows.into_iter().filter(|&r| faded[r] != starred).map(|r| catalog.track_at(tracks[r]).id()).collect()
+        };
+        let mut change: Vec<Uuid> = Vec::new();
+        if shown.remove {
+            let rows = if self.table.has_marks() { self.table.marked_rows(catalog, &rows) } else { shown.selected.into_iter().collect() };
+            change = target(rows, true);
+        } else if !shown.restore.is_empty() {
+            change = target(shown.restore.clone(), false);
+        }
+        if !change.is_empty() {
+            for id in change {
+                shell.act(Action::ToggleStar(Kind::Track, id));
+            }
+            self.table.clear_marks();
+        }
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: &Arc<Catalog>, id: Uuid, player: &PlayerView) {
@@ -98,30 +122,49 @@ impl PlaylistPage {
         // The entries as catalog tracks (an entry of a track not in the catalog yet, just
         // added elsewhere, shows after the next library refresh), with their entry ids
         // and when they were added.
+        // Entries taken out meanwhile stay, in their place, faded (unless they're back).
+        let mut list: Vec<(Entry, bool)> = detail.entries.iter().map(|e| (e.clone(), false)).collect();
+        self.removed.retain(|(_, e)| !detail.entries.iter().any(|d| d.id == e.id));
+        let mut ghosts: Vec<&(usize, Entry)> = self.removed.iter().collect();
+        ghosts.sort_by_key(|(at, _)| *at);
+        for (at, e) in ghosts {
+            list.insert((*at).min(list.len()), (e.clone(), true));
+        }
         let mut tracks = Vec::new();
         let mut entries = Vec::new();
         let mut added = Vec::new();
-        for e in &detail.entries {
+        let mut faded = Vec::new();
+        // Each row's place in `list`.
+        let mut places = Vec::new();
+        for (n, (e, gone)) in list.iter().enumerate() {
             if let Some(t) = catalog.track_index(e.track_id) {
                 tracks.push(t);
                 entries.push(e.id);
                 // (Added here and not sent yet: the server hasn't said when.)
                 added.push(if e.waiting { "waiting".to_string() } else { e.added_at.clone() });
+                faded.push(*gone);
+                places.push(n);
             }
         }
-        let rows = TrackRows { tracks: Some(&tracks), added: Some(&added) };
+        let rows = TrackRows { tracks: Some(&tracks), added: Some(&added), faded: Some(&faded) };
+        let live: Vec<u32> = tracks.iter().zip(&faded).filter(|(_, f)| !**f).map(|(t, _)| *t).collect();
 
         let owner = if detail.mine { String::new() } else { format!(" · by {}", detail.owner) };
         let visibility = if detail.public { "public" } else { "private" };
-        header(ui, "PLAYLIST", &detail.name, &format!("{}{owner} · {visibility}", count_and_length(catalog, tracks.iter().copied())));
+        header(ui, "PLAYLIST", &detail.name, &format!("{}{owner} · {visibility}", count_and_length(catalog, live.iter().copied())));
         if !detail.description.is_empty() {
             ui.label(RichText::new(&detail.description).color(P.muted));
         }
 
         ui.horizontal(|ui| {
             let (play_rect, _) = ui.allocate_exact_size(Vec2::new(116.0, 42.0), Sense::hover());
-            if play_button(ui, "playlist-play", play_rect) && !tracks.is_empty() {
-                shell.act(Action::Play { tracks: self.table.tracks(&rows), start: 0 });
+            if play_button(ui, "playlist-play", play_rect) && !live.is_empty() {
+                // (Not the ones just taken out.)
+                let mut tracks = self.table.tracks(&rows);
+                if !self.removed.is_empty() {
+                    tracks.retain(|t| live.contains(t));
+                }
+                shell.act(Action::Play { tracks, start: 0 });
             }
             ui.add_space(8.0);
             if detail.mine {
@@ -178,6 +221,14 @@ impl PlaylistPage {
         let options = Options { key: "playlist", columns: PLAYLIST_COLUMNS, added: Some("Added"), filter_hint: Some("Filter this playlist: words, or artist:… year:…"), album: None, places: None, keys: true, scroll: true };
         let shown = self.table.show(ui, shell, catalog, &rows, version(shell.generation, &entries), player, &options);
 
+        // `p` on faded rows: back into the playlist (at its end), and no longer faded.
+        if !shown.restore.is_empty() && detail.mine {
+            let back: Vec<Uuid> = shown.restore.iter().map(|&row| list[places[row]].0.track_id).collect();
+            let gone: Vec<Uuid> = shown.restore.iter().map(|&row| entries[row]).collect();
+            self.removed.retain(|(_, e)| !gone.contains(&e.id));
+            shell.playlists.add(id, detail.name.clone(), back);
+            self.table.clear_marks();
+        }
         // Keys for your own playlist (outside text fields).
         if shown.remove && !detail.mine {
             shell.playlists.notice = Some(("Only its owner can take tracks out of a playlist".into(), Instant::now()));
@@ -201,19 +252,19 @@ impl PlaylistPage {
             if remove {
                 // The marked entries (just the copy marked of a track in it twice), or the selected one.
                 let marked = self.table.marked_rows(catalog, &rows);
-                let out: Vec<Uuid> = if !marked.is_empty() {
-                    marked.into_iter().map(|row| entries[row]).collect()
-                } else {
-                    shown.selected.map(|row| entries[row]).into_iter().collect()
-                };
+                let out: Vec<usize> = if !marked.is_empty() { marked } else { shown.selected.into_iter().collect() };
+                let out: Vec<usize> = out.into_iter().filter(|&row| !faded[row]).collect();
                 if !out.is_empty() {
-                    shell.playlists.remove(id, out);
+                    shell.playlists.remove(id, out.iter().map(|&row| entries[row]).collect());
+                    self.removed.extend(out.iter().map(|&row| (places[row], list[places[row]].0.clone())));
                     self.table.clear_marks();
                 }
             }
             if let Some(row) = shown.selected {
                 let by: isize = if up { -1 } else if down { 1 } else { 0 };
-                if by != 0 && !shown.in_own_order {
+                if by != 0 && !self.removed.is_empty() {
+                    shell.playlists.notice = Some(("Not while the tracks just taken out are shown: open the playlist again".into(), Instant::now()));
+                } else if by != 0 && !shown.in_own_order {
                     shell.playlists.notice = Some(("To move tracks, sort by # and clear the filter".into(), Instant::now()));
                 } else if by != 0 && (row as isize + by) >= 0 && ((row as isize + by) as usize) < entries.len() {
                     shell.playlists.move_entry(id, entries[row], by);

@@ -103,7 +103,7 @@ pub const GROUPS: &[(&str, &[Binding])] = &[
     (
         "Your playlists and the queue",
         &[
-            ("Delete  or  Shift+P", "take the track out (marked tracks: all of them)"),
+            ("Delete  or  Shift+P", "take the track out (marked tracks: all of them); it stays, faded, until the page is opened again, and p puts it back (at the end)"),
             ("Ctrl+↑ / Ctrl+↓", "move it up / down"),
             ("F2", "rename the playlist"),
         ],

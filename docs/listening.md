@@ -53,7 +53,10 @@ together; [edit mode](editing/README.md) adds merging and the other editing tool
 ## Playlists
 
 Make one from the `+` in the sidebar, or with `p` on anything. Inside a playlist:
-`Delete` or `Shift+P` takes a track out (all the marked tracks, if any are marked), `Ctrl+↑`/`Ctrl+↓` reorders, `F2` renames. Deleted playlists go
+`Delete` or `Shift+P` takes a track out (all the marked tracks, if any are marked). A track taken out stays on the page, faded,
+until you open it again, so you see what went; `p` on it puts it back (at the end).
+`Ctrl+↑`/`Ctrl+↓` reorders, `F2` renames. On Liked songs, `Shift+P` unstars the same way
+(faded, `p` or `s` stars it again). Deleted playlists go
 to the [trash](library/storage.md) and can be restored.
 
 ## Quality and downloads

@@ -193,6 +193,8 @@ pub struct Shown {
     /// Shift+P on a playlist's page: the page takes the tracks out (the marked ones, or
     /// the selected one). Elsewhere the table asks which playlist to take them out of.
     pub remove: bool,
+    /// `p` on faded rows (taken out, unstarred): the rows (of those given) to bring back.
+    pub restore: Vec<usize>,
 }
 
 /// A row of the table: a track (its place in `order`), or a disc's name before its
@@ -395,7 +397,14 @@ impl TrackTable {
             }
         }
         // Shift+P: out of a playlist. A playlist's page does it itself.
-        let own_page = options.key == "playlist";
+        let own_page = matches!(options.key, "playlist" | "liked");
+        // `p` on faded rows brings them back instead of adding them to a playlist.
+        let mut restore: Vec<usize> = Vec::new();
+        if moved.add && rows.faded.is_some() {
+            let targets: Vec<usize> = if self.marking.is_empty() { self.order.get(self.selected).copied().into_iter().collect() } else { self.marked_rows(catalog, rows) };
+            restore = targets.into_iter().filter(|&r| rows.is_faded(r)).collect();
+        }
+        let add = moved.add && restore.is_empty();
         if moved.remove && !own_page {
             let tracks = if self.marking.is_empty() {
                 self.order.get(self.selected).map(|&row| catalog.track_at(rows.track(row)).id()).into_iter().collect()
@@ -412,7 +421,7 @@ impl TrackTable {
             if moved.rate_by != 0 {
                 self.marking.rate_by(shell, moved.rate_by);
             }
-            if moved.add {
+            if add {
                 self.marking.add(shell, order.len(), id_at);
             }
             if let Some(next) = moved.queue {
@@ -426,7 +435,7 @@ impl TrackTable {
             if moved.rate_by != 0 {
                 shell.act(Action::RateBy(Kind::Track, id, moved.rate_by));
             }
-            if moved.add {
+            if add {
                 shell.act(Action::AddToPlaylist(vec![id]));
             }
             if let Some(next) = moved.queue {
@@ -548,7 +557,7 @@ impl TrackTable {
                     let away = !acetate_core::playback::on_disk::has(here.as_deref(), t.sha256_bytes());
                     for (idx, c) in columns.iter().enumerate() {
                         row.col(|ui| {
-                            if away {
+                            if away || rows.is_faded(at) {
                                 ui.multiply_opacity(0.35);
                             }
                             // The mark's box, in front of the first column: a click (un)marks the row.
@@ -720,6 +729,7 @@ impl TrackTable {
             in_own_order: self.sort == TrackSort::Natural && !self.descending && self.filter.trim().is_empty(),
             clicked: clicked.is_some() || double.is_some() || boxed.is_some(),
             remove: moved.remove && own_page,
+            restore,
         }
     }
 
