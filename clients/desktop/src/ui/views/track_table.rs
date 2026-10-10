@@ -122,6 +122,22 @@ impl Column {
         }
     }
 
+    /// `width`, `extra` wider (for a column of fixed width; the others have room).
+    fn width_plus(self, extra: f32) -> Width {
+        match self {
+            Column::Position => Width::exact(40.0 + extra),
+            Column::Number => Width::exact(48.0 + extra),
+            Column::Cover => Width::exact(36.0 + extra),
+            Column::Released => Width::exact(92.0 + extra),
+            Column::Plays => Width::exact(52.0 + extra),
+            Column::Format => Width::exact(52.0 + extra),
+            Column::Og => Width::exact(40.0 + extra),
+            Column::Length => Width::exact(56.0 + extra),
+            Column::Added => Width::exact(96.0 + extra),
+            _ => self.width(),
+        }
+    }
+
     fn width(self) -> Width {
         match self {
             Column::Position => Width::exact(40.0),
@@ -429,11 +445,11 @@ impl TrackTable {
             // All of it: its height isn't capped (the page around it scrolls).
             builder = builder.max_scroll_height(f32::INFINITY);
         }
-        if boxes {
-            builder = builder.column(Width::exact(26.0 * boxes_open));
-        }
-        for c in &columns {
-            builder = builder.column(c.width());
+        // The marks' boxes are in the first column's cell, which is that much wider (not a
+        // column of their own: the gap between columns would jump when it goes).
+        let box_room = 26.0 * boxes_open;
+        for (n, c) in columns.iter().enumerate() {
+            builder = builder.column(if n == 0 { c.width_plus(box_room) } else { c.width() });
         }
         if let Some(row) = self.scroll_to.take() {
             let line = self.lines.iter().position(|l| *l == Line::Track(row)).unwrap_or(row);
@@ -446,11 +462,11 @@ impl TrackTable {
         builder
             // 2 px more than the labels need: a little air above the first row.
             .header(28.0, |mut header| {
-                if boxes {
-                    header.col(|_| {});
-                }
-                for c in &columns {
+                for (idx, c) in columns.iter().enumerate() {
                     let (_, response) = header.col(|ui| {
+                        if idx == 0 {
+                            ui.add_space(box_room);
+                        }
                         let name = c.name(options);
                         let Some(sort) = c.sort() else {
                             ui.label(RichText::new(name).font(font(12.0, semibold())).color(P.faint));
@@ -497,7 +513,7 @@ impl TrackTable {
                                 let at = ui.max_rect().left_center() + Vec2::new(2.0, 4.0);
                                 painter.text(at, egui::Align2::LEFT_CENTER, format!("Disc {disc}"), font(12.5, semibold()), P.muted);
                             });
-                            for _ in columns.iter().skip(if boxes { 0 } else { 1 }) {
+                            for _ in columns.iter().skip(1) {
                                 row.col(|_| {});
                             }
                             return;
@@ -508,18 +524,18 @@ impl TrackTable {
                     row.set_selected(n == self.selected);
                     let marked = self.marking.contains(&t.id());
                     let color = if playing == Some(t.id()) { P.accent } else { P.text };
-                    // The mark's box: a click (un)marks the row.
-                    if boxes {
+                    for (idx, c) in columns.iter().enumerate() {
                         row.col(|ui| {
-                        let (rect, response) = ui.allocate_exact_size(Vec2::splat(18.0), Sense::click());
-                        super::marking::paint_box(ui.painter(), t.id(), rect.translate(Vec2::new(2.0, 0.0)), marked, response.hovered());
-                        if response.on_hover_text("Mark (x)").clicked() {
-                            boxed = Some(n);
-                        }
-                        });
-                    }
-                    for c in &columns {
-                        row.col(|ui| match c {
+                            // The mark's box, in front of the first column: a click (un)marks the row.
+                            if idx == 0 && boxes {
+                                let (room, response) = ui.allocate_exact_size(Vec2::new(box_room, 18.0), Sense::click());
+                                let rect = egui::Rect::from_min_size(room.min + Vec2::new(2.0, 0.0), Vec2::splat(18.0));
+                                super::marking::paint_box(&ui.painter().with_clip_rect(room), t.id(), rect, marked, response.hovered());
+                                if response.on_hover_text("Mark (x)").clicked() {
+                                    boxed = Some(n);
+                                }
+                            }
+                            match c {
                             Column::Position => {
                                 ui.label(RichText::new((at + 1).to_string()).font(font(12.5, medium())).color(P.faint));
                             }
@@ -532,7 +548,7 @@ impl TrackTable {
                             Column::Cover => {
                                 // Centred in the whole cell (not at its top left, where the
                                 // cell's edge and the table's top cut it off).
-                                let cell = ui.max_rect();
+                                let cell = ui.available_rect_before_wrap();
                                 ui.allocate_rect(cell, Sense::hover());
                                 let rect = egui::Rect::from_center_size(cell.center(), Vec2::splat(28.0));
                                 shell.cover(ui, t.cover(), t.id(), rect, 4, 0.0);
@@ -603,7 +619,7 @@ impl TrackTable {
                                 ui.label(RichText::new(t.codec().unwrap_or("")).color(P.faint).small());
                             }
                             Column::Og => {
-                                let cell = ui.max_rect();
+                                let cell = ui.available_rect_before_wrap();
                                 let response = ui.allocate_rect(cell, Sense::hover());
                                 if let Some(name) = &t.original_filename() {
                                     widgets::og_badge(ui.painter(), cell.left_center() + Vec2::new(4.0, 0.0), 15.0);
@@ -616,6 +632,7 @@ impl TrackTable {
                             Column::Added => {
                                 let added = rows.added.and_then(|a| a.get(at)).map(|a| a.get(..10).unwrap_or(a)).unwrap_or("");
                                 ui.label(RichText::new(added).color(P.faint));
+                            }
                             }
                         });
                     }

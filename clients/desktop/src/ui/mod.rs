@@ -411,12 +411,17 @@ impl Shell {
                     egui::Shadow { offset: [0, 10], blur: 28, spread: 0, color: egui::Color32::from_black_alpha((150.0 * t) as u8) }
                         .as_shape(rect, radius as u8),
                 );
-                widgets::placeholder(ui.painter(), rect, radius as u8, seed);
+                // The images are drawn at full strength all the way (the preview's own growing
+                // and shrinking is its size; fading them would show what's under them). The
+                // placeholder only when there's no image at all.
+                if small.is_none() && big.is_none() {
+                    widgets::placeholder(ui.painter(), rect, radius as u8, seed);
+                }
                 // The small copy is there at once; the large one fades in over it.
                 for (texture, fade) in [small, big].into_iter().flatten() {
                     egui::Image::from_texture(&texture)
                         .corner_radius(radius as u8)
-                        .tint(egui::Color32::from_white_alpha((fade * t * 255.0) as u8))
+                        .tint(egui::Color32::from_white_alpha((fade * 255.0) as u8))
                         .paint_at(ui, rect);
                 }
             });
