@@ -117,6 +117,8 @@ private fun SettingsDialog(model: Model, close: () -> Unit) {
         title = { Text("Settings") },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState())) {
+                AccountSection(model)
+                Spacer(Modifier.height(12.dp))
                 model.core.versionWarning()?.let {
                     Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium)
                     Spacer(Modifier.height(12.dp))

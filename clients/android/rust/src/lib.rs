@@ -115,6 +115,13 @@ pub struct SessionInfo {
     pub username: String,
 }
 
+/// What an address answered when asked whether it is this session's server.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct AddressAnswer {
+    pub same: bool,
+    pub text: String,
+}
+
 /// Whether the server can be reached.
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct ConnectionInfo {
@@ -714,6 +721,27 @@ impl Core {
     /// Who's logged in (kept between runs), if anyone.
     pub fn session(&self) -> Option<SessionInfo> {
         self.shared.api.session().map(|s| SessionInfo { server: s.server, username: s.username })
+    }
+
+    /// Asks an address whether it is this session's server (found by its identity): whether it
+    /// is, and in words what it is if not.
+    pub async fn check_address(&self, address: String) -> AddressAnswer {
+        let api = self.shared.api.clone();
+        match self.runtime.spawn(async move { api.check_address(&address).await }).await {
+            Ok(found) => AddressAnswer { same: found == acetate_core::api::AddressCheck::Same, text: found.to_string() },
+            Err(e) => AddressAnswer { same: false, text: format!("Couldn't ask: {e}") },
+        }
+    }
+
+    /// Moves the session to another address of the same server. Nothing else changes: the
+    /// library, downloads and queue stay.
+    pub async fn change_address(&self, address: String) -> Result<(), CoreError> {
+        let api = self.shared.api.clone();
+        match self.runtime.spawn(async move { api.change_address(&address).await }).await {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(why)) => Err(CoreError::Failed { code: "address".into(), reason: why }),
+            Err(e) => Err(CoreError::Failed { code: "internal".into(), reason: e.to_string() }),
+        }
     }
 
     /// Asks an address (no login) and says what came back: the HTTP status, or why the

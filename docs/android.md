@@ -103,6 +103,9 @@ review and the rest of library work stay on the desktop.
 
 In **Settings**:
 
+- **Account:** the server and who is logged in. **Change address** moves the app to another
+  address of the *same* server (say a new domain): it asks the address first, and the library,
+  downloads and queue stay. A different server needs a log out and a log in.
 - **Quality on Wi-Fi / on mobile data.** The original, or a copy the server makes (320, 192,
   128, 96 kbps). The choice applies to what plays next, and changes by itself as the
   connection does. The default is the original on Wi-Fi and 128 kbps on mobile data.

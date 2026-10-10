@@ -261,6 +261,9 @@ class Model(dataDir: String) : Listener {
     }
 
     fun logout() = core.logout()
+
+    /** Reads who is logged in, and where, again (the address changed). */
+    fun refreshSession() { session = core.session() }
 }
 
 /** The edit that was just saved, and whether it can be put back. */
