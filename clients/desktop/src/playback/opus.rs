@@ -198,8 +198,8 @@ impl Decoder {
     /// Decodes a packet of `frames` samples (per channel) into `out`, interleaved.
     fn decode(&mut self, packet: &[u8], frames: usize, out: &mut [f32]) -> Result<usize, &'static str> {
         match self {
-            Decoder::One(d) => d.decode(packet, frames, out),
-            Decoder::Several(d) => d.decode(packet, frames, out),
+            Decoder::One(d) => d.decode(packet, frames, out).map_err(|err| err.message()),
+            Decoder::Several(d) => d.decode(packet, frames, out).map_err(|err| err.message()),
         }
     }
 }

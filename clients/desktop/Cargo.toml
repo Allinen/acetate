@@ -20,7 +20,7 @@ rfd = { version = "0.17.2", default-features = false, features = ["xdg-portal"] 
 rodio = { version = "0.22.2", default-features = false, features = ["playback", "symphonia-all", "symphonia-simd"] }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 rustfft = "6.4.1"
-rusty-opus = "0.9.1"
+rusty-opus = "1.0.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.151", features = ["raw_value"] }
 sha2 = "0.11.0"
