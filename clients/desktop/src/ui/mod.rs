@@ -15,6 +15,7 @@ pub mod files;
 pub mod watch;
 pub mod edit;
 pub mod keymap;
+pub mod messages;
 pub mod modal;
 pub mod share;
 pub mod theme;
@@ -124,6 +125,7 @@ pub enum Action {
     ToggleEditMode,
     /// Show every key (the `?` overlay).
     ShowKeys,
+    ShowMessages,
     /// Copy a link to this track, album or artist (to send to someone with an account).
     CopyLink(crate::links::Target),
     /// Copy a link to the page shown (if it's a track's, album's or artist's).
@@ -194,6 +196,8 @@ pub struct Shell {
     pub modal_was_open: bool,
     /// The palette is open (it takes Esc, before the page's form could).
     pub palette_open: bool,
+    /// The toasts so far, to read again.
+    pub messages: messages::Messages,
     pub runtime: Runtime,
     pub api: Api,
     pub controller: Arc<Controller>,
@@ -915,6 +919,7 @@ impl App {
             slash_target: None,
             list_target: None,
             palette_open: false,
+            messages: Default::default(),
             runtime,
             api,
             controller,
@@ -1266,6 +1271,7 @@ impl App {
                 }
                 Action::RefreshLibrary => self.shell.refresh_library(ctx),
                 Action::ShowKeys => self.keys_open = true,
+                Action::ShowMessages => self.shell.messages.open = !self.shell.messages.open,
                 Action::CopyShareLink(target) => self.open_share_dialog(target),
                 Action::CopyPageShareLink => match self.page_target() {
                     Some(target) => self.open_share_dialog(target),
@@ -1363,7 +1369,7 @@ impl App {
     /// Keys that work everywhere (outside text fields).
     fn keys(&mut self, ctx: &egui::Context) {
         // The key overlay takes its own keys (Esc closes it, not "back"); so does a popup.
-        if self.keys_open || self.shell.modal_open {
+        if self.keys_open || self.shell.modal_open || self.shell.messages.open {
             return;
         }
         let m = ctx.input(|i| i.modifiers);
@@ -1386,6 +1392,10 @@ impl App {
         }
         if key(Key::F5) {
             self.shell.act(Action::RefreshLibrary);
+        }
+        // Alt+M: the earlier messages (Alt+M or Esc closes them: see `Messages::show`).
+        if !self.shell.messages.open && ctx.input_mut(|i| i.consume_key(egui::Modifiers::ALT, Key::M)) {
+            self.shell.act(Action::ShowMessages);
         }
         if key(Key::F1) && !self.keys_open {
             self.shell.act(Action::ShowKeys);
@@ -1605,6 +1615,7 @@ impl eframe::App for App {
         self.shell.show_watch(&ctx);
         self.show_share(&ctx);
         keymap::overlay(&ctx, &mut self.keys_open);
+        self.shell.messages.show(&ctx);
         self.apply(&ctx);
     }
 }

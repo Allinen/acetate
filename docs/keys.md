@@ -20,6 +20,7 @@ matched by the character you type, so it works on non-US layouts.
 | `Alt+← / Alt+→` | back / forward |
 | `Esc  or  Backspace` | back (a text field: leave it) |
 | `/` | filter this list |
+| `Alt+M` | earlier messages (the toasts that went by) |
 | `F5` | check the library for changes |
 | `e` | edit mode on / off |
 | `Alt+E` | edit mode on / off, in a text field too (a commandline) |

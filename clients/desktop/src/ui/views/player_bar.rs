@@ -225,7 +225,7 @@ fn toast_life(text: &str, base: f32) -> f32 {
 
 /// The newest message (an error, or a notice), in a box above the player bar's right
 /// end: wrapped when long, sliding up and fading in, fading out when its time is up.
-fn toast(ui: &egui::Ui, shell: &Shell) {
+fn toast(ui: &egui::Ui, shell: &mut Shell) {
     const FADE_IN: f32 = 0.18;
     const FADE_OUT: f32 = 0.3;
     let ctx = ui.ctx();
@@ -236,6 +236,7 @@ fn toast(ui: &egui::Ui, shell: &Shell) {
         (e, n) => e.or(n),
     };
     let Some((text, at, base, color)) = newest else { return };
+    shell.messages.record(&text, at, color == P.danger);
     let (age, life) = (at.elapsed().as_secs_f32(), toast_life(&text, base));
     if age >= life {
         return;

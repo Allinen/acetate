@@ -68,6 +68,7 @@ const COMMANDS: &[Command] = &[
     Command { name: "Trash (take things back out, clean up old files)", word: "trash", page: true, keys: "", action: || Action::Go(Page::Trash) },
     Command { name: "Edit mode on / off", word: "edit", page: false, keys: "e", action: || Action::ToggleEditMode },
     Command { name: "Show every key", word: "keys", page: false, keys: "?", action: || Action::ShowKeys },
+    Command { name: "Earlier messages", word: "messages", page: false, keys: "Alt+M", action: || Action::ShowMessages },
     Command { name: "Mute / unmute", word: "mute", page: false, keys: "m", action: || Action::ToggleMute },
     Command { name: "Log out", word: "logout", page: false, keys: "", action: || Action::LogOut },
 ];
