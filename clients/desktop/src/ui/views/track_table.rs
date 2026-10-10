@@ -558,7 +558,7 @@ impl TrackTable {
                                 let (room, response) = ui.allocate_exact_size(Vec2::new(box_room, 18.0), Sense::click());
                                 ui.spacing_mut().item_spacing.x = gap;
                                 let rect = egui::Rect::from_min_size(room.min + Vec2::new(2.0, 0.0), Vec2::splat(18.0));
-                                super::marking::paint_box(&ui.painter().with_clip_rect(room), t.id(), rect, marked, response.hovered());
+                                super::marking::paint_box(&ui.painter().with_clip_rect(room), (t.id(), self.copies[at]), rect, marked, response.hovered());
                                 if response.on_hover_text("Mark (x)").clicked() {
                                     boxed = Some(n);
                                 }
