@@ -104,7 +104,7 @@ pub fn pin_tracks(
     match pin.kind.as_str() {
         "track" => Some(id.and_then(|id| catalog.track_index(id)).into_iter().collect()),
         "album" => Some(id.map(|id| catalog.album_tracks(id).to_vec()).unwrap_or_default()),
-        "playlist" => id.and_then(|id| playlist_tracks(id)).map(|found| found.into_iter().filter_map(|t| catalog.track_index(t)).collect()),
+        "playlist" => id.and_then(playlist_tracks).map(|found| found.into_iter().filter_map(|t| catalog.track_index(t)).collect()),
         "liked" => Some(liked()),
         _ => Some(Vec::new()),
     }

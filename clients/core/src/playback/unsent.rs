@@ -33,6 +33,10 @@ impl Unsent {
         self.tracks.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.tracks.is_empty()
+    }
+
     fn save(&self) {
         if self.tracks.is_empty() {
             let _ = std::fs::remove_file(&self.file);

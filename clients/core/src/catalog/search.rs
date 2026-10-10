@@ -130,31 +130,6 @@ impl Search {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_name_typed_comes_before_longer_names_that_start_with_it() {
-        let mut texts = Texts::with_capacity(5);
-        for name in ["deadwhatever", "deadone", "deadtwo", "dead", "a dead end"] {
-            texts.push_lowercase(&[name]);
-        }
-        let texts = texts.finish();
-        let mut search = Search::default();
-        let pattern = Pattern::parse("dead", CaseMatching::Ignore, Normalization::Smart);
-        let found = search.best(&pattern, "dead", &texts, 2);
-        assert_eq!(found[0].0, 3, "the exact name first");
-        assert_eq!(found.len(), 2);
-        // An alias that is exactly it counts as well.
-        let mut texts = Texts::with_capacity(2);
-        texts.push_lowercase(&["deadwhatever"]);
-        texts.push_lowercase(&["Something Else", "dead"]);
-        let found = search.best(&pattern, "dead", &texts.finish(), 1);
-        assert_eq!(found[0].0, 1);
-    }
-}
-
 /// A match as listed: its name, and what tells it apart (an artist's disambiguation and
 /// size; an album's artists, kind and year).
 pub fn describe(catalog: &Catalog, part: Part, i: u32) -> (String, String) {
@@ -192,5 +167,30 @@ pub fn describe(catalog: &Catalog, part: Part, i: u32) -> (String, String) {
             }
             (a.title().to_string(), sub.join(" · "))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_name_typed_comes_before_longer_names_that_start_with_it() {
+        let mut texts = Texts::with_capacity(5);
+        for name in ["deadwhatever", "deadone", "deadtwo", "dead", "a dead end"] {
+            texts.push_lowercase(&[name]);
+        }
+        let texts = texts.finish();
+        let mut search = Search::default();
+        let pattern = Pattern::parse("dead", CaseMatching::Ignore, Normalization::Smart);
+        let found = search.best(&pattern, "dead", &texts, 2);
+        assert_eq!(found[0].0, 3, "the exact name first");
+        assert_eq!(found.len(), 2);
+        // An alias that is exactly it counts as well.
+        let mut texts = Texts::with_capacity(2);
+        texts.push_lowercase(&["deadwhatever"]);
+        texts.push_lowercase(&["Something Else", "dead"]);
+        let found = search.best(&pattern, "dead", &texts.finish(), 1);
+        assert_eq!(found[0].0, 1);
     }
 }

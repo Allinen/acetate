@@ -444,10 +444,10 @@ impl Player {
         self.runtime.spawn(async move {
             if let Err(err) = api.played(track).await {
                 eprintln!("couldn't report a listen of {track}: {err}");
-                if err.status.is_none() {
-                    if let Some(unsent) = unsent.lock().unwrap().as_mut() {
-                        unsent.add(track);
-                    }
+                if err.status.is_none()
+                    && let Some(unsent) = unsent.lock().unwrap().as_mut()
+                {
+                    unsent.add(track);
                 }
             }
         });

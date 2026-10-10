@@ -127,6 +127,8 @@ impl RemoteFile {
         let len = data.len() as u64;
         let shared = Arc::new(Shared {
             state: Mutex::new(State {
+                // One range: the whole file.
+                #[allow(clippy::single_range_in_vec_init)]
                 have: if len > 0 { vec![0..len] } else { Vec::new() },
                 data,
                 wanted: 0,
@@ -349,7 +351,9 @@ mod tests {
         // From the end, it wraps around to what was skipped.
         let s = state(100, &[0..20, 50..100]);
         assert_eq!(s.next_missing(60), Some(20));
-        assert_eq!(state(100, &[0..100]).next_missing(0), None);
+        #[allow(clippy::single_range_in_vec_init)]
+        let whole = state(100, &[0..100]);
+        assert_eq!(whole.next_missing(0), None);
     }
 }
 
