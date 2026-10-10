@@ -2,7 +2,7 @@
 //! there (not one on the server: starring and unstarring is what changes it).
 //!
 //! Both are a track table (see `track_table`), sortable and filterable. On a playlist of
-//! your own: Delete removes the selected track, Ctrl+↑/↓ moves it (in the playlist's own
+//! your own: Delete or Shift+P removes the marked tracks (or the selected one), Ctrl+↑/↓ moves it (in the playlist's own
 //! order, "#"), F2 renames the playlist; the header has public/private, the history
 //! (every change, each one undoable) and the trash.
 
@@ -179,6 +179,9 @@ impl PlaylistPage {
         let shown = self.table.show(ui, shell, catalog, &rows, version(shell.generation, &entries), player, &options);
 
         // Keys for your own playlist (outside text fields).
+        if shown.remove && !detail.mine {
+            shell.playlists.notice = Some(("Only its owner can take tracks out of a playlist".into(), Instant::now()));
+        }
         if detail.mine && !ui.ctx().egui_wants_keyboard_input() {
             let (delete, up, down, rename) = ui.input_mut(|i| {
                 (
@@ -188,16 +191,28 @@ impl PlaylistPage {
                     i.consume_key(Modifiers::NONE, Key::F2),
                 )
             });
+            let remove = delete || shown.remove;
             // (Taking tracks out and moving them need the server: adding doesn't.)
-            let (delete, up, down, rename) = if (delete || up || down || rename) && !shell.needs_server("changing a playlist's tracks") {
+            let (remove, up, down, rename) = if (remove || up || down || rename) && !shell.needs_server("changing a playlist's tracks") {
                 (false, false, false, false)
             } else {
-                (delete, up, down, rename)
+                (remove, up, down, rename)
             };
-            if let Some(row) = shown.selected {
-                if delete {
-                    shell.playlists.remove(id, vec![entries[row]]);
+            if remove {
+                // The marked tracks (every entry of each), or the selected entry.
+                let marked = self.table.marked_tracks(catalog, &rows);
+                let out: Vec<Uuid> = if !marked.is_empty() {
+                    let marked: std::collections::HashSet<&Uuid> = marked.iter().collect();
+                    detail.entries.iter().filter(|e| marked.contains(&e.track_id)).map(|e| e.id).collect()
+                } else {
+                    shown.selected.map(|row| entries[row]).into_iter().collect()
+                };
+                if !out.is_empty() {
+                    shell.playlists.remove(id, out);
+                    self.table.clear_marks();
                 }
+            }
+            if let Some(row) = shown.selected {
                 let by: isize = if up { -1 } else if down { 1 } else { 0 };
                 if by != 0 && !shown.in_own_order {
                     shell.playlists.notice = Some(("To move tracks, sort by # and clear the filter".into(), Instant::now()));

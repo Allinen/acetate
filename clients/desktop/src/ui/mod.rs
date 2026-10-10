@@ -118,6 +118,8 @@ pub enum Action {
     RateBy(Kind, Uuid, i16),
     /// Choose a playlist to add these tracks to (or make one).
     AddToPlaylist(Vec<Uuid>),
+    /// Choose which of your playlists to take these tracks out of.
+    RemoveFromPlaylist(Vec<Uuid>),
     NewPlaylist,
     RenamePlaylist(Uuid),
     RefreshLibrary,
@@ -1259,6 +1261,17 @@ impl App {
                     self.shell.change_mark(kind, id, Mark { rating: (mark.rating + by).clamp(0, 10), ..mark });
                 }
                 Action::AddToPlaylist(tracks) => self.pages.palette.open(ctx, views::palette::Mode::AddTo(tracks)),
+                Action::RemoveFromPlaylist(tracks) => {
+                    if self.shell.needs_server("taking tracks out of a playlist") {
+                        let catalog = self.shell.catalog.value.clone();
+                        if self.shell.playlists.containing(catalog.as_deref(), &tracks).is_empty() {
+                            let text = if tracks.len() == 1 { "That track isn't in any of your playlists" } else { "None of those tracks is in any of your playlists" };
+                            self.shell.playlists.notice = Some((text.into(), std::time::Instant::now()));
+                        } else {
+                            self.pages.palette.open(ctx, views::palette::Mode::RemoveFrom(tracks));
+                        }
+                    }
+                }
                 Action::NewPlaylist => {
                     if self.shell.needs_server("making a playlist") {
                         self.pages.palette.open(ctx, views::palette::Mode::Name(None));

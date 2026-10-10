@@ -34,7 +34,8 @@ and closes the palette when it's already empty.
 - `Shift+S` stars what's playing. In a list, `s` stars the selected track and `+`/`−` change
   its rating by half a star.
 - `q` queues the selected track at the end; `Shift+Q` queues it first.
-- `p` adds to a playlist (typing a new name offers to create it).
+- `p` adds to a playlist (typing a new name offers to create it); `Shift+P` takes it out of one
+  (a list of your playlists that have it to choose from).
 - Playback is gapless. Plays are counted.
 
 ## Lists
@@ -52,7 +53,7 @@ together; [edit mode](editing/README.md) adds merging and the other editing tool
 ## Playlists
 
 Make one from the `+` in the sidebar, or with `p` on anything. Inside a playlist:
-`Delete` takes a track out, `Ctrl+↑`/`Ctrl+↓` reorders, `F2` renames. Deleted playlists go
+`Delete` or `Shift+P` takes a track out (all the marked tracks, if any are marked), `Ctrl+↑`/`Ctrl+↓` reorders, `F2` renames. Deleted playlists go
 to the [trash](library/storage.md) and can be restored.
 
 ## Quality and downloads

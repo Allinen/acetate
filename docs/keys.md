@@ -61,6 +61,7 @@ matched by the character you type, so it works on non-US layouts.
 | `s` | star |
 | `+ / −` | rate half a star up / down |
 | `p` | add to a playlist |
+| `Shift+P` | take it out of a playlist (asks which of yours has it; on a playlist's page: out of it) |
 | `q` | queue it (at the end of the queue) |
 | `Shift+Q` | queue it first |
 | `Ctrl+E` | change this track (a quick fix, the popup below; any mode) |
@@ -73,7 +74,7 @@ matched by the character you type, so it works on non-US layouts.
 | `Shift+↑/↓  or  Shift+click` | mark a range, from the row the cursor is on (from a row just unmarked: unmark) |
 | `Ctrl+A` | mark everything shown |
 | `Esc` | clear the marks |
-| `s  /  + −  /  p  /  q, Shift+Q` | star (all starred: unstar)  /  rate  /  add to a playlist  /  queue the marked tracks |
+| `s  /  + −  /  p, Shift+P  /  q, Shift+Q` | star (all starred: unstar)  /  rate  /  add to, take out of a playlist  /  queue the marked tracks |
 | `Ctrl+E` | change the marked tracks (the editor, below; none marked: the selected one) |
 | `Ctrl+M` | edit mode, two marked: merge them (a popup, the merge keys below) |
 
@@ -98,7 +99,7 @@ matched by the character you type, so it works on non-US layouts.
 
 | Keys | Does |
 |---|---|
-| `Delete` | take the track out |
+| `Delete  or  Shift+P` | take the track out (marked tracks: all of them) |
 | `Ctrl+↑ / Ctrl+↓` | move it up / down |
 | `F2` | rename the playlist |
 

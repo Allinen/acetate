@@ -381,6 +381,32 @@ impl Playlists {
         });
     }
 
+    /// Your own playlists that have any of these tracks, with how many entries of them
+    /// each has (as kept here: nothing is fetched for it beyond the usual).
+    pub fn containing(&mut self, catalog: Option<&Catalog>, tracks: &[Uuid]) -> Vec<(Uuid, usize)> {
+        let tracks: std::collections::HashSet<&Uuid> = tracks.iter().collect();
+        let mine: Vec<Uuid> = self.list(catalog).iter().filter(|p| p.mine).map(|p| p.id).collect();
+        mine.into_iter()
+            .filter_map(|id| {
+                let detail = self.detail(id).value.clone()?;
+                let n = detail.entries.iter().filter(|e| tracks.contains(&e.track_id)).count();
+                (n > 0).then_some((id, n))
+            })
+            .collect()
+    }
+
+    /// Takes every entry of these tracks out of a playlist (shown at once).
+    pub fn remove_tracks(&mut self, id: Uuid, tracks: &[Uuid]) {
+        let Some(detail) = self.detail(id).value.clone() else { return };
+        let tracks: std::collections::HashSet<&Uuid> = tracks.iter().collect();
+        let entries: Vec<Uuid> = detail.entries.iter().filter(|e| tracks.contains(&e.track_id)).map(|e| e.id).collect();
+        if entries.is_empty() {
+            self.notice = Some(("None of those tracks is in that playlist".into(), Instant::now()));
+        } else {
+            self.remove(id, entries);
+        }
+    }
+
     /// Moves an entry up or down by one (shown at once).
     pub fn move_entry(&mut self, id: Uuid, entry: Uuid, by: isize) {
         let mut at = None;

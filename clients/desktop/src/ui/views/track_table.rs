@@ -11,7 +11,7 @@
 //!
 //! Keys: arrows or jk move, Enter plays from there (in the order shown), `s` stars, `+`/`-`
 //! rate, `p` adds to a playlist, `q` queues, `/` filters (with tracks marked, `s`, `+`/`-`,
-//! `p` and `q` are for the marked ones). A playlist's page adds its own keys, using
+//! `p`, Shift+P (out of a playlist) and `q` are for the marked ones). A playlist's page adds its own keys, using
 //! `Shown::selected`.
 //!
 //! Marking many, in any mode: `x` or Ctrl+click marks or unmarks one; Shift+click or
@@ -190,6 +190,9 @@ pub struct Shown {
     pub in_own_order: bool,
     /// A row was clicked (on a page with several tables, it becomes the one in use).
     pub clicked: bool,
+    /// Shift+P on a playlist's page: the page takes the tracks out (the marked ones, or
+    /// the selected one). Elsewhere the table asks which playlist to take them out of.
+    pub remove: bool,
 }
 
 /// A row of the table: a track (its place in `order`), or a disc's name before its
@@ -385,6 +388,16 @@ impl TrackTable {
             } else {
                 self.marking.cursor_at(self.selected);
             }
+        }
+        // Shift+P: out of a playlist. A playlist's page does it itself.
+        let own_page = options.key == "playlist";
+        if moved.remove && !own_page {
+            let tracks = if self.marking.is_empty() {
+                self.order.get(self.selected).map(|&row| catalog.track_at(rows.track(row)).id()).into_iter().collect()
+            } else {
+                self.marking.ordered(order.len(), id_at)
+            };
+            shell.act(Action::RemoveFromPlaylist(tracks));
         }
         // With tracks marked, the keys for a track are for the marked ones.
         if !self.marking.is_empty() {
@@ -700,7 +713,19 @@ impl TrackTable {
             selected: self.order.get(self.selected).copied(),
             in_own_order: self.sort == TrackSort::Natural && !self.descending && self.filter.trim().is_empty(),
             clicked: clicked.is_some() || double.is_some() || boxed.is_some(),
+            remove: moved.remove && own_page,
         }
+    }
+
+    /// The marked tracks, in the order shown (none marked: none).
+    pub fn marked_tracks(&self, catalog: &Catalog, rows: &TrackRows) -> Vec<Uuid> {
+        let order = &self.order;
+        self.marking.ordered(order.len(), |n| order.get(n).map(|&row| catalog.track_at(rows.track(row)).id()))
+    }
+
+    /// Unmarks everything.
+    pub fn clear_marks(&mut self) {
+        self.marking.clear();
     }
 
     fn remake(&mut self, catalog: &Catalog, rows: &TrackRows, version: u64, options: &Options) {

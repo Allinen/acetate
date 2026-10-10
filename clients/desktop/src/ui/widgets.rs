@@ -260,6 +260,8 @@ pub struct Moved {
     pub rate_by: i16,
     /// `p`: add it to a playlist.
     pub add: bool,
+    /// Shift+P: take it out of a playlist.
+    pub remove: bool,
     /// `i`: open its page (a track's: everything about it).
     pub info: bool,
     /// `q`: add it to the end of the queue (false); Shift+Q: play it next (true).
@@ -268,7 +270,7 @@ pub struct Moved {
 
 /// Moves `selected` through `len` items laid out in `columns` (1 for a list) with the
 /// arrow keys or hjkl, Page Up/Down and Home/End; also reads the keys for the selected
-/// item (Enter, `s` star, `+`/`-` rate, `p` add to a playlist, `q`/Shift+Q queue). Does nothing while a text field has
+/// item (Enter, `s` star, `+`/`-` rate, `p` add to a playlist, Shift+P take out of one, `q`/Shift+Q queue). Does nothing while a text field has
 /// the keyboard, or with Ctrl/Alt held (those keys belong to playback and navigation).
 pub fn move_selection(ctx: &egui::Context, selected: &mut usize, len: usize, columns: usize, page: usize) -> Moved {
     let mut out = Moved::default();
@@ -315,6 +317,9 @@ pub fn move_selection(ctx: &egui::Context, selected: &mut usize, len: usize, col
     }
     if !modifiers.shift && key(Key::P) {
         out.add = true;
+    }
+    if modifiers.shift && key(Key::P) {
+        out.remove = true;
     }
     if !modifiers.shift && key(Key::I) {
         out.info = true;

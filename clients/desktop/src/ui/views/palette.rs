@@ -81,6 +81,8 @@ pub enum Mode {
     Search,
     /// Choosing the playlist to add these tracks to.
     AddTo(Vec<Uuid>),
+    /// Choosing which of your playlists to take these tracks out of.
+    RemoveFrom(Vec<Uuid>),
     /// A name for a new playlist (None) or for this one.
     Name(Option<Uuid>),
     /// Choosing an artist, album or track for an edit form (or making a new artist or
@@ -212,8 +214,13 @@ impl Palette {
             return;
         }
         let catalog = shell.catalog.value.clone();
-        let playlists: Vec<PlaylistRow> =
+        let mut playlists: Vec<PlaylistRow> =
             shell.playlists.list(catalog.as_deref()).iter().map(|p| (p.id, p.name.clone(), p.mine, p.entries)).collect();
+        // Taking tracks out: only the playlists that have some of them.
+        if let Mode::RemoveFrom(tracks) = &self.mode {
+            let have: Vec<Uuid> = shell.playlists.containing(catalog.as_deref(), tracks).into_iter().map(|(id, _)| id).collect();
+            playlists.retain(|p| have.contains(&p.0));
+        }
         if let (Mode::Name(Some(id)), false) = (&self.mode, self.prefilled) {
             self.prefilled = true;
             if let Some(p) = playlists.iter().find(|p| p.0 == *id) {
@@ -283,6 +290,8 @@ impl Palette {
                             Mode::Search => "Search anything (artist:… album:… year:… status:…), go: a page, do: a command".to_string(),
                             Mode::AddTo(tracks) if tracks.len() == 1 => "Add the track to which playlist? (or type a new name)".to_string(),
                             Mode::AddTo(tracks) => format!("Add the {} tracks to which playlist? (or type a new name)", tracks.len()),
+                            Mode::RemoveFrom(tracks) if tracks.len() == 1 => "Take the track out of which playlist?".to_string(),
+                            Mode::RemoveFrom(tracks) => format!("Take the {} tracks out of which playlist?", tracks.len()),
                             Mode::Name(None) => "The new playlist's name".to_string(),
                             Mode::Name(Some(_)) => "The playlist's new name".to_string(),
                             Mode::Pick(PickKind::Artist, _) => "Which artist? (or type a new one's name)".to_string(),
@@ -444,6 +453,7 @@ impl Palette {
                     entries.push(Entry::Create);
                 }
             }
+            Mode::RemoveFrom(_) => entries.extend(playlists.iter().filter(|p| matches(&p.1)).map(|p| Entry::Playlist(p.0))),
             Mode::Name(_) => {
                 if !query.is_empty() {
                     entries.push(Entry::Create);
@@ -597,6 +607,7 @@ fn run(shell: &mut Shell, catalog: Option<&Catalog>, mode: &Mode, query: &str, e
                 shell.playlists.create(query.to_string(), tracks.clone());
             }
         }
+        (Mode::RemoveFrom(tracks), Entry::Playlist(id)) => shell.playlists.remove_tracks(id, tracks),
         (Mode::Name(None), Entry::Create) => shell.playlists.create(query.to_string(), Vec::new()),
         (Mode::Name(Some(id)), Entry::Create) => shell.playlists.update(*id, Some(query.to_string()), None, None),
         (Mode::Search, _) => search_result(shell, catalog, entry, shift),
