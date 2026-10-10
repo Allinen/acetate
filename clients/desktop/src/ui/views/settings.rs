@@ -4,6 +4,7 @@
 
 use eframe::egui::{self, RichText};
 
+use super::settings_account::AccountTab;
 use super::settings_computer::ComputerTab;
 use super::settings_general::GeneralTab;
 use super::settings_mirror::MirrorSection;
@@ -51,6 +52,7 @@ pub struct SettingsPage {
     tab: Tab,
     sound: SoundTab,
     computer: ComputerTab,
+    account: AccountTab,
     server: ServerTab,
     /// The mirror, and moving the folder everything's kept in (shown in This computer).
     mirror: MirrorSection,
@@ -110,7 +112,7 @@ impl SettingsPage {
         egui::ScrollArea::vertical().id_salt(self.tab.name()).auto_shrink([false, false]).show(ui, |ui| match self.tab {
             Tab::Sound => self.sound.show(ui, shell, player),
             Tab::Computer => self.computer.show(ui, shell, &mut self.mirror),
-            Tab::Account => super::settings_account::show(ui, shell),
+            Tab::Account => self.account.show(ui, shell),
             Tab::Server => self.server.show(ui, shell),
             Tab::Mirror => self.mirror.show(ui, shell),
             Tab::General => self.general.show(ui, shell),

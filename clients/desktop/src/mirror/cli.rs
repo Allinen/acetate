@@ -215,7 +215,7 @@ async fn watch() -> i32 {
             }
             continue;
         }
-        say(format!("Mirroring {} into {}.", mirror.server().unwrap_or_default(), root.display()));
+        say(format!("Mirroring {} into {}.", mirror.address().unwrap_or_default(), root.display()));
         let shown = show_progress(mirror.clone());
         let watching = tokio::spawn({
             let mirror = mirror.clone();
@@ -259,7 +259,7 @@ fn print_status(mirror: &Mirror) -> anyhow::Result<()> {
         .into_iter()
         .map(|v| format!("{}{}{}", v.name, if v.default { " (default)" } else { "" }, if config.volumes.contains(&v.name) { ": mirrored" } else { "" }))
         .collect();
-    println!("server:     {}", mirror.server()?);
+    println!("server:     {}", mirror.address()?);
     println!("mirroring:  {}", if config.enabled { "yes" } else { "no" });
     println!("volumes:    {}", volumes.join(", "));
     println!("previous:   {}", if config.previous { "yes" } else { "no" });

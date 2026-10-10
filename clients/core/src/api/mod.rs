@@ -76,6 +76,38 @@ pub enum CatalogResponse {
     Changed { body: Vec<u8>, etag: Option<String> },
 }
 
+/// What `Api::check_address` found at an address.
+#[derive(Debug, Clone, PartialEq)]
+pub enum AddressCheck {
+    /// This session's server: the same server, and the login works there.
+    Same,
+    /// Another server.
+    Different,
+    /// This server, but the login isn't accepted there (a backup restored from before it,
+    /// say).
+    TokenRefused,
+    /// Nothing answered; why.
+    NotReached(String),
+    /// Something answered (with this status), but not like an Acetate server.
+    NotAcetate(u16),
+    /// Which server this session is of isn't known yet, and the current address doesn't
+    /// answer to say.
+    UnknownYet,
+}
+
+impl std::fmt::Display for AddressCheck {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AddressCheck::Same => f.write_str("It's the same server."),
+            AddressCheck::Different => f.write_str("That is a different server. To use it, log out and log in to it."),
+            AddressCheck::TokenRefused => f.write_str("That is the same server, but it doesn't accept this login (a backup from before it, perhaps). Log out and log in again there."),
+            AddressCheck::NotReached(why) => write!(f, "Nothing answered there: {why}"),
+            AddressCheck::NotAcetate(status) => write!(f, "Something answered there ({status}), but it isn't an Acetate server."),
+            AddressCheck::UnknownYet => f.write_str("Can't tell yet which server this is: the current address doesn't answer. Try again when it does."),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct Api {
     client: reqwest::Client,
@@ -111,15 +143,40 @@ impl Api {
     pub async fn reach(&self, address: &str) -> Result<u16, String> {
         match self.client.get(address.trim()).send().await {
             Ok(response) => Ok(response.status().as_u16()),
-            Err(err) => {
-                let mut text = err.to_string();
-                let mut cause = std::error::Error::source(&err);
-                while let Some(c) = cause {
-                    text.push_str(&format!(": {c}"));
-                    cause = c.source();
-                }
-                Err(text)
-            }
+            Err(err) => Err(chain(&err)),
+        }
+    }
+
+    /// Whether `address` is where this session's server is now: asks it who the token
+    /// belongs to, and which server it is. Changes nothing, and a refusal doesn't end the
+    /// session.
+    pub async fn check_address(&self, address: &str) -> AddressCheck {
+        if self.session().is_some_and(|s| s.instance.is_none()) {
+            self.learn_instance().await;
+        }
+        let Some(Session { token, username: mine, instance: Some(instance), .. }) = self.session() else {
+            return AddressCheck::UnknownYet;
+        };
+        let address = address.trim().trim_end_matches('/');
+        let response = match self.client.get(format!("{address}/api/auth/me")).bearer_auth(token).send().await {
+            Ok(response) => response,
+            Err(err) => return AddressCheck::NotReached(chain(&err)),
+        };
+        let status = response.status();
+        if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
+            return AddressCheck::TokenRefused;
+        }
+        #[derive(Deserialize)]
+        struct Me {
+            instance: Option<Uuid>,
+            username: Option<String>,
+        }
+        let me = if status.is_success() { response.json::<Me>().await.ok() } else { None };
+        match me {
+            Some(Me { instance: Some(there), .. }) if there != instance => AddressCheck::Different,
+            Some(Me { instance: Some(_), username }) if username.as_deref() == Some(mine.as_str()) => AddressCheck::Same,
+            Some(Me { instance: Some(_), .. }) => AddressCheck::TokenRefused,
+            _ => AddressCheck::NotAcetate(status.as_u16()),
         }
     }
 
@@ -192,6 +249,21 @@ impl Api {
         self.adopt_kept(&session, &learned);
         self.keep(&learned);
         *self.session.write().unwrap() = Some(learned);
+    }
+
+    /// Moves the session to `address`, if the server there is this one (`check_address`
+    /// again, so a stale check changes nothing). Nothing kept is touched: it's kept under
+    /// the server's identity.
+    pub async fn change_address(&self, address: &str) -> Result<(), String> {
+        match self.check_address(address).await {
+            AddressCheck::Same => {}
+            other => return Err(other.to_string()),
+        }
+        let Some(session) = self.session() else { return Err("You're not logged in.".into()) };
+        let moved = Session { server: address.trim().trim_end_matches('/').to_string(), ..session };
+        self.keep(&moved);
+        *self.session.write().unwrap() = Some(moved);
+        Ok(())
     }
 
     pub fn logout(&self) {
@@ -399,8 +471,19 @@ async fn read_json<T: DeserializeOwned>(response: reqwest::Response) -> Result<T
     })
 }
 
+/// An error with the whole chain of its causes, as one line.
+fn chain(err: &reqwest::Error) -> String {
+    let mut text = err.to_string();
+    let mut cause = std::error::Error::source(err);
+    while let Some(c) = cause {
+        text.push_str(&format!(": {c}"));
+        cause = c.source();
+    }
+    text
+}
+
 /// A request that didn't get an answer, in words.
-pub fn unreachable(err: &reqwest::Error, server: &str) -> ApiError {
+fn unreachable(err: &reqwest::Error, server: &str) -> ApiError {
     let message = if err.is_connect() {
         format!("Can't reach the server at {server}. Is it running, and is the address right?")
     } else if err.is_timeout() {
@@ -430,4 +513,78 @@ pub struct Listed {
 pub struct ServerVolume {
     pub name: String,
     pub default: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A server that answers every request with `status` and `body`.
+    fn answering(status: &'static str, body: String) -> String {
+        use std::io::{BufRead, BufReader, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = format!("http://{}", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { return };
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                while reader.read_line(&mut line).is_ok() && !line.trim().is_empty() {
+                    line.clear();
+                }
+                let _ = write!(stream, "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+            }
+        });
+        address
+    }
+
+    fn api_of(instance: Uuid, server: &str) -> (tempfile::TempDir, Api) {
+        let dir = tempfile::tempdir().unwrap();
+        let session = Session { server: server.into(), token: "t".into(), username: "ann".into(), instance: Some(instance) };
+        std::fs::write(dir.path().join("session.json"), serde_json::to_vec(&session).unwrap()).unwrap();
+        let api = Api::new(dir.path().to_path_buf());
+        (dir, api)
+    }
+
+    fn check(instance: Uuid, status: &'static str, body: serde_json::Value) -> (AddressCheck, Api, tempfile::TempDir) {
+        let (dir, api) = api_of(instance, "http://old.example");
+        let there = answering(status, body.to_string());
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let found = runtime.block_on(api.check_address(&there));
+        (found, api, dir)
+    }
+
+    #[test]
+    fn an_address_is_only_taken_if_the_same_server_accepts_the_login() {
+        let id = Uuid::new_v4();
+        let me = |instance: Uuid, username: serde_json::Value| serde_json::json!({ "instance": instance, "username": username, "permissions": [] });
+        assert_eq!(check(id, "200 OK", me(id, "ann".into())).0, AddressCheck::Same);
+        assert_eq!(check(id, "200 OK", me(Uuid::new_v4(), "ann".into())).0, AddressCheck::Different);
+        // The same server, but it knows the login as nobody (a guest) or as someone else.
+        assert_eq!(check(id, "200 OK", me(id, serde_json::Value::Null)).0, AddressCheck::TokenRefused);
+        assert_eq!(check(id, "200 OK", me(id, "bo".into())).0, AddressCheck::TokenRefused);
+        assert_eq!(check(id, "401 Unauthorized", serde_json::json!({})).0, AddressCheck::TokenRefused);
+        assert_eq!(check(id, "404 Not Found", serde_json::json!({})).0, AddressCheck::NotAcetate(404));
+        assert_eq!(check(id, "200 OK", serde_json::json!({ "hello": 1 })).0, AddressCheck::NotAcetate(200));
+        // A refusal isn't the session ending.
+        let (_, api, _dir) = check(id, "401 Unauthorized", serde_json::json!({}));
+        assert!(!api.take_expired());
+    }
+
+    #[test]
+    fn changing_the_address_changes_only_the_address() {
+        let id = Uuid::new_v4();
+        let (dir, api) = api_of(id, "http://old.example");
+        let there = answering("200 OK", serde_json::json!({ "instance": id, "username": "ann", "permissions": [] }).to_string());
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        runtime.block_on(api.change_address(&format!("{there}/"))).unwrap();
+        let session = api.session().unwrap();
+        assert_eq!((session.server.as_str(), session.token.as_str(), session.instance), (there.as_str(), "t", Some(id)));
+        let kept: Session = serde_json::from_slice(&std::fs::read(dir.path().join("session.json")).unwrap()).unwrap();
+        assert_eq!(kept.server, there);
+        // Another server: refused, nothing changed.
+        let other = answering("200 OK", serde_json::json!({ "instance": Uuid::new_v4(), "username": "ann", "permissions": [] }).to_string());
+        assert!(runtime.block_on(api.change_address(&other)).is_err());
+        assert_eq!(api.session().unwrap().server, there);
+    }
 }

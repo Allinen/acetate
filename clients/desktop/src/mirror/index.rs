@@ -2,7 +2,7 @@
 //!
 //! - `have`: the blobs here, each with its size, how it came and when its hash was last
 //!   checked (0: not yet: taken in from a folder by its path and size, without hashing).
-//! - `mirrors`: each server mirrored (by address): what to keep (`Config`), and the
+//! - `mirrors`: each server mirrored (by its identity, `Mirror::server`; an earlier version used the address): what to keep (`Config`), and the
 //!   version of the list last had from it.
 //! - `listed`: that list: every blob the server has, its volume, size and state.
 //! - `pins`: blobs kept for a reason of their own, mirror or not (offline downloads of
@@ -208,6 +208,25 @@ impl Index {
     }
 
     // ---- Mirrors ----
+
+    /// What's kept under the name `from` (a server's address, before servers had an
+    /// identity) is kept under `to`. If `to` has its own (it shouldn't), it's replaced: the
+    /// lists are only copies of what the server says, and fetched again.
+    pub fn rekey(&mut self, from: &str, to: &str) -> anyhow::Result<()> {
+        if from == to {
+            return Ok(());
+        }
+        let tx = self.conn.transaction()?;
+        let has: bool = tx.query_row("SELECT EXISTS (SELECT 1 FROM mirrors WHERE server = ?1)", [from], |r| r.get(0))?;
+        if has {
+            tx.execute("DELETE FROM listed WHERE server = ?1", [to])?;
+            tx.execute("DELETE FROM mirrors WHERE server = ?1", [to])?;
+            tx.execute("UPDATE listed SET server = ?2 WHERE server = ?1", [from, to])?;
+            tx.execute("UPDATE mirrors SET server = ?2 WHERE server = ?1", [from, to])?;
+        }
+        tx.commit()?;
+        self.rebuild_wanted()
+    }
 
     pub fn config(&self, server: &str) -> anyhow::Result<Config> {
         let config: Option<String> =
@@ -485,6 +504,25 @@ mod tests {
 
     fn listed(c: char, volume: &str, size: i64, state: &str) -> Listed {
         Listed { sha256: sha(c), volume: Some(volume.into()), size: Some(size), path: None, state: state.into() }
+    }
+
+    #[test]
+    fn a_servers_mirror_moves_to_its_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut index = Index::open(&dir.path().join("mirror.sqlite")).unwrap();
+        let volumes = [ServerVolume { name: "main".into(), default: true }];
+        index.apply_listing("http://nas:3000", "v1", true, &volumes, &[listed('a', "main", 10, "audio")]).unwrap();
+        index.set_config("http://nas:3000", &Config { enabled: true, volumes: vec!["main".into()], ..Config::default() }).unwrap();
+        index.rekey("http://nas:3000", "the-id").unwrap();
+        assert!(index.config("the-id").unwrap().enabled);
+        assert_eq!(index.version("the-id").unwrap().as_deref(), Some("v1"));
+        assert_eq!(index.listed_size(&sha('a')).unwrap(), Some(10));
+        assert!(!index.config("http://nas:3000").unwrap().enabled);
+        assert_eq!(index.version("http://nas:3000").unwrap(), None);
+        // Again, and to itself: nothing changes.
+        index.rekey("http://nas:3000", "the-id").unwrap();
+        index.rekey("the-id", "the-id").unwrap();
+        assert!(index.config("the-id").unwrap().enabled);
     }
 
     #[test]

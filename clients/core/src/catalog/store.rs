@@ -29,6 +29,15 @@ pub fn key(session: &Session) -> String {
         .collect()
 }
 
+/// What names the server alone (the mirror's index is of a server, whoever logs in): its
+/// identity, or its address in a session from before servers had one.
+pub fn key_of_server(session: &Session) -> String {
+    match session.instance {
+        Some(instance) => instance.to_string(),
+        None => session.server.clone(),
+    }
+}
+
 /// Moves what's kept in `dir` for the key `from` (the catalog, downloads, queue…: a name
 /// like `catalog-<key>.<generation>.snap`, `offline-<key>`, `list-<key>.json`) to the key
 /// `to`. What is already there under `to` is left alone (and so is what's under `from`).

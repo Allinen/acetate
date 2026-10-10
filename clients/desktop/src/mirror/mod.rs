@@ -190,7 +190,14 @@ impl Mirror {
         }
         let store = LocalStore::open(root)?;
         store.clear_leftovers();
-        let index = Index::open(&root.join("mirror.sqlite"))?;
+        let mut index = Index::open(&root.join("mirror.sqlite"))?;
+        // Kept under the server's identity, not its address (so the address can change):
+        // what an earlier version kept under the address moves.
+        if let Some(session) = api.session()
+            && session.instance.is_some()
+        {
+            index.rekey(&session.server, &acetate_core::catalog::store::key_of_server(&session))?;
+        }
         let reader = Index::open_reader(&root.join("mirror.sqlite"))?;
         Ok(Mirror {
             reader: Mutex::new(reader),
@@ -206,8 +213,14 @@ impl Mirror {
         })
     }
 
-    /// The server logged in to (the mirror is of its blobs).
+    /// What the server logged in to is called in the index (the mirror is of its blobs):
+    /// its identity, not its address, which can change.
     pub fn server(&self) -> anyhow::Result<String> {
+        Ok(acetate_core::catalog::store::key_of_server(&self.api.session().context("not logged in")?))
+    }
+
+    /// The server's address, for showing.
+    pub fn address(&self) -> anyhow::Result<String> {
         Ok(self.api.session().context("not logged in")?.server)
     }
 
