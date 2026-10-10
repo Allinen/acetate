@@ -133,6 +133,7 @@ fun AlbumScreen(model: Model, id: String) {
                 }
             }
             item { NotesSection(model, MarkOn.ALBUM, id) }
+            item { HistorySection(model, MarkOn.ALBUM, id) }
         }
     }
 }
@@ -177,6 +178,7 @@ fun ArtistScreen(model: Model, id: String) {
             }
             items(albums.size, key = { it }) { i -> AlbumItem(model, albums[i]) }
             item { NotesSection(model, MarkOn.ARTIST, id) }
+            item { HistorySection(model, MarkOn.ARTIST, id) }
         }
     }
 }

@@ -117,6 +117,13 @@ private fun SettingsDialog(model: Model, close: () -> Unit) {
         title = { Text("Settings") },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState())) {
+                model.core.versionWarning()?.let {
+                    Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium)
+                    Spacer(Modifier.height(12.dp))
+                }
+                if (model.core.canViewHistory()) {
+                    TextButton({ close(); model.pages.add(Page.Changes) }) { Text("What changed lately") }
+                }
                 val q = model.quality
                 QualityChoice("Quality on Wi-Fi", q.unmetered, q::chooseUnmetered)
                 Spacer(Modifier.height(12.dp))

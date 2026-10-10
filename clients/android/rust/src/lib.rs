@@ -27,6 +27,7 @@ uniffi::setup_scaffolding!();
 
 mod editor;
 mod forms;
+mod history;
 mod lyrics_edit;
 mod media;
 

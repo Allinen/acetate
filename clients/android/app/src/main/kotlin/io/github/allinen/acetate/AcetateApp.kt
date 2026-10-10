@@ -259,4 +259,5 @@ sealed interface Page {
     data class Playlist(val id: String) : Page
     data object Liked : Page
     data object Downloads : Page
+    data object Changes : Page
 }

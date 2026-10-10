@@ -58,6 +58,21 @@ pub fn path(before: Option<Uuid>, imports: bool) -> String {
     format!("/api/changes?limit={PAGE}&imports={imports}{before}")
 }
 
+/// A GET answered as `T` (the error as words).
+pub async fn get<T: serde::de::DeserializeOwned>(api: &crate::api::Api, path: &str) -> Result<T, String> {
+    api.send_json(reqwest::Method::GET, path, None).await.map_err(|e| e.message)
+}
+
+/// Puts a revision of a "track", "album" or "artist" back (a new revision with its data).
+pub async fn restore(api: &crate::api::Api, entity: &str, revision: Uuid, reason: &str) -> Result<(), String> {
+    let path = match entity {
+        "album" => format!("/api/album-revisions/{revision}/restore"),
+        "artist" => format!("/api/artist-revisions/{revision}/restore"),
+        _ => format!("/api/revisions/{revision}/restore"),
+    };
+    api.send_json::<serde_json::Value>(reqwest::Method::POST, &path, Some(serde_json::json!({ "reason": reason }))).await.map(|_| ()).map_err(|e| e.message)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

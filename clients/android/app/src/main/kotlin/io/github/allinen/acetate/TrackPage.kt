@@ -143,8 +143,8 @@ fun TrackScreen(model: Model, id: String) {
                     }
                 }
                 item { NotesSection(model, MarkOn.TRACK, id) }
-                // More of what we know of the track goes below this (related tracks, its
-                // history…), each in a section of its own.
+                // More of what we know of the track goes below this (related tracks…), each in
+                // a section of its own.
                 if (lyrics != null) item {
                     Column(Modifier.fillMaxWidth().padding(16.dp, 8.dp)) {
                         SectionHeader("Lyrics")
@@ -155,6 +155,7 @@ fun TrackScreen(model: Model, id: String) {
                         Spacer(Modifier.height(24.dp))
                     }
                 }
+                item { HistorySection(model, MarkOn.TRACK, id) }
             }
         }
     }
