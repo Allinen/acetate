@@ -186,7 +186,7 @@ pub const SHAPES: &[Shape] = &[
             required("song_id", Int),
             // The song's index on its NetEase album, exactly as NetEase has it (it can skip
             // numbers or repeat them). The track's own position on the album is a clean
-            // 1, 2, 3... derived from it (see `id_folders::IdMap`); this keeps the original.
+            // 1, 2, 3... derived from it; this keeps the original.
             optional("song_index", Int),
         ],
     },

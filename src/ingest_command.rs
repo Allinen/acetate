@@ -5,7 +5,6 @@
 //! them from their pages, or Review's "Unlinked extras"); one an extra has already (the same
 //! bytes) is left out.
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
@@ -14,7 +13,7 @@ use sqlx::PgPool;
 
 use crate::db;
 use crate::ingest::describe::{AlbumHint, Hints, MatchedBy, Report, ReportStatus};
-use crate::ingest::layouts::{id_folders, instrumentals, soundcloud, Layout};
+use crate::ingest::layouts::Layout;
 use crate::ingest::{self, comment_links, video, IngestOptions};
 use crate::ingest_client::Server;
 use crate::model::sources::ValidSource;
@@ -34,14 +33,6 @@ pub struct Options {
     pub layout: Layout,
     /// Where files came from when the path doesn't say (e.g. no id in the name).
     pub origin: Option<ValidSource>,
-    /// A folder of album covers named `<title> - <album id>.<ext>` (NetEase layout).
-    pub covers: Option<PathBuf>,
-    /// Songs' albums, positions and other ids (see `id_folders::IdMap`).
-    pub id_map: Option<id_folders::IdMap>,
-    /// The SoundCloud lookup (see `soundcloud::ScMap`).
-    pub sc_map: Option<soundcloud::ScMap>,
-    /// The Traktrain lookup, for `--layout instrumentals` (see `instrumentals::TraktrainMap`).
-    pub traktrain: Option<instrumentals::TraktrainMap>,
     /// Put every new track on the Review page with this note (`--flag`).
     pub flag: Option<String>,
     /// For tracks whose status the layout doesn't say.
@@ -52,9 +43,6 @@ pub struct Options {
     /// Stop instead of copying a file that can't be reflinked (so a big import can't
     /// fill the disk by accident).
     pub reflink_only: bool,
-    /// Files without a song id in the name: look for it in the id map by their tags (see
-    /// `IdMap::fall_back_to_tags`).
-    pub tag_fallback: bool,
     /// See `describe::lax_artist_names`.
     pub lax_artist_names: bool,
     /// See `Hints::no_composers`.
@@ -157,10 +145,6 @@ pub async fn run(target: Target<'_>, dir: &Path, options: Options) -> anyhow::Re
     let found = files.len();
     files.retain(|path| options.filter.allows(path.strip_prefix(&root).unwrap_or(path)));
     files.sort();
-    let covers = match &options.covers {
-        Some(dir) => cover_index(dir)?,
-        None => HashMap::new(),
-    };
     println!(
         "{} {} in {}{}{}",
         files.len(),
@@ -188,9 +172,6 @@ pub async fn run(target: Target<'_>, dir: &Path, options: Options) -> anyhow::Re
         _ => None,
     };
     let mut totals = Totals::default();
-
-    // Fetches covers by URL, set up when the first one is needed.
-    let mut artworks: Option<soundcloud::Artworks> = None;
 
     // `--resume-from N`: the numbering stays the same as a full run's, so the progress
     // lines match the interrupted run's.
@@ -226,23 +207,6 @@ pub async fn run(target: Target<'_>, dir: &Path, options: Options) -> anyhow::Re
             continue;
         }
         let mut info = options.layout.read(&root, path);
-        if let (true, None, Some(map)) = (options.tag_fallback, &info.track, &options.id_map) {
-            // Unreadable tags: no title or artists to go by (ingest reports the file).
-            let extension = path.extension().and_then(|e| e.to_str());
-            let tags = ingest::tags::read_tags(path, extension).ok();
-            let title = tags.as_ref().and_then(|t| t.title.clone());
-            let artists = tags.map(|t| t.artists).unwrap_or_default();
-            map.fall_back_to_tags(&mut info, title.as_deref(), &artists);
-        }
-        if let Some(map) = &options.id_map {
-            map.apply(&mut info);
-        }
-        if let Some(map) = &options.sc_map {
-            map.apply(&mut info);
-        }
-        if let Some(map) = &options.traktrain {
-            map.apply(path, &mut info);
-        }
         // Nothing from the path: a SoundCloud or store link in the comment says where the
         // file is from (see `comment_links`), before --origin.
         if info.track.is_none() && options.comment_links {
@@ -263,55 +227,22 @@ pub async fn run(target: Target<'_>, dir: &Path, options: Options) -> anyhow::Re
             eprintln!("skipped    {shown}: {} and no --origin given", info.warnings.join("; "));
             continue;
         };
-        let mut album = AlbumHint {
-            sources: info.album_sources.clone(),
-            track_number: info.album_track_number,
-            single: info.album_is_single,
-            release_date: info.album_release_date.clone(),
-            ..Default::default()
-        };
-        if let Some(cover) = info.album_cover_key.as_ref().and_then(|key| covers.get(key)) {
-            let bytes = std::fs::read(cover).with_context(|| format!("reading {}", cover.display()))?;
-            album.covers.push(bytes);
-        }
-        // Covers by URL (SoundCloud): a saved copy, else downloaded.
-        let mut track_covers = Vec::new();
-        if !info.track_cover_urls.is_empty() || !info.album_cover_urls.is_empty() {
-            let artworks = match &mut artworks {
-                Some(a) => a,
-                None => artworks.insert(soundcloud::Artworks::new()?),
-            };
-            let folder = info.cover_folder.as_deref();
-            track_covers = artworks.get_all(&info.track_cover_urls, folder, &mut info.warnings).await;
-            album.covers.extend(artworks.get_all(&info.album_cover_urls, folder, &mut info.warnings).await);
-        }
-        let has_album_hint = !album.sources.is_empty()
-            || !album.covers.is_empty()
-            || album.track_number.is_some()
-            || album.single.is_some()
-            || album.release_date.is_some();
+        // Singles and albums folders are the only thing a path says about the album.
+        let album = info.album_is_single.map(|single| AlbumHint { single: Some(single), ..Default::default() });
         let ingest_options = IngestOptions {
             user: None, // the CLI acts as the system
             uploaded_filename: file_name(path),
             origin,
-            status: info.status.clone().unwrap_or_else(|| options.status.clone()),
+            status: options.status.clone(),
             sources: Vec::new(),
             restrict_to: options.restrict_to.clone(),
             hints: Hints {
-                artists: info.artists,
-                album: has_album_hint.then_some(album),
+                album,
                 lax_artist_names: options.lax_artist_names,
-                release_date: info.release_date,
-                release_date_over_tags: info.release_date_over_tags,
-                first_artist_sources: info.first_artist_sources,
-                track_covers,
-                skip_embedded_covers: info.skip_embedded_covers,
-                original_filename: info.original_filename,
                 no_composers: options.no_composers,
                 no_duplicate_merge: options.no_duplicate_merge,
-                given: info.given,
                 flag: options.flag.clone(),
-                described: None,
+                ..Default::default()
             },
             local_path: Some(path.display().to_string()),
             edited_after: false,
@@ -556,19 +487,6 @@ fn is_audio(path: &Path) -> bool {
     path.extension()
         .and_then(|e| e.to_str())
         .is_some_and(|e| AUDIO_EXTENSIONS.contains(&e.to_lowercase().as_str()))
-}
-
-/// Album covers in a folder, by album id: `Do This Thing Often - 10001702.jpg` → "10001702".
-fn cover_index(dir: &Path) -> anyhow::Result<HashMap<String, PathBuf>> {
-    let mut index = HashMap::new();
-    for entry in std::fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
-        let path = entry?.path();
-        let stem = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
-        if let Some((_, id)) = id_folders::split_id(&stem) {
-            index.insert(id.to_string(), path);
-        }
-    }
-    Ok(index)
 }
 
 fn file_name(path: &Path) -> String {

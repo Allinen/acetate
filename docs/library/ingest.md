@@ -16,13 +16,12 @@ with the path as the container sees it.
 | `--layout` | For |
 |---|---|
 | `tags` | nothing from the path, only tags. Needs `--origin` |
-| `netease`, `qq`, `kuwo` | downloads like `Artist - <id>/…/Album - <id>/… - <song id>.flac` |
-| `soundcloud` | `<user id>/{FLACs\|streams}/…` |
-| `instrumentals` | `<producer>/<site>@<account>/…` |
 | `ytdlp` | yt-dlp's `Title [id].ext`; add `--platform soundcloud` or `youtube` |
 
 Layouts never guess: a path that doesn't fit gives no ids and a warning. (To support another
-downloader, a layout is a small Rust module in `src/ingest/layouts/`.)
+downloader, a layout is a small Rust module in `src/ingest/layouts/`. Anything richer than a
+file name, like a downloader's own metadata, goes through the server's ingest API instead:
+the Python library in `clients/python` sends it with the files.)
 
 ## Useful options
 
@@ -37,12 +36,11 @@ downloader, a layout is a small Rust module in `src/ingest/layouts/`.)
 | `--include` / `--exclude` | globs, relative to `<dir>` |
 | `--resume-from N` | carry on after an interruption |
 | `--reflink-only` | stop rather than copy a file that can't be reflinked |
-| `--covers <dir>` | album covers named `<title> - <album id>.jpg` (netease) |
 | `--no-composers` | don't credit the COMPOSER tag as producers |
 | `--no-merge-duplicates` | a file already stored only gets the new origin |
 | `--server <url>` | send files to a remote Acetate over HTTP instead of importing locally. `ACETATE_TOKEN` env var is useful to not have to login. |
 
-Run `acetate ingest --help` for the complete list, including id maps and name matching.
+Run `acetate ingest --help` for the complete list, including name matching.
 
 A file that is already stored isn't stored again: what the import knows that its track
 doesn't (another album, covers, ids) is merged in.
