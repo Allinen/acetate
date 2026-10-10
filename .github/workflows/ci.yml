@@ -1,0 +1,100 @@
+# Tests, on every push to main and every pull request (Dependabot's too).
+#
+# The server's tests use a real Postgres (`#[sqlx::test]` makes a database of its own per
+# test). The queries were checked when `.sqlx/` was made, so the build needs no database.
+# The Android app has its own workflow (android.yml), which only runs when it could be
+# affected.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Cheap, and the first to say what is wrong: the versions agree, the generated docs are
+  # current, and clippy is quiet (the pre-push hook runs the same).
+  checks:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev pkg-config
+          rustup toolchain install stable --profile minimal --component clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            clients
+      - run: scripts/versions.py
+      - run: cargo clippy --all-targets --locked -- -D warnings
+        env:
+          SQLX_OFFLINE: "true"
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+        working-directory: clients
+
+  server:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: acetate
+          POSTGRES_PASSWORD: acetate
+          POSTGRES_DB: acetate
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U acetate"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgres://acetate:acetate@localhost:5432/acetate
+      SQLX_OFFLINE: "true"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          rustup toolchain install stable --profile minimal
+      - uses: Swatinem/rust-cache@v2
+      # Migration 0008 creates the server's role if it isn't there, a role belongs to the
+      # whole Postgres, and the tests migrate databases in parallel: on a new Postgres two
+      # of them both find it missing and one fails. Made here first, as on any real server.
+      - name: The server's role
+        run: psql -h localhost -U acetate -d acetate -c "CREATE ROLE acetate_app NOLOGIN"
+        env:
+          PGPASSWORD: acetate
+      - run: cargo test --locked
+
+  clients:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev pkg-config
+          rustup toolchain install stable --profile minimal
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: clients
+      - run: cargo test --workspace --locked
+        working-directory: clients
+
+  python:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # (The tests against a real server skip themselves without ACETATE_TEST_URL.)
+      - name: Test
+        working-directory: clients/python
+        run: python -m unittest -v

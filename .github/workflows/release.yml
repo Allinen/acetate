@@ -1,15 +1,16 @@
-# The clients' releases. Pushing a version tag (v1.2.3) on a commit that's on main builds
-# the desktop app for Linux and Windows (clients/desktop/package-*.sh, the same scripts as
-# locally) and the Android app, and makes a GitHub release with all three. The tag has to
-# match the version of the server, the core, the desktop app and the Android app: the
-# clients ask for the version of the server they talk to.
+# A release. Pushing a version tag (v1.2.3) on a commit that's on main builds the desktop
+# app for Linux and Windows (clients/desktop/package-*.sh, the same scripts as locally) and
+# the Android app, and makes a GitHub release with all three; and builds the server's image
+# for amd64 and arm64 and publishes it to ghcr.io/allinen/acetate (tags 1.2.3, 1.2 and
+# latest). The tag has to match the version of the server, the core, the desktop app and
+# the Android app: the clients ask for the version of the server they talk to.
 #
 # The Android release is signed with the key in the repository's secrets
 # (ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD;
 # docs/android.md, "Signing a release", says how to make one).
 #
 # Run by hand ("Run workflow"), it builds them from the branch chosen and keeps them as
-# the run's artifacts, without a release. Without the secrets the APK is signed with the
+# the run's artifacts, without a release (the image is built for amd64 and not published). Without the secrets the APK is signed with the
 # debug key, which is fine to try but not to publish.
 name: Release
 
@@ -25,16 +26,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: The tag is on main and says the app's version
+      - name: The tag is on main
         if: github.ref_type == 'tag'
         run: |
           git merge-base --is-ancestor "$GITHUB_SHA" origin/main \
             || { echo "::error::$GITHUB_REF_NAME isn't on main"; exit 1; }
-          for manifest in Cargo.toml clients/core/Cargo.toml clients/desktop/Cargo.toml clients/android/rust/Cargo.toml; do
-            version=$(sed -n 's/^version = "\(.*\)"/\1/p' "$manifest" | head -1)
-            [ "$GITHUB_REF_NAME" = "v$version" ] \
-              || { echo "::error::the tag is $GITHUB_REF_NAME, $manifest says $version"; exit 1; }
-          done
+      - name: The tag is the version of everything (scripts/versions.py)
+        run: scripts/versions.py ${{ github.ref_type == 'tag' && format('--tag {0}', github.ref_name) || '' }}
 
   linux:
     needs: check
@@ -82,7 +80,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: 17
@@ -138,16 +136,123 @@ jobs:
           name: android
           path: clients/android/app/build/outputs/apk/release/app-release.apk
 
-  release:
+  # The server's image, one build per architecture on a machine of its own (an arm64 build
+  # under emulation takes an hour), then one name for both.
+  image:
+    needs: check
+    strategy:
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-24.04
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        if: github.ref_type == 'tag'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: The name (lowercase, as the registry wants it)
+        run: echo "IMAGE=${IMAGE,,}" >> "$GITHUB_ENV"
+      - id: build
+        uses: docker/build-push-action@v6
+        env:
+          # No build record kept as an artifact of the run (nothing reads it).
+          DOCKER_BUILD_RECORD_UPLOAD: "false"
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.description=Acetate: a music library server
+            org.opencontainers.image.licenses=GPL-3.0-only
+          cache-from: type=gha,scope=${{ matrix.platform }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.platform }}
+          # Pushed by digest: the tags go on once both architectures are there.
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=${{ github.ref_type == 'tag' }}
+      - name: Digest
+        if: github.ref_type == 'tag'
+        run: |
+          mkdir -p "$RUNNER_TEMP/digests"
+          digest="${{ steps.build.outputs.digest }}"
+          touch "$RUNNER_TEMP/digests/${digest#sha256:}"
+      - uses: actions/upload-artifact@v4
+        if: github.ref_type == 'tag'
+        with:
+          name: digests-${{ strategy.job-index }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+
+  image-tags:
     if: github.ref_type == 'tag'
+    needs: image
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/${{ github.repository }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: digests-*
+          path: ${{ runner.temp }}/digests
+          merge-multiple: true
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: The name (lowercase, as the registry wants it)
+        run: echo "IMAGE=${IMAGE,,}" >> "$GITHUB_ENV"
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest
+      - name: One name for both architectures
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf "$IMAGE@sha256:%s " *)
+      - name: Inspect
+        run: docker buildx imagetools inspect "$IMAGE:${{ steps.meta.outputs.version }}"
+
+  # (Runs on a manual run too, up to the last step: a change to how artifacts are handled
+  # shows up there and not only on a real release.)
+  release:
     needs: [linux, windows, android]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v4
+      # (Only these: the run has others too, like the image's digests and the build records
+      # docker/build-push-action keeps, which aren't release files.)
+      - uses: actions/download-artifact@v8
         with:
-          merge-multiple: true
+          name: linux
+      - uses: actions/download-artifact@v8
+        with:
+          name: windows
+      - uses: actions/download-artifact@v8
+        with:
+          name: android
       - name: Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -156,5 +261,12 @@ jobs:
           mv Acetate-linux-x86_64.tar.gz "Acetate-$tag-linux-x86_64.tar.gz"
           mv Acetate-windows-x86_64.zip "Acetate-$tag-windows-x86_64.zip"
           mv app-release.apk "Acetate-$tag-android.apk"
-          gh release create "$tag" --repo "$GITHUB_REPOSITORY" --title "Acetate $tag" --generate-notes \
+          # The notes are the release's entry in CHANGELOG.md (written at release time,
+          # scripts/release.sh); GitHub's own list of commits if there isn't one.
+          awk -v v="${tag#v}" '/^## /{on = index($0, "## " v " ") == 1; next} on' CHANGELOG.md > notes.md
+          if [ -s notes.md ]; then notes=(--notes-file notes.md); else notes=(--generate-notes); fi
+          if [ "$GITHUB_REF_TYPE" != tag ]; then
+            echo "not a tag: nothing published. The notes would be:"; cat notes.md; ls -l Acetate-*; exit 0
+          fi
+          gh release create "$tag" --repo "$GITHUB_REPOSITORY" --title "Acetate $tag" "${notes[@]}" \
             "Acetate-$tag-linux-x86_64.tar.gz" "Acetate-$tag-windows-x86_64.zip" "Acetate-$tag-android.apk"

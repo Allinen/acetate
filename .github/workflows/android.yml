@@ -1,0 +1,54 @@
+# Does the Android app still build? Only when something it is made of changed (the Rust
+# core and library, or the app), since it takes a while: the Rust code for the phone, the
+# Kotlin bindings, then the app itself.
+name: Android
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - clients/android/**
+      - clients/core/**
+      - clients/Cargo.*
+      - API_VERSION
+      - .github/workflows/android.yml
+  pull_request:
+    paths:
+      - clients/android/**
+      - clients/core/**
+      - clients/Cargo.*
+      - API_VERSION
+      - .github/workflows/android.yml
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: 17
+      - name: Toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --target aarch64-linux-android
+          cargo install cargo-ndk --locked
+          # The versions build.gradle.kts asks for (ndkVersion, compileSdk).
+          ndk=$(sed -n 's/.*ndkVersion = "\(.*\)"/\1/p' clients/android/app/build.gradle.kts)
+          sdk=$(sed -n 's/.*compileSdk { version = release(\([0-9]*\)) }/\1/p' clients/android/app/build.gradle.kts)
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;$ndk" "platforms;android-$sdk.0"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: clients
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: ${{ github.ref != 'refs/heads/main' }}
+      # The release build: it is what shrinking (R8) can break, and what gets published.
+      - name: Build
+        working-directory: clients/android
+        run: ./gradlew --no-daemon assembleRelease

@@ -5,8 +5,8 @@ keep music on the phone for when there's no connection. Library work (merging, r
 importing) stays on the desktop; for an account that may change the library, the phone
 fixes what you notice while listening (see Editing).
 
-It needs Android 10 or newer and a server that speaks catalog format 9 (the version
-that adds each file's hash to the catalog: update the server first).
+It needs Android 10 or newer and a server of the same release (the app says so,
+and offers the right download, when they differ: see [Installing](#installing)). Update the server first.
 
 ## Installing
 

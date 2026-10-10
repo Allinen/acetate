@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# What CI would fail on, found before it's pushed: the same checks as pre-commit, and clippy
+# (warnings are errors) for the server and for the clients. The server is checked
+# offline, like the image build: it fails if `.sqlx/` doesn't match the queries (run
+# `cargo sqlx prepare -- --all-targets`). Tests are CI's.
+set -euo pipefail
+export PATH="$HOME/.cargo/bin:$PATH"
+cd "$(git rev-parse --show-toplevel)"
+scripts/versions.py
+SQLX_OFFLINE=true cargo clippy --all-targets --quiet -- -D warnings
+(cd clients && cargo clippy --workspace --all-targets --quiet -- -D warnings)

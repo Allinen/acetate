@@ -103,11 +103,10 @@ pub struct EmbeddedPicture {
 /// it's used as a fallback when the format can't be recognized from the content.
 pub fn read_tags(path: &Path, extension: Option<&str>) -> anyhow::Result<TagInfo> {
     let mut probe = Probe::open(path)?.guess_file_type()?;
-    if probe.file_type().is_none() {
-        if let Some(file_type) = extension.and_then(FileType::from_ext) {
+    if probe.file_type().is_none()
+        && let Some(file_type) = extension.and_then(FileType::from_ext) {
             probe = probe.set_file_type(file_type);
         }
-    }
     let tagged_file = probe.read()?;
 
     let props = tagged_file.properties();

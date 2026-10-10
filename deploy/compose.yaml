@@ -3,7 +3,7 @@
 #
 # CLI commands run inside the container, e.g.:
 #   docker compose exec acetate acetate user create admin --group admin
-#   docker compose exec acetate acetate ingest /disk/Music/ --layout tags --source generic --dry-run
+#   docker compose exec acetate acetate ingest /disk/Music/ --layout tags --origin my-library --dry-run
 
 services:
   postgres:
@@ -27,7 +27,7 @@ services:
 
   acetate:
     container_name: acetate
-    image: ${ACETATE_IMAGE:-acetate:latest}
+    image: ${ACETATE_IMAGE:-ghcr.io/allinen/acetate:latest}
     restart: unless-stopped
     depends_on:
       postgres:

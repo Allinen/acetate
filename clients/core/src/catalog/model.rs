@@ -9,8 +9,23 @@ use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 use uuid::Uuid;
 
-/// The catalog format this client reads (the server's `FORMAT`).
-pub const FORMAT: u32 = 10;
+/// The catalog format this client reads: the number in the repository's `CATALOG_FORMAT`
+/// file, the same one the server is built with.
+pub const FORMAT: u32 = parse_format(include_str!("../../../../CATALOG_FORMAT"));
+
+/// (`str::parse` isn't `const`.)
+const fn parse_format(text: &str) -> u32 {
+    let bytes = text.as_bytes();
+    let mut n = 0;
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i].is_ascii_digit() {
+            n = n * 10 + (bytes[i] - b'0') as u32;
+        }
+        i += 1;
+    }
+    n
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]

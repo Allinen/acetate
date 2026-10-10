@@ -15,11 +15,39 @@ impl Listener for Events {
     fn notice(&self, _message: String) {}
 }
 
-const SERVER: &str = "http://127.0.0.1:1";
+/// A server that answers every request with a 404: reachable (so the core stays online),
+/// with nothing to give. Reads are answered at once; a change (a star, a rating) after a
+/// second, so a test can see what the app shows meanwhile, before the server refuses it.
+/// Started once for all the tests.
+static SERVER: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            std::thread::spawn(move || {
+                let mut stream = stream;
+                let mut buf = [0u8; 4096];
+                while let Ok(n) = stream.read(&mut buf) {
+                    if n == 0 {
+                        break;
+                    }
+                    if !buf[..n].starts_with(b"GET ") {
+                        std::thread::sleep(Duration::from_secs(1));
+                    }
+                    if stream.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n").is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+    });
+    url
+});
 
 fn catalog_json() -> String {
     serde_json::json!({
-        "format": 9,
+        "format": acetate_core::catalog::model::FORMAT,
         "tracks": {"columns": ["id", "title", "artist_display", "credits", "albums", "duration_ms", "file_id", "cover_id", "cover_key",
                                 "release_date", "year", "status", "genres", "created_at", "is_restricted", "codec", "groupings", "platforms", "original_filename", "bitrate", "sample_rate", "sha256"],
                    "rows": [
@@ -53,11 +81,11 @@ fn catalog_json() -> String {
 /// A data folder with a session and a kept catalog, and a core on it.
 fn core(with_catalog: bool) -> (tempfile::TempDir, Arc<Core>, Arc<Events>) {
     let dir = tempfile::tempdir().unwrap();
-    let session = serde_json::json!({ "server": SERVER, "token": "tok", "username": "ann" });
+    let session = serde_json::json!({ "server": *SERVER, "token": "tok", "username": "ann" });
     std::fs::write(dir.path().join("session.json"), session.to_string()).unwrap();
     if with_catalog {
         let key = acetate_core::catalog::store::key(&acetate_core::api::Session {
-            server: SERVER.into(),
+            server: SERVER.clone(),
             token: String::new(),
             username: "ann".into(),
             instance: None,
@@ -89,7 +117,7 @@ fn rt() -> tokio::runtime::Runtime {
 fn the_session_is_remembered() {
     let (_dir, core, _) = core(false);
     let session = core.session().unwrap();
-    assert_eq!((session.server.as_str(), session.username.as_str()), (SERVER, "ann"));
+    assert_eq!((session.server.as_str(), session.username.as_str()), (SERVER.as_str(), "ann"));
 }
 
 #[test]
@@ -154,7 +182,7 @@ fn without_a_catalog_views_are_empty() {
 fn covers_are_fetched_with_the_login() {
     let (_dir, core, _) = core(false);
     let request = core.image_request("0011223344556677".into(), ImageSize::Small).unwrap();
-    assert_eq!(request.url, format!("{SERVER}/api/images/0011223344556677?size=small"));
+    assert_eq!(request.url, format!("{}/api/images/0011223344556677?size=small", *SERVER));
     assert_eq!(request.authorization, "Bearer tok");
     core.logout();
     assert!(core.image_request("0011223344556677".into(), ImageSize::Small).is_none());
@@ -204,7 +232,7 @@ fn an_album_plays_through_the_engine_with_the_login() {
     playback.attach(engine.clone());
     playback.play_album(ALBUM.into(), 0);
     let took = engine.took();
-    assert_eq!(took[0], format!("play First {SERVER}/api/files/00000000-0000-7000-8000-0000000000f2/stream @0 [Bearer tok]"));
+    assert_eq!(took[0], format!("play First {}/api/files/00000000-0000-7000-8000-0000000000f2/stream @0 [Bearer tok]", *SERVER));
     assert_eq!(took[1], "next Second");
     assert!(events.0.lock().unwrap().contains(&Change::Player));
 
@@ -323,7 +351,7 @@ fn links_lead_to_albums_and_artists_of_this_server() {
     let album = "00000000-0000-7000-8000-0000000000b1";
     let artist = "00000000-0000-7000-8000-0000000000a1";
     let track = "00000000-0000-7000-8000-000000000001";
-    let here = "server=http%3A%2F%2F127.0.0.1%3A1";
+    let here = format!("server={}", SERVER.replace(':', "%3A").replace('/', "%2F"));
     assert_eq!(core.resolve_link(format!("acetate://open/album/{album}?{here}")), LinkTarget::Album { id: album.into() });
     assert_eq!(core.resolve_link(format!("acetate://open/artist/{artist}?{here}")), LinkTarget::Artist { id: artist.into() });
     assert_eq!(core.resolve_link(format!("acetate://open/track/{track}?{here}")), LinkTarget::Album { id: album.into() });
@@ -333,7 +361,7 @@ fn links_lead_to_albums_and_artists_of_this_server() {
     );
     assert_eq!(core.resolve_link("acetate://open/album/00000000-0000-7000-8000-0000000000ff".into()), LinkTarget::NotThere);
     assert_eq!(core.resolve_link("hello".into()), LinkTarget::Invalid);
-    assert_eq!(core.open_link(MarkOn::Track, track.into()), Some(format!("http://127.0.0.1:1/open/track/{track}")));
+    assert_eq!(core.open_link(MarkOn::Track, track.into()), Some(format!("{}/open/track/{track}", *SERVER)));
 }
 
 #[test]
@@ -341,7 +369,7 @@ fn a_downloaded_track_plays_from_the_device_without_the_login() {
     const HELLO: &str = "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824";
     let (dir, core, _events) = core(true);
     // What an earlier run kept: the file by its hash, and the list that says so.
-    let key = acetate_core::catalog::store::key(&acetate_core::api::Session { server: SERVER.into(), token: String::new(), username: "ann".into(), instance: None });
+    let key = acetate_core::catalog::store::key(&acetate_core::api::Session { server: SERVER.clone(), token: String::new(), username: "ann".into(), instance: None });
     let root = dir.path().join(format!("offline-{key}"));
     let blob = root.join("blobs/2c/f2").join(HELLO);
     std::fs::create_dir_all(blob.parent().unwrap()).unwrap();
@@ -396,7 +424,7 @@ fn a_list_of_tracks_can_be_filtered_in_its_own_order() {
 fn a_kept_cover_is_read_from_the_device_and_the_downloads_list_counts_what_is_here() {
     const HELLO: &str = "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824";
     let (dir, core, _events) = core(true);
-    let key = acetate_core::catalog::store::key(&acetate_core::api::Session { server: SERVER.into(), token: String::new(), username: "ann".into(), instance: None });
+    let key = acetate_core::catalog::store::key(&acetate_core::api::Session { server: SERVER.clone(), token: String::new(), username: "ann".into(), instance: None });
     let root = dir.path().join(format!("offline-{key}"));
     std::fs::create_dir_all(root.join("covers")).unwrap();
     std::fs::write(root.join("covers/0011223344556677-small"), b"png").unwrap();

@@ -79,12 +79,12 @@ When listening, you won't accidentally change something you didn't mean to; adva
 
 ## Install
 
-Acetate runs as two containers: Postgres and the server. There's no published image yet, so build it from a checkout:
+The user guide is at <https://allinen.github.io/acetate/> (its source is `docs/`).
+
+Acetate runs as two containers: Postgres and the server. The image is published at `ghcr.io/allinen/acetate` (amd64 and arm64), so you only need the `deploy` folder:
 
 ```sh
-git clone https://github.com/Allinen/acetate.git && cd acetate
-docker build -t acetate .
-cd deploy
+git clone https://github.com/Allinen/acetate.git && cd acetate/deploy
 cp .env.example .env        # set POSTGRES_PASSWORD, POSTGRES_DATA and DISK (where your music lives)
 docker compose up -d
 docker compose exec acetate acetate user create admin --group admin   # asks for a password
@@ -162,7 +162,10 @@ cp .env.example .env
 cargo run -- user create alice --group admin   # asks for a password (or --password-stdin)
 cargo run -- serve                   # runs migrations, serves on 127.0.0.1:3000
                                      # open http://127.0.0.1:3000 for the web UI in web/
+scripts/install-hooks.sh             # pre-commit: versions agree, generated docs current; pre-push: clippy
 ```
+
+The server, the apps and the Python library share one version: `scripts/versions.py` checks that every place that has it agrees, and `scripts/versions.py --set 0.2.0` changes them all (then tag `v0.2.0` to release; the tag has to match). `API_VERSION` and `CATALOG_FORMAT` are numbers the server and the apps are all built with: bump them when a change would break an app that doesn't have it.
 
 `sqlx::query!` checks SQL against the live database at compile time, so Postgres must be running to build.
 Reset the dev database with `scripts/reset-dev-db.sh`: empties it, reapplies the migrations and creates the user `admin` (password `adminadmin`); `--with-audio` also imports `./test-audio`. It only touches local databases whose name ends in `_dev`, `_test` or `_scratch` (so never the real library, e.g. `acetate`), and works while psql or the server is connected (restart the server afterwards).
