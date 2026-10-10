@@ -85,6 +85,11 @@ impl Core {
     pub fn version_warning(&self) -> Option<String> {
         self.shared.account.lock().unwrap().server.as_ref().and_then(|s| s.warning())
     }
+
+    /// Where the app of the server's version is (the APK), when this app isn't that version.
+    pub fn version_update_url(&self) -> Option<String> {
+        self.shared.account.lock().unwrap().server.as_ref().filter(|s| !s.matches_app()).map(|s| s.apk_url())
+    }
 }
 
 #[uniffi::export(async_runtime = "tokio")]

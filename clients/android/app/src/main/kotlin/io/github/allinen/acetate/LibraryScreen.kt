@@ -46,6 +46,7 @@ import uniffi.acetate_ffi.TrackView
 @Composable
 fun LibraryScreen(model: Model) {
     val tab = model.tab
+    VersionPrompt(model)
     // One filter line per tab, in the library's query language (`artist:… year:…`).
     var filters by rememberSaveable { mutableStateOf(listOf("", "", "", "")) }
     Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal))) {
@@ -80,6 +81,31 @@ fun LibraryScreen(model: Model) {
             else -> SearchScreen(model)
         }
     }
+}
+
+/**
+ * The server is of another release than this app: say so once (per server version), with the
+ * app that goes with the server to download. Nothing is fetched until they say so.
+ */
+@Composable
+private fun VersionPrompt(model: Model) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val warning = remember(model.accountVersion, model.session) { model.core.versionWarning() }
+    val url = remember(model.accountVersion, model.session) { model.core.versionUpdateUrl() }
+    var dismissed by rememberSaveable { mutableStateOf<String?>(null) }
+    if (warning == null || dismissed == warning) return
+    AlertDialog(
+        onDismissRequest = { dismissed = warning },
+        title = { Text("A different version") },
+        text = { Text(warning) },
+        confirmButton = {
+            if (url != null) TextButton({
+                dismissed = warning
+                context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url)))
+            }) { Text("Download") }
+        },
+        dismissButton = { TextButton({ dismissed = warning }) { Text("Later") } },
+    )
 }
 
 @Composable

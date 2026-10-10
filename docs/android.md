@@ -16,6 +16,11 @@ asks once to allow installs from your browser or file manager), or build it your
 ([below](#building-it)). Updates are installed the same way, over the old one; they keep
 your login and downloads as long as they're signed with the same key.
 
+The app and the server are released together, with the same version number. When the server
+you log in to is another version than the app, the app says so (once, and under Settings)
+and offers to download the one that goes with the server. It asks the server, not GitHub:
+nothing is fetched until you tap Download, which opens the file in your browser.
+
 Log in with the server's address, your user and password. Plain `http://` works (a server on
 your home network usually is), and so does `https://` with a certificate from a public
 authority or one you installed on the phone yourself (Settings, Security, install a

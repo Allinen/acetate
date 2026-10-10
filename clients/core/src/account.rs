@@ -46,16 +46,35 @@ impl ServerVersion {
         }
     }
 
+    /// Whether the app is the server's release: a release is the same version everywhere
+    /// (server, core, desktop, Android), so any other one is a different build.
+    pub fn matches_app(&self) -> bool {
+        self.version == env!("CARGO_PKG_VERSION")
+    }
+
+    /// The page of the app that goes with this server (where the downloads are).
+    pub fn release_url(&self) -> String {
+        format!("{RELEASES}/tag/v{}", self.version)
+    }
+
+    /// The Android app that goes with this server, to download straight away.
+    pub fn apk_url(&self) -> String {
+        format!("{RELEASES}/download/v{0}/Acetate-v{0}-android.apk", self.version)
+    }
+
     /// What to tell the person when the versions differ (None: they match).
     pub fn warning(&self) -> Option<String> {
         let ours = env!("CARGO_PKG_VERSION");
         match self.compat() {
-            Compat::Same => None,
             Compat::AppBehind => Some(format!("This server (Acetate {}) is newer than this app ({ours}): update the app, or some things won't work.", self.version)),
             Compat::ServerBehind => Some(format!("This app ({ours}) is newer than this server (Acetate {}): update the server, or some things won't work.", self.version)),
+            Compat::Same if self.matches_app() => None,
+            Compat::Same => Some(format!("This app ({ours}) isn't the version of this server (Acetate {0}): get the app for {0} from {1}", self.version, self.release_url())),
         }
     }
 }
+
+const RELEASES: &str = "https://github.com/Allinen/acetate/releases";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Me {
@@ -241,8 +260,18 @@ mod tests {
     }
 
     #[test]
+    fn a_server_of_another_release_points_to_its_app() {
+        let ours = env!("CARGO_PKG_VERSION");
+        let server = |version: &str| ServerVersion { version: version.into(), api: api_version() };
+        assert!(server(ours).warning().is_none());
+        let other = server("9.9.9");
+        assert!(other.warning().unwrap().contains("releases/tag/v9.9.9"));
+        assert_eq!(other.apk_url(), "https://github.com/Allinen/acetate/releases/download/v9.9.9/Acetate-v9.9.9-android.apk");
+    }
+
+    #[test]
     fn a_server_of_another_api_version_is_warned_about() {
-        let server = |api| ServerVersion { version: "9.9.9".into(), api };
+        let server = |api| ServerVersion { version: env!("CARGO_PKG_VERSION").into(), api };
         assert_eq!(server(api_version()).compat(), Compat::Same);
         assert!(server(api_version()).warning().is_none());
         assert_eq!(server(api_version() + 1).compat(), Compat::AppBehind);
