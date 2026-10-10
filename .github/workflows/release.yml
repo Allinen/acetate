@@ -1,15 +1,16 @@
-# The clients' releases. Pushing a version tag (v1.2.3) on a commit that's on main builds
-# the desktop app for Linux and Windows (clients/desktop/package-*.sh, the same scripts as
-# locally) and the Android app, and makes a GitHub release with all three. The tag has to
-# match the version of the server, the core, the desktop app and the Android app: the
-# clients ask for the version of the server they talk to.
+# A release. Pushing a version tag (v1.2.3) on a commit that's on main builds the desktop
+# app for Linux and Windows (clients/desktop/package-*.sh, the same scripts as locally) and
+# the Android app, and makes a GitHub release with all three; and builds the server's image
+# for amd64 and arm64 and publishes it to ghcr.io/allinen/acetate (tags 1.2.3, 1.2 and
+# latest). The tag has to match the version of the server, the core, the desktop app and
+# the Android app: the clients ask for the version of the server they talk to.
 #
 # The Android release is signed with the key in the repository's secrets
 # (ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD;
 # docs/android.md, "Signing a release", says how to make one).
 #
 # Run by hand ("Run workflow"), it builds them from the branch chosen and keeps them as
-# the run's artifacts, without a release. Without the secrets the APK is signed with the
+# the run's artifacts, without a release (the image is built for amd64 and not published). Without the secrets the APK is signed with the
 # debug key, which is fine to try but not to publish.
 name: Release
 
@@ -137,6 +138,100 @@ jobs:
         with:
           name: android
           path: clients/android/app/build/outputs/apk/release/app-release.apk
+
+  # The server's image, one build per architecture on a machine of its own (an arm64 build
+  # under emulation takes an hour), then one name for both.
+  image:
+    needs: check
+    strategy:
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-24.04
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        if: github.ref_type == 'tag'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: The name (lowercase, as the registry wants it)
+        run: echo "IMAGE=${IMAGE,,}" >> "$GITHUB_ENV"
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.description=Acetate: a music library server
+            org.opencontainers.image.licenses=GPL-3.0-only
+          cache-from: type=gha,scope=${{ matrix.platform }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.platform }}
+          # Pushed by digest: the tags go on once both architectures are there.
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=${{ github.ref_type == 'tag' }}
+      - name: Digest
+        if: github.ref_type == 'tag'
+        run: |
+          mkdir -p "$RUNNER_TEMP/digests"
+          digest="${{ steps.build.outputs.digest }}"
+          touch "$RUNNER_TEMP/digests/${digest#sha256:}"
+      - uses: actions/upload-artifact@v4
+        if: github.ref_type == 'tag'
+        with:
+          name: digests-${{ strategy.job-index }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+
+  image-tags:
+    if: github.ref_type == 'tag'
+    needs: image
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/${{ github.repository }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: digests-*
+          path: ${{ runner.temp }}/digests
+          merge-multiple: true
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: The name (lowercase, as the registry wants it)
+        run: echo "IMAGE=${IMAGE,,}" >> "$GITHUB_ENV"
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest
+      - name: One name for both architectures
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf "$IMAGE@sha256:%s " *)
+      - name: Inspect
+        run: docker buildx imagetools inspect "$IMAGE:${{ steps.meta.outputs.version }}"
 
   release:
     if: github.ref_type == 'tag'

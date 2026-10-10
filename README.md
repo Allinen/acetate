@@ -79,12 +79,10 @@ When listening, you won't accidentally change something you didn't mean to; adva
 
 ## Install
 
-Acetate runs as two containers: Postgres and the server. There's no published image yet, so build it from a checkout:
+Acetate runs as two containers: Postgres and the server. The image is published at `ghcr.io/allinen/acetate` (amd64 and arm64), so you only need the `deploy` folder:
 
 ```sh
-git clone https://github.com/Allinen/acetate.git && cd acetate
-docker build -t acetate .
-cd deploy
+git clone https://github.com/Allinen/acetate.git && cd acetate/deploy
 cp .env.example .env        # set POSTGRES_PASSWORD, POSTGRES_DATA and DISK (where your music lives)
 docker compose up -d
 docker compose exec acetate acetate user create admin --group admin   # asks for a password

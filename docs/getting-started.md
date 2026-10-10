@@ -1,12 +1,11 @@
 # Getting started
 
-Acetate runs as two containers: Postgres and the server. There is no published image yet,
-so build it from a checkout.
+Acetate runs as two containers: Postgres and the server. The server's image is published
+at `ghcr.io/allinen/acetate` (for amd64 and arm64), so all you need from a checkout is the
+`deploy` folder.
 
 ```sh
-git clone https://github.com/Allinen/acetate.git && cd acetate
-docker build -t acetate .
-cd deploy
+git clone https://github.com/Allinen/acetate.git && cd acetate/deploy
 cp .env.example .env        # set POSTGRES_PASSWORD, POSTGRES_DATA and DISK (where your music lives)
 docker compose up -d
 docker compose exec acetate acetate user create admin --group admin   # asks for a password
