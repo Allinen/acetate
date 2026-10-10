@@ -151,8 +151,18 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell, page: Page, username: &str) {
             ui.horizontal(|ui| {
                 ui.label(RichText::new(text).color(P.danger).font(font(12.5, medium())))
                     .on_hover_text("The server can't be reached. What's kept here still plays; it's asked again now and then.");
-                if ui.add(egui::Button::new(RichText::new("Try now").color(P.muted).small()).frame(false)).clicked() {
+                // "Trying…" while the server is asked (a connection gives up after 4 s).
+                let id = egui::Id::new("try-now");
+                let now = ui.ctx().input(|i| i.time);
+                let asked = ui.ctx().data(|d| d.get_temp::<f64>(id)).is_some_and(|at| now - at < 4.0);
+                let label = if asked { "Trying…" } else { "Try now" };
+                let response = widgets::chip_morph(ui, "try-now", label, asked).on_hover_cursor(egui::CursorIcon::PointingHand);
+                if response.clicked() && !asked {
                     shell.api.try_now();
+                    ui.ctx().data_mut(|d| d.insert_temp(id, now));
+                }
+                if asked {
+                    ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
                 }
             });
             ui.ctx().request_repaint_after(std::time::Duration::from_secs(30));
