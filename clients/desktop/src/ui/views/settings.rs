@@ -74,6 +74,7 @@ impl SettingsPage {
         self.sound.opened(shell);
         self.computer.opened(shell);
         self.general.opened(shell);
+        self.account.opened(shell);
         if shell.account.can("admin") {
             self.vocabulary.opened(shell);
             self.server.opened(shell);

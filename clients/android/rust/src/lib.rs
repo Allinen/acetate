@@ -783,7 +783,7 @@ impl Core {
     pub fn logout(&self) {
         self.shared.player.stop();
         *self.shared.keeping.lock().unwrap() = None;
-        self.shared.api.logout();
+        self.shared.api.logout_and_end(self.runtime.handle());
         *self.shared.catalog.lock().unwrap() = None;
         *self.shared.store.lock().unwrap() = None;
         *self.shared.sync.lock().unwrap() = SyncState::default();

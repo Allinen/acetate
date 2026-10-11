@@ -1331,7 +1331,7 @@ impl App {
                 }
                 Action::LogOut => {
                     self.shell.mirror.shut_down(self.shell.runtime.handle());
-                    self.shell.api.logout();
+                    self.shell.api.logout_and_end(self.shell.runtime.handle());
                     // (The queue was kept on disk as it played; it comes back at the next login.)
                     let c = self.shell.controller.clone();
                     self.shell.runtime.spawn(async move { c.stop().await });

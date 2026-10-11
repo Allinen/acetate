@@ -384,6 +384,18 @@ impl Api {
         Ok(())
     }
 
+    /// Ends this session on the server too (it's not left valid), in the background, then
+    /// logs out here. Without an answer from the server it's logged out here all the same.
+    pub fn logout_and_end(&self, runtime: &tokio::runtime::Handle) {
+        if let Ok((request, server)) = self.request_anyway(reqwest::Method::POST, "/api/auth/logout") {
+            let api = self.clone();
+            runtime.spawn(async move {
+                let _ = api.go(request, &server).await;
+            });
+        }
+        self.logout();
+    }
+
     pub fn logout(&self) {
         *self.session.write().unwrap() = None;
         self.connection.send_replace(Connection::Online);
