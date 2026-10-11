@@ -39,8 +39,14 @@ pub async fn youtube(State(_): State<AppState>, _user: CurrentUser, Json(body): 
 /// The video's metadata as `yt-dlp -J` says it (see `youtube`), for the video with this id.
 pub async fn fetch_youtube(id: &str) -> Result<Value, AppError> {
     let url = format!("https://www.youtube.com/watch?v={id}");
-    let run = Command::new("yt-dlp")
-        .args(["-J", "--no-playlist", "--skip-download", "--no-warnings", "--", &url])
+    let mut command = Command::new("yt-dlp");
+    command.args(["-J", "--no-playlist", "--skip-download", "--no-warnings"]);
+    // A cookies.txt (Netscape format) of a logged-in browser, for "Sign in to confirm you're not a bot".
+    if let Some(cookies) = std::env::var_os("ACETATE_YTDLP_COOKIES").filter(|c| !c.is_empty()) {
+        command.arg("--cookies").arg(cookies);
+    }
+    let run = command
+        .args(["--", &url])
         .stdin(std::process::Stdio::null())
         .kill_on_drop(true)
         .output();
@@ -55,7 +61,8 @@ pub async fn fetch_youtube(id: &str) -> Result<Value, AppError> {
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let why = stderr.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("it failed").trim().trim_start_matches("ERROR: ");
-        return Err(AppError::Internal(crate::ingest::Rejected::Invalid(format!("yt-dlp couldn't read the video: {why}")).into()));
+        let hint = if why.contains("Sign in") { " (set ACETATE_YTDLP_COOKIES to a cookies.txt file from a logged-in browser)" } else { "" };
+        return Err(AppError::Internal(crate::ingest::Rejected::Invalid(format!("yt-dlp couldn't read the video: {why}{hint}")).into()));
     }
     let mut json: Value = serde_json::from_slice(&output.stdout).map_err(|err| AppError::Internal(anyhow::anyhow!("yt-dlp's answer isn't JSON: {err}")))?;
     if let Some(map) = json.as_object_mut() {
