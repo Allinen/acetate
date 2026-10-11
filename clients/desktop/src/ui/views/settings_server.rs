@@ -1,17 +1,17 @@
 //! Settings, Server (admins): what the server stores on each volume.
 
-use std::sync::{Arc, Mutex};
 
 use eframe::egui::{self, RichText};
 
 use super::settings::{hint, size};
+use crate::ui::task::Fetched;
 use crate::ui::theme::{font, medium, PALETTE as P};
 use crate::ui::{thousands, Shell};
 
 #[derive(Default)]
 pub struct ServerTab {
     /// What the server stores on each volume (`GET /api/storage`), asked when the page opens.
-    storage: Arc<Mutex<Option<Result<Vec<StorageVolume>, String>>>>,
+    storage: Fetched<Result<Vec<StorageVolume>, String>>,
 }
 
 #[derive(Clone, serde::Deserialize)]
@@ -31,16 +31,11 @@ struct StoragePart {
 
 impl ServerTab {
     pub fn opened(&mut self, shell: &Shell) {
-        let (api, storage, ctx) = (shell.api.clone(), self.storage.clone(), shell.ctx.clone());
-        shell.runtime.spawn(async move {
-            let answer = api.send_json::<Vec<StorageVolume>>(reqwest::Method::GET, "/api/storage", None).await.map_err(|e| e.message);
-            *storage.lock().unwrap() = Some(answer);
-            ctx.request_repaint();
-        });
+        self.storage.start_with(shell, |api| async move { api.send_json::<Vec<StorageVolume>>(reqwest::Method::GET, "/api/storage", None).await.map_err(|e| e.message) });
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui, _shell: &mut Shell) {
-        match self.storage.lock().unwrap().clone() {
+        match self.storage.get().cloned() {
             None => {
                 ui.label(RichText::new("Adding up…").color(P.faint));
             }

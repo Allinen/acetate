@@ -20,6 +20,7 @@ use uuid::Uuid;
 use super::SaveState;
 use crate::api::ApiError;
 use crate::details::ArtistDetail;
+use crate::ui::task::Task;
 use crate::ui::theme::PALETTE as P;
 use crate::ui::{widgets, Action, Page, Shell};
 
@@ -85,7 +86,7 @@ pub struct ArtistForm {
     was: ArtistData,
     reason: String,
     state: SaveState,
-    answer: Arc<Mutex<Option<Outcome>>>,
+    answer: Task<Outcome>,
     /// Aliases asked about (×): None while asking; Some(uses) once known (kept: used).
     uses: HashMap<Uuid, Option<Result<Uses, String>>>,
     uses_answer: UsesAnswer,
@@ -113,7 +114,7 @@ impl ArtistForm {
             data,
             reason: String::new(),
             state: SaveState::Idle,
-            answer: Arc::default(),
+            answer: Task::default(),
             uses: HashMap::new(),
             uses_answer: Arc::default(),
             uses_generation: 0,
@@ -188,16 +189,13 @@ impl ArtistForm {
         self.state = SaveState::Saving;
         self.confirm_discard = false;
         self.notice = None;
-        let (api, answer, ctx) = (shell.api.clone(), self.answer.clone(), shell.ctx.clone());
         let (artist, body, sent) = (self.artist, ArtistForm::body(&self.data, self.base, &self.reason), self.data.clone());
-        shell.runtime.spawn(async move {
+        self.answer.send_with(shell, |api| async move {
             let result = api.send_json::<Written>(reqwest::Method::PUT, &format!("/api/artists/{artist}"), Some(body)).await;
-            let outcome = match result {
+            match result {
                 Ok(w) => Outcome { sent, revision: Some(w.revision_id), error: None },
                 Err(error) => Outcome { sent, revision: None, error: Some(error) },
-            };
-            *answer.lock().unwrap() = Some(outcome);
-            ctx.request_repaint();
+            }
         });
     }
 
@@ -211,7 +209,7 @@ impl ArtistForm {
                 self.uses.insert(alias, Some(result));
             }
         }
-        let Some(outcome) = self.answer.lock().unwrap().take() else { return };
+        let Some(outcome) = self.answer.poll() else { return };
         if let Some(revision) = outcome.revision {
             self.base = revision;
             self.was = outcome.sent;

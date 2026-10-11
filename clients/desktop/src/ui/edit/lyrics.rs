@@ -16,7 +16,6 @@
 
 use super::lyrics_sync::Sync;
 
-use std::sync::{Arc, Mutex};
 
 use eframe::egui::{self, Key, Modifiers, RichText};
 use serde_json::{json, Value};
@@ -26,6 +25,7 @@ use crate::api::ApiError;
 use crate::catalog::Catalog;
 use crate::details::{Lyrics, LyricsRevision, TrackDetail};
 use crate::playback::PlayerView;
+use crate::ui::task::Task;
 use crate::ui::theme::{font, semibold, PALETTE as P};
 use crate::ui::{widgets, Shell};
 
@@ -72,7 +72,7 @@ pub struct LyricsEditor {
     /// Ctrl+Enter was pressed in one of the fields (taken before the track's form sees it).
     save_asked: bool,
     saving: bool,
-    answer: Arc<Mutex<Option<Result<Saved, ApiError>>>>,
+    answer: Task<Result<Saved, ApiError>>,
     error: Option<String>,
     /// Saved (shown for a few seconds).
     saved_at: Option<std::time::Instant>,
@@ -82,7 +82,7 @@ pub struct LyricsEditor {
     showing: Option<Uuid>,
     asked_restore: Option<Uuid>,
     restoring: bool,
-    restore_answer: Arc<Mutex<Option<Result<(), String>>>>,
+    restore_answer: Task<Result<(), String>>,
     /// "Remove…" asked (confirming), and a removal on its way (its answer comes as a
     /// restore's).
     asked_remove: bool,
@@ -158,7 +158,7 @@ impl LyricsEditor {
         if self.track != Some(d.id) {
             *self = LyricsEditor { track: Some(d.id), ..Default::default() };
         }
-        if let Some(result) = self.answer.lock().unwrap().take() {
+        if let Some(result) = self.answer.poll() {
             self.saving = false;
             match result {
                 Ok(saved) => {
@@ -173,7 +173,7 @@ impl LyricsEditor {
                 Err(err) => self.error = Some(err.message),
             }
         }
-        if let Some(result) = self.restore_answer.lock().unwrap().take() {
+        if let Some(result) = self.restore_answer.poll() {
             self.restoring = false;
             match result {
                 Ok(()) => {
@@ -462,17 +462,14 @@ impl LyricsEditor {
         };
         self.saving = true;
         self.error = None;
-        let (api, answer, ctx) = (shell.api.clone(), self.answer.clone(), shell.ctx.clone());
-        shell.runtime.spawn(async move {
-            let result = api.send_json::<Answer>(method, &path, Some(body)).await.and_then(|a| {
+        self.answer.send_with(shell, |api| async move {
+            api.send_json::<Answer>(method, &path, Some(body)).await.and_then(|a| {
                 let entry = match open {
                     Open::Entry(id) => id,
                     Open::New => a.id.ok_or_else(|| ApiError { status: None, code: "invalid".into(), message: "The server didn't say which entry it made.".into(), extra_id: None })?,
                 };
                 Ok(Saved { entry, revision: a.revision_id })
-            });
-            *answer.lock().unwrap() = Some(result);
-            ctx.request_repaint();
+            })
         });
     }
 
@@ -505,16 +502,11 @@ impl LyricsEditor {
         self.restoring = true;
         self.removing = true;
         self.error = None;
-        let (api, answer, ctx) = (shell.api.clone(), self.restore_answer.clone(), shell.ctx.clone());
         let path = match self.base {
             Some(base) => format!("/api/lyrics/{id}?base_revision_id={base}"),
             None => format!("/api/lyrics/{id}"),
         };
-        shell.runtime.spawn(async move {
-            let result = api.send_json::<Value>(reqwest::Method::DELETE, &path, None).await.map(|_| ()).map_err(|err| err.message);
-            *answer.lock().unwrap() = Some(result);
-            ctx.request_repaint();
-        });
+        self.restore_answer.send_with(shell, |api| async move { api.send_json::<Value>(reqwest::Method::DELETE, &path, None).await.map(|_| ()).map_err(|err| err.message) });
     }
 
     /// Puts a removed entry back, as it was.
@@ -528,23 +520,16 @@ impl LyricsEditor {
             "language": l.language,
             "reason": "brought back",
         });
-        let (api, answer, ctx, path) = (shell.api.clone(), self.restore_answer.clone(), shell.ctx.clone(), format!("/api/lyrics/{}", l.id));
-        shell.runtime.spawn(async move {
-            let result = api.send_json::<Value>(reqwest::Method::PUT, &path, Some(body)).await.map(|_| ()).map_err(|err| err.message);
-            *answer.lock().unwrap() = Some(result);
-            ctx.request_repaint();
-        });
+        let path = format!("/api/lyrics/{}", l.id);
+        self.restore_answer.send_with(shell, |api| async move { api.send_json::<Value>(reqwest::Method::PUT, &path, Some(body)).await.map(|_| ()).map_err(|err| err.message) });
     }
 
     fn restore(&mut self, shell: &Shell, revision: Uuid) {
         self.restoring = true;
         self.error = None;
-        let (api, answer, ctx) = (shell.api.clone(), self.restore_answer.clone(), shell.ctx.clone());
-        shell.runtime.spawn(async move {
+        self.restore_answer.send_with(shell, |api| async move {
             let path = format!("/api/lyrics-revisions/{revision}/restore");
-            let result = api.send_json::<Value>(reqwest::Method::POST, &path, Some(json!({ "reason": "" }))).await.map(|_| ()).map_err(|err| err.message);
-            *answer.lock().unwrap() = Some(result);
-            ctx.request_repaint();
+            api.send_json::<Value>(reqwest::Method::POST, &path, Some(json!({ "reason": "" }))).await.map(|_| ()).map_err(|err| err.message)
         });
     }
 }

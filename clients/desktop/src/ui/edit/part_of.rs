@@ -4,13 +4,13 @@
 //! spot). Each change is sent at once and kept in the grouping's history. (A track's are
 //! changed in its editor: `group:`, `-group:`.)
 
-use std::sync::{Arc, Mutex};
 
 use eframe::egui::{self, RichText};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
 use crate::catalog::Catalog;
+use crate::ui::task::Task;
 use crate::ui::theme::{font, medium, PALETTE as P};
 use crate::ui::views::grouping::KINDS;
 use crate::ui::{widgets, Action, Page, Shell};
@@ -34,7 +34,7 @@ impl Member {
 #[derive(Default)]
 pub struct PartOf {
     busy: bool,
-    answer: Arc<Mutex<Option<Result<Uuid, String>>>>,
+    answer: Task<Result<Uuid, String>>,
     error: Option<String>,
     /// "New grouping…": its kind and name, as typed.
     new: Option<(String, String)>,
@@ -42,7 +42,7 @@ pub struct PartOf {
 
 impl PartOf {
     pub fn show(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: &Catalog, member: Member, groupings: &[Uuid]) {
-        if let Some(result) = self.answer.lock().unwrap().take() {
+        if let Some(result) = self.answer.poll() {
             self.busy = false;
             match result {
                 Ok(grouping) => {
@@ -127,12 +127,7 @@ impl PartOf {
 
     fn send(&mut self, shell: &Shell, member: Member, change: Change) {
         self.busy = true;
-        let (api, answer, ctx) = (shell.api.clone(), self.answer.clone(), shell.ctx.clone());
-        shell.runtime.spawn(async move {
-            let result = send(&api, member, &change).await;
-            *answer.lock().unwrap() = Some(result);
-            ctx.request_repaint();
-        });
+        self.answer.send_with(shell, |api| async move { send(&api, member, &change).await });
     }
 }
 

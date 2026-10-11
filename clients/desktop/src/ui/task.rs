@@ -89,3 +89,40 @@ impl<T> Drop for Task<T> {
         }
     }
 }
+
+/// A value fetched in the background and kept, for a page that reads it every frame (and
+/// asks for it again when it opens).
+pub struct Fetched<T> {
+    task: Task<T>,
+    value: Option<T>,
+}
+
+impl<T> Default for Fetched<T> {
+    fn default() -> Self {
+        Fetched { task: Task::default(), value: None }
+    }
+}
+
+impl<T: Send + 'static> Fetched<T> {
+    /// Asks again; what's known stays until the answer comes.
+    pub fn start(&mut self, shell: &Shell, work: impl Future<Output = T> + Send + 'static) {
+        self.task.start(shell, work);
+    }
+
+    pub fn start_with<F: Future<Output = T> + Send + 'static>(&mut self, shell: &Shell, work: impl FnOnce(Api) -> F) {
+        self.task.start_with(shell, work);
+    }
+
+    /// The value, once it's there.
+    pub fn get(&mut self) -> Option<&T> {
+        if let Some(answer) = self.task.poll() {
+            self.value = Some(answer);
+        }
+        self.value.as_ref()
+    }
+
+    /// Sets it (it's known without asking).
+    pub fn set(&mut self, value: T) {
+        self.value = Some(value);
+    }
+}

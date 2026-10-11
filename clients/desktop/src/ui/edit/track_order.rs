@@ -12,7 +12,6 @@
 //! tracks are numbered 1, 2, 3… as they're shown, with the move, and the notice says so.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use eframe::egui::{self, Key, RichText};
@@ -22,6 +21,7 @@ use uuid::Uuid;
 use crate::catalog::index::album_order;
 use crate::catalog::Track;
 use crate::catalog::Catalog;
+use crate::ui::task::Task;
 use crate::ui::theme::PALETTE as P;
 use crate::ui::{Action, Shell};
 
@@ -39,7 +39,7 @@ struct Draft {
     /// Moved tracks' places as they're to be (only ones that differ from the library's).
     wanted: HashMap<Uuid, Place>,
     saving: Saving,
-    answer: Arc<Mutex<Option<Result<(), String>>>>,
+    answer: Task<Result<(), String>>,
     /// The last save failed (the draft is kept, to try again).
     error: Option<String>,
     /// Esc was pressed once: again discards it.
@@ -69,7 +69,7 @@ impl TrackOrder {
     pub fn update(&mut self, shell: &mut Shell, catalog: &Catalog, album: Uuid) {
         let mut refresh = false;
         for (&id, draft) in &mut self.drafts {
-            if let Some(result) = draft.answer.lock().unwrap().take() {
+            if let Some(result) = draft.answer.poll() {
                 match result {
                     Ok(()) => {
                         draft.saving = Saving::Sent(shell.generation);
@@ -215,12 +215,7 @@ impl TrackOrder {
         draft.error = None;
         draft.confirm_discard = false;
         let tracks: Vec<Value> = draft.wanted.iter().map(|(id, (disc, number))| json!({ "track_id": id, "disc_number": disc, "track_number": number })).collect();
-        let (api, answer, ctx) = (shell.api.clone(), draft.answer.clone(), shell.ctx.clone());
-        shell.runtime.spawn(async move {
-            let result = api.send(reqwest::Method::PUT, &format!("/api/albums/{album}/track-numbers"), Some(json!({ "tracks": tracks }))).await.map_err(|err| err.message);
-            *answer.lock().unwrap() = Some(result);
-            ctx.request_repaint();
-        });
+        draft.answer.send_with(shell, |api| async move { api.send(reqwest::Method::PUT, &format!("/api/albums/{album}/track-numbers"), Some(json!({ "tracks": tracks }))).await.map_err(|err| err.message) });
     }
 }
 

@@ -15,7 +15,6 @@
 //! A track's sources are changed in its editor (`source:`, `origin:`); here only the
 //! changes of where its file came from (see `OriginChanges`).
 
-use std::sync::{Arc, Mutex};
 
 use eframe::egui::{self, RichText};
 use serde_json::Value;
@@ -23,6 +22,7 @@ use uuid::Uuid;
 
 use crate::account::SourceShape;
 use crate::details::{OriginChange, Source};
+use crate::ui::task::Task;
 use crate::ui::theme::{font, semibold, PALETTE as P};
 use crate::ui::Shell;
 
@@ -80,7 +80,7 @@ pub struct SourcesEditor {
     /// "Trash…" was clicked on this source: asking to be sure.
     asked_trash: Option<Uuid>,
     busy: bool,
-    answer: Arc<Mutex<Option<Result<String, String>>>>,
+    answer: Task<Result<String, String>>,
     /// What the last save or trash said (Ok: done, in words).
     result: Option<Result<String, String>>,
 }
@@ -90,7 +90,7 @@ impl SourcesEditor {
         if self.owner != Some(owner) {
             *self = SourcesEditor { owner: Some(owner), ..Default::default() };
         }
-        if let Some(result) = self.answer.lock().unwrap().take() {
+        if let Some(result) = self.answer.poll() {
             self.busy = false;
             if result.is_ok() {
                 self.form = None;
@@ -232,12 +232,7 @@ impl SourcesEditor {
     fn send(&mut self, shell: &Shell, method: reqwest::Method, path: String, body: Option<Value>, done: &'static str) {
         self.busy = true;
         self.result = None;
-        let (api, answer, ctx) = (shell.api.clone(), self.answer.clone(), shell.ctx.clone());
-        shell.runtime.spawn(async move {
-            let result = api.send_json::<Value>(method, &path, body).await.map(|_| done.to_string()).map_err(|err| err.message);
-            *answer.lock().unwrap() = Some(result);
-            ctx.request_repaint();
-        });
+        self.answer.send_with(shell, |api| async move { api.send_json::<Value>(method, &path, body).await.map(|_| done.to_string()).map_err(|err| err.message) });
     }
 }
 
@@ -324,13 +319,13 @@ impl Form {
 #[derive(Default)]
 pub struct OriginChanges {
     busy: bool,
-    answer: Arc<Mutex<Option<Result<(), String>>>>,
+    answer: Task<Result<(), String>>,
     error: Option<String>,
 }
 
 impl OriginChanges {
     pub fn show(&mut self, ui: &mut egui::Ui, shell: &mut Shell, d: &crate::details::TrackDetail) {
-        if let Some(result) = self.answer.lock().unwrap().take() {
+        if let Some(result) = self.answer.poll() {
             self.busy = false;
             match result {
                 Ok(()) => {
@@ -369,12 +364,8 @@ impl OriginChanges {
         }
         if let Some(body) = chosen {
             self.busy = true;
-            let (api, answer, ctx, file) = (shell.api.clone(), self.answer.clone(), shell.ctx.clone(), d.file.id);
-            shell.runtime.spawn(async move {
-                let result = api.send_json::<Value>(reqwest::Method::PUT, &format!("/api/files/{file}/origin"), Some(body)).await.map(|_| ()).map_err(|err| err.message);
-                *answer.lock().unwrap() = Some(result);
-                ctx.request_repaint();
-            });
+            let file = d.file.id;
+            self.answer.send_with(shell, |api| async move { api.send_json::<Value>(reqwest::Method::PUT, &format!("/api/files/{file}/origin"), Some(body)).await.map(|_| ()).map_err(|err| err.message) });
         }
         if let Some(err) = &self.error {
             ui.label(RichText::new(err.as_str()).color(P.danger));

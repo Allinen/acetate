@@ -1,13 +1,13 @@
 //! Settings, This computer: the downloads, the library kept here (how much, where, moving
 //! it, checking it against the server) and the memory the app uses.
 
-use std::sync::{Arc, Mutex};
 
 use eframe::egui::{self, RichText};
 
 use super::settings::{hint, section};
 use super::settings::size;
 use super::settings_mirror::MirrorSection;
+use crate::ui::task::Fetched;
 use crate::ui::theme::PALETTE as P;
 use crate::ui::{thousands, widgets, Action, Shell};
 
@@ -15,20 +15,24 @@ use crate::ui::{thousands, widgets, Action, Shell};
 pub struct ComputerTab {
     /// The size of the kept covers (small, standard, and an earlier version's no longer
     /// used), measured in the background: (files, bytes) each.
-    covers_size: Arc<Mutex<Option<[(usize, u64); 3]>>>,
+    covers_size: Fetched<[(usize, u64); 3]>,
 }
 
 impl ComputerTab {
     pub fn opened(&mut self, shell: &Shell) {
-        let (size, dir) = (self.covers_size.clone(), shell.cache_dir.clone());
-        shell.runtime.spawn_blocking(move || {
-            let measure = |name: &str| {
-                let files: Vec<u64> = std::fs::read_dir(dir.join(name))
-                    .map(|entries| entries.filter_map(|e| e.ok()?.metadata().ok()).filter(|m| m.is_file()).map(|m| m.len()).collect())
-                    .unwrap_or_default();
-                (files.len(), files.iter().sum())
-            };
-            *size.lock().unwrap() = Some([measure("covers-small"), measure("covers-standard"), measure("covers")]);
+        let dir = shell.cache_dir.clone();
+        self.covers_size.start(shell, async move {
+            tokio::task::spawn_blocking(move || {
+                let measure = |name: &str| {
+                    let files: Vec<u64> = std::fs::read_dir(dir.join(name))
+                        .map(|entries| entries.filter_map(|e| e.ok()?.metadata().ok()).filter(|m| m.is_file()).map(|m| m.len()).collect())
+                        .unwrap_or_default();
+                    (files.len(), files.iter().sum())
+                };
+                [measure("covers-small"), measure("covers-standard"), measure("covers")]
+            })
+            .await
+            .unwrap_or_default()
         });
     }
 
@@ -75,7 +79,7 @@ impl ComputerTab {
             ui.label(shell.library_status());
             ui.end_row();
             ui.label(RichText::new("Covers kept").color(P.muted));
-            let measured = *self.covers_size.lock().unwrap();
+            let measured = self.covers_size.get().copied();
             let mb = |bytes: u64| format!("{:.1} MB", bytes as f64 / 1_000_000.0);
             match measured {
                 Some([small, standard, _]) => ui.label(format!(

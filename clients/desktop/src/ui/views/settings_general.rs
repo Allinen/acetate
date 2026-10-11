@@ -1,33 +1,32 @@
 //! Settings, General: acetate:// links, the keys, the version.
 
-use std::sync::{Arc, Mutex};
 
 use eframe::egui::{self, RichText};
 
 use super::settings::{hint, section};
 use crate::account::Release;
 use crate::update::{Progress, Update};
+use crate::ui::task::Fetched;
 use crate::ui::theme::PALETTE as P;
 use crate::ui::{widgets, Action, Shell};
 
 #[derive(Default)]
 pub struct GeneralTab {
     /// Which app opens acetate:// links (the system's answer), asked in the background.
-    links_handler: Arc<Mutex<Option<crate::links::Handler>>>,
+    links_handler: Fetched<crate::links::Handler>,
     update: Update,
 }
 
 impl GeneralTab {
     pub fn opened(&mut self, shell: &Shell) {
-        let handler = self.links_handler.clone();
-        shell.runtime.spawn_blocking(move || *handler.lock().unwrap() = Some(crate::links::handler()));
+        self.links_handler.start(shell, async { tokio::task::spawn_blocking(crate::links::handler).await.unwrap_or(crate::links::Handler::Nobody) });
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui, shell: &mut Shell) {
         section(ui, "Links");
         use crate::links::Handler;
         let how = if crate::links::CAN_REGISTER { "“Open links here” sets that up" } else { "clients/desktop/install.sh sets that up" };
-        let handler = self.links_handler.lock().unwrap().clone();
+        let handler = self.links_handler.get().cloned();
         match &handler {
             Some(Handler::Here) => {
                 ui.label(RichText::new("Links to tracks, albums and artists open here.").color(P.text));
@@ -44,7 +43,7 @@ impl GeneralTab {
         }
         if crate::links::CAN_REGISTER && matches!(handler, Some(Handler::Other(_) | Handler::Nobody)) && ui.small_button("Open links here").clicked() {
             match crate::links::register() {
-                Ok(()) => *self.links_handler.lock().unwrap() = Some(crate::links::handler()),
+                Ok(()) => self.links_handler.set(crate::links::handler()),
                 Err(err) => shell.controller.report(err),
             }
         }

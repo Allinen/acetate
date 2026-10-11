@@ -8,13 +8,13 @@
 //! a copy is of what's saved, and the changes are for the version they were typed for.
 //! The track page's commandline does the same (`version:`, see `views::track_commands`).
 
-use std::sync::{Arc, Mutex};
 
 use eframe::egui::{self, Key, RichText};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
 use crate::details::{TrackDetail, Variant};
+use crate::ui::task::Task;
 use crate::ui::theme::PALETTE as P;
 use crate::ui::{Action, Shell};
 
@@ -38,7 +38,7 @@ pub struct VersionsBar {
     track: Option<Uuid>,
     naming: Option<Naming>,
     busy: bool,
-    answer: Arc<Mutex<Option<Result<Done, String>>>>,
+    answer: Task<Result<Done, String>>,
     /// A version just made: the editor edits it once the details have it.
     switch_to: Option<Uuid>,
     error: Option<String>,
@@ -56,7 +56,7 @@ impl VersionsBar {
         if self.track != Some(d.id) {
             *self = VersionsBar { track: Some(d.id), ..Default::default() };
         }
-        if let Some(result) = self.answer.lock().unwrap().take() {
+        if let Some(result) = self.answer.poll() {
             self.busy = false;
             match result {
                 Ok(done) => {
@@ -189,12 +189,7 @@ impl VersionsBar {
     /// Sends a request answered without a body; `done` says what it did.
     fn send(&mut self, shell: &Shell, method: reqwest::Method, path: String, body: Value, done: Done) {
         self.busy = true;
-        let (api, answer, ctx) = (shell.api.clone(), self.answer.clone(), shell.ctx.clone());
-        shell.runtime.spawn(async move {
-            let result = api.send(method, &path, Some(body)).await.map(|()| done).map_err(|err| err.message);
-            *answer.lock().unwrap() = Some(result);
-            ctx.request_repaint();
-        });
+        self.answer.send_with(shell, |api| async move { api.send(method, &path, Some(body)).await.map(|()| done).map_err(|err| err.message) });
     }
 
     /// Makes a new version (`body`: its label, and the one it's a copy of).
@@ -204,15 +199,11 @@ impl VersionsBar {
             variant_id: Uuid,
         }
         self.busy = true;
-        let (api, answer, ctx) = (shell.api.clone(), self.answer.clone(), shell.ctx.clone());
-        shell.runtime.spawn(async move {
-            let result = api
-                .send_json::<Created>(reqwest::Method::POST, &format!("/api/tracks/{track}/variants"), Some(body))
+        self.answer.send_with(shell, |api| async move {
+            api.send_json::<Created>(reqwest::Method::POST, &format!("/api/tracks/{track}/variants"), Some(body))
                 .await
                 .map(|c| Done::Created(c.variant_id))
-                .map_err(|err| err.message);
-            *answer.lock().unwrap() = Some(result);
-            ctx.request_repaint();
+                .map_err(|err| err.message)
         });
     }
 }

@@ -6,12 +6,12 @@
 //!
 //! The search runs in the background, like the palette's: typing never waits.
 
-use std::sync::{Arc, Mutex};
 
 use eframe::egui::{self, Key, Modifiers, RichText};
 
 use crate::catalog::search::{Part, Search};
 use crate::catalog::Catalog;
+use crate::ui::task::Task;
 use crate::ui::theme::{font, medium, PALETTE as P};
 use crate::ui::Shell;
 
@@ -26,7 +26,7 @@ pub struct InlineSearch {
     part: Part,
     pub query: String,
     asked: u64,
-    answer: Arc<Mutex<Option<(u64, Vec<u32>)>>>,
+    answer: Task<(u64, Vec<u32>)>,
     hits: Vec<u32>,
     selected: usize,
     /// Extras (by id) that are never offered: the one the form is for, those chosen already.
@@ -35,13 +35,13 @@ pub struct InlineSearch {
 
 impl InlineSearch {
     pub fn new(part: Part) -> InlineSearch {
-        InlineSearch { part, query: String::new(), asked: 0, answer: Arc::default(), hits: Vec::new(), selected: 0, skip: Vec::new() }
+        InlineSearch { part, query: String::new(), asked: 0, answer: Task::default(), hits: Vec::new(), selected: 0, skip: Vec::new() }
     }
 
     /// The field (`id`, so it can be focused from outside) and, while it has text, its
     /// matches and `extras`. Returns the choice, and whether Shift was held.
     pub fn show(&mut self, ui: &mut egui::Ui, shell: &Shell, catalog: Option<&Catalog>, id: egui::Id, hint: &str, extras: &[String]) -> Option<(Choice, bool)> {
-        if let Some((number, hits)) = self.answer.lock().unwrap().take()
+        if let Some((number, hits)) = self.answer.poll()
             && number == self.asked
         {
             self.hits = hits;
@@ -135,15 +135,20 @@ impl InlineSearch {
             self.hits.clear();
             return;
         };
-        let (number, answer, ctx, part, skip) = (self.asked, self.answer.clone(), shell.ctx.clone(), self.part, self.skip.clone());
-        shell.runtime.spawn_blocking(move || {
-            let mut hits: Vec<u32> = Search::default().run_part(&catalog, &query, part, 8 + skip.len()).into_iter().map(|h| h.0).collect();
-            if part == Part::Extras {
-                hits.retain(|&h| catalog.extras.get(h as usize).is_none_or(|e| !skip.contains(&e.id)));
-            }
-            hits.truncate(8);
-            *answer.lock().unwrap() = Some((number, hits));
-            ctx.request_repaint();
+        let (number, part, skip) = (self.asked, self.part, self.skip.clone());
+        // (A newer query replaces this one's answer.)
+        self.answer.start(shell, async move {
+            let hits = tokio::task::spawn_blocking(move || {
+                let mut hits: Vec<u32> = Search::default().run_part(&catalog, &query, part, 8 + skip.len()).into_iter().map(|h| h.0).collect();
+                if part == Part::Extras {
+                    hits.retain(|&h| catalog.extras.get(h as usize).is_none_or(|e| !skip.contains(&e.id)));
+                }
+                hits.truncate(8);
+                hits
+            })
+            .await
+            .unwrap_or_default();
+            (number, hits)
         });
     }
 }

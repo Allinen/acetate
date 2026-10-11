@@ -5,7 +5,6 @@
 //! fields you changed put back. Ctrl+Enter saves; Esc (outside a field) asks, and a
 //! second Esc discards. New artists typed in the credits are made when it's saved.
 
-use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use eframe::egui::{self, Key, Modifiers, RichText};
@@ -16,6 +15,7 @@ use super::{capitalized, combo, PickKind, SaveState};
 use crate::api::ApiError;
 use crate::catalog::Catalog;
 use crate::details::AlbumDetail;
+use crate::ui::task::Task;
 use crate::ui::theme::PALETTE as P;
 use crate::ui::{Action, Shell};
 
@@ -39,7 +39,7 @@ pub struct AlbumForm {
     was: AlbumData,
     reason: String,
     state: SaveState,
-    answer: Arc<Mutex<Option<Outcome>>>,
+    answer: Task<Outcome>,
     credits_editor: CreditsEditor,
     /// The credit row an artist is being picked for (the palette).
     awaiting: Option<usize>,
@@ -71,7 +71,7 @@ impl AlbumForm {
             data,
             reason: String::new(),
             state: SaveState::Idle,
-            answer: Arc::default(),
+            answer: Task::default(),
             credits_editor: CreditsEditor::default(),
             awaiting: None,
             confirm_discard: false,
@@ -151,11 +151,10 @@ impl AlbumForm {
         self.state = SaveState::Saving;
         self.confirm_discard = false;
         self.notice = None;
-        let (api, answer, ctx) = (shell.api.clone(), self.answer.clone(), shell.ctx.clone());
         let (album, base, reason, mut data) = (self.album, self.base, self.reason.clone(), self.data.clone());
-        shell.runtime.spawn(async move {
+        self.answer.send_with(shell, |api| async move {
             let made = credits::make_new_artists(&api, &mut data.credits).await;
-            let outcome = match made {
+            match made {
                 Err(error) => Outcome { sent: data, revision: None, error: Some(error) },
                 Ok(()) => {
                     let body = AlbumForm::body(&data, base, &reason);
@@ -164,14 +163,12 @@ impl AlbumForm {
                         Err(error) => Outcome { sent: data, revision: None, error: Some(error) },
                     }
                 }
-            };
-            *answer.lock().unwrap() = Some(outcome);
-            ctx.request_repaint();
+            }
         });
     }
 
     fn poll(&mut self, shell: &mut Shell) {
-        let Some(outcome) = self.answer.lock().unwrap().take() else { return };
+        let Some(outcome) = self.answer.poll() else { return };
         credits::take_ids(&mut self.data.credits, &outcome.sent.credits);
         if let Some(revision) = outcome.revision {
             self.base = revision;
