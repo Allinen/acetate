@@ -290,6 +290,30 @@ async fn extras_follow_a_track_merge(_: PgPoolOptions, connect: PgConnectOptions
     Ok(())
 }
 
+/// Albums and artists merged: the kept one shows the extras of the other, and undoing an
+/// album merge gives them back.
+#[sqlx::test]
+async fn extras_follow_album_and_artist_merges(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
+    let lib = setup(connect).await?;
+    let mut tx = db::begin(&lib.app, Some(lib.alice)).await?;
+    let split = db::revisions::create_album(&mut tx, &crate::model::AlbumData { title: "Album A".into(), ..Default::default() }, db::revisions::Source::Edit, "").await?;
+    let zed = db::ingest::find_or_create_artist(&mut tx, "Zed").await?.id;
+    let (on_album, _) = db::extras::create(&mut tx, "Album art stems", "stems", &About::default(), &[Link::Album(split)], None, "").await?;
+    let (on_artist, _) = db::extras::create(&mut tx, "Zed samples", "samples", &About::default(), &[Link::Artist(zed)], None, "").await?;
+    let merged = db::album_merges::merge_album(&mut tx, split, lib.album, "").await?;
+    db::revisions::merge_artist(&mut tx, zed, lib.x, false, false, "").await?;
+    let ids = |v: Vec<db::extras::Extra>| v.iter().map(|e| e.id).collect::<Vec<_>>();
+    assert_eq!(ids(db::extras::linked_to(&mut tx, Link::Album(lib.album)).await?), [on_album]);
+    assert_eq!(ids(db::extras::linked_to(&mut tx, Link::Artist(lib.x)).await?), [on_artist]);
+    let rows = db::library::extras_json(&mut tx, None).await?;
+    assert!(rows.contains(&lib.album.to_string()) && !rows.contains(&split.to_string()));
+    assert!(rows.contains(&lib.x.to_string()) && !rows.contains(&zed.to_string()));
+    db::album_merges::undo_album_merge(&mut tx, merged.merge_id, "", true).await?;
+    assert!(db::extras::linked_to(&mut tx, Link::Album(lib.album)).await?.is_empty());
+    assert_eq!(ids(db::extras::linked_to(&mut tx, Link::Album(split)).await?), [on_album]);
+    Ok(())
+}
+
 /// Linked to a grouping (a collective's stems, say): on its page, in the catalog, undone.
 #[sqlx::test]
 async fn extras_are_linked_to_groupings(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {

@@ -2647,6 +2647,9 @@ pub async fn merge_artist(
     .execute(&mut *conn)
     .await?;
 
+    // The extras linked to `from` show on `into` now.
+    super::extras::touch_linked(conn, None, Some(into)).await?;
+
     // 4. Every variant/album currently crediting `from`: rewrite its latest data. The
     //    redirect set above makes `resolve_credits` move the credits to `into`.
     let pattern = serde_json::json!({ "credits": [{ "artist_id": from }] });

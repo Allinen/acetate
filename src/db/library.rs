@@ -56,8 +56,8 @@ pub async fn extras_json(conn: &mut PgConnection, ids: Option<&[Uuid]>) -> sqlx:
                    COALESCE((SELECT json_agg(json_build_array(
                                  CASE WHEN l.track_id IS NOT NULL THEN 'track' WHEN l.album_id IS NOT NULL THEN 'album'
                                       WHEN l.artist_id IS NOT NULL THEN 'artist' ELSE 'grouping' END,
-                                 -- (A track merged since: the one it went into.)
-                                 COALESCE(final_track(l.track_id), l.album_id, l.artist_id, l.grouping_id)) ORDER BY l.id)
+                                 -- (Merged since: the one it went into.)
+                                 COALESCE(final_track(l.track_id), final_album(l.album_id), final_artist(l.artist_id), l.grouping_id)) ORDER BY l.id)
                              FROM extra_links l WHERE l.extra_id = e.id), '[]'::json),
                    (SELECT count(*) FROM extra_files f WHERE f.extra_id = e.id AND f.hidden_at IS NULL),
                    first.id, first.duration_ms, video.id, left(video.thumb_sha256, 16)

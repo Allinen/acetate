@@ -223,6 +223,7 @@ pub async fn merge_album(conn: &mut PgConnection, from: Uuid, into: Uuid, reason
     .fetch_one(&mut *conn)
     .await?;
 
+    super::extras::touch_linked(conn, Some(into), None).await?;
     system.end(conn).await?;
 
     let track_ids: Vec<Uuid> = record.tracks.iter().map(|t| t.track_id).collect();
@@ -741,6 +742,8 @@ pub async fn undo_album_merge(conn: &mut PgConnection, merge_id: Uuid, reason: &
         )
         .execute(&mut *conn)
         .await?;
+        super::extras::touch_linked(conn, Some(from), None).await?;
+        super::extras::touch_linked(conn, Some(into), None).await?;
     }
 
     system.end(conn).await?;

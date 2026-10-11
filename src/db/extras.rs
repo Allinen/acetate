@@ -385,6 +385,23 @@ async fn link_one(conn: &mut PgConnection, extra: Uuid, to: Link, reason: &str) 
     Ok(made)
 }
 
+/// An album or artist was merged (or a merge undone): the extras linked to it now show
+/// elsewhere, though no link changed, so clients are told they changed (small deltas).
+pub async fn touch_linked(conn: &mut PgConnection, album: Option<Uuid>, artist: Option<Uuid>) -> sqlx::Result<()> {
+    sqlx::query!(
+        r#"SELECT log_change('extra', x.id) AS "_!: ()" FROM (
+               SELECT DISTINCT extra_id AS id FROM extra_links
+               WHERE ($1::uuid IS NOT NULL AND album_id IS NOT NULL AND (album_id = $1 OR final_album(album_id) = $1))
+                  OR ($2::uuid IS NOT NULL AND artist_id IS NOT NULL AND (artist_id = $2 OR final_artist(artist_id) = $2))
+           ) x"#,
+        album,
+        artist
+    )
+    .fetch_all(conn)
+    .await?;
+    Ok(())
+}
+
 /// Undoes a link, and those that went along (a track's single it's alone on, a single's
 /// only track). False: it wasn't linked (or the other side isn't seen).
 pub async fn unlink(conn: &mut PgConnection, extra: Uuid, from: Link, reason: &str) -> anyhow::Result<bool> {
@@ -397,12 +414,12 @@ pub async fn unlink(conn: &mut PgConnection, extra: Uuid, from: Link, reason: &s
 
 async fn unlink_one(conn: &mut PgConnection, extra: Uuid, from: Link, reason: &str) -> anyhow::Result<bool> {
     let (track, album, artist, grouping) = from.ids();
-    // A track's link: also one made to a track merged into it since.
+    // A link made to something merged into it since goes too.
     let gone = sqlx::query!(
         r#"DELETE FROM extra_links WHERE extra_id = $1
            AND (($2::uuid IS NOT NULL AND track_id IS NOT NULL AND (track_id = $2 OR final_track(track_id) = $2))
-                OR ($3::uuid IS NOT NULL AND album_id = $3)
-                OR ($4::uuid IS NOT NULL AND artist_id = $4)
+                OR ($3::uuid IS NOT NULL AND album_id IS NOT NULL AND (album_id = $3 OR final_album(album_id) = $3))
+                OR ($4::uuid IS NOT NULL AND artist_id IS NOT NULL AND (artist_id = $4 OR final_artist(artist_id) = $4))
                 OR ($5::uuid IS NOT NULL AND grouping_id = $5))"#,
         extra,
         track,
@@ -815,7 +832,7 @@ pub async fn get(conn: &mut PgConnection, id: Uuid) -> sqlx::Result<Option<Extra
 }
 
 /// The extras linked to a track, album, artist or grouping (taken-off ones too, flagged), by name.
-/// A track's include those linked to tracks merged into it (links stay where they were
+/// Those linked to a track, album or artist include those linked to ones merged into it (links stay where they were
 /// made: undoing the merge needs nothing).
 pub async fn linked_to(conn: &mut PgConnection, to: Link) -> sqlx::Result<Vec<Extra>> {
     let (track, album, artist, grouping) = to.ids();
@@ -824,8 +841,8 @@ pub async fn linked_to(conn: &mut PgConnection, to: Link) -> sqlx::Result<Vec<Ex
            WHERE e.merged_into IS NULL
              AND EXISTS (SELECT 1 FROM extra_links l WHERE l.extra_id = e.id
                          AND (($1::uuid IS NOT NULL AND l.track_id IS NOT NULL AND final_track(l.track_id) = $1)
-                              OR ($2::uuid IS NOT NULL AND l.album_id = $2)
-                              OR ($3::uuid IS NOT NULL AND l.artist_id = $3)
+                              OR ($2::uuid IS NOT NULL AND l.album_id IS NOT NULL AND final_album(l.album_id) = $2)
+                              OR ($3::uuid IS NOT NULL AND l.artist_id IS NOT NULL AND final_artist(l.artist_id) = $3)
                               OR ($4::uuid IS NOT NULL AND l.grouping_id = $4)))
            ORDER BY lower(e.name), e.id"#,
         track,
@@ -879,19 +896,19 @@ async fn links(conn: &mut PgConnection, extra: Uuid) -> sqlx::Result<Vec<Linked>
     sqlx::query_as!(
         Linked,
         r#"SELECT s.kind AS "kind!", s.id AS "id!", s.title AS "title!" FROM (
-               SELECT DISTINCT ON (COALESCE(t.id, l.album_id, l.artist_id, l.grouping_id))
+               SELECT DISTINCT ON (COALESCE(t.id, al.id, a.id, l.grouping_id))
                       CASE WHEN l.track_id IS NOT NULL THEN 'track' WHEN l.album_id IS NOT NULL THEN 'album'
                            WHEN l.artist_id IS NOT NULL THEN 'artist' ELSE 'grouping' END AS kind,
-                      COALESCE(t.id, l.album_id, l.artist_id, l.grouping_id) AS id,
+                      COALESCE(t.id, al.id, a.id, l.grouping_id) AS id,
                       COALESCE(t.title, al.title, a.name, g.name) AS title, l.id AS link
                FROM extra_links l
-               -- A track merged since: the one it went into.
+               -- Merged since: the one it went into.
                LEFT JOIN tracks t ON t.id = final_track(l.track_id)
-               LEFT JOIN albums al ON al.id = l.album_id
-               LEFT JOIN artists a ON a.id = l.artist_id
+               LEFT JOIN albums al ON al.id = final_album(l.album_id)
+               LEFT JOIN artists a ON a.id = final_artist(l.artist_id)
                LEFT JOIN groupings g ON g.id = l.grouping_id
                WHERE l.extra_id = $1 AND COALESCE(t.id, al.id, a.id, g.id) IS NOT NULL
-               ORDER BY COALESCE(t.id, l.album_id, l.artist_id, l.grouping_id), l.id
+               ORDER BY COALESCE(t.id, al.id, a.id, l.grouping_id), l.id
            ) s ORDER BY s.link"#,
         extra
     )
