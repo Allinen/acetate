@@ -40,7 +40,7 @@ pub async fn youtube(State(_): State<AppState>, _user: CurrentUser, Json(body): 
 pub async fn fetch_youtube(id: &str) -> Result<Value, AppError> {
     let url = format!("https://www.youtube.com/watch?v={id}");
     let mut command = Command::new("yt-dlp");
-    command.args(["-J", "--no-playlist", "--skip-download", "--no-warnings"]);
+    command.args(["-J", "--no-playlist", "--skip-download", "--no-warnings", "--ignore-no-formats-error"]);
     // A cookies.txt (Netscape format) of a logged-in browser, for "Sign in to confirm you're not a bot".
     if let Some(cookies) = std::env::var_os("ACETATE_YTDLP_COOKIES").filter(|c| !c.is_empty()) {
         command.arg("--cookies").arg(cookies);
