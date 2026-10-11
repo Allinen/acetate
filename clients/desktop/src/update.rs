@@ -58,7 +58,11 @@ impl Update {
         state.set(Progress::Downloading(0, None));
         runtime.spawn(async move {
             let result = async {
+                // The release's checksum for it (release.yml makes `<file>.sha256`), fetched
+                // first: no checksum, no update.
+                let sum = fetch_checksum(&url).await?;
                 let archive = download(&url, &state).await?;
+                verify(&archive, &sum)?;
                 state.set(Progress::Installing);
                 tokio::task::spawn_blocking(move || {
                     let exe = std::env::current_exe().map_err(|e| format!("Can't find where the app is: {e}"))?;
@@ -83,6 +87,27 @@ struct State {
 impl State {
     fn set(&self, p: Progress) {
         (self.set)(p)
+    }
+}
+
+async fn fetch_checksum(url: &str) -> Result<String, String> {
+    let url = format!("{url}.sha256");
+    let response = reqwest::get(&url).await.map_err(|e| format!("Couldn't reach GitHub: {e}"))?;
+    if !response.status().is_success() {
+        return Err(format!("The release has no checksum to check the download against ({url}: {}).", response.status()));
+    }
+    response.text().await.map_err(|e| format!("Couldn't read the checksum: {e}"))
+}
+
+/// Whether the download is what the checksum file (`sha256sum`'s: the hash, then the
+/// name) says.
+fn verify(archive: &[u8], checksum_file: &str) -> Result<(), String> {
+    use sha2::{Digest, Sha256};
+    let expected = checksum_file.split_whitespace().next().unwrap_or("").to_ascii_lowercase();
+    if hex::encode(Sha256::digest(archive)) == expected {
+        Ok(())
+    } else {
+        Err("The download doesn't match its checksum, so it wasn't installed.".into())
     }
 }
 
@@ -202,6 +227,16 @@ mod tests {
         let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
         std::io::Write::write_all(&mut gz, &tar).unwrap();
         gz.finish().unwrap()
+    }
+
+    #[test]
+    fn a_download_must_match_its_checksum() {
+        use sha2::{Digest, Sha256};
+        let sum = hex::encode(Sha256::digest(b"archive"));
+        assert!(verify(b"archive", &format!("{sum}  Acetate-v1.0.0-linux-x86_64.tar.gz\n")).is_ok());
+        assert!(verify(b"archive", &sum.to_uppercase()).is_ok());
+        assert!(verify(b"tampered", &format!("{sum}  x\n")).is_err());
+        assert!(verify(b"archive", "").is_err());
     }
 
     #[cfg(unix)]

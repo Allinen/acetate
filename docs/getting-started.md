@@ -35,7 +35,7 @@ files are copied).
   [releases page](https://github.com/Allinen/acetate/releases), or build it with
   `clients/desktop/install.sh`. This is the intended way to use Acetate. When the server is
   a newer release than the app, Settings → General has an **Update** button: it downloads
-  the server's release from GitHub and replaces the program (restart to use it). It never
+  the server's release from GitHub, checks it against the release's `.sha256` file, and replaces the program (restart to use it). It never
   goes back to an older one: if the server is older, the app only says so, and the server
   needs updating (an older server can't read what a newer app keeps).
 - **Android app:** see [The Android app](android.md). Listening, playlists, search and downloads.

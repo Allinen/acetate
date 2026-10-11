@@ -261,6 +261,8 @@ jobs:
           mv Acetate-linux-x86_64.tar.gz "Acetate-$tag-linux-x86_64.tar.gz"
           mv Acetate-windows-x86_64.zip "Acetate-$tag-windows-x86_64.zip"
           mv app-release.apk "Acetate-$tag-android.apk"
+          # A checksum beside each (the desktop app checks its update against it).
+          for f in Acetate-*; do sha256sum "$f" > "$f.sha256"; done
           # The notes are the release's entry in CHANGELOG.md (written at release time,
           # scripts/release.sh); GitHub's own list of commits if there isn't one.
           awk -v v="${tag#v}" '/^## /{on = index($0, "## " v " ") == 1; next} on' CHANGELOG.md > notes.md
@@ -269,4 +271,4 @@ jobs:
             echo "not a tag: nothing published. The notes would be:"; cat notes.md; ls -l Acetate-*; exit 0
           fi
           gh release create "$tag" --repo "$GITHUB_REPOSITORY" --title "Acetate $tag" "${notes[@]}" \
-            "Acetate-$tag-linux-x86_64.tar.gz" "Acetate-$tag-windows-x86_64.zip" "Acetate-$tag-android.apk"
+            "Acetate-$tag-linux-x86_64.tar.gz" "Acetate-$tag-windows-x86_64.zip" "Acetate-$tag-android.apk" Acetate-*.sha256
