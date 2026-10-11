@@ -38,6 +38,15 @@ refused or failed on, which you can fix as drafts and import.
 Marking many works as in any track list (`x`, `Shift`, `Ctrl+A`); the editor then changes
 all of them.
 
+## Unlinked extras
+
+The **Unlinked extras** chip lists extras that belong to nothing yet (videos imported from
+disk, for one). Click rows to select them (Shift+click for a range, or "Select all shown";
+the text filter narrows the list first). Then choose what they belong to (track, album, artist
+or grouping), type its name and press Enter: every selected extra is linked to it, and leaves
+the list. With a single extra selected, its name is typed into the search for you. "Open" on a
+row (or a double-click) goes to the extra's own page; unlinking is done there.
+
 ## Bulk tools
 
 With a chip chosen, `b` (or "Bulk…") acts on exactly what's shown. It lists everything

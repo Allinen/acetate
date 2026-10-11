@@ -23,6 +23,7 @@ pub mod merge;
 pub mod queue;
 pub mod review;
 pub mod review_bulk;
+pub mod unlinked_extras;
 pub mod credited_as;
 pub mod extra;
 pub mod mark_og;

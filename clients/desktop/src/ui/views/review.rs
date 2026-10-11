@@ -131,6 +131,7 @@ pub struct Review {
     showing_not_imported: bool,
     /// Extras linked to nothing (videos imported from disk…), shown in place of the list.
     showing_unlinked: bool,
+    unlinked: super::unlinked_extras::UnlinkedExtras,
     /// Showing artists and albums nobody uses anymore instead of the flagged tracks.
     showing_unused: bool,
     asked_not_imported: bool,
@@ -262,7 +263,7 @@ impl Review {
         ui.add_space(4.0);
         if self.showing_unlinked {
             ui.add_space(6.0);
-            unlinked_extras(ui, shell, catalog, &self.filter);
+            self.unlinked.show(ui, shell, catalog, &self.filter);
             return;
         }
         if self.showing_unused {
@@ -1011,50 +1012,6 @@ fn unused_list(ui: &mut egui::Ui, shell: &mut Shell, catalog: &Catalog, filter: 
             ui.painter().text(egui::pos2(rect.right() - 10.0, rect.center().y), egui::Align2::RIGHT_CENTER, what, font(12.0, medium()), P.faint);
             if response.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                 shell.act(Action::Go(page));
-            }
-        }
-    });
-}
-
-/// Extras linked to nothing (music videos imported from disk…), by name, to link from their
-/// pages. `filter`: words in the name or kind.
-fn unlinked_extras(ui: &mut egui::Ui, shell: &mut Shell, catalog: &Catalog, filter: &str) {
-    let words: Vec<String> = filter.to_lowercase().split_whitespace().map(str::to_string).collect();
-    let mut shown: Vec<&crate::catalog::model::Extra> = catalog
-        .extras
-        .iter()
-        .filter(|e| e.links.is_empty())
-        .filter(|e| {
-            let text = format!("{} {}", e.name, e.kind).to_lowercase();
-            words.iter().all(|w| text.contains(w.as_str()))
-        })
-        .collect();
-    shown.sort_by_key(|e| e.name.to_lowercase());
-    ui.label(RichText::new("Linked to nothing yet: open one to link it to its song (“Link to a track…”) or its artist.").color(P.muted));
-    ui.add_space(6.0);
-    if shown.is_empty() {
-        ui.label(RichText::new("None (or nothing matches the filter).").color(P.faint));
-        return;
-    }
-    egui::ScrollArea::vertical().id_salt("unlinked-extras").auto_shrink([false, false]).show_rows(ui, 52.0, shown.len(), |ui, range| {
-        for e in &shown[range] {
-            let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width().min(760.0), 52.0), Sense::click());
-            if response.hovered() {
-                ui.painter().rect_filled(rect, 8, P.surface);
-            }
-            let thumb = egui::Rect::from_min_size(rect.min + Vec2::new(6.0, 6.0), Vec2::new(71.0, 40.0));
-            match e.thumb() {
-                Some(cover) => shell.cover(ui, Some(cover), e.id, thumb, 4, 0.0),
-                None => {
-                    ui.painter().rect_stroke(thumb, 4, egui::Stroke::new(1.0, P.line), egui::StrokeKind::Inside);
-                }
-            }
-            let left = thumb.right() + 12.0;
-            ui.painter().text(egui::pos2(left, rect.top() + 9.0), egui::Align2::LEFT_TOP, &e.name, font(14.0, semibold()), P.text);
-            let files = crate::ui::edit::extras::files_text(e.files as usize);
-            ui.painter().text(egui::pos2(left, rect.top() + 29.0), egui::Align2::LEFT_TOP, format!("{} · {files}", e.kind), font(12.0, medium()), P.muted);
-            if response.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-                shell.act(Action::Go(crate::ui::Page::Extra(e.id)));
             }
         }
     });
