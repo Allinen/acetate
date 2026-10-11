@@ -41,8 +41,33 @@ pub async fn youtube(State(state): State<AppState>, user: CurrentUser, Json(body
     Ok(Json(fetch_youtube(&state, &user, &id).await?))
 }
 
+/// What was read lately, by video id: the track editor asks for the same video's metadata
+/// at every preview, and it is read once.
+static RECENT: std::sync::Mutex<Vec<(String, std::time::Instant, Value)>> = std::sync::Mutex::new(Vec::new());
+const KEPT_FOR: Duration = Duration::from_secs(10 * 60);
+const KEPT_UP_TO: usize = 100;
+
 /// The video's metadata as `yt-dlp -J` says it (see `youtube`), for the video with this id.
+/// What was read in the last 10 minutes is answered again without yt-dlp (and without
+/// counting against the limits).
 pub async fn fetch_youtube(state: &AppState, user: &CurrentUser, id: &str) -> Result<Value, AppError> {
+    {
+        let mut recent = RECENT.lock().unwrap();
+        recent.retain(|(_, at, _)| at.elapsed() < KEPT_FOR);
+        if let Some((_, _, json)) = recent.iter().find(|(kept, _, _)| kept == id) {
+            return Ok(json.clone());
+        }
+    }
+    let json = read_youtube(state, user, id).await?;
+    let mut recent = RECENT.lock().unwrap();
+    if recent.len() >= KEPT_UP_TO {
+        recent.remove(0);
+    }
+    recent.push((id.to_string(), std::time::Instant::now(), json.clone()));
+    Ok(json)
+}
+
+async fn read_youtube(state: &AppState, user: &CurrentUser, id: &str) -> Result<Value, AppError> {
     if let Some(wait) = state.rate_limits.youtube_read(user.id()) {
         return Err(AppError::TooManyRequests(wait));
     }

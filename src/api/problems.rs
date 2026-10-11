@@ -118,23 +118,25 @@ async fn load_open(
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ImportWith {
+    /// An extra's track only: the YouTube video it is (its link or id).
+    pub(super) link: Option<String>,
     /// The file is an original file (an og file) with this name, when its tags don't say.
-    original_filename: Option<String>,
+    pub(super) original_filename: Option<String>,
     /// The editor's changes to the new track: one of `/api/tracks/edit`'s `tracks`, made on
     /// the track a preview answered, with its ids (`track_id` can be left out).
-    track: Option<Value>,
+    pub(super) track: Option<Value>,
     /// What the track's changes refer to that's to be made first, as in `/api/tracks/edit`.
-    new_artists: Vec<Value>,
-    new_albums: Vec<Value>,
-    new_groupings: Vec<Value>,
-    artist_sources: Vec<Value>,
-    new_review_kinds: Vec<String>,
+    pub(super) new_artists: Vec<Value>,
+    pub(super) new_albums: Vec<Value>,
+    pub(super) new_groupings: Vec<Value>,
+    pub(super) artist_sources: Vec<Value>,
+    pub(super) new_review_kinds: Vec<String>,
     /// The edit's reason (default: that it was made while importing the file).
-    reason: String,
+    pub(super) reason: String,
     /// The `draft` a preview answered, whose ids `track` uses.
-    draft: Option<Draft>,
+    pub(super) draft: Option<Draft>,
     /// Only say what would happen (nothing is kept).
-    preview: bool,
+    pub(super) preview: bool,
 }
 
 /// What importing a file that didn't import did (or would).
@@ -160,6 +162,9 @@ pub struct Imported {
     /// next file's changes, so they're made once.
     #[serde(skip_serializing_if = "Option::is_none")]
     made: Option<Made>,
+    /// An extra's track: why it has no cover from the video's thumbnail.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) no_cover: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -203,6 +208,9 @@ pub async fn import(
             "this file was to be restricted; importing it needs the manage_access permission".to_string(),
         ));
     }
+    if with.link.is_some() {
+        return Err(AppError::BadRequest("`link` is for an extra's track".to_string()));
+    }
     let editing = with.track.is_some();
     if editing && !user.has(Permission::EditMetadata) {
         return Err(AppError::Forbidden("changing the new track needs the `edit_metadata` permission".to_string()));
@@ -226,20 +234,43 @@ pub async fn import(
         tags_from: None, // a tagged copy was only there for the original request
     };
 
-    let mut tx = state.db(&user).await?;
+    let imported = import_with(&state, &user, &file, &options, with, &uploaded_filename, None).await?;
+    Ok(Json(imported))
+}
+
+/// What imports a file with the track editor's changes (see `import`), for a kept file or
+/// an extra's (`made_from`: the extra, which is taken off with the track made, kept; a file
+/// that is a track's already changes nothing then).
+pub async fn import_with(
+    state: &AppState,
+    user: &CurrentUser,
+    file: &ingest::StagedFile,
+    options: &IngestOptions,
+    with: ImportWith,
+    uploaded_filename: &str,
+    made_from: Option<Uuid>,
+) -> Result<Imported, AppError> {
+    let mut tx = state.db(user).await?;
+    if let Some(extra) = made_from {
+        // Read again, locked: it may have been taken off, or made a track, since it was read.
+        let taken: Option<(bool, bool)> = sqlx::query_as("SELECT hidden_at IS NOT NULL, merged_into IS NOT NULL FROM extras WHERE id = $1 FOR UPDATE").bind(extra).fetch_optional(&mut *tx).await?;
+        if taken != Some((false, false)) {
+            return Err(AppError::BadRequest("it is taken off".into()));
+        }
+    }
     // Not a dry run even for a preview: its pictures are stored (see below).
-    let report = ingest::ingest_in(&mut tx, &state.store, &file, &options, false)
+    let report = ingest::ingest_in(&mut tx, &state.store, file, options, false)
         .await
         .map_err(ingest::as_rejected)?;
     let new_track = report.track_id.filter(|_| report.status == ReportStatus::Created);
     let Some(track_id) = new_track else {
         // Already stored: its track got the sources, as any import of it does.
-        if with.preview {
+        if with.preview || made_from.is_some() {
             tx.rollback().await?;
         } else {
             tx.commit().await?;
         }
-        return Ok(Json(Imported { track_id: report.track_id, report, track: None, draft: None, edited: None, missing: Vec::new(), made: None }));
+        return Ok(Imported { track_id: report.track_id, report, track: None, draft: None, edited: None, missing: Vec::new(), made: None, no_cover: None });
     };
 
     // The track before the changes, and its ids by place.
@@ -323,7 +354,7 @@ pub async fn import(
         // Its pictures (embedded in the file, stored by the import) stay staged as the
         // user's, so the draft's covers can be shown (`GET /api/images/{hash}`) and kept.
         if !track.covers.is_empty() {
-            let mut tx = state.db(&user).await?;
+            let mut tx = state.db(user).await?;
             for cover in &track.covers {
                 let size = state.store.size(&cover.blob_sha256).await.map(|s| s as i64);
                 db::blobs::register(&mut tx, &cover.blob_sha256, state.store.default_volume(), size).await?;
@@ -340,9 +371,12 @@ pub async fn import(
                 Rejected::Invalid(format!("a track needs a title and an artist, and this one has no {}", missing.join(" and no "))).into(),
             ));
         }
+        if let Some(extra) = made_from {
+            db::extras::made_track(&mut tx, extra, track_id, &with.reason).await?;
+        }
         tx.commit().await?;
     }
-    Ok(Json(Imported { track_id: Some(track_id), report, track: Some(track), draft: Some(draft), edited: Some(edited), missing, made: Some(made) }))
+    Ok(Imported { track_id: Some(track_id), report, track: Some(track), draft: Some(draft), edited: Some(edited), missing, made: Some(made), no_cover: None })
 }
 
 #[derive(Debug, Deserialize)]

@@ -47,10 +47,14 @@ narrows the list first). Then choose what they belong to (track, album, artist o
 type its name and press Enter: every marked extra is linked to it, and leaves the list.
 
 The last choice, **make tracks (YouTube)**, is for videos downloaded from YouTube (their
-names end with the video's id, `Title [id].mp4`): **Look** asks YouTube what each marked
-extra would become (title, artist, video), and lists the ones that can't (no id, a video
-YouTube can't read, a file that is a track already); **Make** turns the rest into tracks and
-takes the extras off (kept). Needs yt-dlp on the server.
+names end with the video's id, `Title [id].mp4`): **Make N tracks…** asks YouTube about
+each marked extra once (title, artist, date, thumbnail) and opens the track editor over all
+the drafts, as for files that didn't import: what you stage goes on every one, each keeping
+its own title and source. Extras that can't be made (no id, a video YouTube can't read, a
+file that is a track already) are listed as left out. Applying makes the tracks and takes
+the extras off (kept). The line starts with `parse:prefix feat prod` typed, to move
+"Artist -", feat. and prod. out of YouTube's titles (Enter, then look at the check). Needs
+yt-dlp on the server; YouTube is asked for at most 10 videos a minute per person.
 
 With nothing marked, the extra under the cursor is the one, and its name is typed into the
 search for you: click a row (or move to it), check the match, Enter. Enter on a row puts the

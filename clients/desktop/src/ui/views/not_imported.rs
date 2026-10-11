@@ -644,7 +644,7 @@ impl NotImported {
                         let flags = imported.edited.map(|e| e.flags).unwrap_or_default();
                         let with = serde_json::json!({ "original_filename": draft.og });
                         let loose = track.albums.is_empty();
-                        draft.editor.draft(DraftOf { problem: p.id, ids, with, flags }, track);
+                        draft.editor.draft(DraftOf { problem: p.id, path: format!("/api/ingest-problems/{}/import", p.id), ids, with, flags }, track);
                         if first {
                             if loose {
                                 draft.editor.start_single();
@@ -903,7 +903,7 @@ impl NotImported {
                         }
                         let og = (bulk.og_wavs && wav.contains(&problem)).then(|| names.get(&problem).cloned()).flatten();
                         let flags = imported.edited.map(|e| e.flags).unwrap_or_default();
-                        bulk.editor.draft(DraftOf { problem, ids, with: serde_json::json!({ "original_filename": og }), flags }, track);
+                        bulk.editor.draft(DraftOf { problem, path: format!("/api/ingest-problems/{problem}/import"), ids, with: serde_json::json!({ "original_filename": og }), flags }, track);
                         Ok(id)
                     }
                     _ => Err("this exact file is a track's already".to_string()),

@@ -45,8 +45,11 @@ const SETTLE: Duration = Duration::from_millis(250);
 /// A track only a preview has made (see the module's notes).
 #[derive(Debug, Clone)]
 pub struct DraftOf {
-    /// The file that didn't import.
+    /// The file that didn't import, or the extra being made a track.
     pub problem: Uuid,
+    /// Where its preview and import go (`POST`): `/api/ingest-problems/{id}/import`, or an
+    /// extra's `/api/extras/{id}/to-track`.
+    pub path: String,
     /// The `draft` answered with its details: sent back with the edit.
     pub ids: Value,
     /// Sent with the edit too (`original_filename`).
@@ -65,6 +68,9 @@ pub struct Imported {
     pub track: Option<TrackDetail>,
     #[serde(default)]
     pub draft: Option<Value>,
+    /// An extra's track: why it has no cover from the video's thumbnail.
+    #[serde(default)]
+    pub no_cover: Option<String>,
     #[serde(default)]
     pub edited: Option<Answer>,
     /// What it lacks to be imported ("title", "artist").
@@ -778,7 +784,7 @@ impl Engine {
 #[allow(clippy::too_many_arguments)]
 async fn import(api: &Api, draft: &DraftOf, write: &(Uuid, Ready), change: &Change, preview: bool, made: &Made, first: bool, stale: &Mutex<HashSet<Uuid>>) -> Result<(Answer, Option<Uuid>, Option<Made>), String> {
     let body = draft_body(draft, write, change, preview, made, first)?;
-    let path = format!("/api/ingest-problems/{}/import", draft.problem);
+    let path = draft.path.clone();
     let imported = api.send_json::<Imported>(reqwest::Method::POST, &path, Some(body)).await.map_err(|e| {
         if e.code == "conflict" {
             stale.lock().unwrap().insert(draft.problem);
@@ -1172,7 +1178,7 @@ mod tests {
         let mut r = ready(0, &[9], None);
         r.draft = true;
         r.single = true;
-        let draft = DraftOf { problem: id(1), ids: json!({ "ids": {}, "shape": "ab" }), with: json!({ "original_filename": "a.wav" }), flags: vec![] };
+        let draft = DraftOf { problem: id(1), path: String::new(), ids: json!({ "ids": {}, "shape": "ab" }), with: json!({ "original_filename": "a.wav" }), flags: vec![] };
         let body = draft_body(&draft, &(id(5), r), &change, true, &Made::default(), true).unwrap();
         assert_eq!(body["track"]["track_id"], json!(id(5)));
         assert_eq!(body["track"]["meta"]["data"]["credits"][0]["artist_id"], json!(id(9)));

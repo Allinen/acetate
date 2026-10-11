@@ -27,10 +27,11 @@ the editor in either mode, for a quick fix.)
   says which extra has it. (Duplicates from before that are merged, below.)
   An extra that is a YouTube video (its name ends with the video's id, `Title [id].mp4`) can
   become a track: in edit mode, *Make it a track from its YouTube video…* on its page (type
-  the video's link if the name has no id), *Look* shows what it would become, then *Make the
-  track*. The server asks YouTube (with yt-dlp, as the editor's "import metadata" does) for
-  the title, artist (or the channel), date and thumbnail, and the video is the track's
-  source. The track plays the extra's file, and the extra is taken off (kept; *Taken off*
+  the video's link if the name has no id), then *Look*. The server asks YouTube (with yt-dlp,
+  as the editor's "import metadata" does, once) for the title, artist (or the channel), date
+  and thumbnail, and the track editor opens on that draft: change what you like (the line
+  starts with `parse:prefix feat prod`, to move "Artist -", feat. and prod. out of YouTube's
+  title: Enter, look at the check), then apply. The video is the track's source. The track plays the extra's file, and the extra is taken off (kept; *Taken off*
   brings it back). [Review](../review.md)'s "Unlinked extras" does it for many at once.
   Extras that are really one thing (the same file twice, or the pieces of one set) are
   merged on the page you keep: in edit mode, *Merge other extras into this one…*, pick them

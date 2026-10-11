@@ -29,7 +29,8 @@ use super::marking::{paint_box, Key, Marking};
 use crate::catalog::model::Extra;
 use crate::catalog::search::Part;
 use crate::catalog::Catalog;
-use crate::ui::edit::extras::{files_text, merge_request, to_track_request, MadeTrack, MergeReport, Owner};
+use crate::ui::edit::extras::{files_text, merge_request, MergeReport, Owner};
+use super::extra_drafts::ExtraDrafts;
 use crate::ui::edit::inline_search::{describe, Choice, InlineSearch};
 use crate::ui::theme::{font, medium, semibold, PALETTE as P};
 use crate::ui::{widgets, Action, Page, Shell};
@@ -48,9 +49,6 @@ enum Target {
     /// Made into tracks, from their YouTube videos.
     Tracks,
 }
-
-/// What an extra would become as a track, or why not.
-type Looked = (Uuid, String, Result<MadeTrack, String>);
 
 /// A merge being looked over: what would move, before it's done.
 struct Pending {
@@ -103,10 +101,8 @@ pub struct UnlinkedExtras {
     said: Option<Result<String, String>>,
     pending: Option<Pending>,
     preview: Arc<Mutex<Option<Result<MergeReport, String>>>>,
-    /// Making tracks: what each of these would become, once looked at.
-    plan: Option<Vec<Looked>>,
-    looking: bool,
-    looked: Arc<Mutex<Option<Vec<Looked>>>>,
+    /// Making tracks: these extras (and their names), the editor over their drafts.
+    drafts: Option<(Vec<(Uuid, String)>, ExtraDrafts)>,
 }
 
 impl Default for UnlinkedExtras {
@@ -125,9 +121,7 @@ impl Default for UnlinkedExtras {
             said: None,
             pending: None,
             preview: Arc::default(),
-            plan: None,
-            looking: false,
-            looked: Arc::default(),
+            drafts: None,
         }
     }
 }
@@ -160,12 +154,12 @@ impl UnlinkedExtras {
                 }
             }
         }
-        if let Some(plan) = self.looked.lock().unwrap().take() {
-            self.looking = false;
-            self.plan = Some(plan);
-        }
         // Linked ones leave the list at once; forget them once the library says so too.
         self.linked.retain(|id| catalog.extras.iter().any(|e| e.id == *id && e.links.is_empty()));
+        if self.drafts.is_some() {
+            self.drafts_ui(ui, shell, catalog);
+            return;
+        }
         let words: Vec<String> = filter.to_lowercase().split_whitespace().map(str::to_string).collect();
         let mut shown: Vec<&Extra> = catalog
             .extras
@@ -285,7 +279,6 @@ impl UnlinkedExtras {
                     self.target = target;
                     self.prefilled = None;
                     self.pending = None;
-                    self.plan = None;
                     if let Some(part) = target.part() {
                         self.search = InlineSearch::new(part);
                     }
@@ -341,7 +334,7 @@ impl UnlinkedExtras {
                     }
                 }
             }
-            None if self.target == Target::Tracks => self.tracks_ui(ui, shell, catalog, &targets),
+            None if self.target == Target::Tracks => self.tracks_ui(ui, catalog, &targets),
             None => {
                 let mut picked = None;
                 egui::ComboBox::from_id_salt("unlinked-extras-grouping").selected_text("Choose a grouping…").show_ui(ui, |ui| {
@@ -394,68 +387,38 @@ impl UnlinkedExtras {
         }
     }
 
-    /// Making tracks: look at what each marked extra would become, then make them.
-    fn tracks_ui(&mut self, ui: &mut egui::Ui, shell: &Shell, catalog: &Arc<Catalog>, targets: &[Uuid]) {
-        // What was looked at is for those extras only.
-        if self.plan.as_ref().is_some_and(|p| p.iter().map(|l| l.0).collect::<Vec<_>>() != targets) {
-            self.plan = None;
-        }
-        ui.label(RichText::new("Each becomes a track from its YouTube video, found by the [id] at the end of its name: title, artist (or channel), date and thumbnail as YouTube says. The extra is taken off (kept); the track plays its file.").color(P.muted));
-        ui.horizontal(|ui| {
-            if ui.add_enabled(!targets.is_empty() && !self.looking && !self.sending, egui::Button::new(format!("Look at {}", if targets.len() == 1 { "it".to_string() } else { format!("{} extras", targets.len()) }))).clicked() {
-                self.looking = true;
-                self.said = None;
-                self.plan = None;
-                let named: Vec<(Uuid, String)> = targets.iter().filter_map(|id| catalog.extras.iter().find(|e| e.id == *id)).map(|e| (e.id, e.name.clone())).collect();
-                let (api, ctx, into) = (shell.api.clone(), shell.ctx.clone(), self.looked.clone());
-                shell.runtime.spawn(async move {
-                    let mut plan = Vec::new();
-                    for (id, name) in named {
-                        let result = to_track_request(&api, id, None, true).await;
-                        plan.push((id, name, result));
-                    }
-                    *into.lock().unwrap() = Some(plan);
-                    ctx.request_repaint();
-                });
-            }
-            if self.looking {
-                ui.label(RichText::new("Asking YouTube…").color(P.muted));
-            }
-        });
-        let Some(plan) = &self.plan else { return };
-        let makeable: Vec<Uuid> = plan.iter().filter(|(_, _, r)| r.as_ref().is_ok_and(|m| !m.already())).map(|l| l.0).collect();
-        for (_, name, result) in plan {
-            match result {
-                Ok(made) if made.already() => ui.label(RichText::new(format!("{name}: {} is a track already", made.describe())).color(P.faint)),
-                Ok(made) => ui.label(RichText::new(format!("{name} → {}", made.describe())).color(P.text)),
-                Err(err) => ui.label(RichText::new(format!("{name}: {err}")).color(P.danger)),
-            };
-        }
-        if ui.add_enabled(!makeable.is_empty() && !self.sending, egui::Button::new(format!("Make {} track{}", makeable.len(), if makeable.len() == 1 { "" } else { "s" }))).clicked() {
-            self.make_all(shell, makeable);
+    /// Making tracks: the drafts of the marked extras, the editor over them.
+    fn tracks_ui(&mut self, ui: &mut egui::Ui, catalog: &Arc<Catalog>, targets: &[Uuid]) {
+        ui.label(RichText::new("Each becomes a track from its YouTube video, found by the [id] at the end of its name: title, artist (or channel), date and thumbnail as YouTube says. You edit the tracks before they're made; the extras are taken off (kept) and the tracks play their files.").color(P.muted));
+        let named: Vec<(Uuid, String)> = targets.iter().filter_map(|id| catalog.extras.iter().find(|e| e.id == *id)).map(|e| (e.id, e.name.clone())).collect();
+        let label = if named.len() == 1 { "Make it a track…".to_string() } else { format!("Make {} tracks…", named.len()) };
+        if ui.add_enabled(!named.is_empty() && !self.sending, egui::Button::new(label)).clicked() {
+            self.said = None;
+            self.drafts = Some((named, ExtraDrafts::new(Default::default())));
         }
     }
 
-    fn make_all(&mut self, shell: &Shell, extras: Vec<Uuid>) {
-        self.sending = true;
-        self.said = None;
-        self.plan = None;
-        self.linked.extend(extras.iter().copied());
-        self.marking.clear();
-        let (api, ctx, result) = (shell.api.clone(), shell.ctx.clone(), self.result.clone());
-        shell.runtime.spawn(async move {
-            let (mut done, mut failed) = (0, Vec::new());
-            for id in &extras {
-                match to_track_request(&api, *id, None, false).await {
-                    Ok(_) => done += 1,
-                    Err(e) => failed.push(e),
-                }
+    /// The editor over the drafts, in place of the list.
+    fn drafts_ui(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: &Arc<Catalog>) {
+        let busy = self.drafts.as_ref().is_some_and(|(_, d)| d.busy());
+        if ui.add_enabled(!busy, egui::Button::new("← Back to the list")).clicked() {
+            self.drafts = None;
+            return;
+        }
+        let Some((extras, drafts)) = self.drafts.as_mut() else { return };
+        ui.add_space(4.0);
+        let made = drafts.show(ui, shell, catalog, extras);
+        if !made.is_empty() {
+            let gone: HashSet<Uuid> = made.iter().map(|m| m.0).collect();
+            self.linked.extend(gone.iter().copied());
+            self.marking.retain(|id| !gone.contains(id));
+            extras.retain(|(id, _)| !gone.contains(id));
+            let tracks = if made.len() == 1 { "1 track".to_string() } else { format!("{} tracks", made.len()) };
+            self.said = Some(Ok(format!("Made {tracks}.")));
+            if extras.is_empty() {
+                self.drafts = None;
             }
-            let tracks = if done == 1 { "1 track".to_string() } else { format!("{done} tracks") };
-            let said = if failed.is_empty() { Ok(format!("Made {tracks}.")) } else { Err(format!("Made {tracks}, {} failed: {}", failed.len(), failed[0])) };
-            *result.lock().unwrap() = Some(said);
-            ctx.request_repaint();
-        });
+        }
     }
 
     fn merge_all(&mut self, shell: &Shell, pending: Pending) {

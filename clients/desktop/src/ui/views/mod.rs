@@ -26,6 +26,7 @@ pub mod review_bulk;
 pub mod unlinked_extras;
 pub mod credited_as;
 pub mod extra;
+pub mod extra_drafts;
 pub mod mark_og;
 pub mod marking;
 pub mod not_imported;
