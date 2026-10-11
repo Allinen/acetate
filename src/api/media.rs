@@ -264,7 +264,7 @@ pub async fn cover(
         r#"
         SELECT c.blob_sha256, c.mime
         FROM covers c
-        WHERE c.id = $1
+        WHERE c.id = $1 AND c.trashed_at IS NULL
           AND (EXISTS (SELECT 1 FROM tracks t WHERE t.id = c.track_id)
                OR EXISTS (
                    SELECT 1 FROM album_tracks at

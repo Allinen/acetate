@@ -273,7 +273,7 @@ pub async fn image_by_hash(conn: &mut PgConnection, hash: &str) -> sqlx::Result<
         r#"
         SELECT c.blob_sha256 AS "blob_sha256!", c.mime
         FROM covers c
-        WHERE c.blob_sha256 LIKE $1 || '%'
+        WHERE c.blob_sha256 LIKE $1 || '%' AND c.trashed_at IS NULL
           AND (EXISTS (SELECT 1 FROM tracks t WHERE t.id = c.track_id)
                OR EXISTS (SELECT 1 FROM album_tracks at JOIN tracks t ON t.id = at.track_id
                           WHERE at.album_id = c.album_id))

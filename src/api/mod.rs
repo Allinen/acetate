@@ -20,6 +20,8 @@ mod media;
 mod metadata;
 pub mod mirror;
 #[cfg(test)]
+mod exposure_tests;
+#[cfg(test)]
 mod mirror_tests;
 mod playlists;
 mod rate_limit;
