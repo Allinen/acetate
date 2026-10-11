@@ -18,7 +18,6 @@
 //! groupings, credited as, original files.
 
 use std::collections::HashSet;
-use std::sync::{Arc, Mutex};
 
 use eframe::egui::{self, RichText, Vec2};
 use uuid::Uuid;
@@ -27,6 +26,7 @@ use crate::catalog::marks::Kind;
 use crate::catalog::Catalog;
 use crate::playback::PlayerView;
 use crate::ui::selection::Selection;
+use crate::ui::task::Task;
 use crate::ui::theme::{bold, font, semibold, PALETTE as P};
 use crate::ui::{thousands, widgets, Action, Shell};
 
@@ -57,7 +57,7 @@ pub struct Marking {
     /// The marked tracks' files marked as original files (`edit_files`).
     mark_og: Option<super::mark_og::MarkOg>,
     /// Marked tracks being put in a grouping: the server's answer (how many, or why not).
-    grouping_answer: Arc<Mutex<Option<Result<String, String>>>>,
+    grouping_answer: Task<Result<String, String>>,
     /// How many were marked when the bar was last shown (it's drawn a moment after they're
     /// cleared, going away).
     last_count: usize,
@@ -232,7 +232,7 @@ impl Marking {
     /// album's (numbering on it).
     pub fn popups(&mut self, ctx: &egui::Context, shell: &mut Shell, player: &PlayerView, len: usize, id_at: impl Fn(usize) -> Option<Key> + Copy, album: Option<Uuid>) {
         // Marked tracks put in a grouping: said so, and the lists catch up.
-        if let Some(result) = self.grouping_answer.lock().unwrap().take() {
+        if let Some(result) = self.grouping_answer.poll() {
             let text = match result {
                 Ok(done) => {
                     shell.act(Action::RefreshLibrary);
@@ -440,9 +440,8 @@ impl Marking {
                 if let Some((grouping, name)) = chosen {
                     let tracks = self.ordered(len, id_at);
                     let body = serde_json::json!({ "track_ids": tracks });
-                    let (api, answer, ctx) = (shell.api.clone(), self.grouping_answer.clone(), shell.ctx.clone());
-                    shell.runtime.spawn(async move {
-                        let result = api
+                    self.grouping_answer.send_with(shell, |api| async move {
+                        api
                             .send_json::<serde_json::Value>(reqwest::Method::POST, &format!("/api/groupings/{grouping}/add"), Some(body))
                             .await
                             .map(|v| {
@@ -450,9 +449,7 @@ impl Marking {
                                 let singles = if albums > 0 { format!(" and {} they're alone on", acetate_core::format::count(albums as usize, "single")) } else { String::new() };
                                 format!("Put {}{singles} in “{name}” (the others were in it already).", acetate_core::format::count(tracks as usize, "track"))
                             })
-                            .map_err(|e| format!("Couldn't put them in “{name}”: {}", e.message));
-                        *answer.lock().unwrap() = Some(result);
-                        ctx.request_repaint();
+                            .map_err(|e| format!("Couldn't put them in “{name}”: {}", e.message))
                     });
                 }
             }

@@ -17,8 +17,8 @@
 //! a big library), so typing never waits: the list shows the last answer until the
 //! next one arrives, and answers to older queries are dropped.
 
-use std::sync::{Arc, Mutex};
 
+use std::sync::Arc;
 use eframe::egui::{self, Align2, Color32, Key, Modifiers, Pos2, Rect, RichText, Sense, Shadow, Vec2};
 
 use uuid::Uuid;
@@ -27,6 +27,7 @@ use crate::catalog::query::Key as Find;
 use crate::catalog::search::{Hits, Search};
 use crate::commandline::{self, Keys};
 use crate::catalog::Catalog;
+use crate::ui::task::Task;
 use crate::ui::theme::{font, medium, semibold, PALETTE as P};
 use crate::ui::edit::PickKind;
 use crate::ui::{widgets, Action, Page, Shell};
@@ -179,7 +180,7 @@ pub struct Palette {
     /// Numbers each search, so an answer to an older query is dropped.
     asked: u64,
     /// The latest answer from the background: (its number, the hits).
-    answer: Arc<Mutex<Option<(u64, Hits)>>>,
+    answer: Task<(u64, Hits)>,
     /// The library hits shown (from the latest answer).
     hits: Hits,
     /// The catalog generation the hits are for.
@@ -228,7 +229,7 @@ impl Palette {
                 self.query = p.1.clone();
             }
         }
-        if let Some((number, hits)) = self.answer.lock().unwrap().take()
+        if let Some((number, hits)) = self.answer.poll()
             && number == self.asked
         {
             self.hits = hits;
@@ -397,12 +398,12 @@ impl Palette {
             return;
         }
         let Some(catalog) = catalog else { return };
-        let (number, answer, ctx) = (self.asked, self.answer.clone(), shell.ctx.clone());
+        let number = self.asked;
         let limit = if matches!(self.mode, Mode::Pick(..)) { 12 } else { 8 };
-        shell.runtime.spawn_blocking(move || {
-            let hits = Search::default().run_query(&catalog, &query, limit);
-            *answer.lock().unwrap() = Some((number, hits));
-            ctx.request_repaint();
+        // (A newer query replaces this one's answer.)
+        self.answer.start(shell, async move {
+            let hits = tokio::task::spawn_blocking(move || Search::default().run_query(&catalog, &query, limit)).await.unwrap_or_default();
+            (number, hits)
         });
     }
 

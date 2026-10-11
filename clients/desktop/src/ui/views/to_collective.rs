@@ -8,12 +8,12 @@
 //! server flags those for Review), and the extras that move to it. Then the button. See the server's
 //! `db::groupings::turn_into_collective`.
 
-use std::sync::{Arc, Mutex};
 
 use eframe::egui::{self, RichText};
 use serde::Deserialize;
 use uuid::Uuid;
 
+use crate::ui::task::Task;
 use crate::ui::theme::{font, semibold, PALETTE as P};
 use crate::ui::{thousands, widgets, Action, Page, Shell};
 
@@ -42,18 +42,18 @@ pub struct ToCollective {
     into: Option<Uuid>,
     /// The preview's answer, with the target it's for (one for a target no longer chosen
     /// is dropped).
-    preview: Arc<Mutex<Option<(Option<Uuid>, Result<Preview, String>)>>>,
+    preview: Task<(Option<Uuid>, Result<Preview, String>)>,
     loaded: Option<Result<Preview, String>>,
     reason: String,
     sending: bool,
-    done: Arc<Mutex<Option<Result<Uuid, String>>>>,
+    done: Task<Result<Uuid, String>>,
     error: Option<String>,
 }
 
 impl ToCollective {
     /// Asks the server what it would do.
     pub fn open(shell: &Shell, artist: Uuid) -> ToCollective {
-        let mut popup = ToCollective { artist, into: None, preview: Arc::default(), loaded: None, reason: String::new(), sending: false, done: Arc::default(), error: None };
+        let mut popup = ToCollective { artist, into: None, preview: Task::default(), loaded: None, reason: String::new(), sending: false, done: Task::default(), error: None };
         popup.ask(shell);
         popup
     }
@@ -62,22 +62,21 @@ impl ToCollective {
     fn ask(&mut self, shell: &Shell) {
         self.loaded = None;
         let query = self.into.map(|g| format!("?into={g}")).unwrap_or_default();
-        let (api, answer, ctx, artist, into) = (shell.api.clone(), self.preview.clone(), shell.ctx.clone(), self.artist, self.into);
-        shell.runtime.spawn(async move {
+        let (artist, into) = (self.artist, self.into);
+        self.preview.start_with(shell, |api| async move {
             let result = api.send_json::<Preview>(reqwest::Method::GET, &format!("/api/artists/{artist}/collective{query}"), None).await.map_err(|e| e.message);
-            *answer.lock().unwrap() = Some((into, result));
-            ctx.request_repaint();
+            (into, result)
         });
     }
 
     /// The popup. True when it's over (closed, or done: then its collective's page opens).
     pub fn show(&mut self, shell: &mut Shell) -> bool {
-        if let Some((into, result)) = self.preview.lock().unwrap().take()
+        if let Some((into, result)) = self.preview.poll()
             && into == self.into
         {
             self.loaded = Some(result);
         }
-        if let Some(result) = self.done.lock().unwrap().take() {
+        if let Some(result) = self.done.poll() {
             self.sending = false;
             match result {
                 Ok(grouping) => {
@@ -205,15 +204,12 @@ impl ToCollective {
                 grouping_id: Uuid,
             }
             let body = serde_json::json!({ "reason": self.reason.trim(), "into": self.into });
-            let (api, answer, ctx, artist) = (shell.api.clone(), self.done.clone(), shell.ctx.clone(), self.artist);
-            shell.runtime.spawn(async move {
-                let result = api
-                    .send_json::<Done>(reqwest::Method::POST, &format!("/api/artists/{artist}/collective"), Some(body))
+            let artist = self.artist;
+            self.done.send_with(shell, |api| async move {
+                api.send_json::<Done>(reqwest::Method::POST, &format!("/api/artists/{artist}/collective"), Some(body))
                     .await
                     .map(|d| d.grouping_id)
-                    .map_err(|e| e.message);
-                *answer.lock().unwrap() = Some(result);
-                ctx.request_repaint();
+                    .map_err(|e| e.message)
             });
         }
         (closed || cancel) && !self.sending

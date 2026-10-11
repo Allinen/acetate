@@ -6,7 +6,6 @@
 //! linked to, who sees it, which albums lose it), then the button. See the server's
 //! `db::extras::track_to_extra`.
 
-use std::sync::{Arc, Mutex};
 
 use eframe::egui::{self, RichText};
 use serde::Deserialize;
@@ -14,6 +13,7 @@ use uuid::Uuid;
 
 use crate::catalog::search::Part;
 use crate::ui::edit::inline_search::{Choice, InlineSearch};
+use crate::ui::task::Task;
 use crate::ui::theme::{font, semibold, PALETTE as P};
 use crate::ui::{widgets, Action, Page, Shell};
 
@@ -59,10 +59,10 @@ pub struct ToExtra {
     belongs_to: Option<(Uuid, String)>,
     search: InlineSearch,
     asked: Option<Asked>,
-    preview: Arc<Mutex<Option<(Asked, Result<Answer, String>)>>>,
+    preview: Task<(Asked, Result<Answer, String>)>,
     loaded: Option<Result<Answer, String>>,
     sending: bool,
-    done: Arc<Mutex<Option<Result<Answer, String>>>>,
+    done: Task<Result<Answer, String>>,
     error: Option<String>,
 }
 
@@ -77,10 +77,10 @@ impl ToExtra {
             belongs_to: None,
             search: InlineSearch::new(Part::Tracks),
             asked: None,
-            preview: Arc::default(),
+            preview: Task::default(),
             loaded: None,
             sending: false,
-            done: Arc::default(),
+            done: Task::default(),
             error: None,
         }
     }
@@ -100,24 +100,23 @@ impl ToExtra {
         }
         self.asked = Some(now.clone());
         self.loaded = None;
-        let (api, ctx, into, body, track) = (shell.api.clone(), shell.ctx.clone(), self.preview.clone(), self.body(true), self.track);
-        shell.runtime.spawn(async move {
+        let (body, track) = (self.body(true), self.track);
+        self.preview.start_with(shell, |api| async move {
             let result = api.send_json::<Answer>(reqwest::Method::POST, &format!("/api/tracks/{track}/to-extra"), Some(body)).await.map_err(|e| e.message);
-            *into.lock().unwrap() = Some((now, result));
-            ctx.request_repaint();
+            (now, result)
         });
     }
 
     /// The popup. True when it's over (closed, or done: the extra's page opens).
     pub fn show(&mut self, shell: &mut Shell) -> bool {
         self.ask(shell);
-        let previewed = self.preview.lock().unwrap().take();
+        let previewed = self.preview.poll();
         if let Some((asked, result)) = previewed
             && Some(&asked) == self.asked.as_ref()
         {
             self.loaded = Some(result);
         }
-        let finished = self.done.lock().unwrap().take();
+        let finished = self.done.poll();
         if let Some(result) = finished {
             self.sending = false;
             match result {
@@ -224,12 +223,8 @@ impl ToExtra {
         if go {
             self.sending = true;
             self.error = None;
-            let (api, ctx, into, body, track) = (shell.api.clone(), shell.ctx.clone(), self.done.clone(), self.body(false), self.track);
-            shell.runtime.spawn(async move {
-                let result = api.send_json::<Answer>(reqwest::Method::POST, &format!("/api/tracks/{track}/to-extra"), Some(body)).await.map_err(|e| e.message);
-                *into.lock().unwrap() = Some(result);
-                ctx.request_repaint();
-            });
+            let (body, track) = (self.body(false), self.track);
+            self.done.send_with(shell, |api| async move { api.send_json::<Answer>(reqwest::Method::POST, &format!("/api/tracks/{track}/to-extra"), Some(body)).await.map_err(|e| e.message) });
         }
         (closed || cancel) && !self.sending
     }

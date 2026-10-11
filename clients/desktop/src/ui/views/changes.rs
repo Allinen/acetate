@@ -4,7 +4,6 @@
 //! Imports (a file's first metadata) are left out unless asked for. Needs `view_history`.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
 
 use eframe::egui::{self, RichText};
 use uuid::Uuid;
@@ -12,11 +11,12 @@ use uuid::Uuid;
 use acetate_core::changes::{self, Change, Changes};
 
 use crate::catalog::Catalog;
+use crate::ui::task::Task;
 use crate::ui::theme::{bold, font, semibold, PALETTE as P};
 use crate::ui::views::history::changes_named;
 use crate::ui::{widgets, Action, Page, Shell};
 
-type Answer = Arc<Mutex<Option<(bool, Result<Changes, String>)>>>;
+type Answer = Task<(bool, Result<Changes, String>)>;
 
 #[derive(Default)]
 pub struct ChangesPage {
@@ -43,16 +43,14 @@ impl ChangesPage {
         self.error = None;
         let before = if fresh { None } else { self.list.last().map(|c| c.id) };
         let path = changes::path(before, self.imports);
-        let (api, answer, ctx) = (shell.api.clone(), self.answer.clone(), shell.ctx.clone());
-        shell.runtime.spawn(async move {
+        self.answer.start_with(shell, |api| async move {
             let result = api.send_json::<Changes>(reqwest::Method::GET, &path, None).await.map_err(|err| err.message);
-            *answer.lock().unwrap() = Some((fresh, result));
-            ctx.request_repaint();
+            (fresh, result)
         });
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: &Catalog) {
-        let arrived = self.answer.lock().unwrap().take();
+        let arrived = self.answer.poll();
         if let Some((fresh, result)) = arrived {
             self.loading = false;
             match result {

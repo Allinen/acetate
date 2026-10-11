@@ -13,13 +13,13 @@
 //!
 //! Marking: the box in front of a row, or "Mark all shown".
 
-use std::sync::{Arc, Mutex};
 
 use eframe::egui::{self, RichText, Sense, Vec2};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
+use crate::ui::task::Task;
 use crate::ui::selection::Selection;
 use crate::ui::theme::{bold, font, semibold, PALETTE as P};
 use crate::ui::{thousands, widgets, Action, Page, Shell};
@@ -65,7 +65,7 @@ enum Tab {
 /// Old files asked for at a time.
 const PAGE: usize = 100;
 
-type Answer<T> = Arc<Mutex<Option<Result<T, String>>>>;
+type Answer<T> = Task<Result<T, String>>;
 
 /// A playlist of yours in the trash (`GET /api/playlists?trash=true`).
 #[derive(Clone, Deserialize)]
@@ -111,23 +111,13 @@ impl TrashPage {
     }
 
     fn load(&mut self, shell: &Shell) {
-        let (api, answer, ctx) = (shell.api.clone(), self.playlists_answer.clone(), shell.ctx.clone());
-        shell.runtime.spawn(async move {
-            let result = api.send_json::<Vec<TrashedPlaylist>>(reqwest::Method::GET, "/api/playlists?trash=true", None).await.map_err(|err| err.message);
-            *answer.lock().unwrap() = Some(result);
-            ctx.request_repaint();
-        });
+        self.playlists_answer.start_with(shell, |api| async move { api.send_json::<Vec<TrashedPlaylist>>(reqwest::Method::GET, "/api/playlists?trash=true", None).await.map_err(|err| err.message) });
         // The rest of the trash is for who can put things there.
         if !may_trash_anything(shell) {
             self.items = Some(Ok(Vec::new()));
             return;
         }
-        let (api, answer, ctx) = (shell.api.clone(), self.items_answer.clone(), shell.ctx.clone());
-        shell.runtime.spawn(async move {
-            let result = api.send_json::<Vec<TrashItem>>(reqwest::Method::GET, "/api/trash", None).await.map_err(|err| err.message);
-            *answer.lock().unwrap() = Some(result);
-            ctx.request_repaint();
-        });
+        self.items_answer.start_with(shell, |api| async move { api.send_json::<Vec<TrashItem>>(reqwest::Method::GET, "/api/trash", None).await.map_err(|err| err.message) });
     }
 
     /// The next page of old files (after the last one shown).
@@ -135,41 +125,31 @@ impl TrashPage {
         self.old_loading = true;
         let before = self.old.last().map(|f| format!("&before={}", f.id)).unwrap_or_default();
         let path = format!("/api/files/replaced?limit={PAGE}{before}");
-        let (api, answer, ctx) = (shell.api.clone(), self.old_answer.clone(), shell.ctx.clone());
-        shell.runtime.spawn(async move {
-            let result = api.send_json::<Vec<OldFile>>(reqwest::Method::GET, &path, None).await.map_err(|err| err.message);
-            *answer.lock().unwrap() = Some(result);
-            ctx.request_repaint();
-        });
+        self.old_answer.start_with(shell, |api| async move { api.send_json::<Vec<OldFile>>(reqwest::Method::GET, &path, None).await.map_err(|err| err.message) });
     }
 
     /// Sends a restore, purge or trashing; `done` says what it did, from the answer.
     fn send(&mut self, shell: &Shell, path: &'static str, body: Value, done: impl FnOnce(&Value) -> String + Send + 'static) {
         self.busy = true;
         self.result = None;
-        let (api, answer, ctx) = (shell.api.clone(), self.done_answer.clone(), shell.ctx.clone());
-        shell.runtime.spawn(async move {
-            let result = api.send_json::<Value>(reqwest::Method::POST, path, Some(body)).await.map(|v| done(&v)).map_err(|err| err.message);
-            *answer.lock().unwrap() = Some(result);
-            ctx.request_repaint();
-        });
+        self.done_answer.send_with(shell, |api| async move { api.send_json::<Value>(reqwest::Method::POST, path, Some(body)).await.map(|v| done(&v)).map_err(|err| err.message) });
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui, shell: &mut Shell) {
-        if let Some(result) = self.playlists_answer.lock().unwrap().take() {
+        if let Some(result) = self.playlists_answer.poll() {
             match result {
                 Ok(list) => self.playlists = list.into_iter().filter(|p| p.mine).collect(),
                 Err(err) => self.result = Some(Err(format!("Couldn't list your playlists in the trash: {err}"))),
             }
         }
-        if let Some(result) = self.items_answer.lock().unwrap().take() {
+        if let Some(result) = self.items_answer.poll() {
             // What's gone from the trash isn't marked anymore.
             if let Ok(items) = &result {
                 self.marked.retain(|id| items.iter().any(|i| i.id == *id));
             }
             self.items = Some(result);
         }
-        if let Some(result) = self.old_answer.lock().unwrap().take() {
+        if let Some(result) = self.old_answer.poll() {
             self.old_loading = false;
             match result {
                 Ok(files) => {
@@ -181,7 +161,7 @@ impl TrashPage {
         }
         // (Taken out first: the lock is let go at the end of this statement, before
         // `opened` below needs all of `self`.)
-        let done = self.done_answer.lock().unwrap().take();
+        let done = self.done_answer.poll();
         if let Some(result) = done {
             self.busy = false;
             if result.is_ok() {
@@ -243,13 +223,8 @@ impl TrashPage {
                 if ui.add_enabled(!self.busy, egui::Button::new("Restore").small()).clicked() {
                     self.busy = true;
                     self.result = None;
-                    let (api, answer, ctx) = (shell.api.clone(), self.done_answer.clone(), shell.ctx.clone());
                     let (path, name) = (format!("/api/playlists/{}/restore", playlist.id), playlist.name.clone());
-                    shell.runtime.spawn(async move {
-                        let result = api.send(reqwest::Method::POST, &path, None).await.map(|()| format!("“{name}” is back")).map_err(|err| err.message);
-                        *answer.lock().unwrap() = Some(result);
-                        ctx.request_repaint();
-                    });
+                    self.done_answer.send_with(shell, |api| async move { api.send(reqwest::Method::POST, &path, None).await.map(|()| format!("“{name}” is back")).map_err(|err| err.message) });
                 }
             });
         }

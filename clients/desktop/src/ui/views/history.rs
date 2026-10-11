@@ -7,7 +7,6 @@
 //! stay in the history.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
 
 use eframe::egui::{self, RichText};
 use serde_json::Value;
@@ -16,6 +15,7 @@ use uuid::Uuid;
 use crate::catalog::Catalog;
 pub use acetate_core::editor::diff::changes_named;
 use crate::details::{Revision, TrackDetail};
+use crate::ui::task::Task;
 use crate::ui::theme::{font, semibold, PALETTE as P};
 use crate::ui::{Action, Shell};
 
@@ -50,7 +50,7 @@ pub struct History {
     /// "Restore…" was clicked on this revision: asking to be sure.
     asked: Option<Uuid>,
     restoring: Option<Uuid>,
-    answer: Arc<Mutex<Option<Result<(), String>>>>,
+    answer: Task<Result<(), String>>,
     result: Option<Result<(), String>>,
 }
 
@@ -71,7 +71,7 @@ impl History {
     /// revision is of, said before how it was made).
     #[allow(clippy::too_many_arguments)]
     pub fn show_revisions(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: &Catalog, of: Of, revisions: &[Revision], names: &HashMap<Uuid, String>, what: impl Fn(&Revision) -> String) {
-        if let Some(result) = self.answer.lock().unwrap().take() {
+        if let Some(result) = self.answer.poll() {
             self.restoring = None;
             if result.is_ok() {
                 of.refresh(shell);
@@ -135,15 +135,12 @@ impl History {
 
     fn restore(&mut self, shell: &Shell, of: Of, r: &Revision) {
         self.restoring = Some(r.id);
-        let (api, answer, ctx, path) = (shell.api.clone(), self.answer.clone(), shell.ctx.clone(), of.restore_path(r.id));
-        shell.runtime.spawn(async move {
-            let result = api
-                .send_json::<Value>(reqwest::Method::POST, &path, Some(serde_json::json!({ "reason": "" })))
+        let path = of.restore_path(r.id);
+        self.answer.send_with(shell, |api| async move {
+            api.send_json::<Value>(reqwest::Method::POST, &path, Some(serde_json::json!({ "reason": "" })))
                 .await
                 .map(|_| ())
-                .map_err(|err| err.message);
-            *answer.lock().unwrap() = Some(result);
-            ctx.request_repaint();
+                .map_err(|err| err.message)
         });
     }
 }

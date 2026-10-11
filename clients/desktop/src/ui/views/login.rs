@@ -1,9 +1,9 @@
 //! Logging in: the server's address, a username and a password.
 
-use std::sync::{Arc, Mutex};
 
 use eframe::egui::{self, Color32, Key, Margin, Rect, RichText, Shadow, Vec2};
 
+use crate::ui::task::Task;
 use crate::ui::theme::{bold, font, semibold, PALETTE as P};
 use crate::ui::{widgets, Action, Shell};
 
@@ -13,12 +13,12 @@ pub struct Login {
     error: String,
     busy: bool,
     /// The login's outcome, from the background.
-    result: Arc<Mutex<Option<Result<(), String>>>>,
+    result: Task<Result<(), String>>,
 }
 
 impl Default for Login {
     fn default() -> Self {
-        Login { form: ("http://127.0.0.1:3000".into(), String::new(), String::new()), error: String::new(), busy: false, result: Arc::default() }
+        Login { form: ("http://127.0.0.1:3000".into(), String::new(), String::new()), error: String::new(), busy: false, result: Task::default() }
     }
 }
 
@@ -31,7 +31,7 @@ impl Login {
     /// Takes in the login's outcome (every frame: it may arrive after the login screen is
     /// gone).
     pub fn poll(&mut self, shell: &mut Shell) {
-        if let Some(outcome) = self.result.lock().unwrap().take() {
+        if let Some(outcome) = self.result.poll() {
             self.busy = false;
             match outcome {
                 Ok(()) => {
@@ -74,14 +74,9 @@ impl Login {
                 .fill(P.accent)
                 .min_size(Vec2::new(ui.available_width(), 36.0));
             if (ui.add(button).clicked() || enter) && !self.busy {
-                let (api, result, ctx) = (shell.api.clone(), self.result.clone(), ui.ctx().clone());
                 let (server, user, pass) = self.form.clone();
                 self.busy = true;
-                shell.runtime.spawn(async move {
-                    let outcome = api.login(&server, &user, &pass).await.map(|_| ()).map_err(|err| format!("{err:#}"));
-                    *result.lock().unwrap() = Some(outcome);
-                    ctx.request_repaint();
-                });
+                self.result.send_with(shell, |api| async move { api.login(&server, &user, &pass).await.map(|_| ()).map_err(|err| format!("{err:#}")) });
             }
             ui.colored_label(P.danger, &self.error);
         });

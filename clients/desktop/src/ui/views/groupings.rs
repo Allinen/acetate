@@ -3,14 +3,15 @@
 //! click) opens one. In edit mode, a new one can be made here (its kind and name).
 //! Reached from the Artists page ("Collectives & groupings") and the palette.
 
-use std::sync::{Arc, Mutex};
 
+use std::sync::Arc;
 use eframe::egui::{self, RichText, Sense, Vec2};
 use serde_json::json;
 use uuid::Uuid;
 
 use super::grouping::KINDS;
 use crate::catalog::Catalog;
+use crate::ui::task::Task;
 use crate::ui::theme::{font, medium, semibold, PALETTE as P};
 use crate::ui::{thousands, widgets, Action, Page, Shell};
 
@@ -22,13 +23,13 @@ pub struct GroupingsPage {
     selected: usize,
     /// "New grouping…": its kind and name, and the server's answer.
     new: Option<(String, String)>,
-    answer: Arc<Mutex<Option<Result<Uuid, String>>>>,
+    answer: Task<Result<Uuid, String>>,
     error: Option<String>,
 }
 
 impl GroupingsPage {
     pub fn show(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: &Arc<Catalog>) {
-        if let Some(result) = self.answer.lock().unwrap().take() {
+        if let Some(result) = self.answer.poll() {
             match result {
                 Ok(id) => {
                     self.new = None;
@@ -147,12 +148,9 @@ impl GroupingsPage {
                 id: Uuid,
             }
             self.error = None;
-            let (api, answer, ctx) = (shell.api.clone(), self.answer.clone(), shell.ctx.clone());
-            shell.runtime.spawn(async move {
+            self.answer.send_with(shell, |api| async move {
                 let body = json!({ "kind": kind.trim(), "name": name.trim() });
-                let result = api.send_json::<Made>(reqwest::Method::POST, "/api/groupings", Some(body)).await.map(|m| m.id).map_err(|e| e.message);
-                *answer.lock().unwrap() = Some(result);
-                ctx.request_repaint();
+                api.send_json::<Made>(reqwest::Method::POST, "/api/groupings", Some(body)).await.map(|m| m.id).map_err(|e| e.message)
             });
         }
         if let Some(err) = &self.error {

@@ -19,7 +19,7 @@
 //! the singles along or not, Ctrl+Enter merges, n says they're not the same, Esc closes
 //! it.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use eframe::egui::{self, Key, Modifiers, RichText, Sense, Vec2};
 use uuid::Uuid;
@@ -27,6 +27,7 @@ use uuid::Uuid;
 use crate::api::ApiError;
 use crate::catalog::Catalog;
 use crate::details::TrackDetail;
+use crate::ui::task::Task;
 use crate::ui::theme::{bold, font, semibold, PALETTE as P};
 use crate::playback::PlayerView;
 use crate::ui::{playing_track, widgets, Action, Shell};
@@ -81,10 +82,10 @@ pub struct MergeView {
     reason: String,
     merging: bool,
     error: Option<String>,
-    answer: Arc<Mutex<Option<Result<(), ApiError>>>>,
+    answer: Task<Result<(), ApiError>>,
     /// A "share a file instead" on its way, and its answer.
     sharing: bool,
-    share_answer: Arc<Mutex<Option<Result<(), ApiError>>>>,
+    share_answer: Task<Result<(), ApiError>>,
     /// The file pick was set from the files' quality (once both details are there).
     file_suggested: bool,
     /// Both files are being downloaded ahead (for switching between them at once); let
@@ -94,7 +95,8 @@ pub struct MergeView {
     in_popup: bool,
     /// Who may see each (left, right), for `manage_access`: asked once, when either is
     /// restricted.
-    access: Arc<Mutex<Option<(Access, Access)>>>,
+    access_asked_for: Task<(Result<Access, ApiError>, Result<Access, ApiError>)>,
+    access: Option<(Access, Access)>,
     access_asked: bool,
 }
 
@@ -146,13 +148,14 @@ impl MergeView {
             reason: String::new(),
             merging: false,
             error: None,
-            answer: Arc::default(),
+            answer: Task::default(),
             sharing: false,
-            share_answer: Arc::default(),
+            share_answer: Task::default(),
             file_suggested: false,
             kept_by: None,
             in_popup: false,
-            access: Arc::default(),
+            access_asked_for: Task::default(),
+            access: None,
             access_asked: false,
         }
     }
@@ -172,14 +175,14 @@ impl MergeView {
 
     /// The view; returns what happened when it's over.
     pub fn show(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: &Catalog, player: &PlayerView) -> Option<Outcome> {
-        if let Some(result) = self.answer.lock().unwrap().take() {
+        if let Some(result) = self.answer.poll() {
             self.merging = false;
             match result {
                 Ok(()) => return Some(Outcome::Merged { kept: self.left, gone: self.right }),
                 Err(err) => self.error = Some(err.message),
             }
         }
-        if let Some(result) = self.share_answer.lock().unwrap().take() {
+        if let Some(result) = self.share_answer.poll() {
             self.sharing = false;
             match result {
                 Ok(()) => return Some(Outcome::Shared),
@@ -268,19 +271,18 @@ impl MergeView {
         let any_restricted = lt.is_some_and(|t| t.is_restricted()) || rt.is_some_and(|t| t.is_restricted());
         if any_restricted && shell.account.can("manage_access") && !self.access_asked {
             self.access_asked = true;
-            let (api, access, ctx, left, right) = (shell.api.clone(), self.access.clone(), shell.ctx.clone(), self.left, self.right);
-            shell.runtime.spawn(async move {
+            let (left, right) = (self.left, self.right);
+            self.access_asked_for.start_with(shell, |api| async move {
                 let (l_path, r_path) = (format!("/api/tracks/{left}/access"), format!("/api/tracks/{right}/access"));
                 let l = api.send_json::<Access>(reqwest::Method::GET, &l_path, None).await;
                 let r = api.send_json::<Access>(reqwest::Method::GET, &r_path, None).await;
-                if let (Ok(l), Ok(r)) = (l, r) {
-                    *access.lock().unwrap() = Some((l, r));
-                    ctx.request_repaint();
-                }
+                (l, r)
             });
         }
-        let access = self.access.lock().unwrap().clone();
-        match access {
+        if let Some((Ok(l), Ok(r))) = self.access_asked_for.poll() {
+            self.access = Some((l, r));
+        }
+        match self.access.clone() {
             Some((l, r)) if !l.same_as(&r) => {
                 let text = format!(
                     "Who may see them differs (kept: {}; merged: {}). The kept track keeps its own access.",
@@ -433,13 +435,8 @@ impl MergeView {
     fn share(&mut self, shell: &Shell, track: Uuid, other: Uuid) {
         self.sharing = true;
         self.error = None;
-        let (api, answer, ctx) = (shell.api.clone(), self.share_answer.clone(), shell.ctx.clone());
         let body = serde_json::json!({ "file_of": other, "reason": self.reason.trim() });
-        shell.runtime.spawn(async move {
-            let result = api.send_json::<serde_json::Value>(reqwest::Method::POST, &format!("/api/tracks/{track}/use-file"), Some(body)).await.map(|_| ());
-            *answer.lock().unwrap() = Some(result);
-            ctx.request_repaint();
-        });
+        self.share_answer.send_with(shell, |api| async move { api.send_json::<serde_json::Value>(reqwest::Method::POST, &format!("/api/tracks/{track}/use-file"), Some(body)).await.map(|_| ()) });
     }
 
     /// `singles`: they're each alone on a single (merged along if the setting says so).
@@ -450,12 +447,8 @@ impl MergeView {
         let body = self.body(l, r, singles && shell.settings.merge_along);
         self.merging = true;
         self.error = None;
-        let (api, answer, ctx, into) = (shell.api.clone(), self.answer.clone(), shell.ctx.clone(), self.left);
-        shell.runtime.spawn(async move {
-            let result = api.send_json::<serde_json::Value>(reqwest::Method::POST, &format!("/api/tracks/{into}/merge"), Some(body)).await.map(|_| ());
-            *answer.lock().unwrap() = Some(result);
-            ctx.request_repaint();
-        });
+        let into = self.left;
+        self.answer.send_with(shell, |api| async move { api.send_json::<serde_json::Value>(reqwest::Method::POST, &format!("/api/tracks/{into}/merge"), Some(body)).await.map(|_| ()) });
     }
 }
 

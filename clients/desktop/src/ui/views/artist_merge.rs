@@ -6,12 +6,12 @@
 //! name as an alias (its tracks keep showing it), and flag the tracks whose credits
 //! change for review. Ctrl+Enter merges (`POST /api/artists/{left}/merge`).
 
-use std::sync::{Arc, Mutex};
 
 use eframe::egui::{self, Key, Modifiers, RichText};
 use uuid::Uuid;
 
 use crate::catalog::Catalog;
+use crate::ui::task::Task;
 use crate::ui::theme::{bold, font, semibold, PALETTE as P};
 use crate::ui::{thousands, Shell};
 
@@ -31,16 +31,16 @@ pub struct ArtistMergeView {
     reason: String,
     merging: bool,
     error: Option<String>,
-    answer: Arc<Mutex<Option<Result<(), String>>>>,
+    answer: Task<Result<(), String>>,
 }
 
 impl ArtistMergeView {
     pub fn new(from: Uuid, into: Uuid) -> ArtistMergeView {
-        ArtistMergeView { from, into, keep_name: true, flag: true, reason: String::new(), merging: false, error: None, answer: Arc::default() }
+        ArtistMergeView { from, into, keep_name: true, flag: true, reason: String::new(), merging: false, error: None, answer: Task::default() }
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: &Catalog) -> Option<Outcome> {
-        if let Some(result) = self.answer.lock().unwrap().take() {
+        if let Some(result) = self.answer.poll() {
             self.merging = false;
             match result {
                 Ok(()) => return Some(Outcome::Merged { kept: self.into, gone: self.from }),
@@ -169,15 +169,12 @@ impl ArtistMergeView {
         }
         self.merging = true;
         self.error = None;
-        let (api, answer, ctx, from, body) = (shell.api.clone(), self.answer.clone(), shell.ctx.clone(), self.from, self.body());
-        shell.runtime.spawn(async move {
-            let result = api
-                .send_json::<serde_json::Value>(reqwest::Method::POST, &format!("/api/artists/{from}/merge"), Some(body))
+        let (from, body) = (self.from, self.body());
+        self.answer.send_with(shell, |api| async move {
+            api.send_json::<serde_json::Value>(reqwest::Method::POST, &format!("/api/artists/{from}/merge"), Some(body))
                 .await
                 .map(|_| ())
-                .map_err(|err| err.message);
-            *answer.lock().unwrap() = Some(result);
-            ctx.request_repaint();
+                .map_err(|err| err.message)
         });
     }
 }

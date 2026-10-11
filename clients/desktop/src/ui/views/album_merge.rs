@@ -16,13 +16,13 @@
 //! nothing), all of it: what goes back, what stays and why, what's in the way. Only then
 //! the button (`POST` the same).
 
-use std::sync::{Arc, Mutex};
 
 use eframe::egui::{self, Key, Modifiers, RichText, Sense, Vec2};
 use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::catalog::Catalog;
+use crate::ui::task::Task;
 use crate::ui::theme::{bold, font, semibold, PALETTE as P};
 use crate::ui::{widgets, Action, Page, Shell};
 
@@ -41,16 +41,16 @@ pub struct AlbumMergeView {
     reason: String,
     merging: bool,
     error: Option<String>,
-    answer: Arc<Mutex<Option<Result<(), String>>>>,
+    answer: Task<Result<(), String>>,
 }
 
 impl AlbumMergeView {
     pub fn new(from: Uuid, into: Uuid) -> AlbumMergeView {
-        AlbumMergeView { from, into, reason: String::new(), merging: false, error: None, answer: Arc::default() }
+        AlbumMergeView { from, into, reason: String::new(), merging: false, error: None, answer: Task::default() }
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: &Catalog) -> Option<Outcome> {
-        if let Some(result) = self.answer.lock().unwrap().take() {
+        if let Some(result) = self.answer.poll() {
             self.merging = false;
             match result {
                 Ok(()) => return Some(Outcome::Merged { kept: self.into, gone: self.from }),
@@ -218,17 +218,13 @@ impl AlbumMergeView {
         }
         self.merging = true;
         self.error = None;
-        let (api, answer, ctx) = (shell.api.clone(), self.answer.clone(), shell.ctx.clone());
         let merge_tracks = pairs && shell.settings.merge_along;
         let (from, body) = (self.from, serde_json::json!({ "into": self.into, "reason": self.reason.trim(), "merge_tracks": merge_tracks }));
-        shell.runtime.spawn(async move {
-            let result = api
-                .send_json::<serde_json::Value>(reqwest::Method::POST, &format!("/api/albums/{from}/merge"), Some(body))
+        self.answer.send_with(shell, |api| async move {
+            api.send_json::<serde_json::Value>(reqwest::Method::POST, &format!("/api/albums/{from}/merge"), Some(body))
                 .await
                 .map(|_| ())
-                .map_err(|err| err.message);
-            *answer.lock().unwrap() = Some(result);
-            ctx.request_repaint();
+                .map_err(|err| err.message)
         });
     }
 }
@@ -315,7 +311,7 @@ pub struct UndoPanel {
     /// The merge being looked at, and its preview (None: loading).
     open: Option<(Uuid, Option<Result<UndoReport, String>>)>,
     doing: bool,
-    answer: Arc<Mutex<Option<(Uuid, bool, Result<UndoReport, String>)>>>,
+    answer: Task<(Uuid, bool, Result<UndoReport, String>)>,
     /// A finished undo: the album that came back.
     done: Option<(Uuid, String)>,
 }
@@ -329,7 +325,7 @@ impl UndoPanel {
 
     /// The merges into album `album`, each with Undo… (`can`: allowed to).
     pub fn show(&mut self, ui: &mut egui::Ui, shell: &mut Shell, album: Uuid, merges: &[crate::details::AlbumMerge], can: bool) {
-        if let Some((merge, done, result)) = self.answer.lock().unwrap().take() {
+        if let Some((merge, done, result)) = self.answer.poll() {
             self.doing = false;
             match (done, result) {
                 (true, Ok(report)) => {
@@ -433,18 +429,22 @@ impl UndoPanel {
     }
 
     /// The preview (`doit` false) or the undo itself.
-    fn ask(&self, shell: &Shell, merge: Uuid, doit: bool) {
-        let (api, answer, ctx) = (shell.api.clone(), self.answer.clone(), shell.ctx.clone());
-        shell.runtime.spawn(async move {
+    fn ask(&mut self, shell: &Shell, merge: Uuid, doit: bool) {
+        let work = move |api: crate::api::Api| async move {
             let path = format!("/api/album-merges/{merge}/undo");
             let result = if doit {
                 api.send_json::<UndoReport>(reqwest::Method::POST, &path, Some(serde_json::json!({ "reason": "" }))).await
             } else {
                 api.send_json::<UndoReport>(reqwest::Method::GET, &path, None).await
             };
-            *answer.lock().unwrap() = Some((merge, doit, result.map_err(|err| err.message)));
-            ctx.request_repaint();
-        });
+            (merge, doit, result.map_err(|err| err.message))
+        };
+        // (The undo itself is a write: it finishes even if the popup is closed.)
+        if doit {
+            self.answer.send_with(shell, work);
+        } else {
+            self.answer.start_with(shell, work);
+        }
     }
 }
 

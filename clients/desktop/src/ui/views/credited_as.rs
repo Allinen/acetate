@@ -7,7 +7,6 @@
 //! revision each). See the server's `db::credited_as`.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
 
 use eframe::egui::{self, RichText, Vec2};
 use serde::Deserialize;
@@ -16,6 +15,7 @@ use uuid::Uuid;
 use crate::catalog::search::Part;
 use crate::catalog::Catalog;
 use crate::ui::edit::inline_search::{Choice as Choice2, InlineSearch};
+use crate::ui::task::Task;
 use crate::ui::theme::{font, semibold, PALETTE as P};
 use crate::ui::{thousands, widgets, Action, Shell};
 
@@ -75,10 +75,10 @@ pub struct CreditedAs {
     alias: Option<Option<Uuid>>,
     reason: String,
     /// The preview's answer, with the choice it's for (one for another is dropped).
-    preview: Arc<Mutex<Option<(Choice, Result<Answer, String>)>>>,
+    preview: Task<(Choice, Result<Answer, String>)>,
     loaded: Option<Result<Answer, String>>,
     sending: bool,
-    done: Arc<Mutex<Option<Result<Answer, String>>>>,
+    done: Task<Result<Answer, String>>,
     /// What the last one did (or why not).
     outcome: Option<Result<String, String>>,
 }
@@ -95,10 +95,10 @@ impl CreditedAs {
             search: InlineSearch::new(Part::Artists),
             alias: None,
             reason: String::new(),
-            preview: Arc::default(),
+            preview: Task::default(),
             loaded: None,
             sending: false,
-            done: Arc::default(),
+            done: Task::default(),
             outcome: None,
         }
     }
@@ -117,13 +117,13 @@ impl CreditedAs {
             self.rows = rows(&catalog, &self.tracks);
         }
         let choice = self.choice();
-        let previewed = self.preview.lock().unwrap().take();
+        let previewed = self.preview.poll();
         if let Some((asked, result)) = previewed
             && Some(asked) == choice
         {
             self.loaded = Some(result);
         }
-        let finished = self.done.lock().unwrap().take();
+        let finished = self.done.poll();
         if let Some(result) = finished {
             self.sending = false;
             shell.act(Action::RefreshLibrary);
@@ -368,17 +368,13 @@ impl CreditedAs {
             "track_ids": self.tracks, "only_alias_id": only_alias, "only_own_name": only_own,
             "to_artist_id": choice.to, "alias_id": choice.alias, "reason": self.reason.trim(), "preview": preview,
         });
-        let (api, ctx, answer, done) = (shell.api.clone(), shell.ctx.clone(), self.preview.clone(), self.done.clone());
         let from = choice.from;
-        shell.runtime.spawn(async move {
-            let result = api.send_json::<Answer>(reqwest::Method::POST, &format!("/api/artists/{from}/credited-as"), Some(body)).await.map_err(|e| e.message);
-            if preview {
-                *answer.lock().unwrap() = Some((choice, result));
-            } else {
-                *done.lock().unwrap() = Some(result);
-            }
-            ctx.request_repaint();
-        });
+        let ask = move |api: crate::api::Api| async move { api.send_json::<Answer>(reqwest::Method::POST, &format!("/api/artists/{from}/credited-as"), Some(body)).await.map_err(|e| e.message) };
+        if preview {
+            self.preview.start_with(shell, |api| async move { (choice, ask(api).await) });
+        } else {
+            self.done.send_with(shell, ask);
+        }
     }
 }
 

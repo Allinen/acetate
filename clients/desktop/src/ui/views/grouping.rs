@@ -6,8 +6,8 @@
 //! attached, linked and unlinked; its sources (the accounts: ingest puts songs from them in
 //! it, see the server's `db::groupings`); every change made to it.
 
-use std::sync::{Arc, Mutex};
 
+use std::sync::Arc;
 use eframe::egui::{self, RichText, Sense, Vec2};
 use serde_json::json;
 use uuid::Uuid;
@@ -19,6 +19,7 @@ use crate::catalog::index::TrackRows;
 use crate::catalog::Catalog;
 use crate::ui::edit::extras::{ExtrasView, Owner};
 use crate::playback::PlayerView;
+use crate::ui::task::Task;
 use crate::ui::theme::{bold, font, medium, semibold, PALETTE as P};
 use crate::ui::{thousands, widgets, Action, Page, Shell};
 
@@ -48,15 +49,15 @@ pub struct GroupingPage {
     fields: Option<(Fields, Fields)>,
     reason: String,
     saving: bool,
-    answer: Arc<Mutex<Option<Result<(), String>>>>,
+    answer: Task<Result<(), String>>,
     result: Option<Result<(), String>>,
     /// "Add a member…" asked the palette for an artist.
     picking_member: bool,
-    member_answer: Arc<Mutex<Option<Result<(), String>>>>,
+    member_answer: Task<Result<(), String>>,
     member_error: Option<String>,
     /// Edit mode: "Delete" (of an empty one) is out, and what the server said.
     deleting: bool,
-    delete_answer: Arc<Mutex<Option<Result<(), String>>>>,
+    delete_answer: Task<Result<(), String>>,
     delete_error: Option<String>,
 }
 
@@ -192,7 +193,7 @@ impl GroupingPage {
     /// mode: × takes one out; "Add a member…" picks one in the palette; those credited on
     /// its songs who aren't members are offered, one click each.
     fn members(&mut self, ui: &mut egui::Ui, shell: &mut Shell, id: Uuid, d: &crate::details::GroupingDetail) {
-        if let Some(result) = self.member_answer.lock().unwrap().take() {
+        if let Some(result) = self.member_answer.poll() {
             match result {
                 Ok(()) => {
                     self.member_error = None;
@@ -264,18 +265,15 @@ impl GroupingPage {
     }
 
     fn send_members(&mut self, shell: &Shell, id: Uuid, action: &'static str, artist: Uuid) {
-        let (api, answer, ctx) = (shell.api.clone(), self.member_answer.clone(), shell.ctx.clone());
-        shell.runtime.spawn(async move {
+        self.member_answer.send_with(shell, |api| async move {
             let path = format!("/api/groupings/{id}/members/{action}");
-            let result = api.send_json::<serde_json::Value>(reqwest::Method::POST, &path, Some(json!({ "artist_ids": [artist] }))).await.map(|_| ()).map_err(|e| e.message);
-            *answer.lock().unwrap() = Some(result);
-            ctx.request_repaint();
+            api.send_json::<serde_json::Value>(reqwest::Method::POST, &path, Some(json!({ "artist_ids": [artist] }))).await.map(|_| ()).map_err(|e| e.message)
         });
     }
 
     /// Edit mode: its kind, name and description; its sources; its history.
     fn edit_panel(&mut self, ui: &mut egui::Ui, shell: &mut Shell, id: Uuid, grouping: &crate::catalog::model::Grouping, detail: Option<&crate::details::GroupingDetail>, empty: bool) {
-        if let Some(result) = self.delete_answer.lock().unwrap().take() {
+        if let Some(result) = self.delete_answer.poll() {
             match result {
                 Ok(()) => {
                     shell.act(Action::RefreshLibrary);
@@ -287,7 +285,7 @@ impl GroupingPage {
                 }
             }
         }
-        if let Some(result) = self.answer.lock().unwrap().take() {
+        if let Some(result) = self.answer.poll() {
             self.saving = false;
             if result.is_ok() {
                 self.fields = None;
@@ -333,12 +331,7 @@ impl GroupingPage {
                     self.saving = true;
                     self.result = None;
                     let body = json!({ "kind": typed.kind.trim(), "name": typed.name.trim(), "description": typed.description.trim(), "reason": self.reason.trim() });
-                    let (api, answer, ctx) = (shell.api.clone(), self.answer.clone(), shell.ctx.clone());
-                    shell.runtime.spawn(async move {
-                        let result = api.send_json::<serde_json::Value>(reqwest::Method::PUT, &format!("/api/groupings/{id}"), Some(body)).await.map(|_| ()).map_err(|e| e.message);
-                        *answer.lock().unwrap() = Some(result);
-                        ctx.request_repaint();
-                    });
+                    self.answer.send_with(shell, |api| async move { api.send_json::<serde_json::Value>(reqwest::Method::PUT, &format!("/api/groupings/{id}"), Some(body)).await.map(|_| ()).map_err(|e| e.message) });
                 }
                 if ui.add_enabled(dirty && !self.saving, egui::Button::new("Discard")).clicked() {
                     *typed = from.clone();
@@ -358,12 +351,7 @@ impl GroupingPage {
                         self.deleting = true;
                         self.delete_error = None;
                         let body = json!({ "reason": self.reason.trim() });
-                        let (api, answer, ctx) = (shell.api.clone(), self.delete_answer.clone(), shell.ctx.clone());
-                        shell.runtime.spawn(async move {
-                            let result = api.send_json::<serde_json::Value>(reqwest::Method::DELETE, &format!("/api/groupings/{id}"), Some(body)).await.map(|_| ()).map_err(|e| e.message);
-                            *answer.lock().unwrap() = Some(result);
-                            ctx.request_repaint();
-                        });
+                        self.delete_answer.send_with(shell, |api| async move { api.send_json::<serde_json::Value>(reqwest::Method::DELETE, &format!("/api/groupings/{id}"), Some(body)).await.map(|_| ()).map_err(|e| e.message) });
                     }
                 }
             });
