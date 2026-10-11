@@ -1,0 +1,37 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT s.kind AS \"kind!\", s.id AS \"id!\", s.title AS \"title!\" FROM (\n               SELECT DISTINCT ON (COALESCE(t.id, al.id, a.id, l.grouping_id))\n                      CASE WHEN l.track_id IS NOT NULL THEN 'track' WHEN l.album_id IS NOT NULL THEN 'album'\n                           WHEN l.artist_id IS NOT NULL THEN 'artist' ELSE 'grouping' END AS kind,\n                      COALESCE(t.id, al.id, a.id, l.grouping_id) AS id,\n                      COALESCE(t.title, al.title, a.name, g.name) AS title, l.id AS link\n               FROM extra_links l\n               -- Merged since: the one it went into.\n               LEFT JOIN tracks t ON t.id = final_track(l.track_id)\n               LEFT JOIN albums al ON al.id = final_album(l.album_id)\n               LEFT JOIN artists a ON a.id = final_artist(l.artist_id)\n               LEFT JOIN groupings g ON g.id = l.grouping_id\n               WHERE l.extra_id = $1 AND COALESCE(t.id, al.id, a.id, g.id) IS NOT NULL\n               ORDER BY COALESCE(t.id, al.id, a.id, l.grouping_id), l.id\n           ) s ORDER BY s.link",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "kind!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "id!",
+        "type_info": "Uuid",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "title!",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "7a8ce248d9f23869c1d8c658d87db554018f74cbc9f795ca7bc73046e8d0cf14"
+}

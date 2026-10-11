@@ -48,7 +48,8 @@ With many tracks, each field shows how many tracks differ.
 These are changes like the rest, applied together with them:
 
 - `cover:paste` (or `Ctrl+V` with an image, or drop an image file), `cover:file`,
-  `cover:<album or track>` (a copy of its cover), `-cover:#2`
+  `cover:<album or track>` (a copy of its cover), `-cover:#2`. A track or album has each
+  image once: adding one it has already is refused.
 - `source:<link>`, `-source:#1`, `origin:#2`
 - `source:custom vk, sent by a friend`: a source with no platform. The label goes before
   the comma; anything after it is the description.

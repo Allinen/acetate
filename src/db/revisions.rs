@@ -1212,25 +1212,21 @@ pub async fn merge_tracks(
         Some(id)
     };
 
-    // 5. Covers: all of them move over; the picked side's come first. With
-    //    `leave_identical`, an image the kept track has already stays behind.
+    // 5. Covers: they move over, the picked side's first. An image the kept track has
+    //    already stays behind (each image once among a track's covers).
     let kept_covers = cover_positions(conn, into).await?;
-    let leave: Vec<Uuid> = if picks.leave_identical {
-        sqlx::query_scalar!(
-            r#"
-            SELECT d.id FROM covers d
-            WHERE d.track_id = $1
-              AND EXISTS (SELECT 1 FROM covers k WHERE k.track_id = $2 AND k.trashed_at IS NULL
-                                                     AND k.blob_sha256 = d.blob_sha256)
-            "#,
-            from,
-            into
-        )
-        .fetch_all(&mut *conn)
-        .await?
-    } else {
-        Vec::new()
-    };
+    let leave: Vec<Uuid> = sqlx::query_scalar!(
+        r#"
+        SELECT d.id FROM covers d
+        WHERE d.track_id = $1 AND d.trashed_at IS NULL
+          AND EXISTS (SELECT 1 FROM covers k WHERE k.track_id = $2 AND k.trashed_at IS NULL
+                                                 AND k.blob_sha256 = d.blob_sha256)
+        "#,
+        from,
+        into
+    )
+    .fetch_all(&mut *conn)
+    .await?;
     let dupe_covers: Vec<CoverPosition> =
         cover_positions(conn, from).await?.into_iter().filter(|c| !leave.contains(&c.id)).collect();
     let dupe_all_covers = sqlx::query_scalar!(

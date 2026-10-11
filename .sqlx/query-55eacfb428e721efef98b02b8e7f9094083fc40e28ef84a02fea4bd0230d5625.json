@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, position FROM covers WHERE album_id = $1 ORDER BY position, id",
+  "query": "\n        SELECT c.id, c.position FROM covers c\n        WHERE c.album_id = $1\n          AND NOT (c.trashed_at IS NULL AND EXISTS (SELECT 1 FROM covers k WHERE k.album_id = $2\n                   AND k.blob_sha256 = c.blob_sha256 AND k.trashed_at IS NULL))\n        ORDER BY c.position, c.id\n        ",
   "describe": {
     "columns": [
       {
@@ -28,6 +28,7 @@
     ],
     "parameters": {
       "Left": [
+        "Uuid",
         "Uuid"
       ]
     },
@@ -36,5 +37,5 @@
       false
     ]
   },
-  "hash": "62e3708707556c9a743ecefebe8bc5b78bd03d9b9ec8d2da9f70b48956eccfb6"
+  "hash": "55eacfb428e721efef98b02b8e7f9094083fc40e28ef84a02fea4bd0230d5625"
 }

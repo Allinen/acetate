@@ -66,6 +66,19 @@ pub async fn add(conn: &mut PgConnection, owner: CoverOwner, cover: &NewCover<'_
         .into());
     }
 
+    // Each image once among an owner's covers (a unique index holds it too).
+    let has_it = sqlx::query_scalar!(
+        r#"SELECT EXISTS (SELECT 1 FROM covers WHERE (track_id = $1 OR album_id = $1) AND blob_sha256 = $2
+                          AND trashed_at IS NULL) AS "e!""#,
+        owner.id(),
+        cover.blob_sha256
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    if has_it {
+        return Err(EditRejected::Invalid("it has that image as a cover already".to_string()).into());
+    }
+
     Ok(sqlx::query_scalar!(
         r#"
         INSERT INTO covers (track_id, album_id, blob_sha256, mime, width, height, source, position)

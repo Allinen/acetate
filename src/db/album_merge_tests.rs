@@ -82,7 +82,7 @@ async fn merging_albums_moves_everything_over(_: PgPoolOptions, connect: PgConne
     let merged = db::album_merges::merge_album(&mut tx, split.b, lib.album, "").await?;
     tx.commit().await?;
     // O and V moved (V was on both); H is hidden from carol but stays on A too.
-    assert_eq!((merged.tracks, merged.covers), (2, 2));
+    assert_eq!((merged.tracks, merged.covers), (2, 1));
 
     // Tracks: O keeps its number; V keeps its place on A, not B's track 5.
     let mut expected = vec![(lib.v, None), (lib.h, None), (lib.o, Some(1))];
@@ -99,11 +99,12 @@ async fn merging_albums_moves_everything_over(_: PgPoolOptions, connect: PgConne
     assert_eq!(reason, "merged album \"album a\" into \"Album A\"");
 
     let mut tx = db::begin(&lib.app, Some(lib.carol)).await?;
-    // A keeps its own title and date. Covers: A's first, then all of B's in their order
-    // (also the one with the same image as A's).
+    // A keeps its own title and date. Covers: A's first, then B's in their order (not the
+    // one with the same image as A's: that stays on B).
     let a = db::catalog::get_album(&mut tx, lib.album, false).await?.unwrap();
     assert_eq!((a.title.as_str(), a.release_date.as_deref()), ("Album A", None));
-    assert_eq!(a.covers.iter().map(|c| c.id).collect::<Vec<_>>(), vec![split.a_cover, split.b_same, split.b_cover]);
+    assert_eq!(a.covers.iter().map(|c| c.id).collect::<Vec<_>>(), vec![split.a_cover, split.b_cover]);
+    assert_eq!(covers_on(&lib, split.b).await?, vec![(split.b_same, 0)]);
     assert_eq!(a.sources.iter().map(|s| s.platform.as_str()).collect::<Vec<_>>(), vec!["netease"]);
     // B redirects, and isn't found by search anymore.
     assert_eq!(db::catalog::album_merged_into(&mut tx, split.b).await?, Some(lib.album));
@@ -269,7 +270,7 @@ async fn undoing_right_away_puts_everything_back(_: PgPoolOptions, connect: PgCo
     assert_eq!(v.detail, "back on \"album a\" (track 5); stays on \"Album A\" (no track number), as it was on both before");
     let o = preview.tracks.iter().find(|t| t.id == lib.o).unwrap();
     assert_eq!(o.detail, "back on \"album a\" (track 1), off \"Album A\"");
-    assert!(preview.goes_back.iter().any(|l| l == "2 covers back to \"album a\", in their old order"), "{:?}", preview.goes_back);
+    assert!(preview.goes_back.iter().any(|l| l == "1 cover back to \"album a\", in their old order"), "{:?}", preview.goes_back);
     assert_eq!(merged_into(&lib, split.b).await?, Some(lib.album));
 
     // Undone: everything as it was before the merge.
@@ -394,31 +395,34 @@ async fn covers_left_behind_by_older_merges_are_moved_and_undone(_: PgPoolOption
     let split = split_album(&lib).await?;
     let mut tx = db::begin(&lib.owner, None).await?;
     let merged = db::album_merges::merge_album(&mut tx, split.b, lib.album, "").await?;
-    // As an older merge left it: B's copy of A's image still on B (and not in the record).
+    // As an older merge left it: B's cover still on B (and not in the record).
     sqlx::query("UPDATE covers SET album_id = $2, position = 0 WHERE id = $1")
-        .bind(split.b_same)
+        .bind(split.b_cover)
         .bind(split.b)
         .execute(&mut *tx)
         .await?;
     sqlx::query(
         "UPDATE album_merges SET moved = jsonb_set(moved, '{covers}', \
-         (SELECT jsonb_agg(c) FROM jsonb_array_elements(moved -> 'covers') c WHERE c ->> 'id' <> $2::text)) \
+         (SELECT COALESCE(jsonb_agg(c), '[]') FROM jsonb_array_elements(moved -> 'covers') c WHERE c ->> 'id' <> $2::text)) \
          WHERE id = $1",
     )
     .bind(merged.merge_id)
-    .bind(split.b_same)
+    .bind(split.b_cover)
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
 
     // A dry run changes nothing; the fix moves it to the end of A's covers.
     crate::duplicate_albums_command::fix_merged_covers(&lib.owner, true).await?;
-    assert_eq!(covers_on(&lib, split.b).await?, vec![(split.b_same, 0)]);
+    let mut both = vec![(split.b_same, 0), (split.b_cover, 0)];
+    both.sort();
+    assert_eq!(covers_on(&lib, split.b).await?, both);
     crate::duplicate_albums_command::fix_merged_covers(&lib.owner, false).await?;
-    assert_eq!(covers_on(&lib, split.b).await?, vec![]);
+    // (B's copy of A's image stays: A has that image.)
+    assert_eq!(covers_on(&lib, split.b).await?, vec![(split.b_same, 0)]);
     let mut tx = db::begin(&lib.app, Some(lib.carol)).await?;
     let a = db::catalog::get_album(&mut tx, lib.album, false).await?.unwrap();
-    assert_eq!(a.covers.last().map(|c| c.id), Some(split.b_same));
+    assert_eq!(a.covers.last().map(|c| c.id), Some(split.b_cover));
 
     // The undo takes it back to B too.
     db::album_merges::undo_album_merge(&mut tx, merged.merge_id, "", true).await?;

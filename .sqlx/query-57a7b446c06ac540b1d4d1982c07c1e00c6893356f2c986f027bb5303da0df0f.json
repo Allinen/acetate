@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT log_change('extra', x.id) AS \"_!: ()\" FROM (\n               SELECT DISTINCT extra_id AS id FROM extra_links\n               WHERE ($1::uuid IS NOT NULL AND album_id IS NOT NULL AND (album_id = $1 OR final_album(album_id) = $1))\n                  OR ($2::uuid IS NOT NULL AND artist_id IS NOT NULL AND (artist_id = $2 OR final_artist(artist_id) = $2))\n           ) x",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "_!: ()",
+        "type_info": "Void",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "57a7b446c06ac540b1d4d1982c07c1e00c6893356f2c986f027bb5303da0df0f"
+}

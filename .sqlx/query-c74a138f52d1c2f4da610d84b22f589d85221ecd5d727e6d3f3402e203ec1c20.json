@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO covers (track_id, blob_sha256, mime, width, height, position, source)\n        VALUES ($1, $2, $3, $4, $5, $6, $7)\n        ON CONFLICT DO NOTHING\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text",
+        "Int4",
+        "Int4",
+        "Int2",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c74a138f52d1c2f4da610d84b22f589d85221ecd5d727e6d3f3402e203ec1c20"
+}

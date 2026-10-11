@@ -295,3 +295,24 @@ async fn album_cover_goes_on_its_tracks_once(_: PgPoolOptions, connect: PgConnec
     assert_eq!(h_covers, 0, "tracks carol can't see are left alone");
     Ok(())
 }
+
+#[sqlx::test]
+async fn an_image_is_a_cover_once_per_owner(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
+    let lib = setup(connect).await?;
+    let cover = NewCover { blob_sha256: &"b".repeat(64), mime: None, width: None, height: None, source: "upload" };
+    let mut tx = db::begin(&lib.app, Some(lib.carol)).await?;
+    let first = db::covers::add(&mut tx, CoverOwner::Track(lib.v), &cover).await?;
+    let err = db::covers::add(&mut tx, CoverOwner::Track(lib.v), &cover).await.unwrap_err();
+    assert!(rejected_message(&err).contains("already"), "{err}");
+    // Another owner may have it, and after the trash the image can be added again...
+    db::covers::add(&mut tx, CoverOwner::Album(lib.album), &cover).await?;
+    assert!(db::covers::trash(&mut tx, first).await?);
+    let again = db::covers::add(&mut tx, CoverOwner::Track(lib.v), &cover).await?;
+    // ...but then the trashed one can't come back beside it.
+    let err = db::trash::restore(&mut tx, Kind::Cover, first).await.unwrap_err();
+    assert!(rejected_message(&err).contains("already"), "{err}");
+    assert!(db::covers::trash(&mut tx, again).await?);
+    assert!(db::trash::restore(&mut tx, Kind::Cover, first).await?);
+    tx.commit().await?;
+    Ok(())
+}

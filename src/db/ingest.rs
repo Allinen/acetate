@@ -421,6 +421,7 @@ pub async fn insert_track_cover(
         r#"
         INSERT INTO covers (track_id, blob_sha256, mime, width, height, position, source)
         VALUES ($1, $2, $3, $4, $5, $6, $7)
+        ON CONFLICT DO NOTHING
         "#,
         track_id,
         cover.blob_sha256,

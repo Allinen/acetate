@@ -147,6 +147,21 @@ pub async fn list(conn: &mut PgConnection) -> sqlx::Result<Vec<TrashItem>> {
 pub async fn restore(conn: &mut PgConnection, kind: Kind, id: Uuid) -> anyhow::Result<bool> {
     let result = match kind {
         Kind::Cover => {
+            // Not when its owner has that image as a cover already (each image once).
+            let taken = sqlx::query_scalar!(
+                r#"
+                SELECT EXISTS (SELECT 1 FROM covers c JOIN covers o
+                                 ON o.blob_sha256 = c.blob_sha256 AND o.trashed_at IS NULL
+                                AND o.track_id IS NOT DISTINCT FROM c.track_id AND o.album_id IS NOT DISTINCT FROM c.album_id
+                               WHERE c.id = $1 AND c.trashed_at IS NOT NULL) AS "e!"
+                "#,
+                id
+            )
+            .fetch_one(&mut *conn)
+            .await?;
+            if taken {
+                return Err(super::revisions::EditRejected::Invalid("it has that image as a cover already".to_string()).into());
+            }
             sqlx::query!(
                 "UPDATE covers SET trashed_at = NULL, trashed_by = NULL WHERE id = $1 AND trashed_at IS NOT NULL",
                 id

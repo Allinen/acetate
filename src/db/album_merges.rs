@@ -245,12 +245,20 @@ pub async fn merge_album(conn: &mut PgConnection, from: Uuid, into: Uuid, reason
     })
 }
 
-/// Moves all of `from`'s covers (trashed ones too) after `into`'s, keeping their order.
+/// Moves `from`'s covers (trashed ones too) after `into`'s, keeping their order.
 /// Returns them with their positions on `from`, for the undo.
 async fn move_covers(conn: &mut PgConnection, from: Uuid, into: Uuid) -> sqlx::Result<Vec<MovedCover>> {
     let covers: Vec<MovedCover> = sqlx::query!(
-        "SELECT id, position FROM covers WHERE album_id = $1 ORDER BY position, id",
-        from
+        // (Not one `into` has already: it stays behind, not shown anywhere.)
+        r#"
+        SELECT c.id, c.position FROM covers c
+        WHERE c.album_id = $1
+          AND NOT (c.trashed_at IS NULL AND EXISTS (SELECT 1 FROM covers k WHERE k.album_id = $2
+                   AND k.blob_sha256 = c.blob_sha256 AND k.trashed_at IS NULL))
+        ORDER BY c.position, c.id
+        "#,
+        from,
+        into
     )
     .fetch_all(&mut *conn)
     .await?
@@ -623,7 +631,11 @@ pub async fn undo_album_merge(conn: &mut PgConnection, merge_id: Uuid, reason: &
     ];
     if !covers_back.is_empty() {
         let trashed = if covers_trashed > 0 { format!(" ({covers_trashed} of them in the trash)") } else { String::new() };
-        goes_back.push(format!("{} covers back to {b}, in their old order{trashed}", covers_back.len()));
+        goes_back.push(format!(
+            "{} cover{} back to {b}, in their old order{trashed}",
+            covers_back.len(),
+            if covers_back.len() == 1 { "" } else { "s" }
+        ));
     }
     if covers_back.len() < record.covers.len() {
         stays.push(format!(
