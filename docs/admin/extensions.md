@@ -104,7 +104,8 @@ a `[[link]]` with `kind = "any"`, `custom = "qobuz"` and `hosts = ["qobuz.com"]`
 `custom` sources labelled "qobuz" (`amazon.*` is any ending; `path_contains` narrows it).
 See `extensions/stores/extension.toml`.
 A platform like NetEase is a manifest and nothing else, and so are the private ones
-(Traktrain, BeatStars): they live in the admin's own folder, not in the repository.
+(a beat-selling site, a private archive): they live in the admin's own folder
+(`ACETATE_EXTENSIONS_DIR`), not in the repository.
 
 ## What is code: the fetch program
 

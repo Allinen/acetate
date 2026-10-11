@@ -190,6 +190,27 @@ fn a_badly_made_manifest_says_why() {
 }
 
 #[test]
+fn a_folder_adds_and_replaces_and_says_what_it_skipped() {
+    let dir = std::env::temp_dir().join(format!("acetate-extensions-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let write = |name: &str, text: &str| {
+        std::fs::create_dir_all(dir.join(name)).unwrap();
+        std::fs::write(dir.join(name).join("extension.toml"), text).unwrap();
+    };
+    write("beats", "[extension]\nname = \"beats\"\ntitle = \"Beats\"\napi = 1\n[[shape]]\nkind = \"track\"\nid = \"track_id\"\nfields = [{ name = \"track_id\", type = \"int\", required = true }]\n");
+    write("youtube", "[extension]\nname = \"youtube\"\ntitle = \"My YouTube\"\napi = 1\n");
+    write("future", &format!("[extension]\nname = \"future\"\ntitle = \"F\"\napi = {}\n", API + 1));
+    write("broken", "[extension]\nname = \"broken\"\n");
+    let (registry, problems) = Registry::with_folder(&dir);
+    assert!(registry.shape("beats", "track").is_some());
+    assert!(registry.shape("youtube", "track").is_none(), "replaced by the folder's");
+    assert!(registry.shape("soundcloud", "track").is_some());
+    assert_eq!(problems.len(), 2, "{problems:?}");
+    assert!(problems.iter().any(|p| p.contains("needs API")));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn the_built_in_ones_load() {
     let r = Registry::builtin();
     assert!(r.shape("youtube", "track").is_some() && r.shape("custom", "artist").is_some());

@@ -41,6 +41,8 @@ services:
       ACETATE_VOLUMES: ${ACETATE_VOLUMES:?set ACETATE_VOLUMES in .env}
       ACETATE_SECURE_COOKIES: ${ACETATE_SECURE_COOKIES:-false}
       ACETATE_TRUST_PROXY: ${ACETATE_TRUST_PROXY:-false}
+      # Your own extensions (see docs/admin/extensions.md): the folder below.
+      ACETATE_EXTENSIONS_DIR: /extensions
     ports:
       - "${ACETATE_PORT:-3000}:3000"
     volumes:
@@ -49,6 +51,9 @@ services:
       # extra space) on filesystems that support them (btrfs, XFS, ZFS with block cloning);
       # that only works within a single mount, even if two mounts are the same disk.
       - ${DISK:?set DISK in .env}:/disk
+      # Your own extensions, one folder each with an extension.toml (read at start). Empty
+      # is fine.
+      - ${EXTENSIONS:-./extensions}:/extensions:ro
       # A second disk for another volume (see ACETATE_VOLUMES in .env): uncomment, and set
       # DISK2 in .env.
       # - ${DISK2:?set DISK2 in .env}:/disk2

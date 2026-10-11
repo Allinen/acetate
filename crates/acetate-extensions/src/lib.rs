@@ -190,8 +190,6 @@ const BUILTIN: &[(&str, &str)] = &[
     ("qq", include_str!("../../../extensions/qq/extension.toml")),
     ("kuwo", include_str!("../../../extensions/kuwo/extension.toml")),
     ("youtube", include_str!("../../../extensions/youtube/extension.toml")),
-    ("traktrain", include_str!("../../../extensions/traktrain/extension.toml")),
-    ("beatstars", include_str!("../../../extensions/beatstars/extension.toml")),
     ("custom", include_str!("../../../extensions/custom/extension.toml")),
     ("stores", include_str!("../../../extensions/stores/extension.toml")),
 ];

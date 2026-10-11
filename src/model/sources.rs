@@ -266,7 +266,6 @@ mod python_shapes {
             "netease" => "NetEase".into(),
             "qq" => "QQ".into(),
             "youtube" => "YouTube".into(),
-            "beatstars" => "BeatStars".into(),
             other => {
                 let mut chars = other.chars();
                 chars.next().map(|c| c.to_uppercase().collect::<String>() + chars.as_str()).unwrap_or_default()

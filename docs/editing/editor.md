@@ -62,7 +62,7 @@ These are changes like the rest, applied together with them:
   once per item (`song_permalinks:a/b song_permalinks:a/c`).
 - Fields can follow a link or a custom label too: `source:<link> description:sent by a
   friend`, `source:custom vk url:https://…`.
-- `name:` and `status:` are editor keys (the title, the status), so Traktrain's fields of
+- `name:` and `status:` are editor keys (the title, the status), so a platform's fields of
   those names can't be typed after `source:`: they'd change the track's title or status.
 - `source:=…` makes it the track's only source, and the file comes from it. This is generally
   the preferred method for fixing generic sources.

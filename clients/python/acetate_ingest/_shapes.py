@@ -82,26 +82,6 @@ SHAPES: dict[tuple[str, str], Shape] = {
     ("youtube", "artist"): Shape(id_field="channel", fields={
         "channel": Field("str", required=True),
     }),
-    ("traktrain", "track"): Shape(id_field="track_id", fields={
-        "track_id": Field("int", required=True),
-        "name": Field("str", required=False),
-        "bpm": Field("int", required=False),
-        "tags": Field("strs", required=False),
-        "genre_ids": Field("strs", required=False),
-        "audio_key": Field("str", required=False),
-        "status": Field("str", required=False),
-    }),
-    ("traktrain", "artist"): Shape(id_field="user_id", fields={
-        "user_id": Field("int", required=True),
-        "slug": Field("str", required=False),
-        "brand": Field("str", required=False),
-    }),
-    ("beatstars", "track"): Shape(id_field="track_id", fields={
-        "track_id": Field("int", required=True),
-    }),
-    ("beatstars", "artist"): Shape(id_field="slug", fields={
-        "slug": Field("str", required=True),
-    }),
     ("custom", "track"): Shape(id_field=None, fields={
         "label": Field("str", required=True),
         "description": Field("str", required=False),
@@ -297,50 +277,6 @@ class YouTubeArtist(ShapedSource):
 
 
 @dataclass(frozen=True, kw_only=True)
-class TraktrainTrack(ShapedSource):
-    """A track's source on traktrain. Its id: `track_id`."""
-
-    platform: ClassVar[str] = "traktrain"
-    kind: ClassVar[str] = "track"
-    track_id: int
-    name: str | None = None
-    bpm: int | None = None
-    tags: list[str] | None = None
-    genre_ids: list[str] | None = None
-    audio_key: str | None = None
-    status: str | None = None
-
-
-@dataclass(frozen=True, kw_only=True)
-class TraktrainArtist(ShapedSource):
-    """A artist's source on traktrain. Its id: `user_id`."""
-
-    platform: ClassVar[str] = "traktrain"
-    kind: ClassVar[str] = "artist"
-    user_id: int
-    slug: str | None = None
-    brand: str | None = None
-
-
-@dataclass(frozen=True, kw_only=True)
-class BeatStarsTrack(ShapedSource):
-    """A track's source on beatstars. Its id: `track_id`."""
-
-    platform: ClassVar[str] = "beatstars"
-    kind: ClassVar[str] = "track"
-    track_id: int
-
-
-@dataclass(frozen=True, kw_only=True)
-class BeatStarsArtist(ShapedSource):
-    """A artist's source on beatstars. Its id: `slug`."""
-
-    platform: ClassVar[str] = "beatstars"
-    kind: ClassVar[str] = "artist"
-    slug: str
-
-
-@dataclass(frozen=True, kw_only=True)
 class CustomTrack(ShapedSource):
     """A track's source on custom. Its id: none: sources with the same data are the same."""
 
@@ -391,10 +327,6 @@ __all__ = [
     "KuwoArtist",
     "YouTubeTrack",
     "YouTubeArtist",
-    "TraktrainTrack",
-    "TraktrainArtist",
-    "BeatStarsTrack",
-    "BeatStarsArtist",
     "CustomTrack",
     "CustomAlbum",
     "CustomArtist",
