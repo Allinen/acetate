@@ -1,0 +1,51 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT (SELECT count(*) FROM grouping_tracks WHERE grouping_id = $1) AS \"tracks!\",\n                  (SELECT count(*) FROM grouping_albums WHERE grouping_id = $1) AS \"albums!\",\n                  (SELECT count(*) FROM grouping_artists WHERE grouping_id = $1) AS \"members!\",\n                  (SELECT count(*) FROM sources WHERE grouping_id = $1) AS \"sources!\",\n                  (SELECT count(*) FROM extra_links WHERE grouping_id = $1) AS \"extras!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "tracks!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "albums!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "members!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "sources!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 4,
+        "name": "extras!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "94cce95d34f3a4272da2c65f8f1b6c48a6eb57c839163199f3d53b19b7dd67f6"
+}

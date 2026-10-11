@@ -8,7 +8,7 @@
 //! turned into one with `turn_into_collective`, after `collective_preview` says what it
 //! would do.
 //!
-//! Nothing is deleted: every change is kept in `grouping_log`.
+//! Nothing is deleted but an empty grouping (`delete`): every change is kept in `grouping_log`.
 
 use serde::Serialize;
 use sqlx::PgConnection;
@@ -89,6 +89,34 @@ pub async fn edit(conn: &mut PgConnection, id: Uuid, kind: &str, name: &str, des
         "new": { "kind": kind, "name": name.trim(), "description": description.trim() },
     });
     log(conn, id, "edited", None, None, detail, reason).await?;
+    Ok(())
+}
+
+/// Deletes a grouping with nothing in it: no tracks, releases, members, sources or extras
+/// (take those out first). Its log is kept, ending in a `deleted` entry. Making one again
+/// with the same name is the way back.
+pub async fn delete(conn: &mut PgConnection, id: Uuid, reason: &str) -> anyhow::Result<()> {
+    let old = sqlx::query!("SELECT kind, name FROM groupings WHERE id = $1 FOR UPDATE", id)
+        .fetch_optional(&mut *conn)
+        .await?
+        .ok_or(EditRejected::NotFound("grouping"))?;
+    let counts = sqlx::query!(
+        r#"SELECT (SELECT count(*) FROM grouping_tracks WHERE grouping_id = $1) AS "tracks!",
+                  (SELECT count(*) FROM grouping_albums WHERE grouping_id = $1) AS "albums!",
+                  (SELECT count(*) FROM grouping_artists WHERE grouping_id = $1) AS "members!",
+                  (SELECT count(*) FROM sources WHERE grouping_id = $1) AS "sources!",
+                  (SELECT count(*) FROM extra_links WHERE grouping_id = $1) AS "extras!""#,
+        id
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    for (n, what) in [(counts.tracks, "tracks"), (counts.albums, "releases"), (counts.members, "members"), (counts.sources, "sources"), (counts.extras, "extras")] {
+        if n > 0 {
+            return Err(invalid(format!("\"{}\" isn't empty: it has {n} {what} (take them out first)", old.name)));
+        }
+    }
+    log(conn, id, "deleted", None, None, serde_json::json!({ "kind": old.kind, "name": old.name }), reason).await?;
+    sqlx::query!("DELETE FROM groupings WHERE id = $1", id).execute(&mut *conn).await?;
     Ok(())
 }
 

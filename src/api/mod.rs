@@ -327,7 +327,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/artists/{id}/sources", require(&[EditSources], post(sources::add_artist_source)))
         // Groupings (collectives, eras, projects).
         .route("/api/groupings", require(&[EditMetadata], post(groupings::create)))
-        .route("/api/groupings/{id}", require(&[Browse], get(groupings::get)).merge(require(&[EditMetadata], put(groupings::edit))))
+        .route("/api/groupings/{id}", require(&[Browse], get(groupings::get)).merge(require(&[EditMetadata], put(groupings::edit).delete(groupings::delete))))
         .route("/api/groupings/{id}/add", require(&[EditMetadata], post(groupings::add)))
         .route("/api/groupings/{id}/remove", require(&[EditMetadata], post(groupings::remove)))
         .route("/api/groupings/{id}/members/add", require(&[EditMetadata], post(groupings::add_members)))

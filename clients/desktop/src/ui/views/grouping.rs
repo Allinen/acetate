@@ -54,6 +54,10 @@ pub struct GroupingPage {
     picking_member: bool,
     member_answer: Arc<Mutex<Option<Result<(), String>>>>,
     member_error: Option<String>,
+    /// Edit mode: "Delete" (of an empty one) is out, and what the server said.
+    deleting: bool,
+    delete_answer: Arc<Mutex<Option<Result<(), String>>>>,
+    delete_error: Option<String>,
 }
 
 impl GroupingPage {
@@ -127,7 +131,8 @@ impl GroupingPage {
             ui.add_space(18.0);
 
             if shell.edit_mode {
-                self.edit_panel(ui, shell, id, &grouping, detail.as_deref());
+                let empty = tracks.is_empty() && releases.is_empty() && detail.as_ref().is_some_and(|d| d.members.is_empty() && d.sources.is_empty() && d.extras.is_empty());
+                self.edit_panel(ui, shell, id, &grouping, detail.as_deref(), empty);
                 ui.add_space(12.0);
             }
 
@@ -269,7 +274,19 @@ impl GroupingPage {
     }
 
     /// Edit mode: its kind, name and description; its sources; its history.
-    fn edit_panel(&mut self, ui: &mut egui::Ui, shell: &mut Shell, id: Uuid, grouping: &crate::catalog::model::Grouping, detail: Option<&crate::details::GroupingDetail>) {
+    fn edit_panel(&mut self, ui: &mut egui::Ui, shell: &mut Shell, id: Uuid, grouping: &crate::catalog::model::Grouping, detail: Option<&crate::details::GroupingDetail>, empty: bool) {
+        if let Some(result) = self.delete_answer.lock().unwrap().take() {
+            match result {
+                Ok(()) => {
+                    shell.act(Action::RefreshLibrary);
+                    shell.act(Action::Back);
+                }
+                Err(err) => {
+                    self.deleting = false;
+                    self.delete_error = Some(err);
+                }
+            }
+        }
         if let Some(result) = self.answer.lock().unwrap().take() {
             self.saving = false;
             if result.is_ok() {
@@ -335,7 +352,24 @@ impl GroupingPage {
                     }
                     _ => {}
                 }
+                if empty {
+                    ui.add_space(24.0);
+                    if ui.add_enabled(!self.deleting, egui::Button::new("Delete")).on_hover_text("It's empty: delete it. Making one again with the same name brings it back (without its history).").clicked() {
+                        self.deleting = true;
+                        self.delete_error = None;
+                        let body = json!({ "reason": self.reason.trim() });
+                        let (api, answer, ctx) = (shell.api.clone(), self.delete_answer.clone(), shell.ctx.clone());
+                        shell.runtime.spawn(async move {
+                            let result = api.send_json::<serde_json::Value>(reqwest::Method::DELETE, &format!("/api/groupings/{id}"), Some(body)).await.map(|_| ()).map_err(|e| e.message);
+                            *answer.lock().unwrap() = Some(result);
+                            ctx.request_repaint();
+                        });
+                    }
+                }
             });
+            if let Some(err) = &self.delete_error {
+                ui.label(RichText::new(err.as_str()).color(P.danger));
+            }
         });
         ui.add_space(12.0);
         let Some(detail) = detail else { return };

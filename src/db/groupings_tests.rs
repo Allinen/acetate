@@ -106,7 +106,7 @@ async fn groupings_are_changed_logged_and_seen_as_far_as_their_tracks(_: PgPoolO
     let d = db::groupings::detail(&mut tx, id).await?.unwrap();
     assert_eq!(d.tracks, [lib.v]);
     assert_eq!((d.changes[0].action.as_str(), d.changes[0].reason.as_str()), ("removed", "not theirs"));
-    assert!(sqlx::query("DELETE FROM groupings").execute(&mut *tx).await.is_err(), "groupings aren't deleted");
+    assert!(sqlx::query("DELETE FROM groupings").execute(&mut *tx).await.is_err(), "not while something's in it");
     Ok(())
 }
 
@@ -315,5 +315,43 @@ async fn undoing_a_merge_takes_the_kept_track_back_out(_: PgPoolOptions, connect
     assert!(in_grouping(&lib.owner, era).await?.0.contains(&lib.v), "in what it was in before");
     assert!(in_grouping(&lib.owner, mixtape).await?.0.contains(&lib.v), "and what someone put it in since");
     assert!(in_grouping(&lib.owner, crew).await?.0.contains(&lib.o), "O is back, still in it");
+    Ok(())
+}
+
+#[sqlx::test]
+async fn an_empty_grouping_can_be_deleted(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
+    let lib = setup(connect).await?;
+    let mut tx = db::begin(&lib.app, Some(lib.bob)).await?;
+    let id = db::groupings::create(&mut tx, "era", "Oops", "", "").await?;
+    db::groupings::add(&mut tx, id, &[lib.v], &[], "").await?;
+    db::groupings::add_members(&mut tx, id, &[lib.both], "").await?;
+    tx.commit().await?;
+
+    // Not while anything's in it.
+    let mut tx = db::begin(&lib.app, Some(lib.bob)).await?;
+    let err = db::groupings::delete(&mut tx, id, "").await.unwrap_err().to_string();
+    assert!(err.contains("1 tracks"), "{err}");
+    db::groupings::remove(&mut tx, id, &[lib.v], &[], "").await?;
+    let err = db::groupings::delete(&mut tx, id, "").await.unwrap_err().to_string();
+    assert!(err.contains("1 members"), "{err}");
+    db::groupings::remove_members(&mut tx, id, &[lib.both], "").await?;
+    tx.commit().await?;
+    let mut tx = db::begin(&lib.app, Some(lib.bob)).await?;
+    let version = db::library::version(&mut tx).await?;
+    db::groupings::delete(&mut tx, id, "a typo").await?;
+    assert!(db::groupings::detail(&mut tx, id).await?.is_none());
+    assert!(db::groupings::delete(&mut tx, id, "").await.is_err(), "already gone");
+    tx.commit().await?;
+
+    // The catalog is told.
+    let mut tx = db::begin(&lib.app, Some(lib.bob)).await?;
+    assert!(db::library::changes_since(&mut tx, &version).await?.groupings);
+    drop(tx);
+
+    // The same name can be made again.
+    let mut tx = db::begin(&lib.app, Some(lib.bob)).await?;
+    let again = db::groupings::create(&mut tx, "era", "Oops", "", "").await?;
+    assert_ne!(again, id);
+    tx.commit().await?;
     Ok(())
 }

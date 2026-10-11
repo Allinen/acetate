@@ -18,7 +18,9 @@ the editor in either mode, for a quick fix.)
   sourced in place). Artists have IDs, so two artists may share a name. All of it, plus
   sources, extras and notes, can be typed on [the artist page's commandline](artist-page.md).
 - **Groupings:** a collective, label, era or project. Members are added by hand; being
-  credited on a song isn't enough. Browse them from Artists.
+  credited on a song isn't enough. Browse them from Artists. One made by mistake can be
+  deleted from its edit panel once it's empty (no tracks, releases, members, sources or
+  extras); making one again with the same name brings it back, without its history.
 - **Extras:** vocals, stems, samples, music videos: files linked to a track, album, artist
   or grouping, with their own page. A file an extra has already (the same bytes) isn't added
   again: the upload says which extra has it.

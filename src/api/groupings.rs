@@ -44,6 +44,22 @@ pub async fn edit(State(state): State<AppState>, user: CurrentUser, Path(id): Pa
     Ok(Json(serde_json::json!({ "id": id })))
 }
 
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Why {
+    reason: String,
+}
+
+/// `DELETE /api/groupings/{id}`, JSON `{"reason": ""}` (optional): deletes it if it's empty
+/// (no tracks, releases, members, sources or extras), else 400 saying what's in it.
+pub async fn delete(State(state): State<AppState>, user: CurrentUser, Path(id): Path<Uuid>, body: Option<Json<Why>>) -> Result<Json<serde_json::Value>, AppError> {
+    let body = body.map(|Json(b)| b).unwrap_or_default();
+    let mut tx = state.db(&user).await?;
+    db::groupings::delete(&mut tx, id, &body.reason).await?;
+    tx.commit().await?;
+    Ok(Json(serde_json::json!({ "id": id })))
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Members {
