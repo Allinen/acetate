@@ -1,6 +1,6 @@
 [package]
 name = "acetate-extensions"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 
 # What the server and every client share about the places music comes from: the shapes of a
