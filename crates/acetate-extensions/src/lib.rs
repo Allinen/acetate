@@ -185,7 +185,6 @@ pub struct Registry {
 
 const BUILTIN: &[(&str, &str)] = &[
     ("soundcloud", include_str!("../../../extensions/soundcloud/extension.toml")),
-    ("distrokid", include_str!("../../../extensions/distrokid/extension.toml")),
     ("netease", include_str!("../../../extensions/netease/extension.toml")),
     ("qq", include_str!("../../../extensions/qq/extension.toml")),
     ("kuwo", include_str!("../../../extensions/kuwo/extension.toml")),

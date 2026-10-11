@@ -104,7 +104,7 @@ a `[[link]]` with `kind = "any"`, `custom = "qobuz"` and `hosts = ["qobuz.com"]`
 `custom` sources labelled "qobuz" (`amazon.*` is any ending; `path_contains` narrows it).
 See `extensions/stores/extension.toml`.
 A platform like NetEase is a manifest and nothing else, and so are the private ones
-(a beat-selling site, a private archive): they live in the admin's own folder
+(a beat-selling site, a distributor, a private archive): they live in the admin's own folder
 (`ACETATE_EXTENSIONS_DIR`), not in the repository.
 
 ## What is code: the fetch program
@@ -131,7 +131,7 @@ extension lists in `thumbnail_hosts`).
 ## Who gets what
 
 * The server loads the built-in extensions (compiled into the image: YouTube, SoundCloud,
-  NetEase, QQ, Kuwo, DistroKid) and then the folder `ACETATE_EXTENSIONS_DIR`. A folder
+  NetEase, QQ, Kuwo) and then the folder `ACETATE_EXTENSIONS_DIR`. A folder
   with a built-in's name replaces it.
 * `GET /api/extensions` serves every extension's data (not its program).
   Desktop and phone keep it with the catalog (`clients/core`), so **link parsing is

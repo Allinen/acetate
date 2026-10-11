@@ -30,17 +30,6 @@ SHAPES: dict[tuple[str, str], Shape] = {
         "artist_permalinks": Field("strs", required=False),
         "artist_permalink": Field("str", required=False),
     }),
-    ("distrokid", "track"): Shape(id_field=None, fields={
-        "album_uuid": Field("str", required=True),
-        "index": Field("int", required=False),
-    }),
-    ("distrokid", "album"): Shape(id_field="album_uuid", fields={
-        "album_uuid": Field("str", required=True),
-    }),
-    ("distrokid", "artist"): Shape(id_field="artist_id", fields={
-        "artist_id": Field("int", required=False),
-        "artist_uuid": Field("str", required=False),
-    }),
     ("netease", "track"): Shape(id_field="song_id", fields={
         "song_id": Field("int", required=True),
         "song_index": Field("int", required=False),
@@ -138,35 +127,6 @@ class SoundCloudArtist(ShapedSource):
     artist_id: int | None = None
     artist_permalinks: list[str] | None = None
     artist_permalink: str | None = None
-
-
-@dataclass(frozen=True, kw_only=True)
-class DistroKidTrack(ShapedSource):
-    """A track's source on distrokid. Its id: none: sources with the same data are the same."""
-
-    platform: ClassVar[str] = "distrokid"
-    kind: ClassVar[str] = "track"
-    album_uuid: str
-    index: int | None = None
-
-
-@dataclass(frozen=True, kw_only=True)
-class DistroKidAlbum(ShapedSource):
-    """A album's source on distrokid. Its id: `album_uuid`."""
-
-    platform: ClassVar[str] = "distrokid"
-    kind: ClassVar[str] = "album"
-    album_uuid: str
-
-
-@dataclass(frozen=True, kw_only=True)
-class DistroKidArtist(ShapedSource):
-    """A artist's source on distrokid. Its id: `artist_id`."""
-
-    platform: ClassVar[str] = "distrokid"
-    kind: ClassVar[str] = "artist"
-    artist_id: int | None = None
-    artist_uuid: str | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -313,9 +273,6 @@ __all__ = [
     "SoundCloudTrack",
     "SoundCloudAlbum",
     "SoundCloudArtist",
-    "DistroKidTrack",
-    "DistroKidAlbum",
-    "DistroKidArtist",
     "NetEaseTrack",
     "NetEaseAlbum",
     "NetEaseArtist",

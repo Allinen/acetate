@@ -53,10 +53,10 @@ These are changes like the rest, applied together with them:
 - `source:<link>`, `-source:#1`, `origin:#2`
 - `source:custom vk, sent by a friend`: a source with no platform. The label goes before
   the comma; anything after it is the description.
-- `source:distrokid album_uuid:0b358691-d0db-4fa4-b494-1cdf92f034dc index:1`: a platform
+- `source:qq song_id:1234 song_mid:0039MnYb0qxYhV`: a platform
   and its fields, typed one by one. Use this when a link doesn't say enough. It works for
   every platform, and fields chain like `artist:` → `role:` → `as:`. `Tab` on a platform
-  adds its first field (`source:distr` → `source:distrokid album_uuid:`). After a value,
+  adds its first field (`source:q` → `source:qq song_id:`). After a value,
   `Tab` adds the next field not given yet, needed ones first. The choices under the commandline
   say what each field takes. A value runs until the next field, and a list field is given
   once per item (`song_permalinks:a/b song_permalinks:a/c`).

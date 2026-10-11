@@ -217,7 +217,7 @@ mod tests {
         assert!(validate(Kind::Track, new("netease", json!({ "song_id": 1, "x": 2 }))).is_err());
         // Missing required field.
         assert!(validate(Kind::Track, new("netease", json!({ "song_index": 1 }))).is_err());
-        assert!(validate(Kind::Track, new("distrokid", json!({ "index": 1 }))).is_err());
+        assert!(validate(Kind::Track, new("qq", json!({ "song_mid": "x" }))).is_err());
         // A list where one value is expected, and the other way round.
         assert!(validate(Kind::Track, new("soundcloud", json!({ "song_permalinks": "a/b" }))).is_err());
         assert!(validate(Kind::Track, new("soundcloud", json!({ "song_permalinks": ["a/b", 1] }))).is_err());
@@ -232,20 +232,6 @@ mod tests {
     fn soundcloud_song_by_permalink_only() {
         let v = validate(Kind::Track, new("soundcloud", json!({ "song_permalinks": ["1kori/spinback"] }))).unwrap();
         assert_eq!(v.external_id, None);
-    }
-
-    #[test]
-    fn distrokid() {
-        let track = validate(
-            Kind::Track,
-            new("distrokid", json!({ "album_uuid": "C47AFBE2-678D-4595-926C7586E304CA81", "index": 1 })),
-        )
-        .unwrap();
-        assert_eq!(track.external_id, None);
-        let album = validate(Kind::Album, new("distrokid", json!({ "album_uuid": "C47AFBE2-678D-4595-926C7586E304CA81" }))).unwrap();
-        assert_eq!(album.external_id.as_deref(), Some("C47AFBE2-678D-4595-926C7586E304CA81"));
-        let artist = validate(Kind::Artist, new("distrokid", json!({ "artist_id": 1001517, "artist_uuid": "x" }))).unwrap();
-        assert_eq!(artist.external_id.as_deref(), Some("1001517"));
     }
 }
 
@@ -262,7 +248,6 @@ mod python_shapes {
     fn class_prefix(platform: &str) -> String {
         match platform {
             "soundcloud" => "SoundCloud".into(),
-            "distrokid" => "DistroKid".into(),
             "netease" => "NetEase".into(),
             "qq" => "QQ".into(),
             "youtube" => "YouTube".into(),
