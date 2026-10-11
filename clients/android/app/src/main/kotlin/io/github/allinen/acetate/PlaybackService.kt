@@ -66,7 +66,16 @@ class PlaybackService : MediaLibraryService() {
             .setUpstreamDataSourceFactory(upstream)
             .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
 
-        player = ExoPlayer.Builder(this)
+        // The equalizer sits in the audio sink, so every track passes through it.
+        val renderers = object : androidx.media3.exoplayer.DefaultRenderersFactory(this) {
+            override fun buildAudioSink(context: Context, enableFloatOutput: Boolean, enableAudioTrackPlaybackParams: Boolean) =
+                androidx.media3.exoplayer.audio.DefaultAudioSink.Builder(context)
+                    .setEnableFloatOutput(enableFloatOutput)
+                    .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
+                    .setAudioProcessors(arrayOf(EqProcessor()))
+                    .build()
+        }
+        player = ExoPlayer.Builder(this, renderers)
             // Files on the device (downloads) are read from there, the rest through the cache.
             .setMediaSourceFactory(DefaultMediaSourceFactory(androidx.media3.datasource.DefaultDataSource.Factory(this, cached)))
             .setAudioAttributes(

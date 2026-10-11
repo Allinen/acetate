@@ -118,6 +118,9 @@ In **Settings**:
   first, with the text selectable, for the ones that vanished before you read them.
 - **Output level:** lowers the app's own volume below the phone's (for headphones that are
   loud even at the lowest step).
+- **Equalizer:** as on the desktop (see [Listening](listening.md)): ten bands, an octave
+  apart, ±12 dB each, a switch and Flat. Heard at once, kept on the phone, and the whole sound
+  is lowered by the largest boost so it can't clip.
 - **Lyrics timing:** moves the lyrics earlier or later. A Bluetooth headset delays the sound
   by an amount the phone only half knows, so there is one setting for when one is connected
   and one for everything else. If the lyrics come late, raise the number until a line lands

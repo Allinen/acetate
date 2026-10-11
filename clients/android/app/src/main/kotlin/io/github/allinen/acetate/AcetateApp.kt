@@ -30,6 +30,7 @@ class AcetateApp : Application() {
         // Before the core: its first request checks a certificate.
         Tls.init(this)
         Output.init(this)
+        Equalizer.init(this)
         LyricsTiming.init(this)
         model = Model(filesDir.path)
         model.context = this

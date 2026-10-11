@@ -14,6 +14,8 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.width
+import androidx.compose.material3.Switch
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -176,6 +178,8 @@ private fun SettingsDialog(model: Model, close: () -> Unit) {
                     value = (30 - Output.reduction).toFloat(), onValueChange = { Output.set(30 - it.toInt()) },
                     valueRange = 0f..30f, steps = 29,
                 )
+                Spacer(Modifier.height(12.dp))
+                EqualizerSection()
             }
         },
     )
@@ -186,5 +190,30 @@ private fun QualityChoice(title: String, chosen: Int, choose: (Int) -> Unit) {
     Text(title, style = MaterialTheme.typography.labelLarge)
     Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
         QUALITIES.forEach { kbps -> FilterChip(chosen == kbps, { choose(kbps) }, { Text(qualityName(kbps)) }) }
+    }
+}
+
+@Composable
+private fun EqualizerSection() {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text("Equalizer", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+        TextButton({ Equalizer.flatten() }, enabled = Equalizer.gains.any { it != 0 }) { Text("Flat") }
+        Switch(Equalizer.enabled, { Equalizer.enable(it) })
+    }
+    Equalizer.BANDS.forEachIndexed { band, hz ->
+        val name = if (hz >= 1000f) "${(hz / 1000f).toInt()} kHz" else "${hz.toInt()} Hz"
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(name, Modifier.width(56.dp), style = MaterialTheme.typography.labelMedium)
+            Slider(
+                Equalizer.gains[band].toFloat(), { Equalizer.set(band, it.toInt()) },
+                Modifier.weight(1f), enabled = Equalizer.enabled,
+                valueRange = -Equalizer.RANGE_DB.toFloat()..Equalizer.RANGE_DB.toFloat(), steps = 2 * Equalizer.RANGE_DB - 1,
+            )
+            Text("%+d".format(Equalizer.gains[band]), Modifier.width(32.dp), style = MaterialTheme.typography.labelMedium)
+        }
+    }
+    val headroom = Equalizer.headroomDb()
+    if (Equalizer.enabled && headroom > 0) {
+        Text("The sound is lowered by $headroom dB to make room for the boosts, so they can't clip.", style = MaterialTheme.typography.bodySmall)
     }
 }

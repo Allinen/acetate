@@ -70,7 +70,7 @@ aren't transcoded.
 of the server's copy qualities (for less to download), or Automatic. It applies from the next
 track you play. The queue's next track is fetched again at the new quality.
 
-**Equalizer** (desktop Settings → Sound): ten bands, an octave apart (31 Hz to 16 kHz),
+**Equalizer** (desktop Settings → Sound; Android Settings): ten bands, an octave apart (31 Hz to 16 kHz),
 ±12 dB each; double-click a band to flatten it. It's heard at once, applies to everything
 played, and is remembered. To keep a boost from clipping, the whole sound is lowered by the
 largest boost (the settings say by how much).
