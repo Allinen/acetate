@@ -1,5 +1,5 @@
 //! Review's "Unlinked extras": extras linked to nothing (music videos imported from disk…),
-//! to link in bulk. Marked like tracks are (`Marking`: the box in front, `x`, Ctrl+click,
+//! to link in bulk. Marked like tracks are (`Selection`: the box in front, `x`, Ctrl+click,
 //! Shift+click or Shift+↑/↓ for a range, Ctrl+A, Esc), then: choose what they go to (a
 //! track, album, artist or grouping), type its name and Enter, and every marked extra is
 //! linked to it. With none marked the cursor's extra is the one (as a track table's quick
@@ -25,7 +25,8 @@ use std::sync::Arc;
 use eframe::egui::{self, RichText, Sense, Vec2};
 use uuid::Uuid;
 
-use super::marking::{paint_box, Key, Marking};
+use super::marking::paint_box;
+use crate::ui::selection::Selection;
 use crate::catalog::model::Extra;
 use crate::catalog::search::Part;
 use crate::catalog::Catalog;
@@ -84,7 +85,7 @@ impl Target {
 }
 
 pub struct UnlinkedExtras {
-    marking: Marking,
+    marking: Selection<Uuid>,
     /// The row the cursor is on (of those shown).
     cursor: usize,
     /// Bring the cursor into view.
@@ -109,7 +110,7 @@ pub struct UnlinkedExtras {
 impl Default for UnlinkedExtras {
     fn default() -> Self {
         UnlinkedExtras {
-            marking: Marking::default(),
+            marking: Selection::default(),
             cursor: 0,
             scroll_to: false,
             view: (0.0, 400.0),
@@ -185,7 +186,7 @@ impl UnlinkedExtras {
             ui.label(RichText::new("None (or nothing matches the filter).").color(P.faint));
             return;
         }
-        let id_at = |n: usize| shown.get(n).map(|e| (e.id, 0u32));
+        let id_at = |n: usize| shown.get(n).map(|e| e.id);
         self.keys(ui.ctx(), shell, &shown, id_at);
         self.toolbar(ui, shell, catalog, &shown);
         ui.add_space(6.0);
@@ -204,50 +205,23 @@ impl UnlinkedExtras {
         if self.marking.is_empty() {
             return shown.get(self.cursor).map(|e| e.id).into_iter().collect();
         }
-        self.marking.ordered(shown.len(), |n| shown.get(n).map(|e| (e.id, 0)))
+        self.marking.ordered(shown.len(), |n| shown.get(n).map(|e| e.id))
     }
 
-    fn keys(&mut self, ctx: &egui::Context, shell: &mut Shell, shown: &[&Extra], id_at: impl Fn(usize) -> Option<Key> + Copy) {
+    fn keys(&mut self, ctx: &egui::Context, shell: &mut Shell, shown: &[&Extra], id_at: impl Fn(usize) -> Option<Uuid> + Copy) {
         if shell.palette_open || shell.modal_open {
             return;
         }
-        let before = self.cursor;
         let page = ((self.view.1 / ROW) as usize).max(1);
-        let moved = widgets::move_selection(ctx, &mut self.cursor, shown.len(), 1, page);
+        let moved = self.marking.move_cursor(ctx, &mut self.cursor, shown.len(), page, id_at);
         if moved.moved {
             self.scroll_to = true;
-            if ctx.input(|i| i.modifiers.shift) {
-                self.marking.range_to(before, self.cursor, id_at);
-            } else {
-                self.marking.cursor_at(self.cursor);
-            }
         }
         if ctx.egui_wants_keyboard_input() {
             return;
         }
-        let (toggle, all, clear, info) = ctx.input_mut(|i| {
-            (
-                i.key_pressed(egui::Key::X) && i.modifiers.is_none(),
-                i.consume_key(egui::Modifiers::COMMAND, egui::Key::A),
-                !self.marking.is_empty() && i.consume_key(egui::Modifiers::NONE, egui::Key::Escape),
-                i.key_pressed(egui::Key::I) && i.modifiers.is_none(),
-            )
-        });
-        if toggle {
-            self.marking.toggle(self.cursor, id_at);
-        }
-        if all {
-            for n in 0..shown.len() {
-                if let Some(key) = id_at(n)
-                    && !self.marking.contains(&key)
-                {
-                    self.marking.toggle(n, id_at);
-                }
-            }
-        }
-        if clear {
-            self.marking.clear();
-        }
+        self.marking.keys(ctx, self.cursor, shown.len(), id_at, true);
+        let info = ctx.input_mut(|i| i.key_pressed(egui::Key::I) && i.modifiers.is_none());
         if info && let Some(e) = shown.get(self.cursor) {
             shell.act(Action::Go(Page::Extra(e.id)));
         }
@@ -262,8 +236,8 @@ impl UnlinkedExtras {
             ui.label(RichText::new(if self.marking.is_empty() { "Cursor row".to_string() } else { format!("{} marked", targets.len()) }).font(font(13.0, semibold())));
             if ui.small_button("Mark all shown").clicked() {
                 for n in 0..shown.len() {
-                    if !self.marking.contains(&(shown[n].id, 0)) {
-                        self.marking.toggle(n, |n| shown.get(n).map(|e| (e.id, 0)));
+                    if !self.marking.contains(&shown[n].id) {
+                        self.marking.toggle(n, |n| shown.get(n).map(|e| e.id));
                     }
                 }
             }
@@ -458,7 +432,7 @@ impl UnlinkedExtras {
     }
 
     fn rows(&mut self, ui: &mut egui::Ui, shell: &mut Shell, shown: &[&Extra]) {
-        let id_at = |n: usize| shown.get(n).map(|e| (e.id, 0u32));
+        let id_at = |n: usize| shown.get(n).map(|e| e.id);
         let modifiers = ui.input(|i| i.modifiers);
         let (mut boxed, mut clicked) = (None, None);
         let mut area = egui::ScrollArea::vertical().id_salt("unlinked-extras").auto_shrink([false, false]);
@@ -476,7 +450,7 @@ impl UnlinkedExtras {
         let out = area.show_rows(ui, ROW, shown.len(), |ui, range| {
             for n in range {
                 let e = shown[n];
-                let marked = self.marking.contains(&(e.id, 0));
+                let marked = self.marking.contains(&e.id);
                 let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width().min(760.0), ROW), Sense::click());
                 if n == self.cursor {
                     ui.painter().rect_filled(rect, 8, P.surface);
@@ -485,7 +459,7 @@ impl UnlinkedExtras {
                 }
                 let tick = egui::Rect::from_center_size(egui::pos2(rect.left() + 20.0, rect.center().y), Vec2::splat(18.0));
                 let box_response = ui.interact(tick.expand(4.0), ui.id().with(("mark-extra", e.id)), Sense::click());
-                paint_box(ui.painter(), (e.id, 0u32), tick, marked, box_response.hovered());
+                paint_box(ui.painter(), e.id, tick, marked, box_response.hovered());
                 let thumb = egui::Rect::from_min_size(egui::pos2(rect.left() + 40.0, rect.top() + 6.0), Vec2::new(71.0, 40.0));
                 match e.thumb() {
                     Some(cover) => shell.cover(ui, Some(cover), e.id, thumb, 4, 0.0),

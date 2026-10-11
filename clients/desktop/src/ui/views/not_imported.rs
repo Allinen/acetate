@@ -44,6 +44,7 @@ use crate::catalog::Track;
 use crate::catalog::Catalog;
 use crate::playback::{AudioSource, QueueItem};
 use crate::ui::edit::editor::{DraftOf, Imported, TrackEditor};
+use crate::ui::selection::Selection;
 use crate::ui::edit::inline_search::{Choice, InlineSearch};
 use crate::ui::theme::{bold, font, medium, semibold, PALETTE as P};
 use crate::ui::{widgets, Action, Page, Shell};
@@ -206,8 +207,7 @@ pub struct NotImported {
     draft: Option<Draft>,
     drafts_asked: u64,
     /// Marked files (by id), and where a range of marks starts (a row shown).
-    marked: HashSet<Uuid>,
-    anchor: Option<usize>,
+    marked: Selection<Uuid>,
     /// The marked files, going somewhere together.
     bulk: Option<Bulk>,
     sending: bool,
@@ -268,7 +268,7 @@ impl NotImported {
                     // Gone from the list at once; on to the one in its place.
                     let at = self.list.iter().position(|p| p.id == problem);
                     self.list.retain(|p| p.id != problem);
-                    self.marked.remove(&problem);
+                    self.marked.retain(|id| *id != problem);
                     if let Some(at) = at {
                         self.selected = self.list.get(at.min(self.list.len().saturating_sub(1))).map(|p| p.id);
                     }
@@ -334,25 +334,8 @@ impl NotImported {
         // Many files being imported or kept: shown until they're done.
         let busy = self.bulk.as_ref().is_some_and(|b| b.editor.applying() || b.sending.is_some());
         if !ui.ctx().egui_wants_keyboard_input() && !shell.modal_open && !shell.palette_open && !busy {
-            let (toggle, all, clear) = ui.ctx().input_mut(|i| {
-                (
-                    i.key_pressed(egui::Key::X) && i.modifiers.is_none(),
-                    i.consume_key(egui::Modifiers::COMMAND, egui::Key::A),
-                    !self.marked.is_empty() && i.consume_key(egui::Modifiers::NONE, egui::Key::Escape),
-                )
-            });
-            if toggle && let Some(id) = ids.get(selected_at) {
-                if !self.marked.remove(id) {
-                    self.marked.insert(*id);
-                }
-                self.anchor = Some(selected_at);
-            }
-            if all {
-                self.marked.extend(ids.iter().copied());
-            }
-            if clear {
-                self.marked.clear();
-            }
+            let id_at = |n: usize| ids.get(n).copied();
+            self.marked.keys(ui.ctx(), selected_at, ids.len(), id_at, true);
         }
         if !self.marked.is_empty() {
             // Esc is for the marks, not "back".
@@ -414,25 +397,14 @@ impl NotImported {
                 widgets::text_in(painter, egui::Rect::from_min_size(rect.min + Vec2::new(34.0, 25.0), Vec2::new(rect.width() - 44.0, 16.0)), &sub, font(12.0, medium()), P.muted);
                 if response.clicked() {
                     let modifiers = ui.input(|i| i.modifiers);
-                    if modifiers.command || on_box {
-                        if !self.marked.remove(&p.id) {
-                            self.marked.insert(p.id);
-                        }
-                        self.anchor = Some(n);
-                    } else if modifiers.shift {
-                        // The range gets the state of the row it starts from.
-                        let start = self.anchor.unwrap_or(selected_at);
-                        let on = ids.get(start).is_none_or(|id| self.marked.contains(id) || self.anchor.is_none());
-                        for id in &ids[start.min(n)..=start.max(n).min(ids.len() - 1)] {
-                            if on {
-                                self.marked.insert(*id);
-                            } else {
-                                self.marked.remove(id);
-                            }
-                        }
+                    let id_at = |n: usize| ids.get(n).copied();
+                    if on_box {
+                        self.marked.toggle(n, id_at);
+                    } else if modifiers.command || modifiers.shift {
+                        self.marked.click(n, selected_at, modifiers, id_at);
                     } else {
                         self.selected = Some(p.id);
-                        self.anchor = Some(n);
+                        self.marked.cursor_at(n);
                     }
                 }
             }

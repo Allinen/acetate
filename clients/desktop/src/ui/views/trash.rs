@@ -13,7 +13,6 @@
 //!
 //! Marking: the box in front of a row, or "Mark all shown".
 
-use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
 use eframe::egui::{self, RichText, Sense, Vec2};
@@ -21,6 +20,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
+use crate::ui::selection::Selection;
 use crate::ui::theme::{bold, font, semibold, PALETTE as P};
 use crate::ui::{thousands, widgets, Action, Page, Shell};
 
@@ -84,7 +84,7 @@ pub struct TrashPage {
     items_answer: Answer<Vec<TrashItem>>,
     /// Only this kind shown ("cover", "source", "file", "problem"); None: all.
     only: Option<String>,
-    marked: HashSet<Uuid>,
+    marked: Selection<Uuid>,
     /// Purge asked: what's typed to confirm it.
     purging: Option<String>,
     old: Vec<OldFile>,
@@ -92,7 +92,7 @@ pub struct TrashPage {
     old_more: bool,
     old_loading: bool,
     old_answer: Answer<Vec<OldFile>>,
-    old_marked: HashSet<Uuid>,
+    old_marked: Selection<Uuid>,
     /// A restore, purge or trashing on its way, and what the last one said.
     busy: bool,
     done_answer: Answer<String>,
@@ -293,7 +293,7 @@ impl TrashPage {
         ui.add_space(6.0);
         ui.horizontal_wrapped(|ui| {
             if ui.small_button("Mark all shown").clicked() {
-                self.marked.extend(shown.iter().map(|i| i.id));
+                self.marked.all(shown.len(), |n| shown.get(n).map(|i| i.id));
             }
             if !marked.is_empty() {
                 let bytes: i64 = marked.iter().filter_map(|i| i.size_bytes).sum();
@@ -361,15 +361,14 @@ impl TrashPage {
 
         // ---- The items, oldest first ----
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            for item in shown {
+            let ids: Vec<Uuid> = shown.iter().map(|i| i.id).collect();
+            for (n, item) in shown.into_iter().enumerate() {
                 ui.horizontal(|ui| {
                     let mut on = self.marked.contains(&item.id);
                     if ui.checkbox(&mut on, "").changed() {
-                        if on {
-                            self.marked.insert(item.id);
-                        } else {
-                            self.marked.remove(&item.id);
-                        }
+                        // Shift+click: the range from the last one clicked.
+                        let modifiers = ui.input(|i| i.modifiers);
+                        self.marked.click(n, n, if modifiers.shift { modifiers } else { egui::Modifiers::COMMAND }, |n| ids.get(n).copied());
                         self.purging = None;
                     }
                     if item.kind == "cover" {
@@ -422,7 +421,7 @@ impl TrashPage {
             let more = if self.old_more { " so far" } else { "" };
             ui.label(RichText::new(format!("{} files · {}{more}", thousands(self.old.len()), size(total))).color(P.text));
             if ui.small_button("Mark all shown").clicked() {
-                self.old_marked.extend(self.old.iter().map(|f| f.id));
+                self.old_marked.all(self.old.len(), |n| self.old.get(n).map(|f| f.id));
             }
             if !marked.is_empty() {
                 let bytes: i64 = marked.iter().map(|(_, size)| size).sum();
@@ -440,15 +439,13 @@ impl TrashPage {
         });
         ui.add_space(8.0);
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            for f in &self.old {
+            let ids: Vec<Uuid> = self.old.iter().map(|f| f.id).collect();
+            for (n, f) in self.old.iter().enumerate() {
                 ui.horizontal(|ui| {
                     let mut on = self.old_marked.contains(&f.id);
                     if ui.checkbox(&mut on, "").changed() {
-                        if on {
-                            self.old_marked.insert(f.id);
-                        } else {
-                            self.old_marked.remove(&f.id);
-                        }
+                        let modifiers = ui.input(|i| i.modifiers);
+                        self.old_marked.click(n, n, if modifiers.shift { modifiers } else { egui::Modifiers::COMMAND }, |n| ids.get(n).copied());
                     }
                     ui.vertical(|ui| {
                         ui.horizontal_wrapped(|ui| {

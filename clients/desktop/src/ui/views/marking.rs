@@ -26,6 +26,7 @@ use uuid::Uuid;
 use crate::catalog::marks::Kind;
 use crate::catalog::Catalog;
 use crate::playback::PlayerView;
+use crate::ui::selection::Selection;
 use crate::ui::theme::{bold, font, semibold, PALETTE as P};
 use crate::ui::{thousands, widgets, Action, Shell};
 
@@ -40,10 +41,7 @@ pub type Key = (Uuid, u32);
 pub struct Marking {
     /// Marked rows (by track and which of its copies: sorting and filtering keep them, and
     /// a track twice in a list is marked once at a time).
-    marked: HashSet<Key>,
-    /// Where a range starts (a row shown), and whether the range marks (or unmarks):
-    /// Shift+click and Shift+↑/↓ go from here.
-    anchor: Option<(usize, bool)>,
+    marked: Selection<Key>,
     /// Changing the marked tracks, and whether its popup is open.
     bulk: crate::ui::edit::editor::TrackEditor,
     bulk_open: bool,
@@ -69,7 +67,7 @@ impl Marking {
     /// The boxes are about to show for the first time (the first track was marked in listen
     /// mode): the marked ones start unmarked, so they animate in.
     pub fn boxes_appear(&self, ctx: &egui::Context) {
-        for id in &self.marked {
+        for id in self.marked.iter() {
             widgets::glide_from(ctx, egui::Id::new(("mark-box", id)), 0.0);
         }
     }
@@ -111,14 +109,12 @@ impl Marking {
     /// The marked tracks, in the order shown (marked ones not shown last), each once.
     pub fn ordered(&self, len: usize, id_at: impl Fn(usize) -> Option<Key>) -> Vec<Uuid> {
         let mut seen = HashSet::new();
-        let shown = (0..len).filter_map(id_at).filter(|key| self.marked.contains(key)).map(|key| key.0);
-        let hidden = self.marked.iter().map(|key| key.0);
-        shown.chain(hidden).filter(|id| seen.insert(*id)).collect()
+        self.marked.ordered(len, id_at).into_iter().map(|key| key.0).filter(|id| seen.insert(*id)).collect()
     }
 
     /// The marked rows shown, as positions.
     pub fn marked_rows(&self, len: usize, id_at: impl Fn(usize) -> Option<Key>) -> Vec<usize> {
-        (0..len).filter(|&n| id_at(n).is_some_and(|key| self.marked.contains(&key))).collect()
+        self.marked.rows(len, id_at)
     }
 
     /// The marked tracks, once each (unordered).
@@ -126,56 +122,26 @@ impl Marking {
         self.marked.iter().map(|key| key.0).collect()
     }
 
-    /// Marks or unmarks one shown row; it becomes where ranges start, and they do as it
-    /// did (mark, or unmark).
+    /// Marks or unmarks one shown row (see `Selection`).
     pub fn toggle(&mut self, n: usize, id_at: impl Fn(usize) -> Option<Key>) {
-        let mut on = false;
-        if let Some(id) = id_at(n)
-            && !self.marked.remove(&id)
-        {
-            self.marked.insert(id);
-            on = true;
-        }
-        self.anchor = Some((n, on));
+        self.marked.toggle(n, id_at);
     }
 
     /// The cursor is on row `n` (moved there, or clicked): ranges start here, and mark.
     pub fn cursor_at(&mut self, n: usize) {
-        self.anchor = Some((n, true));
+        self.marked.cursor_at(n);
     }
 
-    /// The rows from the anchor (or `from`) to `to` are marked, or (the anchor was a row
-    /// just unmarked) unmarked.
     pub fn range_to(&mut self, from: usize, to: usize, id_at: impl Fn(usize) -> Option<Key>) {
-        let (start, on) = self.anchor.unwrap_or((from, true));
-        for n in start.min(to)..=start.max(to) {
-            if let Some(id) = id_at(n) {
-                if on {
-                    self.marked.insert(id);
-                } else {
-                    self.marked.remove(&id);
-                }
-            }
-        }
-        self.anchor = Some((start, on));
+        self.marked.range_to(from, to, id_at);
     }
 
-    /// A click on row `n` (`selected` before it): Ctrl+click marks or unmarks it,
-    /// Shift+click marks the range from where it starts (see `range_to`), a plain click
-    /// is where ranges start.
     pub fn click(&mut self, n: usize, selected: usize, modifiers: egui::Modifiers, id_at: impl Fn(usize) -> Option<Key>) {
-        if modifiers.command {
-            self.toggle(n, id_at);
-        } else if modifiers.shift {
-            self.range_to(selected, n, id_at);
-        } else {
-            self.cursor_at(n);
-        }
+        self.marked.click(n, selected, modifiers, id_at);
     }
 
     pub fn clear(&mut self) {
         self.marked.clear();
-        self.anchor = None;
     }
 
     /// The editing tools' popups close (leaving edit mode); the change (Ctrl+E) stays.
@@ -198,8 +164,7 @@ impl Marking {
             [] => {}
             [one] => self.open_quick(*one),
             _ => {
-                self.marked = ids.into_iter().map(|id| (id, 0)).collect();
-                self.anchor = None;
+                self.marked.set(ids.into_iter().map(|id| (id, 0)));
                 self.open_bulk();
             }
         }
@@ -355,28 +320,12 @@ impl Marking {
         if self.popup_open() || ctx.egui_wants_keyboard_input() {
             return;
         }
-        let (toggle, all, clear, open) = ctx.input_mut(|i| {
-            (
-                i.key_pressed(egui::Key::X) && i.modifiers.is_none(),
-                i.consume_key(egui::Modifiers::COMMAND, egui::Key::A),
-                !self.marked.is_empty() && (!self.bulk.has_changes() || self.bulk.applied()) && i.consume_key(egui::Modifiers::NONE, egui::Key::Escape),
-                !self.marked.is_empty() && shell.account.can("edit_metadata") && i.consume_key(egui::Modifiers::COMMAND, egui::Key::E),
-            )
-        });
-        let open = open && shell.needs_server("editing");
-        if toggle {
-            self.toggle(selected, id_at);
+        let may_clear = !self.bulk.has_changes() || self.bulk.applied();
+        if self.marked.keys(ctx, selected, len, id_at, may_clear).cleared && self.bulk.applied() {
+            self.bulk.close();
         }
-        if all {
-            self.marked.extend((0..len).filter_map(id_at));
-        }
-        if clear {
-            if self.bulk.applied() {
-                self.bulk.close();
-            }
-            self.clear();
-        }
-        if open {
+        let open = !self.marked.is_empty() && shell.account.can("edit_metadata") && ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::E));
+        if open && shell.needs_server("editing") {
             self.open_bulk();
         }
     }
