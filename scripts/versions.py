@@ -20,6 +20,7 @@ root = Path(__file__).resolve().parent.parent
 # (file, the line that has the version, with the version as group 2)
 PLACES = [
     ("Cargo.toml", r'^(version = ")([^"]+)(")', re.M),
+    ("crates/acetate-extensions/Cargo.toml", r'^(version = ")([^"]+)(")', re.M),
     ("clients/core/Cargo.toml", r'^(version = ")([^"]+)(")', re.M),
     ("clients/desktop/Cargo.toml", r'^(version = ")([^"]+)(")', re.M),
     ("clients/android/rust/Cargo.toml", r'^(version = ")([^"]+)(")', re.M),
