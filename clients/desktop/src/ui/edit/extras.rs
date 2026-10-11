@@ -642,6 +642,9 @@ pub struct MadeTrack {
     pub video: String,
     pub title: String,
     pub artists: Vec<String>,
+    /// Why there is no cover from the video's thumbnail.
+    #[serde(default)]
+    pub no_cover: Option<String>,
     report: serde_json::Value,
 }
 
@@ -651,9 +654,10 @@ impl MadeTrack {
         self.report["status"] == "duplicate"
     }
 
-    /// "Title — Artist, Artist (youtube id)".
+    /// "Title — Artist, Artist (youtube id)", and why there is no cover, if so.
     pub fn describe(&self) -> String {
-        format!("{} — {} (youtube {})", self.title, self.artists.join(", "), self.video)
+        let cover = self.no_cover.as_ref().map(|why| format!(", no cover: {why}")).unwrap_or_default();
+        format!("{} — {} (youtube {}{cover})", self.title, self.artists.join(", "), self.video)
     }
 }
 

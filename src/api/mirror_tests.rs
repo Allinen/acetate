@@ -280,3 +280,34 @@ async fn the_bytes_come_as_stored_also_in_parts(_: PgPoolOptions, connect: PgCon
     assert_eq!(s.get(&missing, &s.admin, None).await.status, StatusCode::NOT_FOUND);
     Ok(())
 }
+
+#[sqlx::test]
+async fn the_catalog_answers_its_own_etag_with_304_until_something_changes(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
+    let s = setup(connect).await?;
+    let ask = |etag: Option<String>| {
+        let mut request = Request::builder().uri("/api/catalog").header("authorization", format!("Bearer {}", s.admin));
+        request = request.extension(axum::extract::ConnectInfo(std::net::SocketAddr::from(([127, 0, 0, 1], 9))));
+        if let Some(etag) = etag {
+            request = request.header("if-none-match", etag);
+        }
+        let app = s.app.clone();
+        async move {
+            let response = app.oneshot(request.body(Body::empty()).unwrap()).await.unwrap();
+            let etag = response.headers().get("etag").map(|v| v.to_str().unwrap().to_string());
+            (response.status(), etag)
+        }
+    };
+    let (status, etag) = ask(None).await;
+    assert_eq!(status, StatusCode::OK);
+    let etag = etag.expect("an ETag");
+    assert_eq!(ask(Some(etag.clone())).await.0, StatusCode::NOT_MODIFIED);
+
+    sqlx::query("UPDATE tracks SET title = 'Renamed' WHERE id = $1").bind(s.track).execute(&s.owner).await?;
+    let (status, newer) = ask(Some(etag.clone())).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_ne!(newer.as_deref(), Some(etag.as_str()));
+    assert_eq!(ask(newer).await.0, StatusCode::NOT_MODIFIED);
+    // Something that isn't a version is no ETag of ours: the catalog comes.
+    assert_eq!(ask(Some("\"abc\"".into())).await.0, StatusCode::OK);
+    Ok(())
+}

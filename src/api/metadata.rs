@@ -17,6 +17,10 @@ use crate::auth::CurrentUser;
 /// yt-dlp gets this long.
 const TIMEOUT: Duration = Duration::from_secs(60);
 
+/// At most this many yt-dlp processes run at once, for everyone together.
+const AT_ONCE: usize = 3;
+static RUNNING: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(AT_ONCE);
+
 /// What yt-dlp's JSON has that no one here reads, and that makes it big.
 const LEFT_OUT: &[&str] = &["formats", "requested_formats", "requested_downloads", "thumbnails", "automatic_captions", "subtitles", "heatmap", "_format_sort_fields"];
 
@@ -30,14 +34,21 @@ pub struct Youtube {
 /// `POST /api/metadata/youtube`, JSON `{"link": "…"}`: the video's metadata, as
 /// `yt-dlp -J` says it (without its formats, thumbnails and captions). Only YouTube: the
 /// link is read for the video's id, and yt-dlp is given that video's own link. 503 where
-/// yt-dlp isn't installed; 422 when it can't read the video (with why).
-pub async fn youtube(State(_): State<AppState>, _user: CurrentUser, Json(body): Json<Youtube>) -> Result<Json<Value>, AppError> {
+/// yt-dlp isn't installed; 422 when it can't read the video (with why) or takes too long;
+/// 429 past 10 videos a minute per user, or while 3 are being read already.
+pub async fn youtube(State(state): State<AppState>, user: CurrentUser, Json(body): Json<Youtube>) -> Result<Json<Value>, AppError> {
     let id = video_id(&body.link).ok_or_else(|| AppError::BadRequest("not a YouTube video's link or id".to_string()))?;
-    Ok(Json(fetch_youtube(&id).await?))
+    Ok(Json(fetch_youtube(&state, &user, &id).await?))
 }
 
 /// The video's metadata as `yt-dlp -J` says it (see `youtube`), for the video with this id.
-pub async fn fetch_youtube(id: &str) -> Result<Value, AppError> {
+pub async fn fetch_youtube(state: &AppState, user: &CurrentUser, id: &str) -> Result<Value, AppError> {
+    if let Some(wait) = state.rate_limits.youtube_read(user.id()) {
+        return Err(AppError::TooManyRequests(wait));
+    }
+    let Ok(_running) = RUNNING.try_acquire() else {
+        return Err(AppError::TooManyRequests(Duration::from_secs(5)));
+    };
     let url = format!("https://www.youtube.com/watch?v={id}");
     let mut command = Command::new("yt-dlp");
     command.args(["-J", "--no-playlist", "--skip-download", "--no-warnings", "--ignore-no-formats-error"]);
@@ -51,7 +62,7 @@ pub async fn fetch_youtube(id: &str) -> Result<Value, AppError> {
         .kill_on_drop(true)
         .output();
     let output = match tokio::time::timeout(TIMEOUT, run).await {
-        Err(_) => return Err(AppError::BadRequest(format!("yt-dlp took longer than {} seconds", TIMEOUT.as_secs()))),
+        Err(_) => return Err(AppError::Internal(crate::ingest::Rejected::Invalid(format!("yt-dlp took longer than {} seconds", TIMEOUT.as_secs())).into())),
         Ok(Err(err)) if err.kind() == std::io::ErrorKind::NotFound => {
             return Err(AppError::Unavailable("yt-dlp isn't installed on the server: paste the video's yt-dlp JSON instead".to_string()));
         }
@@ -77,7 +88,7 @@ pub async fn fetch_youtube(id: &str) -> Result<Value, AppError> {
 /// youtube.com, its m./www./music. hosts or youtu.be) or the id itself.
 pub fn video_id(link: &str) -> Option<String> {
     let link = link.trim();
-    let is_id = |s: &str| s.len() == 11 && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
+    let is_id = crate::ingest::youtube::is_id;
     if is_id(link) {
         return Some(link.to_string());
     }

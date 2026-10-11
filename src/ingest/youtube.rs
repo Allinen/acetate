@@ -9,7 +9,7 @@
 
 use serde_json::{json, Value};
 
-use super::layouts::ytdlp::{bracket_id, is_youtube_id};
+use super::layouts::ytdlp::bracket_id;
 
 /// A video, as far as a track needs.
 #[derive(Debug, Clone, PartialEq)]
@@ -59,12 +59,18 @@ pub fn parse(json: &Value) -> Result<Video, String> {
     Ok(Video { id, title, artists, channel, release_date, source, thumbnail: str_of(json, "thumbnail").map(str::to_string) })
 }
 
+/// Whether this is a YouTube video id: any 11 of `A-Z a-z 0-9 - _` (so "helloworld1" is
+/// one, on purpose). The one place that says so.
+pub fn is_id(id: &str) -> bool {
+    id.len() == 11 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
 /// The video id at the end of a file's name (`Title [id].mp4`, or the name without its
 /// extension), if there is one.
 pub fn id_in_name(name: &str) -> Option<String> {
     let name = name.trim();
     let stem = name.rsplit_once('.').filter(|(_, ext)| ext.len() <= 4 && ext.bytes().all(|b| b.is_ascii_alphanumeric())).map_or(name, |(stem, _)| stem);
-    bracket_id(stem).filter(|id| is_youtube_id(id)).map(str::to_string)
+    bracket_id(stem).filter(|id| is_id(id)).map(str::to_string)
 }
 
 #[cfg(test)]

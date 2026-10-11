@@ -325,6 +325,8 @@ pub struct MadeTrack {
     video: String,
     title: String,
     artists: Vec<String>,
+    /// Why the track has no cover from the video's thumbnail (none: it has, or there was none).
+    no_cover: Option<String>,
     report: crate::ingest::describe::Report,
 }
 
@@ -357,7 +359,7 @@ pub async fn to_track(State(state): State<AppState>, user: CurrentUser, Path(id)
             .or_else(|| crate::ingest::youtube::id_in_name(&file.name))
             .ok_or_else(|| AppError::BadRequest(format!("no YouTube id at the end of “{}” (“… [id]”): give the video's link", extra.name)))?,
     };
-    let json = super::metadata::fetch_youtube(&video_id).await?;
+    let json = super::metadata::fetch_youtube(&state, &user, &video_id).await?;
     let video = crate::ingest::youtube::parse(&json).map_err(AppError::BadRequest)?;
     if video.id != video_id {
         return Err(AppError::BadRequest(format!("YouTube answered for another video ({})", video.id)));
@@ -387,17 +389,15 @@ async fn make_track(state: &AppState, user: &CurrentUser, extra: &Extra, file: &
         release_date: video.release_date.clone(),
         ..Default::default()
     };
-    // Its thumbnail, if it can be had (the track doesn't wait on it).
+    // Its thumbnail, if it can be had (up to 15 seconds; the track is made without it
+    // otherwise, and the report says why there is no cover).
     let mut covers = Vec::new();
-    if let Some(url) = &video.thumbnail
-        && let Ok(client) = reqwest::Client::builder().timeout(std::time::Duration::from_secs(15)).build()
-        && let Ok(answer) = client.get(url).send().await
-        && answer.status().is_success()
-        && let Ok(bytes) = answer.bytes().await
-        && bytes.len() <= 10 << 20
-        && crate::model::image_info(&bytes).is_some()
-    {
-        covers.push(bytes.to_vec());
+    let mut no_cover = None;
+    if let Some(url) = &video.thumbnail {
+        match fetch_thumbnail(url).await {
+            Ok(bytes) => covers.push(bytes),
+            Err(why) => no_cover = Some(why),
+        }
     }
     let restrict_to = extra.is_restricted.then(|| extra.groups.iter().map(|g| g.id).collect::<Vec<_>>());
     if restrict_to.is_some() && !user.has(Permission::ManageAccess) {
@@ -418,6 +418,11 @@ async fn make_track(state: &AppState, user: &CurrentUser, extra: &Extra, file: &
     };
     let staged = crate::ingest::StagedFile::stored(&state.store, &file.sha256, file.size_bytes as u64).await;
     let mut tx = state.db(user).await?;
+    // Read again, locked: it may have been taken off, or made a track, since it was read.
+    let taken: Option<(bool, bool)> = sqlx::query_as("SELECT hidden_at IS NOT NULL, merged_into IS NOT NULL FROM extras WHERE id = $1 FOR UPDATE").bind(extra.id).fetch_optional(&mut *tx).await?;
+    if taken != Some((false, false)) {
+        return Err(AppError::BadRequest("it is taken off".into()));
+    }
     let report = crate::ingest::ingest_in(&mut tx, &state.store, &staged, &options, preview).await.map_err(crate::ingest::as_rejected)?;
     let track_id = report.track_id;
     if report.status == ReportStatus::Created && !preview {
@@ -428,7 +433,41 @@ async fn make_track(state: &AppState, user: &CurrentUser, extra: &Extra, file: &
     } else {
         tx.rollback().await?;
     }
-    Ok(MadeTrack { track_id, video: video.id, title: video.title, artists: video.artists, report })
+    Ok(MadeTrack { track_id, video: video.id, title: video.title, artists: video.artists, no_cover, report })
+}
+
+/// Hosts YouTube's thumbnails are on.
+fn is_thumbnail_host(host: &str) -> bool {
+    host == "ytimg.com" || host.ends_with(".ytimg.com")
+}
+
+/// A video's thumbnail: only from YouTube's image hosts (also after a redirect, of which
+/// there are at most 3), an image of at most 10 MB. Err says why not.
+async fn fetch_thumbnail(url: &str) -> Result<Vec<u8>, String> {
+    let on_youtube = |url: &reqwest::Url| url.scheme() == "https" && url.host_str().is_some_and(is_thumbnail_host);
+    let url: reqwest::Url = url.parse().map_err(|_| "its thumbnail's address isn't one".to_string())?;
+    if !on_youtube(&url) {
+        return Err(format!("its thumbnail is not on YouTube's image hosts ({})", url.host_str().unwrap_or("?")));
+    }
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .redirect(reqwest::redirect::Policy::custom(move |attempt| {
+            if attempt.previous().len() >= 3 || !on_youtube(attempt.url()) { attempt.stop() } else { attempt.follow() }
+        }))
+        .build()
+        .map_err(|err| err.to_string())?;
+    let answer = client.get(url).send().await.map_err(|err| format!("its thumbnail couldn't be fetched: {err}"))?;
+    if !answer.status().is_success() {
+        return Err(format!("its thumbnail couldn't be fetched: {}", answer.status()));
+    }
+    let bytes = answer.bytes().await.map_err(|err| format!("its thumbnail couldn't be read: {err}"))?;
+    if bytes.len() > 10 << 20 {
+        return Err("its thumbnail is over 10 MB".into());
+    }
+    if crate::model::image_info(&bytes).is_none() {
+        return Err("its thumbnail isn't an image".into());
+    }
+    Ok(bytes.to_vec())
 }
 
 #[derive(Debug, Deserialize)]
@@ -583,9 +622,9 @@ mod tests {
         let hidden: bool = sqlx::query_scalar("SELECT hidden_at IS NOT NULL FROM extras WHERE id = $1").bind(id).fetch_one(&owner).await?;
         assert!(hidden, "the extra is taken off");
 
-        // Again: the file is a track's already.
-        let again = super::make_track(&state, &user, &extra, &extra.files[0], video, "", false).await.map_err(|e| anyhow::anyhow!("{e:?}"))?;
-        assert_eq!(serde_json::to_value(&again.report)?["status"], "duplicate");
+        // Again (with the extra as it was read before): it is taken off now.
+        let again = super::make_track(&state, &user, &extra, &extra.files[0], video, "", false).await;
+        assert!(matches!(again, Err(super::AppError::BadRequest(why)) if why == "it is taken off"));
         assert_eq!(tracks().await?, 1);
 
         // Not an original file, whatever the extra's file was called.

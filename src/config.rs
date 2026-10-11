@@ -75,9 +75,23 @@ impl Config {
             web_dir: std::env::var("ACETATE_WEB_DIR")
                 .unwrap_or_else(|_| "./web".to_string())
                 .into(),
-            secure_cookies: std::env::var("ACETATE_SECURE_COOKIES").is_ok_and(|v| v == "true"),
-            trust_proxy: std::env::var("ACETATE_TRUST_PROXY").is_ok_and(|v| v == "true"),
+            secure_cookies: flag("ACETATE_SECURE_COOKIES")?,
+            trust_proxy: flag("ACETATE_TRUST_PROXY")?,
         })
+    }
+}
+
+/// An on/off setting: true/false, 1/0, yes/no, on/off in any case; unset or empty is off.
+/// Anything else is an error, so a security setting is never silently off.
+fn flag(name: &str) -> anyhow::Result<bool> {
+    parse_flag(name, &std::env::var(name).unwrap_or_default())
+}
+
+fn parse_flag(name: &str, text: &str) -> anyhow::Result<bool> {
+    match text.trim().to_lowercase().as_str() {
+        "" | "false" | "0" | "no" | "off" => Ok(false),
+        "true" | "1" | "yes" | "on" => Ok(true),
+        _ => anyhow::bail!("{name}: \"{text}\" isn't true or false"),
     }
 }
 
@@ -135,6 +149,17 @@ mod tests {
         assert_eq!(parse_kbps("192, 64,192,128").unwrap(), [192, 64, 128]);
         assert!(parse_kbps("128,9").is_err());
         assert!(parse_kbps("high").is_err());
+    }
+
+    #[test]
+    fn flags_are_real_booleans() {
+        for on in ["true", "1", "YES", " On "] {
+            assert!(parse_flag("X", on).unwrap(), "{on}");
+        }
+        for off in ["", "false", "0", "No", "OFF"] {
+            assert!(!parse_flag("X", off).unwrap(), "{off}");
+        }
+        assert!(parse_flag("X", "ture").is_err());
     }
 
     #[test]

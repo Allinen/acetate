@@ -3,7 +3,9 @@
 //!
 //! The body can be large (tens of MB for a big library), so it's compressed (gzip or
 //! zstd, as the client asks) and has an ETag: a client sends it back as `If-None-Match`
-//! and gets `304 Not Modified` with no body when nothing changed.
+//! and gets `304 Not Modified` with no body when nothing changed. (The ETag is the
+//! catalog's `version`: whether anything changed that the user sees is what a delta asks,
+//! so the body isn't built to answer it.)
 //!
 //! Every catalog has a `version`. With `?since=<version>`, only what changed since that
 //! copy comes back (a delta, `"delta": true`): the changed tracks, albums and artists as
@@ -24,7 +26,6 @@ use axum::extract::{Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
-use sha2::{Digest, Sha256};
 
 use super::{AppError, AppState};
 use crate::auth::CurrentUser;
@@ -64,6 +65,19 @@ pub async fn catalog(
     let mut tx = state.db(&user).await?;
     // Before reading anything: whatever changes after this is in the next delta.
     let version = db::library::version(&mut tx).await?;
+
+    // The ETag a client sends is the version of the whole catalog it has: nothing changed
+    // that it sees since then (the same question a delta asks), so no body is built to
+    // find that out.
+    if params.since.is_none()
+        && let Some(sent) = headers.get(header::IF_NONE_MATCH).and_then(|v| v.to_str().ok())
+    {
+        let sent = sent.trim_matches('"');
+        if !sent.is_empty() && sent.bytes().all(|b| b.is_ascii_digit() || b == b':' || b == b',') && db::library::changes_since(&mut tx, sent).await?.is_empty() {
+            let etag = HeaderValue::from_str(&format!("\"{sent}\"")).map_err(anyhow::Error::from)?;
+            return Ok((StatusCode::NOT_MODIFIED, [(header::ETAG, etag), no_cache()]).into_response());
+        }
+    }
 
     // A delta, when there's a copy to bring up to date and it can be done that way.
     if let Some(since) = params.since {
@@ -144,15 +158,8 @@ pub async fn catalog(
         part(EXTRA_COLUMNS, &extras)?,
     );
 
-    // The ETag leaves out the version (it moves with any change anywhere, even ones this
-    // user can't see): the same content is the same tag.
-    let content = body.replacen(&format!(r#""version":"{version}","#), "", 1);
-    let etag = format!("\"{}\"", &hex::encode(Sha256::digest(content.as_bytes()))[..32]);
-    let etag = HeaderValue::from_str(&etag).map_err(anyhow::Error::from)?;
-    let unchanged = headers.get(header::IF_NONE_MATCH).is_some_and(|sent| sent == etag);
-    if unchanged {
-        return Ok((StatusCode::NOT_MODIFIED, [(header::ETAG, etag), no_cache()]).into_response());
-    }
+    // The ETag is the version this was built at.
+    let etag = HeaderValue::from_str(&format!("\"{version}\"")).map_err(anyhow::Error::from)?;
     Ok(([(header::CONTENT_TYPE, HeaderValue::from_static("application/json")), (header::ETAG, etag), no_cache()], body).into_response())
 }
 

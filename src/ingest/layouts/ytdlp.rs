@@ -39,7 +39,7 @@ pub fn read(platform: Platform, path: &Path) -> PathInfo {
             .filter(|_| id.bytes().all(|b| b.is_ascii_digit()))
             .map(|n| source("soundcloud", Kind::Track, "song_id", json!(n))),
         // YouTube video ids are 11 characters of letters, digits, `-` and `_`.
-        (Platform::Youtube, Some(id)) if is_youtube_id(id) => {
+        (Platform::Youtube, Some(id)) if crate::ingest::youtube::is_id(id) => {
             Some(source("youtube", Kind::Track, "song_id", json!(id)))
         }
         _ => None,
@@ -60,10 +60,6 @@ pub fn bracket_id(stem: &str) -> Option<&str> {
     let start = inner.rfind('[')?;
     let id = &inner[start + 1..];
     (!id.is_empty()).then_some(id)
-}
-
-pub fn is_youtube_id(id: &str) -> bool {
-    id.len() == 11 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
 #[cfg(test)]
