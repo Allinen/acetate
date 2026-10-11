@@ -1678,15 +1678,15 @@ impl TrackEditor {
         let (api, out, ctx) = (shell.api.clone(), self.fetched.clone(), shell.ctx.clone());
         shell.runtime.spawn(async move {
             let result = async {
-                let json = match pasted {
-                    Pasted::Json(json) => json,
+                // The server reads it, with the platform's extension.
+                let meta = match pasted {
+                    Pasted::Json(json) => api.send_json::<Metadata>(reqwest::Method::POST, "/api/extensions/import", Some(json)).await.map_err(|e| e.message)?,
                     Pasted::Broken(why) => return Err(why),
                     Pasted::YouTube(link) => {
-                        let body = serde_json::json!({ "link": link });
-                        api.send_json::<serde_json::Value>(reqwest::Method::POST, "/api/metadata/youtube", Some(body)).await.map_err(|e| e.message)?
+                        let body = serde_json::json!({ "input": link });
+                        api.send_json::<Metadata>(reqwest::Method::POST, "/api/extensions/youtube/metadata", Some(body)).await.map_err(|e| e.message)?
                     }
                 };
-                let meta = import::parse(&json)?;
                 let owners = match &meta.account {
                     Some(a) => {
                         let body = serde_json::json!({ "platform": a.platform, "ids": a.ids });
@@ -1759,7 +1759,7 @@ impl TrackEditor {
             }
         }
         if may_source {
-            let (platform, id, data) = m.source.clone();
+            let import::SourceRef { platform, id, data } = m.source.clone();
             // A stand-in id, as `source:` makes them.
             let stand_in = {
                 use std::hash::{Hash, Hasher};

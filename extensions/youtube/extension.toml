@@ -47,3 +47,18 @@ captures = { song_id = { class = "id", len = 11 } }
 kind = "artist"
 open = "https://www.youtube.com/channel/{channel}"
 match = ["https://youtube.com/@{channel}", "https://youtube.com/channel/{channel}"]
+
+# A pasted yt-dlp info JSON (and a video's link, read with yt-dlp) is turned into the track's
+# metadata by metadata.py. YouTube is asked for at most 10 videos a minute per person, 3 at a time.
+[import]
+extractor = "youtube"
+contains = { webpage_url = "youtube.com/" }
+
+[fetch]
+command = ["python3", "metadata.py"]
+timeout = 60
+at_once = 3
+per_user_per_minute = 10
+network = true
+env = ["ACETATE_YTDLP_COOKIES"]
+thumbnail_hosts = ["ytimg.com"]

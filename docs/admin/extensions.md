@@ -1,7 +1,7 @@
 # Extensions (design draft)
 
-> Status: the data part (shapes, links, ids) works, in `extensions/*/extension.toml`. Pasted-JSON
-> import (`[import]`) and the fetch program (`[fetch]`) are designed here and not built yet.
+> Status: all of it works: shapes, links and ids (data), pasted-JSON detection (`[import]`) and the
+> fetch program (`[fetch]`). YouTube's and SoundCloud's programs are `extensions/*/metadata.py`.
 
 An **extension** teaches Acetate about one place music comes from (YouTube, SoundCloud,
 NetEase, a store...). Today that knowledge is spread over the server and every client:
@@ -74,29 +74,22 @@ kind = "artist"
 open = "https://www.youtube.com/channel/{channel}"
 match = ["https://youtube.com/@{channel}", "https://youtube.com/channel/{channel}"]
 
-# ---- Pasted JSON: a downloader's or the site's own, as SoundCloud's is read today ----
-# `detect`: the JSON is this platform's if it has any of these keys (a dotted path), or a
-# string in `contains` has the text. Then each field of the result is read from a path of
-# the JSON; `{a}` in a text is the value at path `a`; a list of paths is the first found.
+# ---- Pasted JSON: which one is this platform's ----
+# Any of these. The program's `parse` then reads it.
 [import]
-detect = { extractor = "youtube", keys = [], contains = { webpage_url = "youtube.com/" } }
-title = "title"
-artists = ["artist", "creator", "channel"]
-release_date = "upload_date"            # YYYYMMDD or ISO, both read
-thumbnail = "thumbnail"
-source = { song_id = "id" }             # the fields of the track shape
-account = { kind = "artist", name = "channel", source = { channel = "channel_id" } }
-# what a path can't say (SoundCloud's artwork sizes, a list of descriptions) is left to the
-# fetch program: `{"op": "parse", "input": <the JSON>}`, answered like "metadata" below.
+extractor = "youtube"                     # yt-dlp's extractor_key, any case
+keys = []                                 # or it has any of these keys
+contains = { webpage_url = "youtube.com/" }   # or the text at a key has this in it
 
-# ---- The part that needs code: metadata of a video ----
+# ---- The part that needs code ----
 [fetch]
-command = ["python3", "metadata.py"]
-timeout = 60                # seconds
-at_once = 3                 # processes running together, for everyone
+command = ["python3", "metadata.py"]      # run in the extension's folder
+timeout = 60                              # seconds
+at_once = 3                               # running together, for everyone
 per_user_per_minute = 10
-network = true              # said, so the admin sees it (see "Limits" below)
-env = ["ACETATE_YTDLP_COOKIES"]   # the only environment variables it is given
+network = true                            # said, so the admin sees it (not enforced: see "Limits")
+env = ["ACETATE_YTDLP_COOKIES"]           # the only environment variables it is given (and PATH, HOME, LANG)
+thumbnail_hosts = ["ytimg.com"]           # where the server may fetch a thumbnail from
 ```
 
 A store with no shape of its own (Qobuz, Tidal...) is the same file with no `[[shape]]`:
@@ -109,24 +102,37 @@ A platform like NetEase is a manifest and nothing else, and so are the private o
 
 ## What is code: the fetch program
 
-The server runs `command` with the extension's folder as the working directory, writes
-one JSON object to its standard input, and reads one from its standard output:
+The server runs `command` with the extension's folder as the working directory (for the
+extensions that come with Acetate, `/app/extensions/<name>` in the image, or
+`ACETATE_BUILTIN_EXTENSIONS_DIR`), writes one JSON object to its standard input, and reads one
+from its standard output. It gets `PATH`, `HOME`, `LANG`, the variables its manifest lists, and
+`ACETATE_FETCH_TIMEOUT` (the seconds it has).
 
 ```
-in:  { "op": "metadata", "input": "dQw4w9WgXcQ" }       # a link or an id, as the user gave it
-     { "op": "parse", "input": { …pasted JSON… } }      # for what [import] can't read
-out: { "id": "dQw4w9WgXcQ",
-       "title": "…", "artists": ["…"], "release_date": "2021-06-04",
-       "thumbnail": "https://i.ytimg.com/…",
-       "source": { …fields of the track shape… },
-       "accounts": [{ "kind": "artist", "name": "…", "source": { "channel": "…" } }] }
+in:  { "op": "metadata", "input": "<the link or id as typed>", "match": { "song_id": "dQw4w9WgXcQ" } }
+     { "op": "parse", "input": { …the pasted JSON… } }
+out: { "from": "YouTube", "title": "…", "date": "2021-06-04", "genre": null,
+       "artists": ["…"],
+       "account": { "platform": "youtube", "ids": ["UC…"], "label": "youtube @x", "data": { "channel": "UC…" } },
+       "source": { "platform": "youtube", "id": "dQw4w9WgXcQ", "data": { …fields of the track shape… } },
+       "artwork": ["https://i.ytimg.com/…"] }
 ```
 
-or `{ "error": "why" }` (shown to the user as it is). Any language works. YouTube's does
-what `api/metadata.rs` does with yt-dlp now. The server keeps what it does today around it:
-the timeout, the cap on processes running together, the per-user limit, reading the same
-video once for 10 minutes, and fetching the thumbnail itself (only from hosts the answer's
-extension lists in `thumbnail_hosts`).
+`match` is what the extension's `[[link]]`s and `[id]` made of the input, so the program
+doesn't read links. The answer is the track's metadata as the track editor takes it
+(`account` is the uploader's, when the artist is the uploader). Or `{ "error": "why" }`, shown
+to the user as it is (with `"unavailable": true` when a tool it needs, like yt-dlp, isn't
+installed: the user is told so). Any language works.
+
+The server keeps around it: the timeout, the cap on processes running together, the per-user
+limit, answering the same `metadata` request again for 10 minutes without running it, and
+fetching the thumbnail itself (only from `thumbnail_hosts`).
+
+Clients ask through `POST /api/extensions/import` (a pasted JSON; the extension whose `[import]`
+recognizes it reads it) and `POST /api/extensions/{name}/metadata` (`{"input": "<link>"}`).
+YouTube's program is `extensions/youtube/metadata.py` (yt-dlp), SoundCloud's reads a track's
+JSON in `extensions/soundcloud/metadata.py`; each has tests next to it
+(`python3 -m unittest`).
 
 ## Who gets what
 
@@ -175,7 +181,6 @@ what it does, it doesn't stop it. Install only what you trust, as you would any 
 2. The data: shapes, links, filenames, comment links and pasted-JSON import as manifests; the built-ins written;
    `/api/extensions`; `clients/core` reads them (one link parser); the generated Python
    shapes go. YouTube's *fetch* still in Rust.
-3. The fetch program: YouTube's yt-dlp becomes `metadata.py`; the server runs programs
-   through a `MetadataProvider` trait.
+3. The fetch program: YouTube's yt-dlp is `metadata.py`; the server runs programs (done).
 4. Author-specific leftovers: the `Singles`/`Albums` folder rule, the cookies setting, the
    hard-coded `"released"`, the vocabulary (its own task).

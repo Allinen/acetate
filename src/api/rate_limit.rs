@@ -41,8 +41,7 @@ const LOGIN_FAILURES_PER_USERNAME: usize = 10;
 const SHARE_FAILURES_PER_IP: usize = 20;
 const SHARE_REQUEST_WINDOW: Duration = Duration::from_secs(60);
 const SHARE_REQUESTS_PER_IP: usize = 300;
-const YOUTUBE_WINDOW: Duration = Duration::from_secs(60);
-const YOUTUBE_READS_PER_USER: usize = 10;
+const FETCH_WINDOW: Duration = Duration::from_secs(60);
 
 /// The name the failures are kept under (`db::state`).
 const KEPT_AS: &str = "rate_limits";
@@ -55,8 +54,8 @@ pub struct RateLimits {
     failures: Limiter,
     /// Every request to a share route.
     share_requests: Limiter,
-    /// Videos read with yt-dlp, per user.
-    youtube_reads: Limiter,
+    /// Runs of extensions' programs, per user and extension.
+    fetch_reads: Limiter,
     /// Where the failures are kept between runs (none: not kept, e.g. in unit tests).
     pool: Option<PgPool>,
     /// A write of the failures is on its way.
@@ -68,7 +67,7 @@ impl RateLimits {
         RateLimits {
             failures: Limiter::new(FAILURE_WINDOW),
             share_requests: Limiter::new(SHARE_REQUEST_WINDOW),
-            youtube_reads: Limiter::new(YOUTUBE_WINDOW),
+            fetch_reads: Limiter::new(FETCH_WINDOW),
             pool: None,
             keeping: AtomicBool::new(false),
         }
@@ -113,13 +112,13 @@ impl RateLimits {
         Ok(())
     }
 
-    /// Counts a video read with yt-dlp (10 a minute per user); if the user has used them
-    /// up: how long until the next.
-    pub fn youtube_read(&self, user: Option<uuid::Uuid>) -> Option<Duration> {
-        let key = format!("youtube:{}", user.map(|u| u.to_string()).unwrap_or_default());
-        let wait = self.youtube_reads.check(&key, YOUTUBE_READS_PER_USER);
+    /// Counts a run of an extension's program for `user` (`max` a minute, for each
+    /// extension); if the user has used them up: how long until the next.
+    pub fn fetch_read(&self, extension: &str, user: Option<uuid::Uuid>, max: usize) -> Option<Duration> {
+        let key = format!("fetch:{extension}:{}", user.map(|u| u.to_string()).unwrap_or_default());
+        let wait = self.fetch_reads.check(&key, max);
         if wait.is_none() {
-            self.youtube_reads.record(&key);
+            self.fetch_reads.record(&key);
         }
         wait
     }

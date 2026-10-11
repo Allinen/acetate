@@ -1,6 +1,8 @@
 //! The extensions that are loaded (see `acetate_extensions` and docs/admin/extensions.md):
 //! those that come with Acetate and the ones in `ACETATE_EXTENSIONS_DIR`.
 
+pub mod fetch;
+
 use std::path::Path;
 use std::sync::OnceLock;
 

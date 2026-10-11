@@ -65,3 +65,14 @@ kind = "artist"
 open = "https://soundcloud.com/{artist_permalinks}"
 match = ["https://soundcloud.com/{artist}/*"]
 set = { artist_permalinks = "{artist}" }
+
+# A SoundCloud track's own JSON (the API's, a downloader's), pasted into the editor.
+[import]
+keys = ["waveform_url", "waveformKey"]
+contains = { permalink_url = "soundcloud.com/" }
+
+[fetch]
+command = ["python3", "metadata.py"]
+timeout = 10
+at_once = 4
+per_user_per_minute = 60

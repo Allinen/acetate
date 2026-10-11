@@ -27,6 +27,8 @@ RUN apt-get update \
 ADD --chmod=755 https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp /usr/local/bin/yt-dlp
 COPY --from=build /usr/local/bin/acetate /usr/local/bin/acetate
 COPY web /app/web
+# The programs of the extensions that come with Acetate (their data is in the binary).
+COPY extensions /app/extensions
 WORKDIR /app
 # ACETATE_VOLUMES (where blobs go) and DATABASE_URL come from the compose file.
 ENV ACETATE_WEB_DIR=/app/web \

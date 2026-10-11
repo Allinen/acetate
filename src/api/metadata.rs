@@ -1,141 +1,76 @@
-//! Metadata from elsewhere, for the track editor's "import metadata from": a YouTube
-//! video's, read with `yt-dlp` (optional on the server, like ffmpeg: where it's missing,
-//! this says so, and pasting a yt-dlp JSON still works). The client parses it, the same as
-//! a pasted one.
-
-use std::time::Duration;
+//! Metadata from elsewhere, for the track editor's "import metadata from": a platform's
+//! track read by its extension's program (YouTube's with `yt-dlp`, optional on the server
+//! like ffmpeg: where it's missing, this says so, and pasting its JSON still works), or a
+//! pasted JSON the extensions recognize. Both answer with the same `Metadata`.
 
 use axum::Json;
-use axum::extract::State;
+use axum::extract::{Path, State};
 use serde::Deserialize;
-use serde_json::Value;
-use tokio::process::Command;
+use serde_json::{Value, json};
+
+use acetate_extensions::Metadata;
 
 use super::{AppError, AppState};
 use crate::auth::CurrentUser;
-
-/// yt-dlp gets this long.
-const TIMEOUT: Duration = Duration::from_secs(60);
-
-/// At most this many yt-dlp processes run at once, for everyone together.
-const AT_ONCE: usize = 3;
-static RUNNING: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(AT_ONCE);
-
-/// What yt-dlp's JSON has that no one here reads, and that makes it big.
-const LEFT_OUT: &[&str] = &["formats", "requested_formats", "requested_downloads", "thumbnails", "automatic_captions", "subtitles", "heatmap", "_format_sort_fields"];
+use crate::extensions::{fetch, registry};
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Youtube {
-    /// A video's link (youtube.com, youtu.be, music.youtube.com) or its id.
-    link: String,
+pub struct Input {
+    /// A link to the track (or its id on its own, where the platform has those).
+    input: String,
 }
 
-/// `POST /api/metadata/youtube`, JSON `{"link": "…"}`: the video's metadata, as
-/// `yt-dlp -J` says it (without its formats, thumbnails and captions). Only YouTube: the
-/// link is read for the video's id, and yt-dlp is given that video's own link. 503 where
-/// yt-dlp isn't installed; 422 when it can't read the video (with why) or takes too long;
-/// 429 past 10 videos a minute per user, or while 3 are being read already.
-pub async fn youtube(State(state): State<AppState>, user: CurrentUser, Json(body): Json<Youtube>) -> Result<Json<Value>, AppError> {
-    let id = video_id(&body.link).ok_or_else(|| AppError::BadRequest("not a YouTube video's link or id".to_string()))?;
-    Ok(Json(fetch_youtube(&state, &user, &id).await?))
+/// `POST /api/extensions/{name}/metadata`, JSON `{"input": "…"}`: the track at this link on
+/// the platform, read by its extension's program. 400 for what isn't one of the platform's
+/// links; 503 where the program's tool isn't installed (yt-dlp); 422 when it can't read the
+/// track (with why) or takes too long; 429 past the extension's limits (YouTube: 10 a
+/// minute per person, 3 at once).
+pub async fn metadata(State(state): State<AppState>, user: CurrentUser, Path(name): Path<String>, Json(body): Json<Input>) -> Result<Json<Metadata>, AppError> {
+    Ok(Json(by_input(&state, &user, &name, &body.input).await?))
 }
 
-/// What was read lately, by video id: the track editor asks for the same video's metadata
-/// at every preview, and it is read once.
-static RECENT: std::sync::Mutex<Vec<(String, std::time::Instant, Value)>> = std::sync::Mutex::new(Vec::new());
-const KEPT_FOR: Duration = Duration::from_secs(10 * 60);
-const KEPT_UP_TO: usize = 100;
-
-/// The video's metadata as `yt-dlp -J` says it (see `youtube`), for the video with this id.
-/// What was read in the last 10 minutes is answered again without yt-dlp (and without
-/// counting against the limits).
-pub async fn fetch_youtube(state: &AppState, user: &CurrentUser, id: &str) -> Result<Value, AppError> {
-    {
-        let mut recent = RECENT.lock().unwrap();
-        recent.retain(|(_, at, _)| at.elapsed() < KEPT_FOR);
-        if let Some((_, _, json)) = recent.iter().find(|(kept, _, _)| kept == id) {
-            return Ok(json.clone());
-        }
-    }
-    let json = read_youtube(state, user, id).await?;
-    let mut recent = RECENT.lock().unwrap();
-    if recent.len() >= KEPT_UP_TO {
-        recent.remove(0);
-    }
-    recent.push((id.to_string(), std::time::Instant::now(), json.clone()));
-    Ok(json)
+/// The track a link (or id) is on `platform`, read by the extension's program.
+pub async fn by_input(state: &AppState, user: &CurrentUser, platform: &str, input: &str) -> Result<Metadata, AppError> {
+    let registry = registry();
+    let title = registry.extension(platform).map_or(platform, |e| e.extension.title.as_str());
+    let found = registry
+        .match_bare_id(input, "track")
+        .or_else(|| registry.match_link(input, "track", false))
+        .filter(|m| m.platform == platform)
+        .ok_or_else(|| AppError::BadRequest(format!("not a link or id of a track on {title}")))?;
+    let fields: serde_json::Map<String, Value> = found.fields.iter().map(|(k, v)| (k.clone(), json!(v))).collect();
+    let remember = format!("{:?}", found.fields);
+    let request = json!({ "op": "metadata", "input": input.trim(), "match": fields });
+    Ok(fetch::metadata(state, user, platform, &request, Some(&remember)).await?)
 }
 
-async fn read_youtube(state: &AppState, user: &CurrentUser, id: &str) -> Result<Value, AppError> {
-    if let Some(wait) = state.rate_limits.youtube_read(user.id()) {
-        return Err(AppError::TooManyRequests(wait));
-    }
-    let Ok(_running) = RUNNING.try_acquire() else {
-        return Err(AppError::TooManyRequests(Duration::from_secs(5)));
+/// `POST /api/extensions/import`, JSON: a pasted JSON object (a yt-dlp info JSON, a
+/// SoundCloud track's). The extension that recognizes it (`[import]`) reads it. 400 when
+/// none does.
+pub async fn import(State(state): State<AppState>, user: CurrentUser, Json(pasted): Json<Value>) -> Result<Json<Metadata>, AppError> {
+    let registry = registry();
+    let Some(extension) = registry.detect_import(&pasted) else {
+        let known: Vec<&str> = registry.extensions.iter().filter(|e| e.import.is_some()).map(|e| e.extension.title.as_str()).collect();
+        return Err(AppError::BadRequest(format!("not the JSON of a platform Acetate reads ({})", known.join(", "))));
     };
-    let url = format!("https://www.youtube.com/watch?v={id}");
-    let mut command = Command::new("yt-dlp");
-    command.args(["-J", "--no-playlist", "--skip-download", "--no-warnings", "--ignore-no-formats-error"]);
-    // A cookies.txt (Netscape format) of a logged-in browser, for "Sign in to confirm you're not a bot".
-    if let Some(cookies) = std::env::var_os("ACETATE_YTDLP_COOKIES").filter(|c| !c.is_empty()) {
-        command.arg("--cookies").arg(cookies);
-    }
-    let run = command
-        .args(["--", &url])
-        .stdin(std::process::Stdio::null())
-        .kill_on_drop(true)
-        .output();
-    let output = match tokio::time::timeout(TIMEOUT, run).await {
-        Err(_) => return Err(AppError::Internal(crate::ingest::Rejected::Invalid(format!("yt-dlp took longer than {} seconds", TIMEOUT.as_secs())).into())),
-        Ok(Err(err)) if err.kind() == std::io::ErrorKind::NotFound => {
-            return Err(AppError::Unavailable("yt-dlp isn't installed on the server: paste the video's yt-dlp JSON instead".to_string()));
-        }
-        Ok(Err(err)) => return Err(AppError::Internal(anyhow::anyhow!("running yt-dlp: {err}"))),
-        Ok(Ok(output)) => output,
-    };
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let why = stderr.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("it failed").trim().trim_start_matches("ERROR: ");
-        let hint = if why.contains("Sign in") { " (set ACETATE_YTDLP_COOKIES to a cookies.txt file from a logged-in browser)" } else { "" };
-        return Err(AppError::Internal(crate::ingest::Rejected::Invalid(format!("yt-dlp couldn't read the video: {why}{hint}")).into()));
-    }
-    let mut json: Value = serde_json::from_slice(&output.stdout).map_err(|err| AppError::Internal(anyhow::anyhow!("yt-dlp's answer isn't JSON: {err}")))?;
-    if let Some(map) = json.as_object_mut() {
-        for key in LEFT_OUT {
-            map.remove(*key);
-        }
-    }
-    Ok(json)
-}
-
-/// A YouTube video's id from its link (watch?v=, youtu.be/, /shorts/, /embed/, /live/, on
-/// youtube.com, its m./www./music. hosts or youtu.be: the YouTube extension's `[[link]]`s)
-/// or the id itself.
-pub fn video_id(link: &str) -> Option<String> {
-    let registry = crate::extensions::registry();
-    let found = registry.match_bare_id(link, "track").or_else(|| registry.match_link(link, "track", false))?;
-    if found.platform != "youtube" {
-        return None;
-    }
-    found.fields.into_iter().find(|(field, _)| field == "song_id").map(|(_, id)| id)
+    let request = json!({ "op": "parse", "input": pasted });
+    Ok(Json(fetch::metadata(&state, &user, &extension.extension.name, &request, None).await?))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::video_id;
+    use crate::extensions::registry;
 
     #[test]
-    fn video_ids_from_links() {
-        let id = Some("dQw4w9WgXcQ".to_string());
-        assert_eq!(video_id("dQw4w9WgXcQ"), id);
-        assert_eq!(video_id("https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=42s"), id);
-        assert_eq!(video_id("https://music.youtube.com/watch?list=x&v=dQw4w9WgXcQ"), id);
-        assert_eq!(video_id("http://youtu.be/dQw4w9WgXcQ?si=abc"), id);
-        assert_eq!(video_id("youtube.com/shorts/dQw4w9WgXcQ"), id);
-        assert_eq!(video_id("https://m.youtube.com/embed/dQw4w9WgXcQ"), id);
-        assert_eq!(video_id("https://evil.example/watch?v=dQw4w9WgXcQ"), None);
-        assert_eq!(video_id("https://www.youtube.com/watch?v=short"), None);
-        assert_eq!(video_id("https://www.youtube.com/@channel"), None);
+    fn pasted_json_is_told_apart_by_the_extensions() {
+        let r = registry();
+        let name = |json: serde_json::Value| r.detect_import(&json).map(|e| e.extension.name.clone());
+        assert_eq!(name(serde_json::json!({ "id": "x", "extractor_key": "Youtube" })).as_deref(), Some("youtube"));
+        assert_eq!(name(serde_json::json!({ "webpage_url": "https://www.youtube.com/watch?v=x" })).as_deref(), Some("youtube"));
+        assert_eq!(name(serde_json::json!({ "id": 1, "waveform_url": "x" })).as_deref(), Some("soundcloud"));
+        assert_eq!(name(serde_json::json!({ "id": 1, "permalink_url": "https://soundcloud.com/a/b" })).as_deref(), Some("soundcloud"));
+        assert_eq!(name(serde_json::json!({ "id": 1 })), None);
+        assert_eq!(name(serde_json::json!({ "id": "1", "extractor_key": "Soundcloud" })), None);
     }
 }

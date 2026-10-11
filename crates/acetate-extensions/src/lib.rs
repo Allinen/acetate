@@ -32,9 +32,80 @@ pub struct Manifest {
     pub links: Vec<Link>,
     #[serde(default)]
     pub id: Option<IdRule>,
-    /// The program for what data can't say (not yet read: see the design).
+    /// Which pasted JSON is this platform's (the program's `parse` reads it).
+    #[serde(default, rename = "import")]
+    pub import: Option<Import>,
+    /// The program for what data can't say.
     #[serde(default, skip_serializing)]
     pub fetch: Option<Fetch>,
+    /// The folder it was loaded from (none for the built-in ones).
+    #[serde(skip)]
+    pub dir: Option<std::path::PathBuf>,
+}
+
+/// How to tell that a pasted JSON is a platform's: any of these.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Import {
+    /// `extractor_key` is this (any case): yt-dlp's name for the site.
+    pub extractor: Option<String>,
+    /// It has any of these keys.
+    pub keys: Vec<String>,
+    /// A text at this key has this in it.
+    pub contains: HashMap<String, String>,
+}
+
+impl Import {
+    fn detects(&self, json: &Value) -> bool {
+        let text = |key: &str| json.get(key).and_then(Value::as_str);
+        self.extractor.as_deref().is_some_and(|e| text("extractor_key").is_some_and(|k| k.eq_ignore_ascii_case(e)))
+            || self.keys.iter().any(|k| json.get(k).is_some())
+            || self.contains.iter().any(|(k, needle)| text(k).is_some_and(|t| t.contains(needle.as_str())))
+    }
+}
+
+/// What a platform says about a track, as a program's `metadata` and `parse` answer it and
+/// as the track editor takes it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Metadata {
+    /// Where it came from, as a version is named ("SoundCloud", "YouTube").
+    pub from: String,
+    pub title: String,
+    #[serde(default)]
+    pub date: Option<String>,
+    #[serde(default)]
+    pub genre: Option<String>,
+    /// The artists' names, primary, in order.
+    pub artists: Vec<String>,
+    /// The uploader's account, when the (first) artist is the uploader.
+    #[serde(default)]
+    pub account: Option<Account>,
+    /// The track's source there.
+    pub source: SourceRef,
+    /// The artwork's links, best first.
+    #[serde(default)]
+    pub artwork: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SourceRef {
+    pub platform: String,
+    /// The platform's id for it.
+    pub id: String,
+    /// Its data, in the platform's track shape.
+    pub data: Value,
+}
+
+/// An account on a platform, as an artist's source.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Account {
+    pub platform: String,
+    /// The ids it may be known by (an artist's source's id field): looked up.
+    pub ids: Vec<String>,
+    /// How it's said ("soundcloud someone").
+    pub label: String,
+    /// Its data, in the platform's artist shape.
+    pub data: Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -174,6 +245,9 @@ pub struct Fetch {
     pub network: bool,
     #[serde(default)]
     pub env: Vec<String>,
+    /// Hosts (and their subdomains) the thumbnail in an answer may be fetched from.
+    #[serde(default)]
+    pub thumbnail_hosts: Vec<String>,
 }
 
 /// Every extension that is loaded, in order (a later one with the same name replaced the
@@ -222,6 +296,11 @@ impl Manifest {
         let name = &self.extension.name;
         if name.is_empty() || !name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_') {
             return Err(format!("the name “{name}” is lowercase letters, digits and _"));
+        }
+        if let Some(fetch) = &self.fetch
+            && fetch.command.is_empty()
+        {
+            return Err("[fetch] needs a command".into());
         }
         for shape in &self.shapes {
             if !KINDS.contains(&shape.kind.as_str()) {
@@ -290,7 +369,10 @@ impl Registry {
                 Ok(manifest) if manifest.extension.api > API => {
                     problems.push(format!("{}: needs API {} and this is {API}", file.display(), manifest.extension.api));
                 }
-                Ok(manifest) => registry.add(manifest),
+                Ok(mut manifest) => {
+                    manifest.dir = Some(folder.clone());
+                    registry.add(manifest);
+                }
                 Err(why) => problems.push(format!("{}: {why}", file.display())),
             }
         }
@@ -322,6 +404,15 @@ impl Registry {
         self.extensions.iter().find_map(|e| {
             e.links.iter().filter(|l| (l.kind == kind || l.kind == "any") && (!comment || l.comment)).find_map(|l| link::read(e, l, &parts, link))
         })
+    }
+
+    /// The extension a pasted JSON is of, if any says so.
+    pub fn detect_import(&self, json: &Value) -> Option<&Manifest> {
+        self.extensions.iter().find(|e| e.import.as_ref().is_some_and(|i| i.detects(json)))
+    }
+
+    pub fn extension(&self, name: &str) -> Option<&Manifest> {
+        self.extensions.iter().find(|e| e.extension.name == name)
     }
 
     /// Whether an extension has links on this link's site, whatever kind of thing they

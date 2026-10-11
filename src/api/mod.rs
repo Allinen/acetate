@@ -197,7 +197,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/tracks/{id}/sources", require(&[EditSources], post(sources::add_track_source)))
         .route("/api/sources/{id}", require(&[EditSources], delete(sources::trash)))
         .route("/api/sources/accounts", require(&[Browse], post(sources::accounts)))
-        .route("/api/metadata/youtube", require(&[EditMetadata], post(metadata::youtube)))
+        .route("/api/extensions/import", require(&[EditMetadata], post(metadata::import)))
+        .route("/api/extensions/{name}/metadata", require(&[EditMetadata], post(metadata::metadata)))
         // Lyrics (entries are edited, never deleted).
         .route("/api/tracks/{id}/lyrics", require(&[EditMetadata], post(lyrics::create)))
         .route("/api/lyrics/{id}", require(&[EditMetadata], put(lyrics::edit).delete(lyrics::remove)))

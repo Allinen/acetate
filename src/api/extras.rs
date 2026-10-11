@@ -337,28 +337,26 @@ pub async fn to_track(State(state): State<AppState>, user: CurrentUser, Path(id)
     let [file] = files[..] else {
         return Err(AppError::BadRequest(format!("it has {} files; only an extra with one can become a track", files.len())));
     };
-    let video_id = match with.link.as_deref().map(str::trim).filter(|l| !l.is_empty()) {
-        Some(link) => super::metadata::video_id(link).ok_or_else(|| AppError::BadRequest("not a YouTube video's link or id".into()))?,
+    let input = match with.link.as_deref().map(str::trim).filter(|l| !l.is_empty()) {
+        Some(link) => link.to_string(),
         None => crate::ingest::youtube::id_in_name(&extra.name)
             .or_else(|| crate::ingest::youtube::id_in_name(&file.name))
             .ok_or_else(|| AppError::BadRequest(format!("no YouTube id at the end of “{}” (“… [id]”): give the video's link", extra.name)))?,
     };
-    let json = super::metadata::fetch_youtube(&state, &user, &video_id).await?;
-    let video = crate::ingest::youtube::parse(&json).map_err(AppError::BadRequest)?;
-    if video.id != video_id {
-        return Err(AppError::BadRequest(format!("YouTube answered for another video ({})", video.id)));
-    }
+    let video = super::metadata::by_input(&state, &user, "youtube", &input).await?;
     Ok(Json(make_track(&state, &user, &extra, file, video, with).await?))
 }
 
 /// `to_track` once the video is known: the track, from `file` of `extra`.
-async fn make_track(state: &AppState, user: &CurrentUser, extra: &Extra, file: &db::extras::ExtraFile, video: crate::ingest::youtube::Video, with: super::problems::ImportWith) -> Result<super::problems::Imported, AppError> {
+async fn make_track(state: &AppState, user: &CurrentUser, extra: &Extra, file: &db::extras::ExtraFile, video: acetate_extensions::Metadata, with: super::problems::ImportWith) -> Result<super::problems::Imported, AppError> {
     use crate::ingest::describe::{ArtistHint, Described, DescribedCredit, Hints};
     use crate::model::sources::{self, Kind, NewSource};
     let invalid = |err: sources::InvalidSource| AppError::BadRequest(err.to_string());
-    let track_source = sources::validate(Kind::Track, NewSource { platform: "youtube".into(), source_id: None, captured_at: None, data: video.source.clone() }).map_err(invalid)?;
-    let channel_source = match &video.channel {
-        Some(channel) => Some(sources::validate(Kind::Artist, NewSource { platform: "youtube".into(), source_id: None, captured_at: None, data: serde_json::json!({ "channel": channel }) }).map_err(invalid)?),
+    let platform = video.source.platform.clone();
+    let track_source = sources::validate(Kind::Track, NewSource { platform: platform.clone(), source_id: None, captured_at: None, data: video.source.data.clone() }).map_err(invalid)?;
+    // The uploader's account, when the artist is the uploader: the first artist's source.
+    let channel_source = match &video.account {
+        Some(account) => Some(sources::validate(Kind::Artist, NewSource { platform: account.platform.clone(), source_id: None, captured_at: None, data: account.data.clone() }).map_err(invalid)?),
         None => None,
     };
     let artists: Vec<ArtistHint> = video
@@ -370,15 +368,16 @@ async fn make_track(state: &AppState, user: &CurrentUser, extra: &Extra, file: &
     let described = Described {
         title: video.title.clone(),
         credits: video.artists.iter().enumerate().map(|(n, name)| DescribedCredit { name: name.clone(), role: "primary".into(), artist: Some(n) }).collect(),
-        release_date: video.release_date.clone(),
+        release_date: video.date.clone(),
         ..Default::default()
     };
     // Its thumbnail, if it can be had (up to 15 seconds; the track is made without it
     // otherwise, and the answer says why there is no cover).
     let mut covers = Vec::new();
     let mut no_cover = None;
-    if let Some(url) = &video.thumbnail {
-        match fetch_thumbnail(url).await {
+    if let Some(url) = video.artwork.first() {
+        let hosts = crate::extensions::registry().extension(&platform).and_then(|e| e.fetch.as_ref()).map(|f| f.thumbnail_hosts.clone()).unwrap_or_default();
+        match fetch_thumbnail(url, &hosts).await {
             Ok(bytes) => covers.push(bytes),
             Err(why) => no_cover = Some(why),
         }
@@ -406,14 +405,14 @@ async fn make_track(state: &AppState, user: &CurrentUser, extra: &Extra, file: &
     Ok(imported)
 }
 
-/// Hosts YouTube's thumbnails are on.
-fn is_thumbnail_host(host: &str) -> bool {
-    host == "ytimg.com" || host.ends_with(".ytimg.com")
+/// Whether `host` is one of `hosts` or under it.
+fn is_thumbnail_host(host: &str, hosts: &[String]) -> bool {
+    hosts.iter().any(|h| host == h || host.ends_with(&format!(".{h}")))
 }
 
 /// A video's thumbnail: only from YouTube's image hosts (also after a redirect, of which
 /// there are at most 3), an image of at most 10 MB. Err says why not.
-async fn fetch_thumbnail(url: &str) -> Result<Vec<u8>, String> {
+async fn fetch_thumbnail(url: &str, hosts: &[String]) -> Result<Vec<u8>, String> {
     // The editor previews again at every change: fetched once.
     static RECENT: std::sync::Mutex<Vec<(String, std::time::Instant, Vec<u8>)>> = std::sync::Mutex::new(Vec::new());
     {
@@ -423,7 +422,7 @@ async fn fetch_thumbnail(url: &str) -> Result<Vec<u8>, String> {
             return Ok(bytes.clone());
         }
     }
-    let bytes = fetch_thumbnail_now(url).await?;
+    let bytes = fetch_thumbnail_now(url, hosts).await?;
     let mut recent = RECENT.lock().unwrap();
     if recent.len() >= 20 {
         recent.remove(0);
@@ -432,11 +431,12 @@ async fn fetch_thumbnail(url: &str) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
-async fn fetch_thumbnail_now(url: &str) -> Result<Vec<u8>, String> {
-    let on_youtube = |url: &reqwest::Url| url.scheme() == "https" && url.host_str().is_some_and(is_thumbnail_host);
+async fn fetch_thumbnail_now(url: &str, hosts: &[String]) -> Result<Vec<u8>, String> {
+    let allowed = hosts.to_vec();
+    let on_youtube = move |url: &reqwest::Url| url.scheme() == "https" && url.host_str().is_some_and(|h| is_thumbnail_host(h, &allowed));
     let url: reqwest::Url = url.parse().map_err(|_| "its thumbnail's address isn't one".to_string())?;
     if !on_youtube(&url) {
-        return Err(format!("its thumbnail is not on YouTube's image hosts ({})", url.host_str().unwrap_or("?")));
+        return Err(format!("its thumbnail is not on the platform's image hosts ({})", url.host_str().unwrap_or("?")));
     }
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(15))
@@ -582,9 +582,11 @@ mod tests {
             let mut tx = state.db(&user).await?;
             db::extras::get(&mut tx, id).await?.unwrap()
         };
-        let video = crate::ingest::youtube::parse(&serde_json::json!({
-            "id": "dQw4w9WgXcQ", "title": "Mira Vale - Glass Harbor (Official Video)", "channel": "Mira Vale", "channel_id": "UCabc",
-            "upload_date": "20210604"
+        let video: acetate_extensions::Metadata = serde_json::from_value(serde_json::json!({
+            "from": "YouTube", "title": "Mira Vale - Glass Harbor (Official Video)", "date": "2021-06-04", "artists": ["Mira Vale"],
+            "account": { "platform": "youtube", "ids": ["UCabc"], "label": "youtube @miravale", "data": { "channel": "UCabc" } },
+            "source": { "platform": "youtube", "id": "dQw4w9WgXcQ", "data": { "song_id": "dQw4w9WgXcQ", "song_release_date": "2021-06-04" } },
+            "artwork": []
         }))
         .unwrap();
         let tracks = || async { sqlx::query_scalar::<_, i64>("SELECT count(*) FROM tracks").fetch_one(&owner).await };

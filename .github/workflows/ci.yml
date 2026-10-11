@@ -98,3 +98,9 @@ jobs:
       - name: Test
         working-directory: clients/python
         run: python -m unittest -v
+      # The programs of the extensions that come with Acetate.
+      - name: Test the extensions' programs
+        run: |
+          for dir in extensions/*/; do
+            if ls "$dir"test_*.py >/dev/null 2>&1; then (cd "$dir" && python -m unittest -v); fi
+          done
