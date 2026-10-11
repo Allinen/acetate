@@ -227,7 +227,7 @@ fn strings(tag: &Tag, key: ItemKey) -> Vec<String> {
 }
 
 /// Splits artist values on `;`, the usual separator for several values in one tag
-/// (NetEase writes `ARTIST=Ravel.;Moss Keeper`). The parts are trimmed ("A; B"), and empty
+/// (some stores write `ARTIST=Ravel.;Moss Keeper`). The parts are trimmed ("A; B"), and empty
 /// ones and repeats are dropped. A value without `;` is kept exactly as written.
 ///
 /// Nothing else is split: "A feat. B", "A x B" or "A & B" stay one name, since those can be

@@ -390,7 +390,7 @@ async fn make_track(state: &AppState, user: &CurrentUser, extra: &Extra, file: &
         user: user.id(),
         uploaded_filename: file.name.clone(),
         origin: track_source.clone(),
-        status: "released".into(),
+        status: crate::model::DEFAULT_STATUS.into(),
         sources: vec![track_source],
         restrict_to,
         hints: Hints { artists, described: Some(described), track_covers: covers, no_duplicate_merge: true, ..Default::default() },

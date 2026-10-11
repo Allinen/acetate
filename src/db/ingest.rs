@@ -292,7 +292,7 @@ pub async fn find_album(
 }
 
 /// Roles for an album's artists from a file's tags: every album artist is primary, except
-/// on a single: there only the first is, and the others are featured (NetEase lists
+/// on a single: there only the first is, and the others are featured (some stores list
 /// everyone on a single as album artists).
 pub fn album_roles_from_tags(album_artists: &[FoundArtist], single: bool) -> Vec<(FoundArtist, String)> {
     album_artists
@@ -387,7 +387,7 @@ pub async fn owners_with_platform_id(
     }
 }
 
-/// An owner's ids on a platform, e.g. an artist's NetEase artist ids. With `trashed`,
+/// An owner's ids on a platform, e.g. an artist's ids on it. With `trashed`,
 /// only the ones in the trash (marked wrong), else only the ones that aren't.
 pub async fn platform_ids_of(
     conn: &mut PgConnection,

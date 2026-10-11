@@ -182,5 +182,5 @@ what it does, it doesn't stop it. Install only what you trust, as you would any 
    `/api/extensions`; `clients/core` reads them (one link parser); the generated Python
    shapes go. YouTube's *fetch* still in Rust.
 3. The fetch program: YouTube's yt-dlp is `metadata.py`; the server runs programs (done).
-4. Author-specific leftovers: the `Singles`/`Albums` folder rule, the cookies setting, the
+4. Author-specific leftovers: the cookies setting, the
    hard-coded `"released"`, the vocabulary (its own task).

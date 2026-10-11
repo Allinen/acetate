@@ -108,7 +108,7 @@ pub async fn ingest(
         user: user.id(),
         uploaded_filename: filename,
         origin: description.origin,
-        status: description.status.unwrap_or_else(|| "released".to_string()),
+        status: description.status.unwrap_or_else(|| crate::model::DEFAULT_STATUS.to_string()),
         sources: description.track_sources,
         restrict_to: description.restrict_to,
         hints: description.hints,

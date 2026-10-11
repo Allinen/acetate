@@ -1,7 +1,7 @@
 //! The data shape of each platform's sources, per kind of entity.
 //!
 //! Source data is supplied by whoever uploads (e.g. migration tooling with its own
-//! logic for finding SoundCloud / NetEase / YouTube info). It's validated strictly:
+//! logic for finding SoundCloud / YouTube info). It's validated strictly:
 //! unknown fields or wrong types are rejected rather than stored, so it stays queryable.
 //!
 //! A snapshot holds one value per field: the data as it was at one point in time.

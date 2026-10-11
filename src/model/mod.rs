@@ -59,12 +59,14 @@ pub struct TrackFacts {
     pub relations: Vec<Relation>,
 }
 
-// Written by hand instead of derived, so a missing status reads as "released" (the
-// column default) rather than "".
+/// The status a track has unless it is given one: the `tracks.status` column's default.
+pub const DEFAULT_STATUS: &str = "released";
+
+// Written by hand instead of derived, so a missing status reads as the default rather than "".
 impl Default for TrackFacts {
     fn default() -> Self {
         TrackFacts {
-            status: "released".to_string(),
+            status: DEFAULT_STATUS.to_string(),
             albums: Vec::new(),
             relations: Vec::new(),
         }

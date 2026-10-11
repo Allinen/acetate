@@ -185,7 +185,7 @@ pub async fn flag_merged_artist(
 }
 
 /// Flags a new track that has the same platform song id as other tracks (e.g. the same
-/// NetEase song downloaded twice, as different files). A possible duplicate, with the reason.
+/// song of a platform downloaded twice, as different files). A possible duplicate, with the reason.
 pub async fn flag_same_song(
     conn: &mut PgConnection,
     track_id: Uuid,

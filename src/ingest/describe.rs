@@ -2,7 +2,7 @@
 //! server uses it.
 //!
 //! The track's metadata always comes from the file's tags (see `ingest`). A description
-//! only adds *hints*: platform ids (a NetEase artist, album or song id...) and explicit
+//! only adds *hints*: platform ids (an artist, album or song id there...) and explicit
 //! Acetate ids. They decide which existing artist or album a name from the tags means,
 //! and get attached as sources so the next file finds them by id instead of by name.
 //!
@@ -165,7 +165,7 @@ pub struct ArtistHint {
     pub name: String,
     /// "It's this artist": no matching at all.
     pub id: Option<Uuid>,
-    /// Where the artist can be found, e.g. their NetEase artist id.
+    /// Where the artist can be found, e.g. their artist id on a platform.
     pub sources: Vec<ValidSource>,
     /// The artist's name on the platform, when the tags call it something else (see
     /// `lax_artist_names`). Matching by name then uses this name, and the tags' spelling

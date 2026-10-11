@@ -44,7 +44,7 @@ pub async fn upload(
     user: CurrentUser,
     mut multipart: Multipart,
 ) -> Result<Json<Vec<UploadResult>>, AppError> {
-    let mut status = "released".to_string();
+    let mut status = crate::model::DEFAULT_STATUS.to_string();
     let mut restrict_to: Option<Vec<Uuid>> = None;
     let mut volume: Option<String> = None;
     let mut next_origin: Option<ValidSource> = None;

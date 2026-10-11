@@ -178,7 +178,7 @@ pub async fn add_snapshot(
 
 /// Moves every source of `from` to `into` (the same kind of owner: two artists, two
 /// tracks), when merging them. A source with the same platform id as one of `into`'s
-/// (e.g. both have NetEase song 123) joins that one: its snapshots move over, so files'
+/// (e.g. both have the platform's song 123) joins that one: its snapshots move over, so files'
 /// origins keep pointing at the same snapshots, and the emptied source is deleted.
 pub async fn move_all(conn: &mut PgConnection, from: SourceOwner, into: SourceOwner) -> sqlx::Result<MovedSources> {
     let sources = sqlx::query!(

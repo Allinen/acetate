@@ -12,7 +12,7 @@ use globset::{Glob, GlobSet, GlobSetBuilder};
 use sqlx::PgPool;
 
 use crate::db;
-use crate::ingest::describe::{AlbumHint, Hints, MatchedBy, Report, ReportStatus};
+use crate::ingest::describe::{Hints, MatchedBy, Report, ReportStatus};
 use crate::ingest::layouts::Layout;
 use crate::ingest::{self, comment_links, video, IngestOptions};
 use crate::ingest_client::Server;
@@ -206,7 +206,7 @@ pub async fn run(target: Target<'_>, dir: &Path, options: Options) -> anyhow::Re
             println!("not video  {shown}: just sound, left out (import it without --videos)");
             continue;
         }
-        let mut info = options.layout.read(&root, path);
+        let mut info = options.layout.read(path);
         // Nothing from the path: a SoundCloud or store link in the comment says where the
         // file is from (see `comment_links`), before --origin.
         if info.track.is_none() && options.comment_links {
@@ -227,8 +227,6 @@ pub async fn run(target: Target<'_>, dir: &Path, options: Options) -> anyhow::Re
             eprintln!("skipped    {shown}: {} and no --origin given", info.warnings.join("; "));
             continue;
         };
-        // Singles and albums folders are the only thing a path says about the album.
-        let album = info.album_is_single.map(|single| AlbumHint { single: Some(single), ..Default::default() });
         let ingest_options = IngestOptions {
             user: None, // the CLI acts as the system
             uploaded_filename: file_name(path),
@@ -237,7 +235,7 @@ pub async fn run(target: Target<'_>, dir: &Path, options: Options) -> anyhow::Re
             sources: Vec::new(),
             restrict_to: options.restrict_to.clone(),
             hints: Hints {
-                album,
+                album: None,
                 lax_artist_names: options.lax_artist_names,
                 no_composers: options.no_composers,
                 no_duplicate_merge: options.no_duplicate_merge,

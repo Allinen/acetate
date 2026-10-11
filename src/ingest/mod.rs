@@ -1155,9 +1155,8 @@ async fn create_track_rows(
     // ignoring case, like artist matching.
     //
     // On a single, the first artist is primary and the others featured, whatever ALBUM
-    // ARTIST says (NetEase lists everyone there on singles). A single is what the
-    // description (or the folders, see `layouts::release_kind`) says, or else a track
-    // count of 1 ("1/1"). Anything else is an album.
+    // ARTIST says (some stores list everyone there on singles). A single is what the
+    // description says, or else a track count of 1 ("1/1"). Anything else is an album.
     let single = hints
         .album
         .as_ref()
@@ -1302,7 +1301,7 @@ async fn create_track_rows(
         albums.push(AlbumMembership {
             album_id: id,
             disc_number: tags.disc_number.and_then(|n| i16::try_from(n).ok()),
-            // A position given with the album (e.g. from a NetEase album map) wins over
+            // A position given with the album (e.g. from a platform's album map) wins over
             // the TRACK tag.
             track_number: hints
                 .album
