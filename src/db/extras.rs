@@ -676,9 +676,36 @@ pub async fn stored_as(conn: &mut PgConnection, sha256: &str) -> sqlx::Result<Op
     .await
 }
 
-/// A file (its bytes stored already, and registered) added to an extra. Doesn't check that
-/// the bytes are new (see `stored_as`): a track made an extra again keeps its file.
+/// Refuses bytes some extra has already (the extras the user can't see count too), so a
+/// file is kept once. Takes a lock on the bytes until the transaction ends, so two uploads of
+/// the same file at once can't both pass. `allowed`: extras that may hold them (a track
+/// made an extra again keeps its file).
+async fn check_new_bytes(conn: &mut PgConnection, sha256: &str, allowed: &[Uuid]) -> anyhow::Result<()> {
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))").bind(sha256).execute(&mut *conn).await?;
+    let seen = stored_as(conn, sha256).await?;
+    let system = super::as_system(conn).await?;
+    let holder = sqlx::query_scalar!("SELECT f.extra_id FROM extra_files f WHERE f.sha256 = $1 AND f.extra_id <> ALL($2) LIMIT 1", sha256, allowed)
+        .fetch_optional(&mut *conn)
+        .await?;
+    system.end(conn).await?;
+    if holder.is_none() {
+        return Ok(());
+    }
+    Err(EditRejected::Invalid(match seen {
+        Some(stored) => format!("{} has this file already: add it there, or merge the extras", stored.described()),
+        None => "an extra you can't see has this file already".into(),
+    })
+    .into())
+}
+
+/// A file (its bytes stored already, and registered) added to an extra. Refused if another
+/// extra has the same bytes already (see `stored_as`, which callers use to say so first).
 pub async fn add_file(conn: &mut PgConnection, extra: Uuid, sha256: &str, name: &str, size_bytes: i64, facts: &FileFacts, reason: &str) -> anyhow::Result<Uuid> {
+    check_new_bytes(conn, sha256, &[]).await?;
+    insert_file(conn, extra, sha256, name, size_bytes, facts, reason).await
+}
+
+async fn insert_file(conn: &mut PgConnection, extra: Uuid, sha256: &str, name: &str, size_bytes: i64, facts: &FileFacts, reason: &str) -> anyhow::Result<Uuid> {
     sqlx::query_scalar!("SELECT id FROM extras WHERE id = $1", extra).fetch_optional(&mut *conn).await?.ok_or(EditRejected::NotFound("extra"))?;
     if let Some((thumb, volume)) = &facts.thumb {
         super::blobs::register(conn, thumb, volume, None).await?;
@@ -961,7 +988,11 @@ pub async fn track_to_extra(conn: &mut PgConnection, track: Uuid, kind: &str, na
         duration_ms: row.duration_ms,
         ..Default::default()
     };
-    let file_id = add_file(conn, extra, &row.sha256, &row.file_name, row.size_bytes, &facts, reason).await?;
+    // Its file again (the track was an extra before, and came back): fine; the same bytes in
+    // some other extra: it would be there twice.
+    let before = sqlx::query_scalar!("SELECT id FROM extras WHERE from_track_id = $1", track).fetch_all(&mut *conn).await?;
+    check_new_bytes(conn, &row.sha256, &before).await?;
+    let file_id = insert_file(conn, extra, &row.sha256, &row.file_name, row.size_bytes, &facts, reason).await?;
     log(conn, extra, "made from a track", json!({ "track": track, "title": row.title }), reason).await?;
     sqlx::query!("SELECT track_became_extra($1, $2)", track, extra).execute(&mut *conn).await?;
     let made = get(conn, extra).await?.ok_or(EditRejected::NotFound("extra"))?;

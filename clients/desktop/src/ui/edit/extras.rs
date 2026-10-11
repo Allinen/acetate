@@ -616,7 +616,7 @@ impl MergeReport {
                 line += &format!(" ({})", names(&r.files_moved));
             }
             if !r.files_duplicate.is_empty() {
-                line += &format!("; {} the same bytes as one here, left behind ({})", r.files_duplicate.len(), names(&r.files_duplicate));
+                line += &format!("; {} already here (the same file, kept once), left on the old one ({})", r.files_duplicate.len(), names(&r.files_duplicate));
             }
             if !r.links_moved.is_empty() {
                 line += &format!("; belongs to {} too", r.links_moved.iter().map(|l| l.title.as_str()).collect::<Vec<_>>().join(", "));

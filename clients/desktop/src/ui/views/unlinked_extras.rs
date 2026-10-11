@@ -270,6 +270,8 @@ impl UnlinkedExtras {
             }
         });
         ui.add_space(4.0);
+        // Never offered itself (set before the name is typed in, so the first answer is clean).
+        self.search.skip = if self.target == Target::Merge { targets.clone() } else { Vec::new() };
         // One extra: its name is typed in, as a start (moving to another changes it).
         let one = if let [only] = targets[..] { catalog.extras.iter().find(|e| e.id == only) } else { None };
         if self.target.part().is_some() && self.prefilled.as_ref().map(|p| p.0) != one.map(|e| e.id) {
@@ -284,9 +286,6 @@ impl UnlinkedExtras {
             }
         }
         let sending = self.sending;
-        if self.target == Target::Merge {
-            self.search.skip = targets.clone();
-        }
         match self.target.part() {
             Some(part) => {
                 let hint = if self.target == Target::Merge {
@@ -478,7 +477,13 @@ impl UnlinkedExtras {
             self.marking.toggle(n, id_at);
             self.cursor = n;
         } else if let Some(n) = clicked {
-            self.marking.click(n, self.cursor, modifiers, id_at);
+            if modifiers.command || modifiers.shift {
+                self.marking.click(n, self.cursor, modifiers, id_at);
+            } else {
+                // A plain click marks that row alone (as x would).
+                self.marking.clear();
+                self.marking.toggle(n, id_at);
+            }
             self.cursor = n;
             self.said = None;
             // The name is next.

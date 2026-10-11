@@ -23,7 +23,8 @@ the editor in either mode, for a quick fix.)
   extras); making one again with the same name brings it back, without its history.
 - **Extras:** vocals, stems, samples, music videos: files linked to a track, album, artist
   or grouping, with their own page. A file an extra has already (the same bytes) isn't added
-  again: the upload says which extra has it.
+  again, by any route (an upload, an import, turning a track into an extra): the server
+  says which extra has it. (Duplicates from before that are merged, below.)
   Extras that are really one thing (the same file twice, or the pieces of one set) are
   merged on the page you keep: in edit mode, *Merge other extras into this one…*, pick them
   by name, preview what moves, then merge. Their files and links come over (a file or link

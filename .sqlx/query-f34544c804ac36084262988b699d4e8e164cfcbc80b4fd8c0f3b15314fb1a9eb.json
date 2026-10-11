@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT f.extra_id FROM extra_files f WHERE f.sha256 = $1 AND f.extra_id <> ALL($2) LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "extra_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "extra_files",
+            "name": "extra_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "UuidArray"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "f34544c804ac36084262988b699d4e8e164cfcbc80b4fd8c0f3b15314fb1a9eb"
+}

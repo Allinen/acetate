@@ -47,6 +47,13 @@ impl InlineSearch {
             self.hits = hits;
             self.selected = 0;
         }
+        // (Also what arrived before `skip` changed.)
+        if self.part == Part::Extras
+            && !self.skip.is_empty()
+            && let Some(c) = catalog
+        {
+            self.hits.retain(|&h| c.extras.get(h as usize).is_none_or(|e| !self.skip.contains(&e.id)));
+        }
         let focused = ui.ctx().memory(|m| m.has_focus(id));
         // Keys for the list, taken before the field sees them.
         let (up, down, enter, shift_enter, escape) = if focused {

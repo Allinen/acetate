@@ -329,7 +329,13 @@ async fn extras_are_merged_and_the_merge_undone(_: PgPoolOptions, connect: PgCon
     let (stems, _) = db::extras::create(&mut tx, "V stems", "stems", &About::default(), &[Link::Artist(lib.both)], None, "").await?;
     let facts = FileFacts::default();
     let kept_file = db::extras::add_file(&mut tx, keep, SHA, "vox.wav", 3, &facts, "").await?;
-    let twin_file = db::extras::add_file(&mut tx, twin, SHA, "vox copy.wav", 3, &facts, "").await?;
+    // The same bytes in two extras: from before they were refused.
+    assert!(db::extras::add_file(&mut tx, twin, SHA, "vox copy.wav", 3, &facts, "").await.is_err(), "kept once");
+    let twin_file: uuid::Uuid = sqlx::query_scalar("INSERT INTO extra_files (extra_id, sha256, name, size_bytes) VALUES ($1, $2, 'vox copy.wav', 3) RETURNING id")
+        .bind(twin)
+        .bind(SHA)
+        .fetch_one(&mut *tx)
+        .await?;
     let stems_file = db::extras::add_file(&mut tx, stems, &other_sha, "stems.zip", 3, &facts, "").await?;
 
     // Not into itself; not while they're seen by different people.
