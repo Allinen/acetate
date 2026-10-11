@@ -38,10 +38,6 @@ possible yet, so be careful!
 
 ## In bulk
 
-`acetate merge-duplicates` merges every "possible duplicate" pair with exactly the same
-title and about the same length, and keeps the better file (WAV over FLAC over MP3, then
-the bigger). Review's bulk tools do the same after showing exactly which pairs and can be
-filtered, so it should be preferred.
-
-`acetate duplicate-albums` lists albums that look like the same album twice. 
-Run with `--merge` to merge them. Tracks are not merged. 
+Review's bulk tools merge every "possible duplicate" pair with exactly the same title and
+about the same length, after showing exactly which pairs, and can be filtered. They keep the
+better file (WAV over FLAC over MP3, then the bigger).

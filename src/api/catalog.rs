@@ -9,7 +9,7 @@ use uuid::Uuid;
 use super::{AppError, AppState};
 use crate::auth::{CurrentUser, Permission};
 use crate::db;
-use crate::db::catalog::{AlbumDetail, AlbumHit, ArtistDetail, ArtistHit, TrackHit};
+use crate::db::catalog::{AlbumDetail, AlbumHit, ArtistDetail, ArtistHit};
 use crate::db::revisions::{self, Source, Written};
 use crate::db::tracks::TrackSummary;
 use crate::model::{AlbumData, Alias, ArtistData, Credit};
@@ -30,30 +30,6 @@ fn search_query(q: &str) -> Result<&str, AppError> {
         return Err(AppError::BadRequest("`q` can't be empty".to_string()));
     }
     Ok(q)
-}
-
-#[derive(Debug, Serialize)]
-pub struct SearchResults {
-    tracks: Vec<TrackHit>,
-    artists: Vec<ArtistHit>,
-    albums: Vec<AlbumHit>,
-}
-
-/// `GET /api/search?q=...`: tracks, artists (incl. aliases) and albums, fuzzy (typos are
-/// fine) and ranked, up to `limit` (default 20) of each.
-pub async fn search(
-    State(state): State<AppState>,
-    user: CurrentUser,
-    Query(params): Query<SearchParams>,
-) -> Result<Json<SearchResults>, AppError> {
-    let q = search_query(&params.q)?;
-    let limit = search_limit(params.limit);
-    let mut tx = state.db(&user).await?;
-    Ok(Json(SearchResults {
-        tracks: db::catalog::search_tracks(&mut tx, q, limit).await?,
-        artists: db::catalog::search_artists(&mut tx, q, limit).await?,
-        albums: db::catalog::search_albums(&mut tx, q, limit).await?,
-    }))
 }
 
 /// `GET /api/vocab`: allowed statuses, credit roles, album kinds and relation kinds.
@@ -223,24 +199,6 @@ pub async fn alias_uses(
         return Err(AppError::NotFound);
     }
     Ok(Json(revisions::alias_uses_seen(&mut tx, alias_id).await?))
-}
-
-#[derive(Debug, Deserialize)]
-pub struct BrowseParams {
-    before: Option<Uuid>,
-    limit: Option<i64>,
-}
-
-/// `GET /api/library/albums?before=&limit=`: albums, newest first (up to 500 a page), with
-/// their album artists and the cover to show. Only albums the user can see.
-pub async fn list_albums(
-    State(state): State<AppState>,
-    user: CurrentUser,
-    Query(params): Query<BrowseParams>,
-) -> Result<Json<Vec<db::catalog::AlbumListItem>>, AppError> {
-    let mut tx = state.db(&user).await?;
-    let limit = params.limit.unwrap_or(100).clamp(1, 500);
-    Ok(Json(db::catalog::list_albums(&mut tx, params.before, limit).await?))
 }
 
 /// `POST /api/artists/{id}/merge`, JSON `{"into": "...", "keep_name_as_alias": true}`:

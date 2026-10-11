@@ -120,6 +120,8 @@ pub struct AppState {
     pub store: BlobStore,
     /// Directory with the web UI's static files.
     pub web_dir: std::path::PathBuf,
+    /// The user guide as a website (the built mdBook), served at `/docs`.
+    pub docs_dir: std::path::PathBuf,
     /// Mark the session cookie `Secure` (only sent over HTTPS).
     pub secure_cookies: bool,
     /// Take the client's address from `X-Forwarded-For` (set by a reverse proxy).
@@ -171,11 +173,9 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/shares", require(&[Share], get(shares::list).post(shares::create)))
         .route("/api/shares/{id}", require(&[Share], delete(shares::revoke)))
-        .route("/api/search", require(&[Browse], get(catalog::search)))
         .route("/api/vocab", require(&[Browse], get(catalog::vocab)))
         .route("/api/vocabulary", require(&[Browse], get(vocabulary::list)).merge(require(&[Admin], post(vocabulary::add))))
         .route("/api/vocabulary/{list}/{word}", require(&[Admin], put(vocabulary::change)).merge(require(&[Admin], delete(vocabulary::remove))))
-        .route("/api/tracks", require(&[Browse], get(tracks::list)))
         .route("/api/tracks/{id}", require(&[Browse], get(tracks::get)))
         .route("/api/tracks/{id}/access", require(&[ManageAccess], get(access::get).put(access::set)))
         .route("/api/albums/{id}/access", require(&[ManageAccess], put(access::set_album)))
@@ -345,7 +345,6 @@ pub fn router(state: AppState) -> Router {
                 .merge(require(&[EditMetadata], put(catalog::edit_artist))),
         )
         .route("/api/artists/{id}/tracks", require(&[Browse], get(catalog::artist_tracks)))
-        .route("/api/library/albums", require(&[Browse], get(catalog::list_albums)))
         // The whole library for local browsing: big, so compressed (only this route; audio
         // and covers are compressed already).
         .route("/api/catalog", require(&[Browse], get(library::catalog)).layer(CompressionLayer::new()))
@@ -418,7 +417,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/auth/login", post(auth::login))
         .merge(share_links)
         // The web UI's page for a share link; the page itself reads the token from the URL.
-        .route_service("/s/{token}", ServeFile::new(state.web_dir.join("index.html")))
+        .route_service("/s/{token}", ServeFile::new(state.web_dir.join("share.html")))
         // A link to a track, album or artist, for someone with an account: the page hands
         // it to the desktop app (or the web UI) itself.
         .route_service("/open/{kind}/{id}", ServeFile::new(state.web_dir.join("open.html")));
@@ -426,7 +425,9 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .merge(public)
         .merge(api)
-        // Everything that isn't an API route: the web UI's static files.
+        // The user guide.
+        .nest_service("/docs", ServeDir::new(&state.docs_dir).append_index_html_on_directories(true))
+        // Everything that isn't an API route: the few static files (the share and open pages).
         .fallback_service(ServeDir::new(&state.web_dir))
         .layer(middleware::from_fn(same_version))
         .layer(TraceLayer::new_for_http())

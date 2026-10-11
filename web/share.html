@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Acetate</title>
+  <link rel="icon" type="image/png" href="/favicon.jpg">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <!-- What a share link (/s/<token>) shows to someone who isn't logged in: the shared track or
+       album, to listen to. -->
+  <main id="share"><p class="muted">Loading…</p></main>
+  <footer id="player" hidden>
+    <img id="player-cover" alt="" hidden>
+    <div id="player-info"></div>
+    <audio id="audio" controls preload="none"></audio>
+  </footer>
+  <script src="/share.js"></script>
+</body>
+</html>

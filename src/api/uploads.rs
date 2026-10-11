@@ -236,6 +236,7 @@ pub(crate) mod tests {
             pool,
             store: BlobStore::open(dir.path())?,
             web_dir: dir.path().to_path_buf(),
+            docs_dir: dir.path().join("docs"),
             secure_cookies: false,
             trust_proxy: false,
             rate_limits: std::sync::Arc::new(api::rate_limit::RateLimits::new()),

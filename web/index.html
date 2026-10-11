@@ -8,55 +8,13 @@
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-  <header>
-    <a href="#/" class="logo">Acetate</a>
-    <input id="search" type="search" placeholder="Search title or artist…" autocomplete="off">
-    <button id="upload-toggle" hidden>Upload</button>
-    <a id="playlists-link" href="#/playlists" hidden>Playlists</a>
-    <a id="shares-link" href="#/shares" hidden>Shares</a>
-    <a id="review-link" href="#/review" hidden>Review</a>
-    <a id="groups-link" href="#/groups" hidden>Groups</a>
-    <a id="trash-link" href="#/trash" hidden>Trash</a>
-    <a id="whoami" href="#/account" title="Account: password and sessions"></a>
-    <button id="account" class="small"></button>
-  </header>
-
-  <section id="login" hidden>
-    <form id="login-form" class="stack">
-      <strong>Acetate</strong>
-      <label>username <input name="username" autocomplete="username" required autofocus></label>
-      <label>password <input name="password" type="password" autocomplete="current-password" required></label>
-      <button type="submit">Log in</button>
-      <div id="login-error" class="error"></div>
-    </form>
-  </section>
-
-  <section id="upload-panel" hidden></section>
-
-  <!-- What a share link (/s/<token>) shows to someone who isn't logged in. -->
-  <section id="share-view" hidden></section>
-
   <main>
-    <section id="list-pane">
-      <table id="track-list">
-        <thead>
-          <tr><th>Title</th><th>Artist</th><th>Status</th><th>Date</th><th>Codec</th><th>Length</th></tr>
-        </thead>
-        <tbody></tbody>
-      </table>
-      <button id="load-more" hidden>Load more</button>
-    </section>
-    <section id="detail-pane">
-      <p class="muted">Select a track.</p>
-    </section>
+    <h1>Acetate</h1>
+    <p>This is an Acetate server. Use the Acetate app (desktop or phone) to log in and listen.</p>
+    <p class="row">
+      <a class="button" href="/docs/">Read the guide</a>
+      <a class="button" href="https://github.com/Allinen/acetate/releases">Get the app</a>
+    </p>
   </main>
-
-  <footer id="player">
-    <img id="player-cover" alt="" hidden>
-    <div id="player-info"><span class="muted">Nothing playing</span></div>
-    <audio id="audio" controls preload="none"></audio>
-  </footer>
-
-  <script src="/app.js"></script>
 </body>
 </html>

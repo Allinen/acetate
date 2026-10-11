@@ -19,7 +19,7 @@
 - Indicators for **original files**, their filenames, etc.
 - Built in support for **music videos**
 - Tracks **link** together (A is a remix of B and so on)
-- **Fully native cross-platform desktop app (egui)** - it's clean and fast. Simple web UI is included, but it's not the preferred way to use Acetate.
+- **Fully native cross-platform desktop app (egui)** - it's clean and fast. The server's own web pages are only for share links and this guide.
 - Python library for custom ingestion scripts, tailor it to your specific library setup
 
 **There's an entire [feature rich edit mode](#edit-mode) too**
@@ -66,7 +66,7 @@ When listening, you won't accidentally change something you didn't mean to; adva
 
   <img src="assets/screenshots/history.webp" alt="A track's history: every change, who made it and why, with Restore" width="560">
 
-- **Share** with your friends! If they're logged in, they can see it straight from the app; if not, the web version will do just fine
+- **Share** with your friends! If they're logged in, they can see it straight from the app; if not, the link's page plays it in a browser
 - Built in **synced lyric editor** - supports headers like [Intro] and [Verse 1: Artist] - even in synced lyrics!
 
 <p align="center"><img src="assets/screenshots/lyric-editor.webp" alt="Timing lyrics in the synced lyric editor" width="820"></p>
@@ -98,7 +98,7 @@ docker compose exec acetate acetate ingest /disk/Music --layout tags --origin my
 
 Drop `--dry-run` once the output looks right. Keep your music on the same mount as Acetate's volume: imports are then reflinks, which are instant and take no extra space (on btrfs, XFS, or ZFS with block cloning; anywhere else the files are copied).
 
-**Clients:** the desktop app for Linux and Windows is on the [releases page](https://github.com/Allinen/acetate/releases). To build it yourself, run `clients/desktop/install.sh`. The web UI is at `http://<your-server>:3000`, but you'll most likely not need it.
+**Clients:** the desktop app for Linux and Windows is on the [releases page](https://github.com/Allinen/acetate/releases). To build it yourself, run `clients/desktop/install.sh`. The user guide is at `http://<your-server>:3000/docs`.
 
 ## Non-goals
 
@@ -161,7 +161,7 @@ docker compose up -d                 # Postgres 18 on 127.0.0.1:5432
 cp .env.example .env
 cargo run -- user create alice --group admin   # asks for a password (or --password-stdin)
 cargo run -- serve                   # runs migrations, serves on 127.0.0.1:3000
-                                     # open http://127.0.0.1:3000 for the web UI in web/
+                                     # the apps connect here; the guide is built into target/book (mdbook build docs) and served at /docs
 scripts/install-hooks.sh             # pre-commit: versions agree, generated docs current; pre-push: clippy
 ```
 

@@ -432,47 +432,6 @@ async fn settle_pair(
     Ok(changed)
 }
 
-/// A pair `recheck_duplicates` settled: the flagged track and one it was said to look
-/// like, with their titles as they are now.
-pub struct Rechecked {
-    pub track: (Uuid, String),
-    pub other: (Uuid, String),
-}
-
-/// Looks at the open possible-duplicate flags again with today's rule for titles: a pair
-/// whose titles name different versions (`VersionWords::marks`: "Song" and "Song (Instrumental)")
-/// is settled as `settle_duplicate_pair` does, and the rest stay as they are. Flags raised
-/// for the same platform song (`flag_same_song`, with a `reason`) aren't about titles, and
-/// stay. A listed track merged since is looked at as the track it went into.
-pub async fn recheck_duplicates(conn: &mut PgConnection, resolution: &str) -> sqlx::Result<Vec<Rechecked>> {
-    let pairs = sqlx::query!(
-        r#"
-        SELECT t.id AS track, t.title AS track_title, listed.id::uuid AS "listed!",
-               o.id AS other, o.title AS other_title
-        FROM review_flags rf
-        JOIN tracks t ON t.id = rf.track_id
-        CROSS JOIN jsonb_array_elements_text(rf.related -> 'tracks') AS listed(id)
-        JOIN tracks o ON o.id = COALESCE((SELECT merged_into FROM tracks WHERE id = listed.id::uuid), listed.id::uuid)
-        WHERE rf.kind = 'possible_duplicate' AND rf.resolved_at IS NULL AND NOT rf.related ? 'reason'
-        ORDER BY rf.id, listed.id
-        "#
-    )
-    .fetch_all(&mut *conn)
-    .await?;
-    let words = VersionWords::load(&mut *conn).await?;
-    let mut settled = Vec::new();
-    for pair in pairs {
-        if pair.other == pair.track || words.marks(&pair.track_title) == words.marks(&pair.other_title) {
-            continue;
-        }
-        // Flagged both ways (A looks like B, B looks like A): the first settles both.
-        if !settle_pair(conn, pair.track, pair.listed, resolution, false).await?.is_empty() {
-            settled.push(Rechecked { track: (pair.track, pair.track_title), other: (pair.other, pair.other_title) });
-        }
-    }
-    Ok(settled)
-}
-
 /// A kind of flag, as `GET /api/vocab` lists them.
 #[derive(Debug, Serialize)]
 pub struct Kind {

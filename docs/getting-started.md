@@ -39,7 +39,7 @@ files are copied).
   goes back to an older one: if the server is older, the app only says so, and the server
   needs updating (an older server can't read what a newer app keeps).
 - **Android app:** see [The Android app](android.md). Listening, playlists, search and downloads.
-- **Web UI:** `http://<your-server>:3000`. Simpler, lacks many features - fine for visitors.
+- **In a browser:** `http://<your-server>:3000` has only the page for share links, and this guide at `/docs`. Everything else is in the apps.
 
 Log in with the user you created. Then press `?` to see the keys, and `Ctrl+K` to open the
 command palette.

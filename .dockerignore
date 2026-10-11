@@ -1,4 +1,4 @@
-# Only what the build needs: sources, migrations, .sqlx, web.
+# Only what the build needs: sources, migrations, .sqlx, web, docs.
 target
 data
 test-audio

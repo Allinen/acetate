@@ -30,4 +30,4 @@ the link and copies it. `Ctrl+Enter` does both, `Esc` closes.
 By default a share link plays a lower-quality copy (Opus, 128 kbps) with none of the file's
 tags or cover, so the link can't be used to collect original files. With **original** the link
 plays the original file. If its creator later loses `download_original`, the link goes back
-to playing copies. The web UI's Shares page says which kind each link is.
+to playing copies. `GET /api/shares` lists the links and says which kind each is, and `DELETE /api/shares/{id}` revokes one (the apps don't show a list yet).

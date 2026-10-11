@@ -2,16 +2,10 @@ mod api;
 mod auth;
 mod config;
 mod db;
-mod duplicate_albums_command;
 mod extensions;
 mod ingest;
 mod ingest_client;
 mod ingest_command;
-mod merge_duplicates_command;
-mod recheck_duplicates_command;
-mod producers_command;
-mod album_covers_command;
-mod measure_command;
 mod model;
 mod navidrome;
 mod storage;
@@ -93,30 +87,6 @@ enum Command {
         #[arg(long)]
         list_missing: Option<PathBuf>,
     },
-    /// Merge the "possible duplicate" pairs from review flags that have exactly the same
-    /// title and about the same length. The older track is kept (its metadata and covers),
-    /// with the better of the two files (WAV over FLAC over MP3, then the bigger). Each merge
-    /// can be undone on the track's page.
-    MergeDuplicates {
-        /// How far apart the lengths may be, in milliseconds.
-        #[arg(long, default_value_t = 1000)]
-        max_length_difference_ms: i64,
-        /// Also merge titles that differ only in case ("Intro" and "INTRO"). The kept
-        /// track's spelling stays.
-        #[arg(long)]
-        ignore_case: bool,
-        /// Only list what would be merged.
-        #[arg(long)]
-        dry_run: bool,
-    },
-    /// Looks at the open "possible duplicate" flags again with today's rule for titles and
-    /// settles the pairs it rules out: another version of the song ("Song" and "Song
-    /// (Instrumental)", "Sped Up", "Remastered", "Song 2"). For flags raised before the rule.
-    RecheckDuplicates {
-        /// Only list what would be settled.
-        #[arg(long)]
-        dry_run: bool,
-    },
     /// The checks the server runs on every track (no title, no artists, no album, no cover,
     /// no release date): each raises a review flag when a track starts missing that, and
     /// settles it when it's there again. Lists them (with how many flags are open), or
@@ -129,71 +99,6 @@ enum Command {
         /// Turn this check off.
         #[arg(long)]
         off: Option<String>,
-    },
-    /// List albums that look like the same album twice: about the same number of tracks
-    /// and total length, a similar title and an album artist in common (e.g. split by
-    /// ingest because the album artists or the date differ). Read-only unless --merge.
-    DuplicateAlbums {
-        /// How many tracks the two may differ by.
-        #[arg(long, default_value_t = 0)]
-        max_track_difference: i64,
-        /// How far apart the total lengths may be, in milliseconds.
-        #[arg(long, default_value_t = 2000)]
-        max_length_difference_ms: i64,
-        /// How alike the titles must be, 0 to 1 (trigram similarity; 1 = the same
-        /// ignoring case).
-        #[arg(long, default_value_t = 0.6)]
-        min_title_similarity: f32,
-        /// Also pair albums without an album artist in common (by default one is needed:
-        /// singles with a common title like "Intro" by different artists look alike).
-        #[arg(long)]
-        any_artists: bool,
-        /// Merge each pair: the newer album into the older one (tracks, covers, sources,
-        /// shares), which keeps its own title, date and credits.
-        #[arg(long)]
-        merge: bool,
-    },
-    /// One-off, for merges made before 2026-09-26: takes a merged track's covers back out
-    /// of the trash where the kept track had none; moves covers album merges left on the
-    /// merged album; and gives an album a copy of the cover a merged album without covers
-    /// of its own (e.g. a single) showed from its tracklist. Album fixes are recorded in
-    /// each merge, so an undo takes them back too. For merges from importing a stored file
-    /// again (before 2026-09-27): an album that import brought (e.g. the single) without
-    /// covers gets copies of the covers it came with.
-    FixMergedCovers {
-        /// Only list what would be moved.
-        #[arg(long)]
-        dry_run: bool,
-    },
-    /// Fills in what older rows lack: covers' width and height (read from the images;
-    /// covers imported before 2026-09-30 weren't measured) and blobs' sizes (for the storage
-    /// totals). Never changes a blob. Lists what it would do unless --apply.
-    MeasureCovers {
-        /// Save what was measured. Without it nothing is changed.
-        #[arg(long)]
-        apply: bool,
-    },
-    /// One-off: albums without covers of their own (made by hand, or imported before
-    /// 2026-09-27) get a copy of the cover they show now (their first track's), so it's
-    /// theirs and stays when their tracks change. Lists what it would do unless --apply.
-    OwnAlbumCovers {
-        /// Add the copies. Without it nothing is changed.
-        #[arg(long)]
-        apply: bool,
-    },
-    /// Producer credits from the COMPOSER tag for tracks imported before ingest read it
-    /// (2026-09-26): read from each track's stored file, like ingest does. Only tracks whose
-    /// metadata came from their tags and that never had a producer credit (so COMPOSER
-    /// wasn't left out on purpose or fixed by hand). Lists what it would do unless --apply.
-    ProducersFromComposer {
-        /// Only tracks imported before this day (UTC): when the server started reading
-        /// COMPOSER (the update after 2026-09-26). Later imports without producer credits
-        /// were made with --no-composers.
-        #[arg(long, default_value = "2026-09-27")]
-        before: chrono::NaiveDate,
-        /// Add the credits (each track gets a revision). Without it nothing is changed.
-        #[arg(long)]
-        apply: bool,
     },
     /// Move users and their plays, stars and ratings over from a Navidrome server. Reads
     /// Navidrome's database and music files, never changes them. Matches tracks by their
@@ -476,32 +381,6 @@ async fn main() -> anyhow::Result<()> {
             tx.commit().await?;
             Ok(())
         }
-        Command::MergeDuplicates { max_length_difference_ms, ignore_case, dry_run } => {
-            let same = db::review_bulk::SameTrack { max_length_difference_ms, ignore_case };
-            let options = merge_duplicates_command::Options { same, dry_run };
-            merge_duplicates_command::run(&pool, options).await
-        }
-        Command::RecheckDuplicates { dry_run } => recheck_duplicates_command::run(&pool, dry_run).await,
-        Command::DuplicateAlbums {
-            max_track_difference,
-            max_length_difference_ms,
-            min_title_similarity,
-            any_artists,
-            merge,
-        } => {
-            let options = duplicate_albums_command::Options {
-                max_track_difference,
-                max_length_difference_ms,
-                min_title_similarity,
-                any_artists,
-                merge,
-            };
-            duplicate_albums_command::run(&pool, options).await
-        }
-        Command::FixMergedCovers { dry_run } => duplicate_albums_command::fix_merged_covers(&pool, dry_run).await,
-        Command::MeasureCovers { apply } => measure_command::run(&pool, &store, apply).await,
-        Command::OwnAlbumCovers { apply } => album_covers_command::run(&pool, apply).await,
-        Command::ProducersFromComposer { before, apply } => producers_command::run(&pool, &store, before, apply).await,
         Command::ImportNavidrome { db, path_maps, libraries, password_key, only, dry_run } => {
             let path_maps = path_maps
                 .iter()
@@ -561,6 +440,7 @@ async fn serve(config: Config, owner_pool: sqlx::PgPool, store: BlobStore) -> an
         pool,
         store,
         web_dir: config.web_dir.clone(),
+        docs_dir: config.docs_dir.clone(),
         secure_cookies: config.secure_cookies,
         trust_proxy: config.trust_proxy,
         rate_limits: std::sync::Arc::new(rate_limits),

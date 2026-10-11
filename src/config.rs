@@ -31,6 +31,8 @@ pub struct Config {
     pub bind: String,
     /// Directory with the web UI's static files.
     pub web_dir: PathBuf,
+    /// The user guide, built (an mdBook's output), served at `/docs`.
+    pub docs_dir: PathBuf,
     /// The admin's extensions, in a folder each (`ACETATE_EXTENSIONS_DIR`).
     pub extensions_dir: Option<PathBuf>,
     /// Only send the session cookie over HTTPS. Turn on when serving over HTTPS
@@ -77,6 +79,7 @@ impl Config {
             web_dir: std::env::var("ACETATE_WEB_DIR")
                 .unwrap_or_else(|_| "./web".to_string())
                 .into(),
+            docs_dir: std::env::var("ACETATE_DOCS_DIR").unwrap_or_else(|_| "./target/book".to_string()).into(),
             extensions_dir: std::env::var_os("ACETATE_EXTENSIONS_DIR").filter(|d| !d.is_empty()).map(PathBuf::from),
             secure_cookies: flag("ACETATE_SECURE_COOKIES")?,
             trust_proxy: flag("ACETATE_TRUST_PROXY")?,

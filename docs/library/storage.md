@@ -42,5 +42,4 @@ Details:
 
 ## Maintenance commands
 
-`acetate measure-covers` fills in cover sizes and blob sizes (lists first, `--apply` to do
-it). `acetate verify --blobs` checks the blob store. See [Command line](../admin/cli.md).
+`acetate verify --blobs` checks the blob store. See [Command line](../admin/cli.md).

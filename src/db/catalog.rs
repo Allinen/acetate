@@ -310,53 +310,6 @@ pub async fn get_album(
 
 // ---- Browsing ----
 
-/// An album in the library list (`GET /api/library/albums`).
-#[derive(Debug, Serialize)]
-pub struct AlbumListItem {
-    pub id: Uuid,
-    pub title: String,
-    pub kind: String,
-    pub release_date: Option<String>,
-    /// The album artists as credited (aliases included), in order.
-    pub artist_display: String,
-    /// The album's own main cover, else its first track's (as on the album page).
-    pub display_cover_id: Option<Uuid>,
-}
-
-/// Albums, newest first, paged like tracks (`before` = the last id of the previous page).
-pub async fn list_albums(conn: &mut PgConnection, before: Option<Uuid>, limit: i64) -> sqlx::Result<Vec<AlbumListItem>> {
-    sqlx::query_as!(
-        AlbumListItem,
-        r#"
-        SELECT a.id, a.title, a.kind, a.release_date,
-               COALESCE((SELECT string_agg(COALESCE(al.alias, ar.name), ', ' ORDER BY c.position)
-                         FROM album_credits c
-                         JOIN artists ar ON ar.id = c.artist_id
-                         LEFT JOIN artist_aliases al ON al.id = c.alias_id
-                         WHERE c.album_id = a.id), '') AS "artist_display!",
-               COALESCE(
-                   (SELECT c.id FROM covers c WHERE c.album_id = a.id AND c.trashed_at IS NULL
-                    ORDER BY c.position, c.id LIMIT 1),
-                   (SELECT c.id FROM album_tracks at
-                    JOIN tracks t ON t.id = at.track_id
-                    JOIN covers c ON c.track_id = t.id AND c.trashed_at IS NULL
-                    WHERE at.album_id = a.id
-                    ORDER BY at.disc_number NULLS FIRST, at.track_number NULLS LAST, t.title, c.position
-                    LIMIT 1)
-               ) AS display_cover_id
-        FROM albums a
-        WHERE a.merged_into IS NULL
-          AND a.id < COALESCE($1, 'ffffffff-ffff-ffff-ffff-ffffffffffff'::uuid)
-        ORDER BY a.id DESC
-        LIMIT $2
-        "#,
-        before,
-        limit
-    )
-    .fetch_all(conn)
-    .await
-}
-
 // ---- Search ----
 //
 // Fuzzy: `word_similarity` finds the query as (part of) a title or name even when
@@ -364,14 +317,6 @@ pub async fn list_albums(conn: &mut PgConnection, before: Option<Uuid>, limit: i
 // trigram GIN indexes), true above a similarity threshold (0.6 by default). Substring
 // matches (`ILIKE`, also indexed) are included too, so short or partial queries like
 // "mir" work for pickers. Results are ranked by similarity, substring matches first.
-
-#[derive(Debug, Serialize)]
-pub struct TrackHit {
-    pub id: Uuid,
-    pub title: String,
-    pub artist_display: String,
-    pub score: f32,
-}
 
 #[derive(Debug, Serialize)]
 pub struct ArtistHit {
@@ -398,31 +343,6 @@ fn like_pattern(query: &str) -> String {
         .replace('%', "\\%")
         .replace('_', "\\_");
     format!("%{escaped}%")
-}
-
-pub async fn search_tracks(conn: &mut PgConnection, query: &str, limit: i64) -> sqlx::Result<Vec<TrackHit>> {
-    sqlx::query_as!(
-        TrackHit,
-        r#"
-        SELECT t.id, t.title, t.artist_display,
-               GREATEST(
-                   CASE WHEN t.title ILIKE $2 OR t.artist_display ILIKE $2 THEN 1 ELSE 0 END,
-                   word_similarity($1, t.title),
-                   word_similarity($1, t.artist_display)
-               )::real AS "score!"
-        FROM tracks t
-        WHERE ($1 <% t.title OR $1 <% t.artist_display
-               OR t.title ILIKE $2 OR t.artist_display ILIKE $2)
-          AND t.merged_into IS NULL
-        ORDER BY 4 DESC, t.id DESC
-        LIMIT $3
-        "#,
-        query,
-        like_pattern(query),
-        limit
-    )
-    .fetch_all(conn)
-    .await
 }
 
 pub async fn search_artists(conn: &mut PgConnection, query: &str, limit: i64) -> sqlx::Result<Vec<ArtistHit>> {

@@ -23,4 +23,4 @@
   mounts). `--library` limits to one Navidrome library.
 
 Acetate has no Subsonic API, so existing Subsonic clients won't connect: use the desktop
-app or web UI.
+app or the phone app.
