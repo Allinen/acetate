@@ -1,18 +1,19 @@
 //! An album's covers, in edit mode: in order, the first being the main one (the one shown
 //! everywhere). Each can be made the main one, moved earlier or later, looked at in full
-//! (a click: the original), or moved to the trash (asks first; the Trash page brings it
-//! back), or put on all its tracks. (A track's are changed in its editor: `cover:`.)
+//! (a click: the original), or moved to the trash (the Trash page brings it back), or put
+//! on all its tracks. (A track's are changed in its editor: `cover:`.)
 //!
 //! New ones: copied from another track or album (picked in the palette, then one of its
-//! covers chosen: the same image, stored once), or an image pasted (Ctrl+V) or dropped on
-//! the window, uploaded at once.
+//! covers chosen: the same image, stored once), or an image pasted (Ctrl+V), chosen or
+//! dropped on the window.
 //!
-//! Every change is sent at once; the lists catch up (a track's cover shows everywhere).
+//! Changes are a draft, as on the phone: nothing is sent until Save, which sends them all
+//! (Discard drops them); the lists then catch up (a track's cover shows everywhere).
 
 use std::sync::{Arc, Mutex};
 
 use eframe::egui::{self, Key, RichText, Sense, Vec2};
-use serde_json::{json, Value};
+use serde_json::json;
 use uuid::Uuid;
 
 use crate::details::Cover;
@@ -50,15 +51,34 @@ enum From {
     Album(Uuid),
 }
 
+/// One cover in the list being edited.
+struct Item {
+    what: What,
+    /// To the trash when saved.
+    trash: bool,
+    /// Put on all the album's tracks when saved.
+    on_tracks: bool,
+}
+
+enum What {
+    /// One the album has.
+    Existing(Cover),
+    /// An image to add (pasted, dropped or chosen), with a small copy to look at.
+    Image { bytes: Vec<u8>, name: String, preview: Option<egui::TextureHandle> },
+    /// A copy of another track's or album's cover (the same image, stored once).
+    Copy(Cover),
+}
+
 #[derive(Default)]
 pub struct CoverList {
     owner: Option<Owner>,
+    /// The covers as edited, once anything is changed; none: the album's, unchanged. They
+    /// are sent together by Save, and gone by Discard.
+    draft: Option<Vec<Item>>,
     busy: bool,
     answer: Arc<Mutex<Option<Result<String, String>>>>,
-    /// What the last change said (Ok: done, in words).
+    /// What the last save said (Ok: done, in words).
     result: Option<Result<String, String>>,
-    /// "Trash…" was clicked on this cover: asking to be sure.
-    asked_trash: Option<Uuid>,
     /// The palette was asked for a track or album to copy from.
     picking: bool,
     /// Choosing one of its covers to copy.
@@ -83,97 +103,160 @@ impl CoverList {
         };
     }
 
-    /// `paste`: a pasted or dropped image is uploaded as a new cover (where only one
-    /// cover list is shown).
+    /// The draft, started from the album's covers if there is none yet.
+    fn draft<'a>(draft: &'a mut Option<Vec<Item>>, covers: &[Cover]) -> &'a mut Vec<Item> {
+        draft.get_or_insert_with(|| covers.iter().map(|c| Item { what: What::Existing(c.clone()), trash: false, on_tracks: false }).collect())
+    }
+
+    fn add(&mut self, covers: &[Cover], what: What) {
+        Self::draft(&mut self.draft, covers).push(Item { what, trash: false, on_tracks: false });
+    }
+
+    /// `paste`: a pasted or dropped image is added as a new cover (where only one cover
+    /// list is shown). Nothing is sent until Save.
     pub fn show(&mut self, ui: &mut egui::Ui, shell: &mut Shell, owner: Owner, covers: &[Cover], paste: bool) {
         if self.owner != Some(owner) {
             *self = CoverList { owner: Some(owner), ..Default::default() };
         }
         if let Some(result) = self.answer.lock().unwrap().take() {
             self.busy = false;
-            if result.is_ok() {
-                owner.refresh(shell);
-            }
+            // Saved (or not, and then it shows what the album has): the draft is done with.
+            self.draft = None;
+            owner.refresh(shell);
             self.result = Some(result);
         }
         let can = shell.account.can("edit_metadata") && !self.busy;
 
-        // A pasted, dropped or chosen image: a new cover, now. (Chosen ones are this
+        // A pasted, dropped or chosen image: a new cover in the draft. (Chosen ones are this
         // list's; pasted and dropped ones go to the one list that takes them.)
         let chosen = std::mem::take(&mut *self.chosen.lock().unwrap());
         let taking = paste && !shell.palette_open && !shell.modal_open;
         if can && (taking || !chosen.is_empty()) {
             match take_image(ui.ctx(), taking, chosen) {
-                Some(Ok((bytes, name))) => self.upload(shell, owner, bytes, name),
+                Some(Ok((bytes, name))) => {
+                    let preview = preview_of(ui.ctx(), &bytes);
+                    self.add(covers, What::Image { bytes, name, preview });
+                    self.result = None;
+                }
                 Some(Err(err)) => self.result = Some(Err(err)),
                 None => {}
             }
         }
 
         // ---- The covers, in order ----
-        if covers.is_empty() {
+        let n_shown = self.draft.as_ref().map_or(covers.len(), Vec::len);
+        if n_shown == 0 {
             ui.label(RichText::new("No covers of its own.").color(P.muted));
         }
-        let mut order: Option<Vec<Uuid>> = None;
+        // What was asked this frame (applied after drawing).
+        enum Ask {
+            Main(usize),
+            Move(usize, usize),
+            Trash(usize),
+            OnTracks(usize),
+        }
+        let mut ask = None;
         ui.horizontal_wrapped(|ui| {
-            for (n, c) in covers.iter().enumerate() {
+            for n in 0..n_shown {
+                // (Drawn from the draft, else from the album's own covers.)
+                let (existing, item) = match &self.draft {
+                    Some(items) => (None, Some(&items[n])),
+                    None => (Some(&covers[n]), None),
+                };
+                let (trash, on_tracks) = item.map_or((false, false), |i| (i.trash, i.on_tracks));
                 ui.vertical(|ui| {
                     ui.set_width(132.0);
                     let (rect, response) = ui.allocate_exact_size(Vec2::splat(132.0), Sense::click());
-                    shell.cover(ui, c.cover(), c.id, rect, 8, 0.1);
-                    let size = match (c.width, c.height) {
-                        (Some(w), Some(h)) => format!("{w}×{h} · {}", c.source),
-                        _ => c.source.clone(),
+                    let mut note = String::new();
+                    match (existing, item.map(|i| &i.what)) {
+                        (Some(c), _) | (None, Some(What::Existing(c))) => {
+                            shell.cover(ui, c.cover(), c.id, rect, 8, 0.1);
+                            note = match (c.width, c.height) {
+                                (Some(w), Some(h)) => format!("{w}×{h} · {}", c.source),
+                                _ => c.source.clone(),
+                            };
+                        }
+                        (None, Some(What::Copy(c))) => {
+                            shell.cover(ui, c.cover(), c.id, rect, 8, 0.1);
+                            note = "a copy, added when saved".into();
+                        }
+                        (None, Some(What::Image { preview, name, .. })) => {
+                            match preview {
+                                Some(texture) => {
+                                    ui.painter().image(texture.id(), rect, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
+                                }
+                                None => {
+                                    ui.painter().rect_stroke(rect, 8, egui::Stroke::new(1.0, P.line), egui::StrokeKind::Inside);
+                                }
+                            }
+                            note = format!("{name} · added when saved");
+                        }
+                        (None, None) => {}
+                    }
+                    if trash {
+                        ui.painter().rect_filled(rect, 8, egui::Color32::from_black_alpha(150));
+                        ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, "to the trash", font(13.0, semibold()), P.text);
+                    }
+                    let opens = match (existing, item.map(|i| &i.what)) {
+                        (Some(c), _) | (None, Some(What::Existing(c))) | (None, Some(What::Copy(c))) => c.cover(),
+                        _ => None,
                     };
-                    if response.on_hover_cursor(egui::CursorIcon::ZoomIn).on_hover_text(format!("{size} · click: the original")).clicked()
-                        && let Some(cover) = c.cover()
+                    if response.on_hover_cursor(egui::CursorIcon::ZoomIn).on_hover_text(format!("{note} · click: the original")).clicked()
+                        && let Some(cover) = opens
                     {
                         shell.open_original(ui.ctx(), cover);
                     }
+                    let last = n_shown;
                     ui.horizontal(|ui| {
                         if n == 0 {
                             ui.label(RichText::new("Main").font(font(12.5, semibold())).color(P.accent));
-                        } else if ui.add_enabled(can, egui::Button::new("Main").small()).on_hover_text("Make it the main cover (shown everywhere)").clicked() {
-                            order = Some(moved(covers, n, 0));
+                        } else if ui.add_enabled(can && !trash, egui::Button::new("Main").small()).on_hover_text("Make it the main cover (shown everywhere)").clicked() {
+                            ask = Some(Ask::Main(n));
                         }
                         if n > 0 && ui.add_enabled(can, egui::Button::new("←").small()).on_hover_text("Earlier").clicked() {
-                            order = Some(moved(covers, n, n - 1));
+                            ask = Some(Ask::Move(n, n - 1));
                         }
-                        if n + 1 < covers.len() && ui.add_enabled(can, egui::Button::new("→").small()).on_hover_text("Later").clicked() {
-                            order = Some(moved(covers, n, n + 1));
+                        if n + 1 < last && ui.add_enabled(can, egui::Button::new("→").small()).on_hover_text("Later").clicked() {
+                            ask = Some(Ask::Move(n, n + 1));
                         }
-                        if self.asked_trash != Some(c.id) && ui.add_enabled(can, egui::Button::new("🗑").small()).on_hover_text("Move it to the trash…").clicked() {
-                            self.asked_trash = Some(c.id);
-                            self.result = None;
+                        let (label, tip) = if trash { ("↩", "Keep it") } else { ("🗑", "Move it to the trash (when saved; the Trash page brings it back)") };
+                        if ui.add_enabled(can, egui::Button::new(label).small()).on_hover_text(tip).clicked() {
+                            ask = Some(Ask::Trash(n));
                         }
                     });
-                    if let Owner::Album(album) = owner
-                        && ui
-                            .add_enabled(can, egui::Button::new("On all its tracks").small())
-                            .on_hover_text("Adds this image to each of the album's tracks that hasn't got it (as main where a track has no cover)")
-                            .clicked()
+                    let on = on_tracks && !trash;
+                    if ui
+                        .add_enabled(can && !trash, egui::Button::new(if on { "On all its tracks ✓" } else { "On all its tracks" }).small().selected(on))
+                        .on_hover_text("When saved, adds this image to each of the album's tracks that hasn't got it (as main where a track has no cover)")
+                        .clicked()
                     {
-                        let path = format!("/api/albums/{album}/covers/apply-to-tracks");
-                        self.send(shell, reqwest::Method::POST, path, Some(json!({ "cover_id": c.id })), "Put on its tracks.");
+                        ask = Some(Ask::OnTracks(n));
                     }
                 });
             }
         });
-        if let Some(id) = self.asked_trash {
-            ui.label(RichText::new("It goes to the trash (the Trash page, next to Settings, brings it back). The image stays wherever else it's used.").color(P.text));
-            ui.horizontal(|ui| {
-                if ui.button("Move it to the trash").clicked() {
-                    self.asked_trash = None;
-                    self.send(shell, reqwest::Method::DELETE, format!("/api/covers/{id}"), None, "Moved to the trash.");
+        if let Some(ask) = ask {
+            self.result = None;
+            let items = Self::draft(&mut self.draft, covers);
+            match ask {
+                Ask::Main(n) => {
+                    let item = items.remove(n);
+                    items.insert(0, item);
                 }
-                if ui.button("Cancel").clicked() {
-                    self.asked_trash = None;
+                Ask::Move(from, to) => {
+                    let item = items.remove(from);
+                    items.insert(to, item);
                 }
-            });
-        }
-        if let Some(ids) = order {
-            let body = json!({ "cover_ids": ids });
-            self.send(shell, reqwest::Method::PUT, format!("{}/order", owner.path()), Some(body), "Reordered.");
+                Ask::Trash(n) => {
+                    // One not added yet just goes; one the album has is marked.
+                    if matches!(items[n].what, What::Existing(_)) {
+                        items[n].trash = !items[n].trash;
+                    } else {
+                        items.remove(n);
+                    }
+                }
+                Ask::OnTracks(n) => items[n].on_tracks = !items[n].on_tracks,
+            }
         }
 
         // ---- Adding ----
@@ -198,7 +281,28 @@ impl CoverList {
             }
         });
         if let Some(from) = self.copy_from {
-            self.choose_copy(ui, shell, owner, from, can);
+            self.choose_copy(ui, shell, covers, from, can);
+        }
+
+        // ---- Save, or not ----
+        if let Some(items) = &self.draft {
+            let changes = changes(items, covers);
+            if changes > 0 {
+                // Esc is for the draft (Discard), not for leaving the page.
+                shell.form_dirty = true;
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    if ui.add_enabled(can, egui::Button::new(format!("Save the covers ({changes} change{})", if changes == 1 { "" } else { "s" }))).clicked() {
+                        self.save(shell, owner);
+                    }
+                    if ui.add_enabled(!self.busy, egui::Button::new("Discard")).clicked() {
+                        self.draft = None;
+                        self.result = None;
+                    }
+                });
+            } else {
+                self.draft = None;
+            }
         }
         if self.busy {
             ui.label(RichText::new("Saving…").color(P.muted));
@@ -214,8 +318,9 @@ impl CoverList {
         }
     }
 
-    /// The covers of the track or album picked to copy from: a click copies one.
-    fn choose_copy(&mut self, ui: &mut egui::Ui, shell: &mut Shell, owner: Owner, from: From, can: bool) {
+    /// The covers of the track or album picked to copy from: a click adds a copy to the
+    /// draft.
+    fn choose_copy(&mut self, ui: &mut egui::Ui, shell: &mut Shell, own: &[Cover], from: From, can: bool) {
         let (name, covers) = match from {
             From::Track(id) => {
                 let d = shell.track_details.get(id).value.clone();
@@ -244,41 +349,87 @@ impl CoverList {
                     let (rect, response) = ui.allocate_exact_size(Vec2::splat(96.0), Sense::click());
                     shell.cover(ui, c.cover(), c.id, rect, 6, 0.0);
                     if response.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text("Copy this one").clicked() && can {
-                        chosen = Some(c.id);
+                        chosen = Some(c.clone());
                     }
                 }
             });
-            if let Some(id) = chosen {
+            if let Some(cover) = chosen {
                 self.copy_from = None;
-                self.send(shell, reqwest::Method::POST, format!("{}/copy", owner.path()), Some(json!({ "cover_id": id })), "Copied.");
+                self.result = None;
+                self.add(own, What::Copy(cover));
             }
         });
     }
 
-    fn send(&mut self, shell: &Shell, method: reqwest::Method, path: String, body: Option<Value>, done: &'static str) {
-        self.busy = true;
-        self.result = None;
-        let (api, answer, ctx) = (shell.api.clone(), self.answer.clone(), shell.ctx.clone());
-        shell.runtime.spawn(async move {
-            let result = api.send(method, &path, body).await.map(|()| done.to_string()).map_err(|err| err.message);
-            *answer.lock().unwrap() = Some(result);
-            ctx.request_repaint();
-        });
-    }
-
-    fn upload(&mut self, shell: &Shell, owner: Owner, bytes: Vec<u8>, name: String) {
+    /// Sends the draft: the new images and copies first (the server puts them last, in the
+    /// order they came, and says their ids), then the trash, the order, and the tracks.
+    fn save(&mut self, shell: &Shell, owner: Owner) {
+        let Some(items) = self.draft.take() else { return };
+        self.draft = None;
         self.busy = true;
         self.result = None;
         let (api, answer, ctx, path) = (shell.api.clone(), self.answer.clone(), shell.ctx.clone(), owner.path());
+        let Owner::Album(album) = owner;
         shell.runtime.spawn(async move {
-            let result = api.upload::<Value>(&path, bytes, &name).await.map(|_| "Added.".to_string()).map_err(|err| err.message);
+            let result = async {
+                let mut ids: Vec<(Uuid, bool)> = Vec::new(); // (cover, on all its tracks)
+                let mut trashed = Vec::new();
+                for item in items {
+                    match item.what {
+                        What::Existing(c) if item.trash => trashed.push(c.id),
+                        What::Existing(c) => ids.push((c.id, item.on_tracks)),
+                        What::Image { bytes, name, .. } => {
+                            let added: Added = api.upload(&path, bytes, &name).await.map_err(|e| e.message)?;
+                            ids.push((added.id, item.on_tracks));
+                        }
+                        What::Copy(c) => {
+                            let added: Added = api.send_json(reqwest::Method::POST, &format!("{path}/copy"), Some(json!({ "cover_id": c.id }))).await.map_err(|e| e.message)?;
+                            ids.push((added.id, item.on_tracks));
+                        }
+                    }
+                }
+                for id in &trashed {
+                    api.send(reqwest::Method::DELETE, &format!("/api/covers/{id}"), None).await.map_err(|e| e.message)?;
+                }
+                let order: Vec<Uuid> = ids.iter().map(|i| i.0).collect();
+                api.send(reqwest::Method::PUT, &format!("{path}/order"), Some(json!({ "cover_ids": order }))).await.map_err(|e| e.message)?;
+                for (id, _) in ids.iter().filter(|i| i.1) {
+                    api.send(reqwest::Method::POST, &format!("/api/albums/{album}/covers/apply-to-tracks"), Some(json!({ "cover_id": id }))).await.map_err(|e| e.message)?;
+                }
+                Ok::<String, String>("Saved.".to_string())
+            }
+            .await;
             *answer.lock().unwrap() = Some(result);
             ctx.request_repaint();
         });
     }
 }
 
+#[derive(serde::Deserialize)]
+struct Added {
+    id: Uuid,
+}
+
+/// How many things Save would do: covers added, trashed, put on the tracks, and the order
+/// if it isn't the album's.
+fn changes(items: &[Item], covers: &[Cover]) -> usize {
+    let added = items.iter().filter(|i| !matches!(i.what, What::Existing(_))).count();
+    let trashed = items.iter().filter(|i| i.trash).count();
+    let on_tracks = items.iter().filter(|i| i.on_tracks && !i.trash).count();
+    let kept: Vec<Uuid> = items.iter().filter(|i| !i.trash).filter_map(|i| if let What::Existing(c) = &i.what { Some(c.id) } else { None }).collect();
+    let before: Vec<Uuid> = covers.iter().map(|c| c.id).filter(|id| !items.iter().any(|i| i.trash && matches!(&i.what, What::Existing(c) if c.id == *id))).collect();
+    added + trashed + on_tracks + usize::from(kept != before)
+}
+
+/// A small copy of an image to look at in the list (none: it can't be read).
+fn preview_of(ctx: &egui::Context, bytes: &[u8]) -> Option<egui::TextureHandle> {
+    let image = image::load_from_memory(bytes).ok()?.thumbnail(264, 264).to_rgba8();
+    let size = [image.width() as usize, image.height() as usize];
+    Some(ctx.load_texture("new-cover", egui::ColorImage::from_rgba_unmultiplied(size, image.as_raw()), egui::TextureOptions::LINEAR))
+}
+
 /// The ids in order, with the one at `from` moved to `to`.
+#[cfg(test)]
 fn moved(covers: &[Cover], from: usize, to: usize) -> Vec<Uuid> {
     let mut ids: Vec<Uuid> = covers.iter().map(|c| c.id).collect();
     let id = ids.remove(from);
@@ -347,6 +498,7 @@ pub fn take_image(ctx: &egui::Context, taking: bool, chosen: Vec<std::path::Path
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value;
 
     #[test]
     fn moving_a_cover_keeps_the_others_in_order() {
@@ -356,6 +508,27 @@ mod tests {
         let id = Uuid::from_u128;
         assert_eq!(moved(&covers, 2, 0), [id(3), id(1), id(2), id(4)], "made main");
         assert_eq!(moved(&covers, 1, 2), [id(1), id(3), id(2), id(4)], "later");
+    }
+
+    #[test]
+    fn what_a_draft_would_do_is_counted() {
+        let covers: Vec<Cover> = (1..=3)
+            .map(|n| serde_json::from_value(json!({ "id": Uuid::from_u128(n), "blob_sha256": "", "source": "" })).unwrap())
+            .collect();
+        let items = |covers: &[Cover]| -> Vec<Item> { covers.iter().map(|c| Item { what: What::Existing(c.clone()), trash: false, on_tracks: false }).collect() };
+        assert_eq!(changes(&items(&covers), &covers), 0, "as the album has them");
+        let mut moved = items(&covers);
+        let item = moved.remove(2);
+        moved.insert(0, item);
+        assert_eq!(changes(&moved, &covers), 1, "another order");
+        let mut more = items(&covers);
+        more[1].trash = true;
+        more[0].on_tracks = true;
+        more.push(Item { what: What::Copy(covers[0].clone()), trash: false, on_tracks: false });
+        assert_eq!(changes(&more, &covers), 3, "one trashed, one on the tracks, one added: the order is the album's still");
+        let mut trashed_main = items(&covers);
+        trashed_main[0].trash = true;
+        assert_eq!(changes(&trashed_main, &covers), 1, "taking one out isn't a new order");
     }
 
     /// Against a running server (a throwaway database: it adds covers to two tracks,
