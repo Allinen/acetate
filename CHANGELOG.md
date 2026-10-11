@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.2.1 - 2026-10-12
+
+0.2.0 was tagged but its desktop packages failed to build (a moved font licence), so nothing was
+published under it: this is 0.2.0 with the fix and what came after. Read 0.2.0's notes below too.
+The API version is 7, so apps and server have to be updated together (the desktop app offers to
+update itself; the phone's dialog links the APK).
+
+### Added
+
+- **Settings → Account (desktop)** has what the web interface used to: change your password, see
+  the devices you're logged in on and log any of them out, and list and revoke your share links.
+- **Album covers are a draft (desktop).** Making a cover main, moving, trashing, copying and adding
+  images, and putting one on all the tracks are kept until you press Save (or Discard), as on the
+  phone.
+
+### Changed
+
+- Logging out now ends the session on the server too, instead of only forgetting it here.
+- A catalog update sends the playlists and groupings only when one changed, not every time.
+
+### Fixed
+
+- The Linux and Windows packages build again.
+
 ## 0.2.0 - 2026-10-12
 
 **Upgrading:** the server and the apps now have to be the same version (see below), so update
