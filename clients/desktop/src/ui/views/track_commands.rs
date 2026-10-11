@@ -908,7 +908,7 @@ mod tests {
 
     #[test]
     fn choices_for_page_keys() {
-        let (c, v, d) = (catalog(), Vocab::default(), detail());
+        let (c, v, d) = (catalog(), Vocab { extra_kinds: vec!["stems".into(), "video".into()], ..Vocab::default() }, detail());
         let h = here(&c, &v, &d, true);
         let rows = |text: &str| {
             let line = parse(text);
