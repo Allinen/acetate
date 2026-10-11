@@ -1,0 +1,26 @@
+[extension]
+name = "traktrain"
+title = "Traktrain"
+api = 3
+
+[[shape]]
+kind = "track"
+id = "track_id"
+fields = [
+  { name = "track_id", type = "int", required = true },
+  { name = "name", type = "str" },
+  { name = "bpm", type = "int" },
+  { name = "tags", type = "strs" },
+  { name = "genre_ids", type = "strs" },
+  { name = "audio_key", type = "str" },
+  { name = "status", type = "str" },
+]
+
+[[shape]]
+kind = "artist"
+id = "user_id"
+fields = [
+  { name = "user_id", type = "int", required = true },
+  { name = "slug", type = "str" },
+  { name = "brand", type = "str" },
+]

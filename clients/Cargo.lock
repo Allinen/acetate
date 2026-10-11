@@ -135,6 +135,7 @@ dependencies = [
 name = "acetate-core"
 version = "0.1.0"
 dependencies = [
+ "acetate-extensions",
  "anyhow",
  "hex",
  "libc",
@@ -188,6 +189,15 @@ dependencies = [
  "winreg",
  "winresource",
  "zip",
+]
+
+[[package]]
+name = "acetate-extensions"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "toml",
 ]
 
 [[package]]

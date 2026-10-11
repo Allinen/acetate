@@ -1,0 +1,11 @@
+[package]
+name = "acetate-extensions"
+version = "0.1.0"
+edition = "2024"
+
+# What the server and every client share about the places music comes from: the shapes of a
+# platform's sources, and how links to them are read and written. See docs/admin/extensions.md.
+[dependencies]
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+toml = "1"

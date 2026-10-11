@@ -268,7 +268,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/mirror/blobs/{sha256}", require(&[Admin], get(mirror::blob)))
         .route("/api/files/replaced", require(&[Admin], get(trash::replaced_files)))
         .route("/api/files/trash", require(&[Admin], post(trash::trash_files)))
-        .route("/api/source-shapes", require(&[Browse], get(sources::shapes)))
+        .route("/api/extensions", require(&[Browse], get(sources::extensions)))
         // Previous (replaced) files additionally need `view_history`, checked in the handler.
         .route("/api/files/{id}/stream", require(&[Stream], get(media::stream_file)))
         .route("/api/qualities", require(&[Stream, Share], get(media::qualities)))

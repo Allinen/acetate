@@ -16,7 +16,7 @@ use serde_json::json;
 use crate::model::sources::{self, Kind, NewSource, ValidSource};
 
 /// Which layout to read paths with (`--layout`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Layout {
     /// yt-dlp's `Title [id].ext`, from one platform (`--platform`).
     Ytdlp(ytdlp::Platform),
@@ -41,7 +41,7 @@ impl Layout {
     /// what's above it (e.g. `/home/me/Music - 2024`) isn't part of the layout.
     pub fn read(&self, root: &Path, path: &Path) -> PathInfo {
         let mut info = match self {
-            Layout::Ytdlp(platform) => ytdlp::read(*platform, path),
+            Layout::Ytdlp(platform) => ytdlp::read(platform, path),
             Layout::Tags => PathInfo::default(),
         };
         // The same for every layout.
@@ -55,8 +55,8 @@ fn source(platform: &str, kind: Kind, field: &str, id: serde_json::Value) -> Val
     source_with(platform, kind, json!({ field: id }))
 }
 
-/// A source with these fields. Panics only if they don't fit the platform's shape in
-/// `SHAPES`, which is a bug in the layout.
+/// A source with these fields. Panics only if they don't fit the platform's shape in its
+/// extension, which is a bug in the layout.
 fn source_with(platform: &str, kind: Kind, data: serde_json::Value) -> ValidSource {
     let new = NewSource {
         platform: platform.to_string(),

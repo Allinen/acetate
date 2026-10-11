@@ -1,0 +1,38 @@
+# Stores Acetate has no shape of its own for: a link to them is a custom source labelled
+# with the store's name, the link as its url. In a file's comment too (the first link that
+# is a source counts).
+[extension]
+name = "stores"
+title = "Stores (Qobuz, Amazon Music, Tidal, Deezer)"
+api = 3
+
+[[link]]
+kind = "any"
+custom = "qobuz"
+comment = true
+hosts = ["qobuz.com"]
+
+[[link]]
+kind = "any"
+custom = "amazon"
+comment = true
+hosts = ["music.amazon.*"]
+
+[[link]]
+kind = "any"
+custom = "amazon"
+comment = true
+hosts = ["amazon.*"]
+path_contains = "music"
+
+[[link]]
+kind = "any"
+custom = "tidal"
+comment = true
+hosts = ["tidal.com"]
+
+[[link]]
+kind = "any"
+custom = "deezer"
+comment = true
+hosts = ["deezer.com", "deezer.page.link"]

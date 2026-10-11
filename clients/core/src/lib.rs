@@ -28,6 +28,7 @@ pub mod blobs;
 pub mod catalog;
 pub mod changes;
 pub mod editor;
+pub mod extensions;
 pub mod format;
 pub mod commandline;
 pub mod details;

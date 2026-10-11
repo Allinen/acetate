@@ -110,30 +110,15 @@ async fn read_youtube(state: &AppState, user: &CurrentUser, id: &str) -> Result<
 }
 
 /// A YouTube video's id from its link (watch?v=, youtu.be/, /shorts/, /embed/, /live/, on
-/// youtube.com, its m./www./music. hosts or youtu.be) or the id itself.
+/// youtube.com, its m./www./music. hosts or youtu.be: the YouTube extension's `[[link]]`s)
+/// or the id itself.
 pub fn video_id(link: &str) -> Option<String> {
-    let link = link.trim();
-    let is_id = crate::ingest::youtube::is_id;
-    if is_id(link) {
-        return Some(link.to_string());
+    let registry = crate::extensions::registry();
+    let found = registry.match_bare_id(link, "track").or_else(|| registry.match_link(link, "track", false))?;
+    if found.platform != "youtube" {
+        return None;
     }
-    let rest = link.strip_prefix("https://").or_else(|| link.strip_prefix("http://")).unwrap_or(link);
-    let (host, path) = rest.split_once('/').unwrap_or((rest, ""));
-    let host = host.to_lowercase();
-    let host = host.strip_prefix("www.").or_else(|| host.strip_prefix("m.")).or_else(|| host.strip_prefix("music.")).unwrap_or(&host);
-    let candidate = match host {
-        "youtu.be" => path.split(['?', '#', '/']).next().map(str::to_string),
-        "youtube.com" => {
-            let (route, query) = path.split_once('?').unwrap_or((path, ""));
-            match route.split('/').collect::<Vec<_>>().as_slice() {
-                ["watch"] => query.split('&').find_map(|kv| kv.strip_prefix("v=")).map(|v| v.split('#').next().unwrap_or(v).to_string()),
-                ["shorts" | "embed" | "live" | "v", id, ..] => Some(id.to_string()),
-                _ => None,
-            }
-        }
-        _ => None,
-    };
-    candidate.filter(|id| is_id(id))
+    found.fields.into_iter().find(|(field, _)| field == "song_id").map(|(_, id)| id)
 }
 
 #[cfg(test)]

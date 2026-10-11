@@ -1,4 +1,4 @@
-# Made from the server's source shapes (`SHAPES` in src/model/sources.rs): don't edit.
+# Made from the server's source shapes (`extensions/*/extension.toml`): don't edit.
 # `cargo test` checks it's up to date; `ACETATE_WRITE_PYTHON_SHAPES=1 cargo test python_shapes`
 # makes it again.
 

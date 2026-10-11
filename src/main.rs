@@ -3,6 +3,7 @@ mod auth;
 mod config;
 mod db;
 mod duplicate_albums_command;
+mod extensions;
 mod ingest;
 mod ingest_client;
 mod ingest_command;
@@ -264,7 +265,7 @@ struct IngestArgs {
     videos: bool,
     /// For `--layout ytdlp`: where the files are from.
     #[arg(long)]
-    platform: Option<PlatformArg>,
+    platform: Option<String>,
     /// Where the files came from when the path doesn't say (required for `tags`):
     /// a label (`--origin vk`) or a source snapshot as JSON, as for `import --origin`.
     #[arg(long)]
@@ -337,12 +338,6 @@ enum LayoutArg {
     Tags,
 }
 
-#[derive(Clone, Copy, clap::ValueEnum)]
-enum PlatformArg {
-    Soundcloud,
-    Youtube,
-}
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -366,6 +361,7 @@ async fn main() -> anyhow::Result<()> {
         return ingest_command::run(ingest_command::Target::Server(server), &args.dir, options).await;
     }
     let config = Config::from_env()?;
+    extensions::load(config.extensions_dir.as_deref());
 
     // Say what's happening, and fail fast and clearly if the database isn't there
     // (`connect_owner` has a short timeout).
@@ -652,10 +648,9 @@ async fn ingest_options(args: &IngestArgs, groups: Groups<'_>) -> anyhow::Result
         Groups::Remote(_) => args.volume.clone(),
     };
     // `--videos`: no layout (clap allows none only then); videos don't read one.
-    let layout = match (args.layout.unwrap_or(LayoutArg::Tags), args.platform) {
+    let layout = match (args.layout.unwrap_or(LayoutArg::Tags), args.platform.as_deref()) {
         (LayoutArg::Tags, None) => Layout::Tags,
-        (LayoutArg::Ytdlp, Some(PlatformArg::Soundcloud)) => Layout::Ytdlp(ytdlp::Platform::Soundcloud),
-        (LayoutArg::Ytdlp, Some(PlatformArg::Youtube)) => Layout::Ytdlp(ytdlp::Platform::Youtube),
+        (LayoutArg::Ytdlp, Some(name)) => Layout::Ytdlp(ytdlp::Platform::named(name).map_err(anyhow::Error::msg)?),
         (LayoutArg::Ytdlp, None) => anyhow::bail!("--layout ytdlp needs --platform"),
         (_, Some(_)) => anyhow::bail!("--platform is only for --layout ytdlp"),
     };

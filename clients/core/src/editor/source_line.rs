@@ -203,49 +203,21 @@ pub fn data_from(shape: &SourceShape, values: &[(String, String)]) -> Result<Val
 }
 
 /// What a link says, for a `kind` of source ("track", "album", "artist"): the platform
-/// and fields to fill in. SoundCloud (permalinks), YouTube (a video's id, a channel),
-/// NetEase (ids); any other web link: a custom source named after its site, with the link.
+/// and fields to fill in, as the extensions read it (SoundCloud, YouTube, NetEase…); any
+/// other web link: a custom source named after its site, with the link. A link on a
+/// platform's site that is no source of this kind is none.
 pub fn from_link(link: &str, kind: &str) -> Option<(String, Vec<(String, String)>)> {
     let link = link.trim();
-    let rest = link.strip_prefix("https://").or_else(|| link.strip_prefix("http://"))?;
-    let (host, path) = rest.split_once('/').unwrap_or((rest, ""));
-    let host = host.trim_start_matches("www.").trim_start_matches("m.");
-    let (path, query) = path.split_once('?').unwrap_or((path, ""));
-    let path = path.split('#').next().unwrap_or("").trim_end_matches('/');
-    let param = |query: &str, key: &str| {
-        query.split('&').find_map(|pair| pair.split_once('=').filter(|(k, _)| *k == key).map(|(_, v)| v.to_string()))
-    };
-    let one = |platform: &str, field: &str, value: String| Some((platform.to_string(), vec![(field.to_string(), value)]));
-    let parts: Vec<&str> = path.split('/').filter(|p| !p.is_empty()).collect();
-    match (host, kind) {
-        ("soundcloud.com", _) => match (kind, parts.as_slice()) {
-            ("track", [artist, song]) if *song != "sets" => one("soundcloud", "song_permalinks", format!("{artist}/{song}")),
-            ("album", [artist, "sets", set]) => one("soundcloud", "album_permalinks", format!("{artist}/sets/{set}")),
-            ("artist", [artist, ..]) => one("soundcloud", "artist_permalinks", artist.to_string()),
-            _ => None,
-        },
-        ("youtube.com" | "music.youtube.com", "track") => one("youtube", "song_id", param(query, "v")?),
-        ("youtu.be", "track") => one("youtube", "song_id", parts.first()?.to_string()),
-        ("youtube.com", "artist") => match parts.as_slice() {
-            [handle] if handle.starts_with('@') => one("youtube", "channel", handle.trim_start_matches('@').to_string()),
-            ["channel", id] => one("youtube", "channel", id.to_string()),
-            _ => None,
-        },
-        ("music.163.com", _) => {
-            // The id is in the query, before or after a "#/": "…/#/song?id=1", "…/song?id=1".
-            let (page, query) = match link.split_once("#/") {
-                Some((_, after)) => after.split_once('?').unwrap_or((after, "")),
-                None => (path, query),
-            };
-            let id = param(query, "id")?;
-            match (page.trim_matches('/'), kind) {
-                ("song", "track") => one("netease", "song_id", id),
-                ("album", "album") => one("netease", "album_id", id),
-                ("artist", "artist") => one("netease", "artist_id", id),
-                _ => None,
-            }
-        }
-        _ => Some(("custom".to_string(), vec![("label".to_string(), host.to_string()), ("url".to_string(), link.to_string())])),
+    let registry = crate::extensions::current();
+    if let Some(found) = registry.match_link(link, kind, false) {
+        return Some((found.platform, found.fields));
     }
+    let rest = link.strip_prefix("https://").or_else(|| link.strip_prefix("http://"))?;
+    if registry.reads_site_of(link) {
+        return None;
+    }
+    let host = rest.split('/').next().unwrap_or(rest);
+    let host = host.trim_start_matches("www.").trim_start_matches("m.");
+    Some(("custom".to_string(), vec![("label".to_string(), host.to_string()), ("url".to_string(), link.to_string())]))
 }
 

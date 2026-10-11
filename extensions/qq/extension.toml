@@ -1,0 +1,29 @@
+[extension]
+name = "qq"
+title = "QQ Music"
+api = 3
+
+[[shape]]
+kind = "track"
+id = "song_id"
+fields = [
+  { name = "song_id", type = "int", required = true },
+  { name = "song_mid", type = "str" },
+  { name = "song_index", type = "int" },
+]
+
+[[shape]]
+kind = "album"
+id = "album_id"
+fields = [
+  { name = "album_id", type = "int", required = true },
+  { name = "album_mid", type = "str" },
+]
+
+[[shape]]
+kind = "artist"
+id = "artist_id"
+fields = [
+  { name = "artist_id", type = "int", required = true },
+  { name = "artist_mid", type = "str" },
+]

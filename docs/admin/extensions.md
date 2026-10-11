@@ -1,6 +1,7 @@
 # Extensions (design draft)
 
-> Draft: nothing here exists yet. It is written down to be agreed first.
+> Status: the data part (shapes, links, ids) works, in `extensions/*/extension.toml`. Pasted-JSON
+> import (`[import]`) and the fetch program (`[fetch]`) are designed here and not built yet.
 
 An **extension** teaches Acetate about one place music comes from (YouTube, SoundCloud,
 NetEase, a store...). Today that knowledge is spread over the server and every client:
@@ -41,31 +42,37 @@ kind = "artist"
 id = "channel"
 fields = [{ name = "channel", type = "str", required = true }]
 
+# ---- Ids: how this platform's ids look, and where they turn up ----
+# Any 11 of A-Z a-z 0-9 - _ (so "helloworld1" is one, on purpose).
+[id]
+kind = "track"
+field = "song_id"
+class = "id"            # id (letters, digits, - and _) or digits
+len = 11
+filename = true         # an id at the end of a yt-dlp file name: `Title [id].ext`
+bare = true             # an id pasted on its own is a link to it
+
 # ---- Links: one template does both ways ----
-# Pasting a link finds the source; the source's page is the template filled in.
-# {name} is a field of the shape; a link matches if its host and path fit and the
-# {fields} are found where the template has them.
+# Pasting a link finds the source; `open` filled in is the source's page.
+# `{name}` is a part of the link to keep; scheme, www. and m. don't matter; a last `*` is
+# anything more; a query parameter or a #fragment in the template has to be in the link.
 [[link]]
 kind = "track"
-open = "https://www.youtube.com/watch?v={song_id}"     # shown as the link to its page
+open = "https://www.youtube.com/watch?v={song_id}"
 match = [
-  "https://youtube.com/watch?v={song_id}",             # (www., m. and music. are the same host)
+  "https://youtube.com/watch?v={song_id}",
+  "https://music.youtube.com/watch?v={song_id}",
   "https://youtu.be/{song_id}",
   "https://youtube.com/shorts/{song_id}",
 ]
+captures = { song_id = { class = "id", len = 11 } }   # what a part has to look like (also: not = [...])
+# comment = true      # a link in a file's comment counts too (the first one that is a source)
+# set = { album_permalinks = "{user}/sets/{set}" }    # when the fields aren't the parts as they are
 
 [[link]]
 kind = "artist"
 open = "https://www.youtube.com/channel/{channel}"
 match = ["https://youtube.com/@{channel}", "https://youtube.com/channel/{channel}"]
-
-# ---- Where a file came from, by its name: yt-dlp's `Title [id].ext` ----
-[filename]
-bracket_id = { kind = "track", field = "song_id" }
-
-# ---- Where it came from, by a link in its comment ----
-[comment]
-links = true                # the `match` templates above count in comments too (the first one found)
 
 # ---- Pasted JSON: a downloader's or the site's own, as SoundCloud's is read today ----
 # `detect`: the JSON is this platform's if it has any of these keys (a dotted path), or a
@@ -93,7 +100,9 @@ env = ["ACETATE_YTDLP_COOKIES"]   # the only environment variables it is given
 ```
 
 A store with no shape of its own (Qobuz, Tidal...) is the same file with no `[[shape]]`:
-a `[[link]]` with `custom = "qobuz"` makes its links `custom` sources labelled "qobuz".
+a `[[link]]` with `kind = "any"`, `custom = "qobuz"` and `hosts = ["qobuz.com"]` makes its links
+`custom` sources labelled "qobuz" (`amazon.*` is any ending; `path_contains` narrows it).
+See `extensions/stores/extension.toml`.
 A platform like NetEase is a manifest and nothing else, and so are the private ones
 (Traktrain, BeatStars): they live in the admin's own folder, not in the repository.
 
@@ -123,7 +132,7 @@ extension lists in `thumbnail_hosts`).
 * The server loads the built-in extensions (compiled into the image: YouTube, SoundCloud,
   NetEase, QQ, Kuwo, DistroKid) and then the folder `ACETATE_EXTENSIONS_DIR`. A folder
   with a built-in's name replaces it.
-* `GET /api/extensions` serves every extension's data (not its program) with an ETag.
+* `GET /api/extensions` serves every extension's data (not its program).
   Desktop and phone keep it with the catalog (`clients/core`), so **link parsing is
   written once**, in Rust, in `clients/core`, from the data.
 * The Python client reads the same data instead of the generated `_shapes.py`.

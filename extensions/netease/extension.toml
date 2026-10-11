@@ -1,0 +1,44 @@
+[extension]
+name = "netease"
+title = "NetEase Cloud Music"
+api = 3
+
+[[shape]]
+kind = "track"
+id = "song_id"
+fields = [
+  { name = "song_id", type = "int", required = true },
+  { name = "song_index", type = "int" },
+]
+
+[[shape]]
+kind = "album"
+id = "album_id"
+fields = [
+  { name = "album_id", type = "int", required = true },
+]
+
+[[shape]]
+kind = "artist"
+id = "artist_id"
+fields = [
+  { name = "artist_id", type = "int", required = true },
+]
+
+[[link]]
+kind = "track"
+open = "https://music.163.com/#/song?id={song_id}"
+match = ["https://music.163.com/#/song?id={song_id}", "https://music.163.com/song?id={song_id}"]
+captures = { song_id = { class = "digits" } }
+
+[[link]]
+kind = "album"
+open = "https://music.163.com/#/album?id={album_id}"
+match = ["https://music.163.com/#/album?id={album_id}", "https://music.163.com/album?id={album_id}"]
+captures = { album_id = { class = "digits" } }
+
+[[link]]
+kind = "artist"
+open = "https://music.163.com/#/artist?id={artist_id}"
+match = ["https://music.163.com/#/artist?id={artist_id}", "https://music.163.com/artist?id={artist_id}"]
+captures = { artist_id = { class = "digits" } }

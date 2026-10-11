@@ -1,0 +1,26 @@
+[extension]
+name = "distrokid"
+title = "DistroKid"
+api = 3
+
+[[shape]]
+kind = "track"
+fields = [
+  { name = "album_uuid", type = "str", required = true },
+  { name = "index", type = "int" },
+]
+
+[[shape]]
+kind = "album"
+id = "album_uuid"
+fields = [
+  { name = "album_uuid", type = "str", required = true },
+]
+
+[[shape]]
+kind = "artist"
+id = "artist_id"
+fields = [
+  { name = "artist_id", type = "int" },
+  { name = "artist_uuid", type = "str" },
+]

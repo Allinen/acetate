@@ -60,9 +60,9 @@ pub fn parse(json: &Value) -> Result<Video, String> {
 }
 
 /// Whether this is a YouTube video id: any 11 of `A-Z a-z 0-9 - _` (so "helloworld1" is
-/// one, on purpose). The one place that says so.
+/// one, on purpose), as the YouTube extension says.
 pub fn is_id(id: &str) -> bool {
-    id.len() == 11 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    crate::extensions::registry().id_rule("youtube").is_some_and(|rule| rule.is_id(id))
 }
 
 /// The video id at the end of a file's name (`Title [id].mp4`, or the name without its

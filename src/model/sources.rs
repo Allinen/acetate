@@ -7,12 +7,15 @@
 //! A snapshot holds one value per field: the data as it was at one point in time.
 //! Changes over time (a new permalink...) are new snapshots of the same source.
 //!
-//! To support a new platform, entity kind or field: add/extend an entry in `SHAPES`.
-//! That's the only place; the database stores any platform listed here.
+//! The shapes are the extensions' (`extensions/*/extension.toml`, see `crate::extensions`):
+//! to support a new platform, entity kind or field, add or extend one. The database stores
+//! any platform they list.
 
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use uuid::Uuid;
+
+use acetate_extensions::FieldType;
 
 /// What a source belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,7 +52,7 @@ impl SourceOwner {
 }
 
 impl Kind {
-    fn name(&self) -> &'static str {
+    pub fn name(&self) -> &'static str {
         match self {
             Kind::Track => "track",
             Kind::Album => "album",
@@ -57,278 +60,6 @@ impl Kind {
         }
     }
 }
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FieldType {
-    Int,
-    Str,
-    /// A list of strings, e.g. every permalink a SoundCloud song has had.
-    StrList,
-}
-
-pub struct Field {
-    pub name: &'static str,
-    pub field_type: FieldType,
-    pub required: bool,
-}
-
-pub struct Shape {
-    pub platform: &'static str,
-    pub kind: Kind,
-    /// The field holding the platform's id for the owner. Snapshots with the same id
-    /// belong to the same source. None if the platform has no id (e.g. custom).
-    pub id_field: Option<&'static str>,
-    pub fields: &'static [Field],
-}
-
-use FieldType::{Int, Str, StrList};
-
-/// Shorthands to keep `SHAPES` readable.
-const fn required(name: &'static str, field_type: FieldType) -> Field {
-    Field {
-        name,
-        field_type,
-        required: true,
-    }
-}
-const fn optional(name: &'static str, field_type: FieldType) -> Field {
-    Field {
-        name,
-        field_type,
-        required: false,
-    }
-}
-
-const CUSTOM_FIELDS: &[Field] = &[
-    // Short name of where it's from: "discord", "google drive", "a friend"...
-    required("label", Str),
-    // Anything else: who sent it, when, which server/channel...
-    optional("description", Str),
-    // A link to it, e.g. the Tidal track a download came from.
-    optional("url", Str),
-];
-
-/// Every supported (platform, kind) and its fields.
-pub const SHAPES: &[Shape] = &[
-    // ---- SoundCloud ----
-    // The lists hold every value seen over time (deduplicated), as the migration's lookup
-    // gathers them; the single-value fields are the older form. Permalinks are the part
-    // after "soundcloud.com/" ("artist/song").
-    Shape {
-        platform: "soundcloud",
-        kind: Kind::Track,
-        id_field: Some("song_id"),
-        fields: &[
-            // Optional: a download may only say its permalink (e.g. in a comment). Such a
-            // source is matched by its data (see `db::sources::add_snapshot`).
-            optional("song_id", Int),
-            // The uploaded files' ids: a song whose audio was replaced has several.
-            optional("song_uids", StrList),
-            optional("song_permalinks", StrList),
-            optional("song_descriptions", StrList),
-            // `display_date` (else `created_at`) of each capture.
-            optional("release_dates", StrList),
-            optional("created_at", StrList),
-            optional("song_uid", Str),
-            optional("song_permalink", Str),
-            optional("song_description", Str),
-        ],
-    },
-    Shape {
-        platform: "soundcloud",
-        kind: Kind::Album,
-        id_field: Some("album_id"),
-        fields: &[
-            optional("album_id", Int),
-            optional("album_permalinks", StrList),
-            optional("release_dates", StrList),
-            optional("album_permalink", Str),
-        ],
-    },
-    Shape {
-        platform: "soundcloud",
-        kind: Kind::Artist,
-        id_field: Some("artist_id"),
-        fields: &[
-            optional("artist_id", Int),
-            optional("artist_permalinks", StrList),
-            optional("artist_permalink", Str),
-        ],
-    },
-    // ---- DistroKid ----
-    // Releases are identified by their album uuid (the one in DistroKid's links and file
-    // names), a track by its album's uuid and position. Artists have a numeric id (the
-    // "1000777" in "1000777 Records DK") and a uuid.
-    Shape {
-        platform: "distrokid",
-        kind: Kind::Track,
-        id_field: None,
-        fields: &[required("album_uuid", Str), optional("index", Int)],
-    },
-    Shape {
-        platform: "distrokid",
-        kind: Kind::Album,
-        id_field: Some("album_uuid"),
-        fields: &[required("album_uuid", Str)],
-    },
-    Shape {
-        platform: "distrokid",
-        kind: Kind::Artist,
-        id_field: Some("artist_id"),
-        fields: &[optional("artist_id", Int), optional("artist_uuid", Str)],
-    },
-    // ---- NetEase ----
-    Shape {
-        platform: "netease",
-        kind: Kind::Track,
-        id_field: Some("song_id"),
-        fields: &[
-            required("song_id", Int),
-            // The song's index on its NetEase album, exactly as NetEase has it (it can skip
-            // numbers or repeat them). The track's own position on the album is a clean
-            // 1, 2, 3... derived from it; this keeps the original.
-            optional("song_index", Int),
-        ],
-    },
-    Shape {
-        platform: "netease",
-        kind: Kind::Album,
-        id_field: Some("album_id"),
-        fields: &[required("album_id", Int)],
-    },
-    Shape {
-        platform: "netease",
-        kind: Kind::Artist,
-        id_field: Some("artist_id"),
-        fields: &[required("artist_id", Int)],
-    },
-    // ---- QQ Music ----
-    // QQ has two ids for each song, album and artist: a number (`*_id`, the one that
-    // identifies the source here) and a short text id (`*_mid`), which its links use.
-    Shape {
-        platform: "qq",
-        kind: Kind::Track,
-        id_field: Some("song_id"),
-        fields: &[
-            required("song_id", Int),
-            optional("song_mid", Str),
-            // The song's index on its QQ album, verbatim (like NetEase's `song_index`).
-            optional("song_index", Int),
-        ],
-    },
-    Shape {
-        platform: "qq",
-        kind: Kind::Album,
-        id_field: Some("album_id"),
-        fields: &[required("album_id", Int), optional("album_mid", Str)],
-    },
-    Shape {
-        platform: "qq",
-        kind: Kind::Artist,
-        id_field: Some("artist_id"),
-        fields: &[required("artist_id", Int), optional("artist_mid", Str)],
-    },
-    // ---- Kuwo ----
-    Shape {
-        platform: "kuwo",
-        kind: Kind::Track,
-        id_field: Some("song_id"),
-        fields: &[
-            // Optional: some Kuwo downloads came without their song id (`--tag-fallback`).
-            optional("song_id", Int),
-            // The song's index on its Kuwo album, verbatim (like NetEase's `song_index`).
-            optional("song_index", Int),
-        ],
-    },
-    Shape {
-        platform: "kuwo",
-        kind: Kind::Album,
-        id_field: Some("album_id"),
-        fields: &[required("album_id", Int)],
-    },
-    Shape {
-        platform: "kuwo",
-        kind: Kind::Artist,
-        id_field: Some("artist_id"),
-        fields: &[required("artist_id", Int)],
-    },
-    // ---- YouTube ----
-    Shape {
-        platform: "youtube",
-        kind: Kind::Track,
-        id_field: Some("song_id"),
-        fields: &[
-            required("song_id", Str), // video id
-            optional("song_description", Str),
-            // The video's release date, verbatim. Independent of the track's own
-            // (canonical) release date.
-            optional("song_release_date", Str),
-        ],
-    },
-    Shape {
-        platform: "youtube",
-        kind: Kind::Artist,
-        id_field: Some("channel"),
-        // The channel's handle (without "@") or its id ("UC..."), as a download folder
-        // names it.
-        fields: &[required("channel", Str)],
-    },
-    // ---- Traktrain (beats) ----
-    Shape {
-        platform: "traktrain",
-        kind: Kind::Track,
-        id_field: Some("track_id"),
-        fields: &[
-            required("track_id", Int),
-            optional("name", Str),
-            optional("bpm", Int),
-            optional("tags", StrList),
-            // Traktrain's genre ids, as text.
-            optional("genre_ids", StrList),
-            // Where the audio is on Traktrain's storage ("<user id>/<uuid>.mp3").
-            optional("audio_key", Str),
-            optional("status", Str),
-        ],
-    },
-    Shape {
-        platform: "traktrain",
-        kind: Kind::Artist,
-        id_field: Some("user_id"),
-        fields: &[required("user_id", Int), optional("slug", Str), optional("brand", Str)],
-    },
-    // ---- BeatStars (beats) ----
-    Shape {
-        platform: "beatstars",
-        kind: Kind::Track,
-        id_field: Some("track_id"),
-        fields: &[required("track_id", Int)],
-    },
-    Shape {
-        platform: "beatstars",
-        kind: Kind::Artist,
-        id_field: Some("slug"),
-        fields: &[required("slug", Str)],
-    },
-    // ---- Custom: anything without a real platform (Discord, Google Drive...) ----
-    Shape {
-        platform: "custom",
-        kind: Kind::Track,
-        id_field: None,
-        fields: CUSTOM_FIELDS,
-    },
-    Shape {
-        platform: "custom",
-        kind: Kind::Album,
-        id_field: None,
-        fields: CUSTOM_FIELDS,
-    },
-    Shape {
-        platform: "custom",
-        kind: Kind::Artist,
-        id_field: None,
-        fields: CUSTOM_FIELDS,
-    },
-];
 
 /// A source snapshot as sent by a client (upload form, CLI, API).
 #[derive(Debug, Clone, Deserialize)]
@@ -377,10 +108,7 @@ pub fn validate(kind: Kind, source: NewSource) -> Result<ValidSource, InvalidSou
         )))
     };
 
-    let Some(shape) = SHAPES
-        .iter()
-        .find(|s| s.platform == source.platform && s.kind == kind)
-    else {
+    let Some(shape) = crate::extensions::registry().shape(&source.platform, kind.name()) else {
         return err("no data shape defined".to_string());
     };
     let Some(given) = source.data.as_object() else {
@@ -388,27 +116,27 @@ pub fn validate(kind: Kind, source: NewSource) -> Result<ValidSource, InvalidSou
     };
 
     for key in given.keys() {
-        if !shape.fields.iter().any(|f| f.name == key) {
-            let known: Vec<&str> = shape.fields.iter().map(|f| f.name).collect();
+        if !shape.fields.iter().any(|f| &f.name == key) {
+            let known: Vec<&str> = shape.fields.iter().map(|f| f.name.as_str()).collect();
             return err(format!("unknown field `{key}`, expected one of {known:?}"));
         }
     }
 
-    for field in shape.fields {
-        match given.get(field.name) {
+    for field in &shape.fields {
+        match given.get(&field.name) {
             None if field.required => return err(format!("`{}` is required", field.name)),
             None => {}
             Some(value) => {
-                let ok = match field.field_type {
-                    Int => value.is_i64(),
-                    Str => value.is_string(),
-                    StrList => value.as_array().is_some_and(|items| items.iter().all(|i| i.is_string())),
+                let ok = match field.kind {
+                    FieldType::Int => value.is_i64(),
+                    FieldType::Str => value.is_string(),
+                    FieldType::Strs => value.as_array().is_some_and(|items| items.iter().all(|i| i.is_string())),
                 };
                 if !ok {
-                    let expected = match field.field_type {
-                        Int => "an integer",
-                        Str => "a string",
-                        StrList => "a list of strings",
+                    let expected = match field.kind {
+                        FieldType::Int => "an integer",
+                        FieldType::Str => "a string",
+                        FieldType::Strs => "a list of strings",
                     };
                     return err(format!("`{}` must be {expected}, got {value}", field.name));
                 }
@@ -416,7 +144,7 @@ pub fn validate(kind: Kind, source: NewSource) -> Result<ValidSource, InvalidSou
         }
     }
 
-    let external_id = shape.id_field.and_then(|name| match given.get(name)? {
+    let external_id = shape.id.as_ref().and_then(|name| match given.get(name)? {
         serde_json::Value::String(s) => Some(s.clone()),
         other => Some(other.to_string()),
     });
@@ -519,26 +247,11 @@ mod tests {
         let artist = validate(Kind::Artist, new("distrokid", json!({ "artist_id": 1001517, "artist_uuid": "x" }))).unwrap();
         assert_eq!(artist.external_id.as_deref(), Some("1001517"));
     }
-
-    #[test]
-    fn shapes_are_consistent() {
-        for (i, a) in SHAPES.iter().enumerate() {
-            for b in &SHAPES[i + 1..] {
-                assert!(!(a.platform == b.platform && a.kind == b.kind), "{} twice", a.platform);
-            }
-            // The id field must be one of the fields. It may be optional (Kuwo songs whose
-            // id is unknown): a source without it is found by its data instead, like a
-            // custom source (see `db::sources::add_snapshot`).
-            if let Some(id) = a.id_field {
-                assert!(a.fields.iter().any(|f| f.name == id), "{}: id field must be a field", a.platform);
-            }
-        }
-    }
 }
 
 /// The Python ingestion library (`clients/python`) has these shapes as typed classes, in
-/// a file made from `SHAPES`. This checks it's up to date; to make it again after changing
-/// `SHAPES`: `ACETATE_WRITE_PYTHON_SHAPES=1 cargo test python_shapes`.
+/// a file made from the built-in extensions' shapes. This checks it's up to date; to make it again after changing
+/// the shapes: `ACETATE_WRITE_PYTHON_SHAPES=1 cargo test python_shapes`.
 #[cfg(test)]
 mod python_shapes {
     use super::*;
@@ -563,7 +276,7 @@ mod python_shapes {
 
     fn render() -> String {
         let mut out = String::from(
-            "# Made from the server's source shapes (`SHAPES` in src/model/sources.rs): don't edit.\n\
+            "# Made from the server's source shapes (`extensions/*/extension.toml`): don't edit.\n\
              # `cargo test` checks it's up to date; `ACETATE_WRITE_PYTHON_SHAPES=1 cargo test python_shapes`\n\
              # makes it again.\n\n\
              from dataclasses import dataclass\n\
@@ -571,14 +284,14 @@ mod python_shapes {
              from ._source import Field, Shape, ShapedSource\n\n\
              SHAPES: dict[tuple[str, str], Shape] = {\n",
         );
-        for shape in SHAPES {
-            let id = shape.id_field.map_or("None".to_string(), |f| format!("\"{f}\""));
-            out += &format!("    (\"{}\", \"{}\"): Shape(id_field={id}, fields={{\n", shape.platform, shape.kind.name());
-            for field in shape.fields {
-                let kind = match field.field_type {
-                    Int => "int",
-                    Str => "str",
-                    StrList => "strs",
+        for (platform, shape) in acetate_extensions::Registry::builtin().shapes() {
+            let id = shape.id.as_ref().map_or("None".to_string(), |f| format!("\"{f}\""));
+            out += &format!("    (\"{}\", \"{}\"): Shape(id_field={id}, fields={{\n", platform, shape.kind);
+            for field in &shape.fields {
+                let kind = match field.kind {
+                    FieldType::Int => "int",
+                    FieldType::Str => "str",
+                    FieldType::Strs => "strs",
                 };
                 let required = if field.required { "True" } else { "False" };
                 out += &format!("        \"{}\": Field(\"{kind}\", required={required}),\n", field.name);
@@ -587,20 +300,20 @@ mod python_shapes {
         }
         out += "}\n";
         let mut names = Vec::new();
-        for shape in SHAPES {
-            let kind = shape.kind.name();
-            let name = format!("{}{}{}", class_prefix(shape.platform), kind[..1].to_uppercase(), &kind[1..]);
-            let id = shape.id_field.map_or(String::from("none: sources with the same data are the same"), |f| format!("`{f}`"));
+        for (platform, shape) in acetate_extensions::Registry::builtin().shapes() {
+            let kind = shape.kind.as_str();
+            let name = format!("{}{}{}", class_prefix(platform), kind[..1].to_uppercase(), &kind[1..]);
+            let id = shape.id.as_ref().map_or(String::from("none: sources with the same data are the same"), |f| format!("`{f}`"));
             out += &format!(
                 "\n\n@dataclass(frozen=True, kw_only=True)\nclass {name}(ShapedSource):\n    \"\"\"A {kind}'s source on {}. Its id: {id}.\"\"\"\n\n    platform: ClassVar[str] = \"{}\"\n    kind: ClassVar[str] = \"{kind}\"\n",
-                shape.platform, shape.platform
+                platform, platform
             );
-            for field in shape.fields {
-                assert!(!["source_id", "captured_at"].contains(&field.name), "{name}: `{}` is taken", field.name);
-                let python_type = match field.field_type {
-                    Int => "int",
-                    Str => "str",
-                    StrList => "list[str]",
+            for field in &shape.fields {
+                assert!(!["source_id", "captured_at"].contains(&field.name.as_str()), "{name}: `{}` is taken", field.name);
+                let python_type = match field.kind {
+                    FieldType::Int => "int",
+                    FieldType::Str => "str",
+                    FieldType::Strs => "list[str]",
                 };
                 if field.required {
                     out += &format!("    {}: {python_type}\n", field.name);
@@ -628,7 +341,7 @@ mod python_shapes {
         let kept = std::fs::read_to_string(PATH).unwrap_or_default();
         assert!(
             kept == made,
-            "{PATH} doesn't match SHAPES: make it again with `ACETATE_WRITE_PYTHON_SHAPES=1 cargo test python_shapes`"
+            "{PATH} doesn't match the extensions' shapes: make it again with `ACETATE_WRITE_PYTHON_SHAPES=1 cargo test python_shapes`"
         );
     }
 }

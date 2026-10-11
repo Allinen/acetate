@@ -67,9 +67,8 @@ pub fn recognize(text: &str) -> Option<Pasted> {
             )),
         });
     }
-    let lower = text.to_lowercase();
-    let starts = ["http://", "https://", "youtu.be/", "youtube.com/", "www.youtube.com/", "m.youtube.com/", "music.youtube.com/"].iter().any(|p| lower.starts_with(p));
-    let link = starts && ["youtube.com/", "youtu.be/"].iter().any(|h| lower.contains(h)) && !text.contains(char::is_whitespace);
+    // A YouTube video's link, as the YouTube extension reads links.
+    let link = !text.contains(char::is_whitespace) && crate::extensions::current().match_link(text, "track", false).is_some_and(|m| m.platform == "youtube");
     link.then(|| Pasted::YouTube(text.to_string()))
 }
 

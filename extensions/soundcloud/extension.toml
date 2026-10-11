@@ -1,0 +1,67 @@
+[extension]
+name = "soundcloud"
+title = "SoundCloud"
+api = 3
+
+[[shape]]
+kind = "track"
+id = "song_id"
+fields = [
+  { name = "song_id", type = "int" },
+  { name = "song_uids", type = "strs" },
+  { name = "song_permalinks", type = "strs" },
+  { name = "song_descriptions", type = "strs" },
+  { name = "release_dates", type = "strs" },
+  { name = "created_at", type = "strs" },
+  { name = "song_uid", type = "str" },
+  { name = "song_permalink", type = "str" },
+  { name = "song_description", type = "str" },
+]
+
+[[shape]]
+kind = "album"
+id = "album_id"
+fields = [
+  { name = "album_id", type = "int" },
+  { name = "album_permalinks", type = "strs" },
+  { name = "release_dates", type = "strs" },
+  { name = "album_permalink", type = "str" },
+]
+
+[[shape]]
+kind = "artist"
+id = "artist_id"
+fields = [
+  { name = "artist_id", type = "int" },
+  { name = "artist_permalinks", type = "strs" },
+  { name = "artist_permalink", type = "str" },
+]
+
+# yt-dlp names SoundCloud files `Title [number].ext`.
+[id]
+kind = "track"
+field = "song_id"
+class = "digits"
+filename = true
+
+# Permalinks are the part after "soundcloud.com/". A link in a file's comment counts when it
+# is a track: exactly "user/track", and not a playlist, likes, a user's tab…
+[[link]]
+kind = "track"
+comment = true
+open = "https://soundcloud.com/{song_permalinks}"
+match = ["https://soundcloud.com/{user}/{track}"]
+set = { song_permalinks = "{user}/{track}" }
+captures = { track = { not = ["sets", "likes", "reposts", "tracks", "albums", "popular-tracks", "followers", "following"] } }
+
+[[link]]
+kind = "album"
+open = "https://soundcloud.com/{album_permalinks}"
+match = ["https://soundcloud.com/{user}/sets/{set}"]
+set = { album_permalinks = "{user}/sets/{set}" }
+
+[[link]]
+kind = "artist"
+open = "https://soundcloud.com/{artist_permalinks}"
+match = ["https://soundcloud.com/{artist}/*"]
+set = { artist_permalinks = "{artist}" }

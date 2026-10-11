@@ -1,9 +1,13 @@
+[workspace]
+members = [".", "crates/acetate-extensions"]
+
 [package]
 name = "acetate"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+acetate-extensions = { path = "crates/acetate-extensions" }
 aes-gcm = "0.11.1"
 anyhow = "1.0.104"
 argon2 = "0.6.0"

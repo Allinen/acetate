@@ -143,9 +143,47 @@ pub struct Vocab {
     pub relation_kinds: Vec<RelationKind>,
     /// The kinds of review flag, in the order to show them.
     pub review_kinds: Vec<ReviewKind>,
-    /// What each platform's sources hold (`GET /api/source-shapes`, fetched with it).
+    /// What each platform's sources hold (from the extensions, `GET /api/extensions`, fetched with it).
     #[serde(skip)]
     pub source_shapes: Vec<SourceShape>,
+}
+
+/// The server's extensions (kept for reading links), and the source shapes they have.
+async fn fetch_shapes(api: &Api) -> Vec<SourceShape> {
+    match api.send_json::<crate::extensions::Registry>(reqwest::Method::GET, "/api/extensions", None).await {
+        Ok(registry) => {
+            let shapes = shapes_of(&registry);
+            crate::extensions::set(registry);
+            shapes
+        }
+        Err(_) => shapes_of(&crate::extensions::current()),
+    }
+}
+
+/// The source shapes of a set of extensions.
+pub fn shapes_of(registry: &crate::extensions::Registry) -> Vec<SourceShape> {
+    registry
+        .shapes()
+        .map(|(platform, shape)| SourceShape {
+            platform: platform.to_string(),
+            kind: shape.kind.clone(),
+            id_field: shape.id.clone(),
+            fields: shape
+                .fields
+                .iter()
+                .map(|f| ShapeField {
+                    name: f.name.clone(),
+                    kind: match f.kind {
+                        acetate_extensions::FieldType::Int => "int",
+                        acetate_extensions::FieldType::Str => "str",
+                        acetate_extensions::FieldType::Strs => "strs",
+                    }
+                    .to_string(),
+                    required: f.required,
+                })
+                .collect(),
+        })
+        .collect()
 }
 
 /// A platform's sources of one kind (track, album, artist) and their fields.
@@ -240,7 +278,7 @@ impl Account {
             }
             let mut vocab = api.send_json::<Vocab>(reqwest::Method::GET, "/api/vocab", None).await.ok();
             if let Some(vocab) = vocab.as_mut() {
-                vocab.source_shapes = api.send_json(reqwest::Method::GET, "/api/source-shapes", None).await.unwrap_or_default();
+                vocab.source_shapes = fetch_shapes(&api).await;
             }
             let server = api.send_json::<ServerVersion>(reqwest::Method::GET, "/api/version", None).await.ok();
             *arrived.lock().unwrap() = Some((me, vocab, server));
@@ -270,7 +308,7 @@ impl Account {
         runtime.spawn(async move {
             let mut vocab = api.send_json::<Vocab>(reqwest::Method::GET, "/api/vocab", None).await.ok();
             if let Some(vocab) = vocab.as_mut() {
-                vocab.source_shapes = api.send_json(reqwest::Method::GET, "/api/source-shapes", None).await.unwrap_or_default();
+                vocab.source_shapes = fetch_shapes(&api).await;
             }
             if vocab.is_some() {
                 *arrived.lock().unwrap() = Some((None, vocab, None));

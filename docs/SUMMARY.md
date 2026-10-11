@@ -26,4 +26,5 @@
 - [Running a server](admin/README.md)
   - [Users and permissions](admin/users.md)
   - [Configuration](admin/configuration.md)
+  - [Extensions](admin/extensions.md)
   - [Command line](admin/cli.md)

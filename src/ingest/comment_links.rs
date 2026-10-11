@@ -2,16 +2,14 @@
 //! they got it from there ("downloaded from lucida.to: https://soundcloud.com/a/b").
 //! Used by `acetate ingest` for files whose path says nothing (see `origin_from_comment`).
 //!
-//! * A SoundCloud track link is the SoundCloud song, by permalink ("a/b"): the same source
-//!   as SoundCloud downloads, found by their permalinks.
-//! * Qobuz, Amazon Music, Tidal and Deezer links are custom sources labelled with the
-//!   store's name, with the link as `url` (Acetate has no data shape of their own for
-//!   them).
+//! Which links count, and what source each is, is for the extensions to say (`[[link]]`
+//! with `comment = true`): a SoundCloud track link is the SoundCloud song, by permalink
+//! ("a/b"), the same source as SoundCloud downloads, found by their permalinks; Qobuz,
+//! Amazon Music, Tidal and Deezer links are custom sources labelled with the store's name,
+//! with the link as `url`.
 //!
-//! Only one link counts: the first one of these in the comment. Anything else (a
-//! SoundCloud playlist, another site) is no link.
-
-use serde_json::json;
+//! Only one link counts: the first one that is a source. Anything else (a SoundCloud
+//! playlist, another site) is no link.
 
 use crate::model::sources::{self, Kind, NewSource, ValidSource};
 
@@ -24,50 +22,17 @@ pub fn origin_from_comment(comment: &str) -> Option<ValidSource> {
 fn origin_from_link(word: &str) -> Option<ValidSource> {
     // Links in prose often end in punctuation: "(https://…)." or "https://…,".
     let link = word.trim_matches(|c: char| matches!(c, '(' | ')' | '[' | ']' | '<' | '>' | '"' | '\'' | ',' | '.' | ';' | '!'));
-    let rest = link
-        .strip_prefix("https://")
-        .or_else(|| link.strip_prefix("http://"))
-        .unwrap_or(link);
-    let (host, path) = rest.split_once('/').unwrap_or((rest, ""));
-    let host = host.to_lowercase();
-    let host = host.strip_prefix("www.").unwrap_or(&host);
-    let path = path.split(['?', '#']).next().unwrap_or("").trim_end_matches('/');
-
-    if host == "soundcloud.com" || host == "m.soundcloud.com" {
-        // "user/track": exactly two parts, and not a playlist, likes, a user's tab...
-        let parts: Vec<&str> = path.split('/').filter(|p| !p.is_empty()).collect();
-        let reserved = ["sets", "likes", "reposts", "tracks", "albums", "popular-tracks", "followers", "following"];
-        return match parts[..] {
-            [user, track] if !reserved.contains(&track) && !path.is_empty() => {
-                let permalink = format!("{user}/{track}");
-                source("soundcloud", json!({ "song_permalinks": [permalink] }))
-            }
-            _ => None,
-        };
-    }
-    let label = if host.ends_with("qobuz.com") {
-        "qobuz"
-    } else if host.starts_with("music.amazon.") || (host.starts_with("amazon.") && path.contains("music")) {
-        "amazon"
-    } else if host.ends_with("tidal.com") {
-        "tidal"
-    } else if host.ends_with("deezer.com") || host == "deezer.page.link" {
-        "deezer"
-    } else {
-        return None;
-    };
-    let url = if link.contains("://") { link.to_string() } else { format!("https://{link}") };
-    source("custom", json!({ "label": label, "url": url }))
-}
-
-fn source(platform: &str, data: serde_json::Value) -> Option<ValidSource> {
-    let new = NewSource { platform: platform.to_string(), source_id: None, captured_at: None, data };
+    let registry = crate::extensions::registry();
+    let found = registry.match_link(link, "track", true)?;
+    let data = registry.data_from_fields(&found.platform, "track", &found.fields).ok()?;
+    let new = NewSource { platform: found.platform, source_id: None, captured_at: None, data };
     sources::validate(Kind::Track, new).ok()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     fn origin(comment: &str) -> Option<(String, serde_json::Value)> {
         origin_from_comment(comment).map(|s| (s.platform, s.data))

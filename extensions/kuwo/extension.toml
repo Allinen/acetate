@@ -1,0 +1,26 @@
+[extension]
+name = "kuwo"
+title = "Kuwo"
+api = 3
+
+[[shape]]
+kind = "track"
+id = "song_id"
+fields = [
+  { name = "song_id", type = "int" },
+  { name = "song_index", type = "int" },
+]
+
+[[shape]]
+kind = "album"
+id = "album_id"
+fields = [
+  { name = "album_id", type = "int", required = true },
+]
+
+[[shape]]
+kind = "artist"
+id = "artist_id"
+fields = [
+  { name = "artist_id", type = "int", required = true },
+]

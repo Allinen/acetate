@@ -87,16 +87,24 @@ class Acetate:
             raise InvalidDescription(f"no such group on the server: {', '.join(unknown)} (there are: {', '.join(sorted(by_name))})")
         return [by_name[n] for n in names]
 
+    def extensions(self) -> dict[str, Any]:
+        """The server's extensions (`GET /api/extensions`): each platform's source shapes and links."""
+        return self._request("GET", "/api/extensions")
+
     def source_shapes(self) -> list[dict[str, Any]]:
-        """The server's source shapes (`GET /api/source-shapes`)."""
-        return self._request("GET", "/api/source-shapes")
+        """The server's source shapes: one for each platform and kind, from its extensions."""
+        shapes = []
+        for manifest in self.extensions()["extensions"]:
+            for shape in manifest.get("shape", []):
+                shapes.append({"platform": manifest["extension"]["name"], "kind": shape["kind"], "id_field": shape.get("id"), "fields": shape["fields"]})
+        return shapes
 
     def shape_differences(self) -> list[str]:
         """How this library's source shapes differ from the server's (empty: the same).
         Anything listed means one of the two is older than the other."""
         server = {}
         for shape in self.source_shapes():
-            fields = {f["name"]: (f["type"], f["required"]) for f in shape["fields"]}
+            fields = {f["name"]: (f["type"], f.get("required", False)) for f in shape["fields"]}
             server[(shape["platform"], shape["kind"])] = (shape["id_field"], fields)
         ours = {
             key: (shape.id_field, {name: (f.type, f.required) for name, f in shape.fields.items()})

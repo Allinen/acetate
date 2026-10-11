@@ -33,7 +33,7 @@ jobs:
             .
             clients
       - run: scripts/versions.py
-      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
         env:
           SQLX_OFFLINE: "true"
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
@@ -70,7 +70,7 @@ jobs:
         run: psql -h localhost -U acetate -d acetate -c "CREATE ROLE acetate_app NOLOGIN"
         env:
           PGPASSWORD: acetate
-      - run: cargo test --locked
+      - run: cargo test --workspace --locked
 
   clients:
     runs-on: ubuntu-24.04

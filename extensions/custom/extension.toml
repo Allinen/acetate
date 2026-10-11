@@ -1,0 +1,28 @@
+[extension]
+name = "custom"
+title = "Anything else (Discord, Google Drive…)"
+api = 3
+
+[[shape]]
+kind = "track"
+fields = [
+  { name = "label", type = "str", required = true },
+  { name = "description", type = "str" },
+  { name = "url", type = "str" },
+]
+
+[[shape]]
+kind = "album"
+fields = [
+  { name = "label", type = "str", required = true },
+  { name = "description", type = "str" },
+  { name = "url", type = "str" },
+]
+
+[[shape]]
+kind = "artist"
+fields = [
+  { name = "label", type = "str", required = true },
+  { name = "description", type = "str" },
+  { name = "url", type = "str" },
+]
