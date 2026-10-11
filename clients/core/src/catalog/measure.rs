@@ -88,9 +88,9 @@ fn where_memory_goes() {
         annotations: model::Part::default(),
         issues: model::Part::default(),
         lyrics: model::Part::default(),
-        groupings: model::Part::default(),
+        groupings: Some(model::Part::default()),
         extras: model::Part::default(),
-        playlists: Vec::new(),
+        playlists: Some(Vec::new()),
     };
     let t = std::time::Instant::now();
     let (applied, apply_peak) = peak(|| catalog.apply(delta));

@@ -9,7 +9,8 @@
 //!
 //! Every catalog has a `version`. With `?since=<version>`, only what changed since that
 //! copy comes back (a delta, `"delta": true`): the changed tracks, albums and artists as
-//! rows (those the user can see), the user's changed annotations, all playlists, and
+//! rows (those the user can see), the user's changed annotations, the groupings and the
+//! playlists when any changed (the whole lists), and
 //! `removed` (merged ones: they only redirect now; ones the user could see and can't
 //! anymore; annotations that say nothing anymore).
 //! Nothing changed: 304. When a delta can't be given (who may see what changed, or the
@@ -106,8 +107,9 @@ pub async fn catalog(
                     gone_albums.push(id);
                 }
             }
-            let playlists = serde_json::to_string(&db::playlists::list(&mut tx, false).await?)?;
-            let groupings = db::library::groupings_json(&mut tx).await?;
+            // (The lists of groupings and playlists are small, and sent whole when one changed.)
+            let groupings = if changes.groupings { Some(db::library::groupings_json(&mut tx).await?) } else { None };
+            let playlists = if changes.playlists { Some(serde_json::to_string(&db::playlists::list(&mut tx, false).await?)?) } else { None };
             let extras = db::library::extras_json(&mut tx, Some(&changes.extras)).await?;
             drop(tx);
             // The user's changed annotations that say nothing anymore (unstarred, unrated,
@@ -118,15 +120,19 @@ pub async fn catalog(
             let removed = serde_json::json!({
                 "tracks": gone_tracks, "albums": gone_albums, "artists": gone_artists, "annotations": cleared, "extras": gone_extras,
             });
+            let groupings = match groupings {
+                Some(rows) => format!(r#","groupings":{}"#, part(GROUPING_COLUMNS, &rows)?),
+                None => String::new(),
+            };
+            let playlists = playlists.map(|list| format!(r#","playlists":{list}"#)).unwrap_or_default();
             let body = format!(
-                r#"{{"format":{FORMAT},"delta":true,"version":"{version}","tracks":{},"albums":{},"artists":{},"annotations":{},"issues":{},"lyrics":{},"groupings":{},"extras":{},"playlists":{playlists},"removed":{removed}}}"#,
+                r#"{{"format":{FORMAT},"delta":true,"version":"{version}","tracks":{},"albums":{},"artists":{},"annotations":{},"issues":{},"lyrics":{},"extras":{}{groupings}{playlists},"removed":{removed}}}"#,
                 part(TRACK_COLUMNS, &tracks)?,
                 part(ALBUM_COLUMNS, &albums)?,
                 part(ARTIST_COLUMNS, &artists)?,
                 part(ANNOTATION_COLUMNS, &annotations)?,
                 part(ISSUE_COLUMNS, &issues)?,
                 part(LYRIC_COLUMNS, &lyrics)?,
-                part(GROUPING_COLUMNS, &groupings)?,
                 part(EXTRA_COLUMNS, &extras)?,
             );
             return Ok(([(header::CONTENT_TYPE, HeaderValue::from_static("application/json")), no_cache()], body).into_response());

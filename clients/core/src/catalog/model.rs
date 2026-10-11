@@ -302,12 +302,15 @@ pub struct Raw {
     /// Lyrics (a delta: the changed tracks', all of them; none for a track: it has none).
     #[serde(default)]
     pub lyrics: Part<Lyric>,
-    /// Every grouping (a delta has them all too: there are few).
-    pub groupings: Part<Grouping>,
+    /// Every grouping (a delta has them all too when one changed: there are few; else none).
+    #[serde(default)]
+    pub groupings: Option<Part<Grouping>>,
     /// Extras (a delta: the changed ones).
     #[serde(default)]
     pub extras: Part<Extra>,
-    pub playlists: Vec<Playlist>,
+    /// Every playlist (a delta has them all when one changed; else none).
+    #[serde(default)]
+    pub playlists: Option<Vec<Playlist>>,
 }
 
 /// What a delta drops: tracks, albums and artists merged into another; tracks, albums and
@@ -396,7 +399,9 @@ pub fn parse(body: &[u8]) -> anyhow::Result<Raw> {
     if !raw.lyrics.columns.is_empty() {
         check_columns("lyrics", &raw.lyrics.columns, LYRIC_COLUMNS)?;
     }
-    check_columns("groupings", &raw.groupings.columns, GROUPING_COLUMNS)?;
+    if let Some(groupings) = &raw.groupings {
+        check_columns("groupings", &groupings.columns, GROUPING_COLUMNS)?;
+    }
     if !raw.extras.columns.is_empty() {
         check_columns("extras", &raw.extras.columns, EXTRA_COLUMNS)?;
     }

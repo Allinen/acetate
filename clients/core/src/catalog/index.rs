@@ -715,8 +715,8 @@ impl<'a> Merger<'a> {
             lyrics: raw.lyrics.rows,
             keep_old_lyrics: false,
             lyrics_replaced: Default::default(),
-            groupings: raw.groupings.rows,
-            playlists: raw.playlists,
+            groupings: raw.groupings.map(|g| g.rows).unwrap_or_default(),
+            playlists: raw.playlists.unwrap_or_default(),
         }
     }
 
@@ -774,9 +774,13 @@ impl<'a> Merger<'a> {
         if delta.version.is_some() {
             self.version = delta.version;
         }
-        // Sent whole with every delta.
-        self.groupings = delta.groupings.rows;
-        self.playlists = delta.playlists;
+        // Sent whole when one changed.
+        if let Some(groupings) = delta.groupings {
+            self.groupings = groupings.rows;
+        }
+        if let Some(playlists) = delta.playlists {
+            self.playlists = playlists;
+        }
     }
 
     /// The catalog. `old`: the one `Pending::Kept` rows are from. A row that doesn't read
@@ -990,6 +994,27 @@ mod tests {
     }
 
     #[test]
+    fn a_delta_without_the_playlists_or_groupings_keeps_them() {
+        let base = |extra: serde_json::Value| {
+            let mut delta = serde_json::json!({
+                "format": crate::catalog::model::FORMAT, "delta": true, "version": "10:20:",
+                "tracks": {"columns": [], "rows": []}, "albums": {"columns": [], "rows": []},
+                "artists": {"columns": [], "rows": []}, "annotations": {"columns": [], "rows": []},
+                "issues": {"columns": [], "rows": []}, "removed": {}
+            });
+            delta.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            serde_json::from_value::<model::Raw>(delta).unwrap()
+        };
+        let playlist = serde_json::json!({ "id": "00000000-0000-7000-8000-0000000000a1", "name": "Mine", "description": "", "public": false, "owner": "ann", "mine": true, "entries": 0, "duration_ms": 0 });
+        let c = catalog().apply(base(serde_json::json!({ "playlists": [playlist] })));
+        assert_eq!(c.playlists.len(), 1);
+        let c = c.apply(base(serde_json::json!({})));
+        assert_eq!(c.playlists.len(), 1, "not sent: unchanged");
+        let c = c.apply(base(serde_json::json!({ "playlists": [] })));
+        assert!(c.playlists.is_empty(), "sent empty: none left");
+    }
+
+    #[test]
     fn unknown_columns_ask_for_an_update() {
         let body = format!(r#"{{"format": {}}}"#, model::FORMAT + 1);
         let err = model::parse(body.as_bytes()).err().unwrap().to_string();
@@ -1044,9 +1069,9 @@ mod bench {
             annotations: model::Part { columns: Vec::new(), rows: Vec::new() },
             issues: model::Part { columns: Vec::new(), rows: Vec::new() },
             lyrics: model::Part::default(),
-            groupings: model::Part { columns: Vec::new(), rows: Vec::new() },
+            groupings: None,
             extras: model::Part::default(),
-            playlists: Vec::new(),
+            playlists: None,
         };
         let t = Instant::now();
         let c = c.apply(delta);

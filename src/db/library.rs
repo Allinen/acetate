@@ -362,12 +362,14 @@ pub struct Changes {
     pub annotations: Vec<Uuid>,
     /// A grouping changed (its name, what's in it): the list is sent again.
     pub groupings: bool,
+    /// A playlist (or its entries) changed: the list is sent again.
+    pub playlists: bool,
     pub extras: Vec<Uuid>,
 }
 
 impl Changes {
     pub fn is_empty(&self) -> bool {
-        !self.everything && self.tracks.is_empty() && self.albums.is_empty() && self.artists.is_empty() && self.annotations.is_empty() && !self.groupings && self.extras.is_empty()
+        !self.everything && self.tracks.is_empty() && self.albums.is_empty() && self.artists.is_empty() && self.annotations.is_empty() && !self.groupings && !self.playlists && self.extras.is_empty()
     }
 }
 
@@ -416,6 +418,7 @@ pub async fn changes_since(conn: &mut PgConnection, since: &str) -> anyhow::Resu
             "artist" => changes.artists.push(id),
             "annotation" => changes.annotations.push(id),
             "grouping" => changes.groupings = true,
+            "playlist" => changes.playlists = true,
             "extra" => changes.extras.push(id),
             // (Logged by 0045 only, alongside a "track"/"album" change that `unseen`
             // finds: nothing more to do.)

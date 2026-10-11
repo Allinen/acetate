@@ -318,3 +318,28 @@ async fn a_name_taken_off_an_artist_leaves_the_catalog(_: PgPoolOptions, connect
     assert_eq!(hidden, 1, "hidden, not deleted");
     Ok(())
 }
+
+#[sqlx::test]
+async fn a_playlist_changed_says_so_and_nothing_else_does(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
+    let lib = setup(connect).await?;
+    let since = version(&lib).await?;
+    let c = changes(&lib, lib.carol, since.clone()).await?;
+    assert!(!c.playlists && c.is_empty());
+    // An edit to a track doesn't send the playlists again.
+    sqlx::query("UPDATE tracks SET title = 'Song V (edited)' WHERE id = $1").bind(lib.v).execute(&lib.owner).await?;
+    assert!(!changes(&lib, lib.carol, since).await?.playlists);
+
+    // A playlist made (by alice), and a track put in it: everyone's list is asked for again.
+    let before = version(&lib).await?;
+    let mut tx = db::begin(&lib.app, Some(lib.alice)).await?;
+    let playlist = db::playlists::create(&mut tx, "Mine", "", true).await?;
+    tx.commit().await?;
+    let made = changes(&lib, lib.carol, before).await?;
+    assert!(made.playlists && !made.is_empty());
+    let before = version(&lib).await?;
+    let mut tx = db::begin(&lib.app, Some(lib.alice)).await?;
+    db::playlists::add(&mut tx, playlist, &[lib.v], None).await?;
+    tx.commit().await?;
+    assert!(changes(&lib, lib.carol, before).await?.playlists);
+    Ok(())
+}
