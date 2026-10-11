@@ -33,9 +33,12 @@ pub mod tracks;
 pub mod problems;
 pub mod trash;
 pub mod users;
+pub mod vocabulary;
 
 #[cfg(test)]
 mod rls_tests;
+#[cfg(test)]
+mod vocabulary_tests;
 #[cfg(test)]
 mod track_edit_tests;
 #[cfg(test)]
@@ -112,11 +115,7 @@ const TABLES_WITHOUT_RLS: &[&str] = &[
     "group_permissions",
     "sessions",
     "shares",
-    "track_statuses",
-    "credit_roles",
-    "album_kinds",
-    "relation_kinds",
-    "review_kinds",
+    "vocabulary",
 ];
 
 /// Connects as the owner: for migrations and the CLI.

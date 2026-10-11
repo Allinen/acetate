@@ -119,7 +119,7 @@ pub async fn issues_json(conn: &mut PgConnection, ids: Option<&[Uuid]>) -> sqlx:
         WITH open AS (
             SELECT f.track_id, json_agg(json_build_array(f.id, f.kind) ORDER BY k.position, f.id) AS flags
             FROM review_flags f
-            JOIN review_kinds k ON k.kind = f.kind
+            JOIN vocabulary k ON k.list = 'review_kind' AND k.word = f.kind
             WHERE f.resolved_at IS NULL AND ($1::uuid[] IS NULL OR f.track_id = ANY($1))
             GROUP BY f.track_id
         )

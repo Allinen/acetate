@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT r.kind, r.to_track_id AS track_id, t.title, t.artist_display, k.template\n        FROM track_relations r\n        JOIN tracks t ON t.id = r.to_track_id\n        JOIN relation_kinds k ON k.kind = r.kind\n        WHERE r.from_track_id = $1\n        ORDER BY r.kind, t.title\n        ",
+  "query": "\n        SELECT r.kind, r.to_track_id AS track_id, t.title, t.artist_display, (k.data ->> 'template') AS \"template!\"\n        FROM track_relations r\n        JOIN tracks t ON t.id = r.to_track_id\n        JOIN vocabulary k ON k.list = 'relation_kind' AND k.word = r.kind\n        WHERE r.from_track_id = $1\n        ORDER BY r.kind, t.title\n        ",
   "describe": {
     "columns": [
       {
@@ -49,14 +49,9 @@
       },
       {
         "ordinal": 4,
-        "name": "template",
+        "name": "template!",
         "type_info": "Text",
-        "origin": {
-          "Table": {
-            "table": "relation_kinds",
-            "name": "template"
-          }
-        }
+        "origin": "Expression"
       }
     ],
     "parameters": {
@@ -69,8 +64,8 @@
       false,
       false,
       false,
-      false
+      null
     ]
   },
-  "hash": "bb3765eabbd007e8ea1c6af469d138d3821430384693df8e3f9d6b298e8f3b6b"
+  "hash": "00d5350c0f48ad6e9185714c3f41eb31e7e29c22768736f8138bccd0087ba142"
 }

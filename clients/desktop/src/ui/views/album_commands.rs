@@ -245,6 +245,7 @@ impl Here<'_> {
             shapes: &self.vocab.source_shapes,
             extras: self.extras,
             library_extras: &self.catalog.extras,
+            extra_kinds: &self.vocab.extra_kinds,
             may_access: self.may_access,
             notes: self.notes,
         }

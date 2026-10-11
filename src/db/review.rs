@@ -23,80 +23,72 @@ const DUPLICATE_SIMILARITY: f32 = 0.5;
 const DUPLICATE_MAX_LENGTH_DIFFERENCE_MS: i64 = 3_000;
 
 /// Words that make a title another version of a song: "Song" and "Song (Instrumental)"
-/// aren't duplicates, however similar the titles. Each maps to a mark, so spellings of the
-/// same thing agree ("Remastered" and "Remaster"). Several words are matched in a row.
-const VERSION_WORDS: &[(&[&str], &str)] = &[
-    (&["instrumental"], "instrumental"),
-    (&["inst"], "instrumental"),
-    (&["off", "vocal"], "instrumental"),
-    (&["karaoke"], "instrumental"),
-    (&["a", "cappella"], "a cappella"),
-    (&["acapella"], "a cappella"),
-    (&["acappella"], "a cappella"),
-    (&["sped"], "sped up"),
-    (&["speed", "up"], "sped up"),
-    (&["spedup"], "sped up"),
-    (&["nightcore"], "sped up"),
-    (&["slowed"], "slowed"),
-    (&["reverb"], "reverb"),
-    (&["remaster"], "remaster"),
-    (&["remastered"], "remaster"),
-    (&["remix"], "remix"),
-    (&["mix"], "mix"),
-    (&["edit"], "edit"),
-    (&["extended"], "extended"),
-    (&["live"], "live"),
-    (&["acoustic"], "acoustic"),
-    (&["unplugged"], "acoustic"),
-    (&["demo"], "demo"),
-    (&["8d"], "8d"),
-];
+/// aren't duplicates, however similar the titles. The library's own (the `version_word`
+/// list of the vocabulary). Each maps to a mark, so spellings of the same thing agree
+/// ("Remastered" and "Remaster"). Several words are matched in a row; the ones marked
+/// `substring` (for languages written without spaces between words) are found anywhere in
+/// the title.
+pub struct VersionWords {
+    phrases: Vec<(Vec<String>, String)>,
+    substrings: Vec<(String, String)>,
+}
 
-/// The same for titles written without spaces between words (Chinese, Japanese): found
-/// anywhere in the title.
-const VERSION_SUBSTRINGS: &[(&str, &str)] = &[
-    ("伴奏", "instrumental"),
-    ("纯音乐", "instrumental"),
-    ("インスト", "instrumental"),
-    ("加速", "sped up"),
-    ("降速", "slowed"),
-    ("慢速", "slowed"),
-    ("现场", "live"),
-    ("ライブ", "live"),
-    ("重制", "remaster"),
-    ("混音", "remix"),
-];
+impl VersionWords {
+    pub async fn load(conn: &mut PgConnection) -> sqlx::Result<VersionWords> {
+        let rows = sqlx::query!(
+            r#"SELECT lower(word) AS "word!", data ->> 'mark' AS "mark!", COALESCE((data ->> 'substring')::boolean, false) AS "substring!"
+               FROM vocabulary WHERE list = 'version_word' ORDER BY word"#
+        )
+        .fetch_all(conn)
+        .await?;
+        let mut words = VersionWords { phrases: Vec::new(), substrings: Vec::new() };
+        for row in rows {
+            if row.substring {
+                words.substrings.push((row.word, row.mark));
+            } else {
+                let phrase: Vec<String> = row.word.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).map(str::to_string).collect();
+                if !phrase.is_empty() {
+                    words.phrases.push((phrase, row.mark));
+                }
+            }
+        }
+        // Longer phrases first: "speed up" before a "speed" of its own.
+        words.phrases.sort_by_key(|(phrase, _)| std::cmp::Reverse(phrase.len()));
+        Ok(words)
+    }
 
-/// What makes a title a particular version: its version words (above) and its numbers
-/// ("Song 2", "Part II"), each as often as it appears. Two tracks are possible duplicates
-/// only if theirs are the same: "Song" and "Song (Sped Up)" aren't, nor "Song" and "Song
-/// 2", nor "Live Forever" and "Live Forever (Live)"; "Song (Remix)" and "Song - remix" are.
-fn version_marks(title: &str) -> Vec<String> {
-    let title = title.to_lowercase();
-    let words: Vec<&str> = title.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect();
-    let mut marks = Vec::new();
-    let mut i = 0;
-    while i < words.len() {
-        if let Some((phrase, mark)) = VERSION_WORDS.iter().find(|(phrase, _)| words[i..].starts_with(phrase)) {
-            marks.push(mark.to_string());
-            i += phrase.len();
-            continue;
+    /// What makes a title a particular version: its version words and its numbers ("Song
+    /// 2", "Part II"), each as often as it appears. Two tracks are possible duplicates
+    /// only if theirs are the same: "Song" and "Song (Sped Up)" aren't, nor "Song" and
+    /// "Song 2", nor "Live Forever" and "Live Forever (Live)"; "Song (Remix)" and "Song -
+    /// remix" are.
+    pub fn marks(&self, title: &str) -> Vec<String> {
+        let title = title.to_lowercase();
+        let words: Vec<&str> = title.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect();
+        let mut marks = Vec::new();
+        let mut i = 0;
+        while i < words.len() {
+            if let Some((phrase, mark)) = self.phrases.iter().find(|(phrase, _)| words[i..].len() >= phrase.len() && phrase.iter().zip(&words[i..]).all(|(a, b)| a == b)) {
+                marks.push(mark.clone());
+                i += phrase.len();
+                continue;
+            }
+            let word = words[i];
+            let roman = ["ii", "iii", "iv", "vi", "vii", "viii", "ix"].iter().position(|r| *r == word);
+            if let Some(n) = roman {
+                marks.push([2, 3, 4, 6, 7, 8, 9][n].to_string());
+            } else if word.bytes().all(|b| b.is_ascii_digit()) {
+                let n = word.trim_start_matches('0');
+                marks.push(if n.is_empty() { "0" } else { n }.to_string());
+            }
+            i += 1;
         }
-        let word = words[i];
-        let roman = ["ii", "iii", "iv", "vi", "vii", "viii", "ix"].iter().position(|r| *r == word);
-        if let Some(n) = roman {
-            marks.push([2, 3, 4, 6, 7, 8, 9][n].to_string());
-        } else if word.bytes().all(|b| b.is_ascii_digit()) {
-            let n = word.trim_start_matches('0');
-            marks.push(if n.is_empty() { "0" } else { n }.to_string());
+        for (text, mark) in &self.substrings {
+            marks.extend(std::iter::repeat_n(mark.clone(), title.matches(text.as_str()).count()));
         }
-        i += 1;
+        marks.sort();
+        marks
     }
-    for (text, mark) in VERSION_SUBSTRINGS {
-        marks.extend(std::iter::repeat_n(mark.to_string(), title.matches(text).count()));
-    }
-    marks.sort();
-    marks
 }
 
 /// Flags a track whose artist name from the tags matched several artists; `chosen` (the
@@ -205,7 +197,7 @@ pub async fn flag_same_song(
 
 /// Flags a new track if tracks by the same artists have a similar title and about the same
 /// length (a track or file without a known length isn't ruled out), and are the same
-/// version (`version_marks`). `except`: tracks already flagged for another reason (see
+/// version (`VersionWords::marks`). `except`: tracks already flagged for another reason (see
 /// `flag_same_song`).
 ///
 /// Starts from the artists' tracks rather than from all similar titles: an artist has at
@@ -243,8 +235,9 @@ pub async fn flag_possible_duplicates(
     )
     .fetch_all(&mut *conn)
     .await?;
-    let marks = version_marks(title);
-    let similar: Vec<Uuid> = candidates.into_iter().filter(|t| version_marks(&t.title) == marks).map(|t| t.id).take(10).collect();
+    let words = VersionWords::load(&mut *conn).await?;
+    let marks = words.marks(title);
+    let similar: Vec<Uuid> = candidates.into_iter().filter(|t| words.marks(&t.title) == marks).map(|t| t.id).take(10).collect();
     if similar.is_empty() {
         return Ok(());
     }
@@ -325,7 +318,7 @@ pub async fn list(conn: &mut PgConnection, filter: &Filter<'_>, before: Option<U
                f.created_at, f.resolved_at, u.username AS "resolved_by?", f.resolution,
                fi.imported_from
         FROM review_flags f
-        JOIN review_kinds k ON k.kind = f.kind
+        JOIN vocabulary k ON k.list = 'review_kind' AND k.word = f.kind
         JOIN tracks t ON t.id = f.track_id
         LEFT JOIN files fi ON fi.id = t.file_id
         LEFT JOIN users u ON u.id = f.resolved_by
@@ -333,7 +326,7 @@ pub async fn list(conn: &mut PgConnection, filter: &Filter<'_>, before: Option<U
           AND f.id < COALESCE($2, 'ffffffff-ffff-ffff-ffff-ffffffffffff'::uuid)
           AND ($4::text IS NULL OR f.kind = $4)
           AND ($5::text IS NULL OR f.kind <> $5)
-          AND ($6::bool IS NULL OR k.automatic = $6)
+          AND ($6::bool IS NULL OR (k.data ->> 'automatic')::boolean = $6)
           AND ($7::uuid IS NULL OR f.track_id = $7)
         ORDER BY f.id DESC
         LIMIT $3
@@ -447,7 +440,7 @@ pub struct Rechecked {
 }
 
 /// Looks at the open possible-duplicate flags again with today's rule for titles: a pair
-/// whose titles name different versions (`version_marks`: "Song" and "Song (Instrumental)")
+/// whose titles name different versions (`VersionWords::marks`: "Song" and "Song (Instrumental)")
 /// is settled as `settle_duplicate_pair` does, and the rest stay as they are. Flags raised
 /// for the same platform song (`flag_same_song`, with a `reason`) aren't about titles, and
 /// stay. A listed track merged since is looked at as the track it went into.
@@ -466,9 +459,10 @@ pub async fn recheck_duplicates(conn: &mut PgConnection, resolution: &str) -> sq
     )
     .fetch_all(&mut *conn)
     .await?;
+    let words = VersionWords::load(&mut *conn).await?;
     let mut settled = Vec::new();
     for pair in pairs {
-        if pair.other == pair.track || version_marks(&pair.track_title) == version_marks(&pair.other_title) {
+        if pair.other == pair.track || words.marks(&pair.track_title) == words.marks(&pair.other_title) {
             continue;
         }
         // Flagged both ways (A looks like B, B looks like A): the first settles both.
@@ -496,7 +490,13 @@ pub struct Kind {
 
 /// Every kind of flag, in the order to show them.
 pub async fn kinds(conn: &mut PgConnection) -> sqlx::Result<Vec<Kind>> {
-    sqlx::query_as!(Kind, "SELECT kind, name, automatic, checked, custom FROM review_kinds ORDER BY position").fetch_all(conn).await
+    sqlx::query_as!(
+        Kind,
+        r#"SELECT word AS "kind!", label AS "name!", (data ->> 'automatic')::boolean AS "automatic!", (data ->> 'checked')::boolean AS "checked!", NOT locked AS "custom!"
+           FROM vocabulary WHERE list = 'review_kind' ORDER BY position, word"#
+    )
+    .fetch_all(conn)
+    .await
 }
 
 /// A kind of flag made by a person (see migration 0056), named `name`: returns its key.
@@ -507,7 +507,7 @@ pub async fn make_kind(conn: &mut PgConnection, name: &str) -> anyhow::Result<St
     if key.is_empty() {
         return Err(EditRejected::Invalid("a kind of flag needs a name with letters or digits".into()).into());
     }
-    let taken = sqlx::query_scalar!(r#"SELECT name AS "name!" FROM review_kinds WHERE kind = $1 OR lower(name) = lower($2)"#, key, name)
+    let taken = sqlx::query_scalar!(r#"SELECT label AS "name!" FROM vocabulary WHERE list = 'review_kind' AND (word = $1 OR lower(label) = lower($2))"#, key, name)
         .fetch_optional(&mut *conn)
         .await?;
     if let Some(taken) = taken {
@@ -519,7 +519,7 @@ pub async fn make_kind(conn: &mut PgConnection, name: &str) -> anyhow::Result<St
 /// Flags a track by hand with `kind` ("Fix later" or one made by people), unless it has
 /// an open flag of that kind already. Returns whether it was flagged.
 pub async fn flag_by_hand(conn: &mut PgConnection, track_id: Uuid, kind: &str) -> anyhow::Result<bool> {
-    let found = sqlx::query!("SELECT name, custom FROM review_kinds WHERE kind = $1", kind).fetch_optional(&mut *conn).await?;
+    let found = sqlx::query!(r#"SELECT label AS "name!", NOT locked AS "custom!" FROM vocabulary WHERE list = 'review_kind' AND word = $1"#, kind).fetch_optional(&mut *conn).await?;
     match found {
         None => return Err(EditRejected::NotFound("kind of flag").into()),
         Some(k) if !k.custom && kind != "fix_later" => {
@@ -558,7 +558,7 @@ pub async fn settle_kind(conn: &mut PgConnection, track_id: Uuid, kind: &str, re
 /// marked fine before (turning a check on means "look at all of them again").
 /// Returns how many flags are open of that kind afterwards.
 pub async fn set_checked(conn: &mut PgConnection, kind: &str, checked: bool) -> anyhow::Result<i64> {
-    let automatic = sqlx::query_scalar!("SELECT automatic FROM review_kinds WHERE kind = $1", kind)
+    let automatic = sqlx::query_scalar!(r#"SELECT (data ->> 'automatic')::boolean AS "automatic!" FROM vocabulary WHERE list = 'review_kind' AND word = $1"#, kind)
         .fetch_optional(&mut *conn)
         .await?;
     match automatic {
@@ -566,7 +566,7 @@ pub async fn set_checked(conn: &mut PgConnection, kind: &str, checked: bool) -> 
         Some(false) => anyhow::bail!("{kind:?} isn't an automatic check (ingest and merges raise it)"),
         Some(true) => {}
     }
-    sqlx::query!("UPDATE review_kinds SET checked = $2 WHERE kind = $1", kind, checked)
+    sqlx::query!("UPDATE vocabulary SET data = jsonb_set(data, '{checked}', to_jsonb($2::boolean)) WHERE list = 'review_kind' AND word = $1", kind, checked)
         .execute(&mut *conn)
         .await?;
     if !checked {
@@ -590,11 +590,15 @@ pub async fn set_checked(conn: &mut PgConnection, kind: &str, checked: bool) -> 
 
 #[cfg(test)]
 mod tests {
-    use super::version_marks;
+    use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 
-    #[test]
-    fn versions_of_a_song_are_told_apart() {
-        let same = |a: &str, b: &str| version_marks(a) == version_marks(b);
+    use super::VersionWords;
+
+    #[sqlx::test]
+    async fn versions_of_a_song_are_told_apart(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
+        let pool = PgPoolOptions::new().connect_with(connect).await?;
+        let words = VersionWords::load(&mut *pool.acquire().await?).await?;
+        let same = |a: &str, b: &str| words.marks(a) == words.marks(b);
         assert!(same("Northbound", "northbound"));
         assert!(same("Northbound (feat. Someone)", "Northbound"));
         assert!(same("Northbound (Remix)", "Northbound - remix"));
@@ -621,5 +625,6 @@ mod tests {
         assert!(!same("Live Forever", "Live Forever (Live)"));
         assert!(!same("Northbound (Sped Up)", "Northbound (Slowed)"));
         assert!(same("Northbound (Sped Up)", "Northbound - SPED UP"));
+        Ok(())
     }
 }

@@ -37,6 +37,7 @@ pub mod settings_general;
 pub mod settings_mirror;
 pub mod settings_server;
 pub mod settings_sound;
+pub mod settings_vocabulary;
 pub mod sidebar;
 pub mod track_table;
 pub mod trash;

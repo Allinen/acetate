@@ -369,7 +369,7 @@ pub async fn read_flags(conn: &mut PgConnection, tracks: &mut [TrackEdited]) -> 
     sqlx::query("SET CONSTRAINTS ALL IMMEDIATE").execute(&mut *conn).await?;
     let ids: Vec<Uuid> = tracks.iter().map(|t| t.track_id).collect();
     let open = sqlx::query!(
-        r#"SELECT f.track_id, f.kind FROM review_flags f JOIN review_kinds k ON k.kind = f.kind
+        r#"SELECT f.track_id, f.kind FROM review_flags f JOIN vocabulary k ON k.list = 'review_kind' AND k.word = f.kind
            WHERE f.track_id = ANY($1) AND f.resolved_at IS NULL
            ORDER BY k.position, f.kind"#,
         &ids

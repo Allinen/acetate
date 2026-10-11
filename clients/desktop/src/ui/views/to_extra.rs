@@ -13,7 +13,6 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::catalog::search::Part;
-use crate::ui::edit::extras::KINDS;
 use crate::ui::edit::inline_search::{Choice, InlineSearch};
 use crate::ui::theme::{font, semibold, PALETTE as P};
 use crate::ui::{widgets, Action, Page, Shell};
@@ -134,6 +133,7 @@ impl ToExtra {
         shell.modal_open = true;
         let ctx = shell.ctx.clone();
         let catalog = shell.catalog.value.clone();
+        let kinds = crate::ui::edit::extras::kinds(shell);
         let mut go = false;
         let mut cancel = false;
         let closed = crate::ui::modal::show(&ctx, "to-extra", "Turn into an extra", egui::Vec2::new(820.0, 720.0), |ui| {
@@ -141,7 +141,7 @@ impl ToExtra {
             ui.add_space(8.0);
             ui.horizontal_wrapped(|ui| {
                 ui.label("Kind");
-                for k in KINDS {
+                for k in &kinds {
                     if widgets::chip(ui, k, self.kind == *k) {
                         self.kind = k.to_string();
                     }

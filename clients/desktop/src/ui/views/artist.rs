@@ -217,6 +217,7 @@ impl ArtistPage {
         let may_edit = edit_mode && shell.account.can("edit_metadata");
         let (aliases, disambiguation, sources) = details.as_ref().map_or((&[][..], "", &[][..]), |d| (&d.aliases[..], d.disambiguation.as_str(), &d.sources[..]));
         let may_source = edit_mode && shell.account.can("edit_sources");
+        let extra_kinds: Vec<String> = crate::ui::edit::extras::kinds(shell);
         let shapes: Vec<crate::account::SourceShape> = shell.account.vocab.as_ref().map(|v| v.source_shapes.clone()).unwrap_or_default();
         let may_access = edit_mode && shell.account.can("manage_access");
         let here = |sections| Here {
@@ -237,6 +238,7 @@ impl ArtistPage {
             sources,
             may_source,
             shapes: &shapes,
+            extra_kinds: &extra_kinds,
             extras: &extras,
             library_extras: &catalog.extras,
             may_access,

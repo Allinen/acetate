@@ -1,17 +1,18 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT EXISTS (SELECT 1 FROM track_statuses WHERE status = $1) AS \"ok!\"",
+  "query": "SELECT EXISTS (SELECT 1 FROM vocabulary WHERE list = $1 AND word = $2) AS \"e!\"",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "ok!",
+        "name": "e!",
         "type_info": "Bool",
         "origin": "Expression"
       }
     ],
     "parameters": {
       "Left": [
+        "Text",
         "Text"
       ]
     },
@@ -19,5 +20,5 @@
       null
     ]
   },
-  "hash": "0b0bd66a676efd32063ca57449c6f0fa8eda48122bded04e02a7e8f7cdcc0652"
+  "hash": "e074ece10db59871e1f720558d4ff67725bf1dd256e877439e6ef51188e07afd"
 }

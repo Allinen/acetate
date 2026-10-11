@@ -77,6 +77,8 @@ pub struct Things<'a> {
     /// one can be said here (`manage_access`).
     pub extras: &'a [crate::details::Extra],
     pub library_extras: &'a [crate::catalog::model::Extra],
+    /// The kinds of extra the library has.
+    pub extra_kinds: &'a [String],
     pub may_access: bool,
     /// Its notes (taken off ones too).
     pub notes: &'a [crate::details::Note],
@@ -796,7 +798,7 @@ pub fn extra_arg_rows<A, E>(arg: Arg, value: &str, t: &Things, known: &Known) ->
     }
     let typed = value.trim().to_lowercase();
     match arg {
-        Arg::Kind => crate::ui::edit::extras::KINDS.iter().filter(|k| k.starts_with(&typed)).map(|k| Row { label: k.to_string(), sub: "a kind (any word works)".into(), choice: Choice::Raw(k.to_string(), None) }).collect(),
+        Arg::Kind => t.extra_kinds.iter().filter(|k| k.starts_with(&typed)).map(|k| Row { label: k.to_string(), sub: "a kind of extra here".into(), choice: Choice::Raw(k.to_string(), None) }).collect(),
         Arg::File => {
             let mut rows = file_words(&typed, "the files copied in a file manager", "the file dialog");
             rows.extend(path_rows(value.trim()));

@@ -1,0 +1,35 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT label AS \"name!\", NOT locked AS \"custom!\" FROM vocabulary WHERE list = 'review_kind' AND word = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "vocabulary",
+            "name": "label"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "custom!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      null
+    ]
+  },
+  "hash": "c52068f843a5bd269fb0a974f8cad446fd315582ffe6c722f959d7d05c191ed6"
+}

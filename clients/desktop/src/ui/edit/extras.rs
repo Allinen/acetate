@@ -20,7 +20,10 @@ use crate::ui::theme::{font, medium, semibold, PALETTE as P};
 use crate::ui::{thousands, widgets, Action, Page, Shell};
 
 /// The kinds offered (any other can be typed).
-pub const KINDS: &[&str] = &["vocals", "instrumental", "stems", "sample", "clip", "video", "project", "other"];
+/// The kinds of extra the library has (an admin adds them: Settings → Vocabulary).
+pub fn kinds(shell: &Shell) -> Vec<String> {
+    shell.account.vocab.as_ref().map(|v| v.extra_kinds.clone()).unwrap_or_default()
+}
 
 /// What extras are shown on.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -409,7 +412,7 @@ impl ExtrasView {
             });
             ui.horizontal_wrapped(|ui| {
                 ui.label("Kind");
-                for k in KINDS {
+                for k in &kinds(shell) {
                     if widgets::chip(ui, k, a.kind == *k) {
                         a.kind = k.to_string();
                     }

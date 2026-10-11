@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT EXISTS (SELECT 1 FROM album_kinds WHERE kind = $1) AS \"ok!\"",
+  "query": "SELECT EXISTS (SELECT 1 FROM vocabulary WHERE list = 'status' AND word = $1) AS \"ok!\"",
   "describe": {
     "columns": [
       {
@@ -19,5 +19,5 @@
       null
     ]
   },
-  "hash": "ff03dfdc9313e5cba52c8040b178f9a10c7854e037cfe06784d0633dfab19fd6"
+  "hash": "31375c3f1a534f3bb7f1faf54f94c43df48b81b694ff683ede10c50d0af2887e"
 }

@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO vocabulary (list, word, label, description, position, inverse, data, created_by, created_at)\n         VALUES ($1, $2, $3, $4, $5, $6, $7, current_app_user(), now())",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Int4",
+        "Text",
+        "Jsonb"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "5862f8b6548f3d065c85ab6c98210e847d8b01393786159046d426a3d23365e4"
+}

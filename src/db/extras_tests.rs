@@ -299,7 +299,7 @@ async fn extras_follow_album_and_artist_merges(_: PgPoolOptions, connect: PgConn
     let split = db::revisions::create_album(&mut tx, &crate::model::AlbumData { title: "Album A".into(), ..Default::default() }, db::revisions::Source::Edit, "").await?;
     let zed = db::ingest::find_or_create_artist(&mut tx, "Zed").await?.id;
     let (on_album, _) = db::extras::create(&mut tx, "Album art stems", "stems", &About::default(), &[Link::Album(split)], None, "").await?;
-    let (on_artist, _) = db::extras::create(&mut tx, "Zed samples", "samples", &About::default(), &[Link::Artist(zed)], None, "").await?;
+    let (on_artist, _) = db::extras::create(&mut tx, "Zed samples", "sample", &About::default(), &[Link::Artist(zed)], None, "").await?;
     let merged = db::album_merges::merge_album(&mut tx, split, lib.album, "").await?;
     db::revisions::merge_artist(&mut tx, zed, lib.x, false, false, "").await?;
     let ids = |v: Vec<db::extras::Extra>| v.iter().map(|e| e.id).collect::<Vec<_>>();

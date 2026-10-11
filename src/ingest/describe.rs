@@ -1303,7 +1303,7 @@ fn hint_key(hint: Option<&ArtistHint>) -> String {
 /// Refuses described metadata with a credit role or album kind the server doesn't have,
 /// before anything is looked up or made.
 pub async fn check_described_vocab(conn: &mut PgConnection, described: &Described) -> anyhow::Result<()> {
-    let roles = sqlx::query_scalar!("SELECT role FROM credit_roles ORDER BY role").fetch_all(&mut *conn).await?;
+    let roles = sqlx::query_scalar!(r#"SELECT word AS "word!" FROM vocabulary WHERE list = 'credit_role' ORDER BY word"#).fetch_all(&mut *conn).await?;
     let album_artists = described.album.iter().flat_map(|a| &a.artists);
     for DescribedCredit { name, role, .. } in described.credits.iter().chain(album_artists) {
         if !roles.contains(role) {
@@ -1315,7 +1315,7 @@ pub async fn check_described_vocab(conn: &mut PgConnection, described: &Describe
         }
     }
     if let Some(album) = &described.album {
-        let kinds = sqlx::query_scalar!("SELECT kind FROM album_kinds ORDER BY kind").fetch_all(&mut *conn).await?;
+        let kinds = sqlx::query_scalar!(r#"SELECT word AS "word!" FROM vocabulary WHERE list = 'album_kind' ORDER BY word"#).fetch_all(&mut *conn).await?;
         if !kinds.contains(&album.kind) {
             return Err(super::Rejected::Invalid(format!(
                 "metadata.album: there's no album kind \"{}\" (there are: {})",

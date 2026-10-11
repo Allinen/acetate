@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT vocabulary_uses($1, $2) AS \"uses!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "uses!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "821aba7ff449fd063e35fb6ab848556e01003cbc78f248427b9209e8ca74951c"
+}

@@ -1,23 +1,22 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT name AS \"name!\" FROM review_kinds WHERE kind = $1 OR lower(name) = lower($2)",
+  "query": "SELECT word AS \"word!\" FROM vocabulary WHERE list = $1 ORDER BY position, word",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "name!",
+        "name": "word!",
         "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "review_kinds",
-            "name": "name"
+            "table": "vocabulary",
+            "name": "word"
           }
         }
       }
     ],
     "parameters": {
       "Left": [
-        "Text",
         "Text"
       ]
     },
@@ -25,5 +24,5 @@
       false
     ]
   },
-  "hash": "abb10b363193b0ad5f94b818c6a28740d2db5e5245ee1e60393baaf324ed417c"
+  "hash": "1e3cb8e257977016bbdb31a458216a5ca6cef0b19ad76f2a8b58f1ad996f8b0b"
 }

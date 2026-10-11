@@ -1,0 +1,45 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT word AS \"kind!\", inverse AS \"inverse_kind!\", (data ->> 'template') AS \"template!\"\n               FROM vocabulary WHERE list = 'relation_kind' ORDER BY position, word",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "kind!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "vocabulary",
+            "name": "word"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "inverse_kind!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "vocabulary",
+            "name": "inverse"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "template!",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      true,
+      null
+    ]
+  },
+  "hash": "231851f32c92867fd03f02959781a9b9b548063214489fe7dee3313017874960"
+}

@@ -1,0 +1,41 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT locked, inverse FROM vocabulary WHERE list = $1 AND word = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "locked",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "vocabulary",
+            "name": "locked"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "inverse",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "vocabulary",
+            "name": "inverse"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      true
+    ]
+  },
+  "hash": "9915405bd35f83cb2f34e0741b148b47836462a72f4cce394b9f8c7726674b7c"
+}

@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE vocabulary SET label = COALESCE($3, label), description = COALESCE($4, description), position = COALESCE($5, position)\n         WHERE list = $1 AND word = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "a1c3b7027268d772bb9fc6bd0868b47100cd3d69ffab3b4011ba4be5d933f617"
+}

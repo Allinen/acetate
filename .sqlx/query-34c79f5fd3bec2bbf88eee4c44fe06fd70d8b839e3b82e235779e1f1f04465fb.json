@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT u.v AS \"role!\" FROM unnest($1::text[]) AS u(v)\n        WHERE NOT EXISTS (SELECT 1 FROM credit_roles r WHERE r.role = u.v)\n        ",
+  "query": "\n        SELECT u.v AS \"role!\" FROM unnest($1::text[]) AS u(v)\n        WHERE NOT EXISTS (SELECT 1 FROM vocabulary r WHERE r.list = 'credit_role' AND r.word = u.v)\n        ",
   "describe": {
     "columns": [
       {
@@ -19,5 +19,5 @@
       null
     ]
   },
-  "hash": "81746b4c26b3d6739a0f749cf83b3ac65513785603c5f2114079b9fdd276ac75"
+  "hash": "34c79f5fd3bec2bbf88eee4c44fe06fd70d8b839e3b82e235779e1f1f04465fb"
 }

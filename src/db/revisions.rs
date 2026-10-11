@@ -691,7 +691,7 @@ pub(super) async fn current_facts(conn: &mut PgConnection, track_id: Uuid) -> sq
 
 /// Relation kind -> its inverse (remix_of -> remix_to, alternate -> alternate).
 async fn inverse_kinds(conn: &mut PgConnection) -> sqlx::Result<HashMap<String, String>> {
-    let rows = sqlx::query!("SELECT kind, inverse_kind FROM relation_kinds")
+    let rows = sqlx::query!(r#"SELECT word AS "kind!", inverse AS "inverse_kind!" FROM vocabulary WHERE list = 'relation_kind'"#)
         .fetch_all(&mut *conn)
         .await?;
     Ok(rows.into_iter().map(|r| (r.kind, r.inverse_kind)).collect())
@@ -2997,7 +2997,7 @@ async fn check_credits(conn: &mut PgConnection, credits: &[Credit]) -> anyhow::R
     let unknown = sqlx::query_scalar!(
         r#"
         SELECT u.v AS "role!" FROM unnest($1::text[]) AS u(v)
-        WHERE NOT EXISTS (SELECT 1 FROM credit_roles r WHERE r.role = u.v)
+        WHERE NOT EXISTS (SELECT 1 FROM vocabulary r WHERE r.list = 'credit_role' AND r.word = u.v)
         "#,
         &roles
     )
@@ -3035,7 +3035,7 @@ async fn check_credits(conn: &mut PgConnection, credits: &[Credit]) -> anyhow::R
 
 async fn check_facts(conn: &mut PgConnection, facts: &TrackFacts) -> anyhow::Result<()> {
     let status_ok = sqlx::query_scalar!(
-        r#"SELECT EXISTS (SELECT 1 FROM track_statuses WHERE status = $1) AS "ok!""#,
+        r#"SELECT EXISTS (SELECT 1 FROM vocabulary WHERE list = 'status' AND word = $1) AS "ok!""#,
         facts.status
     )
     .fetch_one(&mut *conn)
@@ -3063,7 +3063,7 @@ async fn check_facts(conn: &mut PgConnection, facts: &TrackFacts) -> anyhow::Res
     let unknown = sqlx::query_scalar!(
         r#"
         SELECT u.v AS "kind!" FROM unnest($1::text[]) AS u(v)
-        WHERE NOT EXISTS (SELECT 1 FROM relation_kinds k WHERE k.kind = u.v)
+        WHERE NOT EXISTS (SELECT 1 FROM vocabulary k WHERE k.list = 'relation_kind' AND k.word = u.v)
         "#,
         &kinds
     )
@@ -3077,7 +3077,7 @@ async fn check_facts(conn: &mut PgConnection, facts: &TrackFacts) -> anyhow::Res
 
 async fn check_album_kind(conn: &mut PgConnection, kind: &str) -> anyhow::Result<()> {
     let ok = sqlx::query_scalar!(
-        r#"SELECT EXISTS (SELECT 1 FROM album_kinds WHERE kind = $1) AS "ok!""#,
+        r#"SELECT EXISTS (SELECT 1 FROM vocabulary WHERE list = 'album_kind' AND word = $1) AS "ok!""#,
         kind
     )
     .fetch_one(&mut *conn)

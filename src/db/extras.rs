@@ -172,6 +172,17 @@ fn checked_name(name: &str) -> anyhow::Result<String> {
     Ok(name.chars().take(500).collect())
 }
 
+/// `kind` is a kind of extra the library has (`vocabulary`).
+async fn known_kind(conn: &mut PgConnection, kind: &str) -> anyhow::Result<()> {
+    let known = sqlx::query_scalar!(r#"SELECT EXISTS (SELECT 1 FROM vocabulary WHERE list = 'extra_kind' AND word = $1) AS "known!""#, kind)
+        .fetch_one(conn)
+        .await?;
+    if !known {
+        return Err(EditRejected::Invalid(format!("“{kind}” isn't a kind of extra here (an admin can add it: Settings → Vocabulary)")).into());
+    }
+    Ok(())
+}
+
 fn checked_kind(kind: &str) -> String {
     let kind = kind.trim().to_lowercase();
     if kind.is_empty() { "other".into() } else { kind.chars().take(60).collect() }
@@ -204,6 +215,7 @@ pub async fn access_of_track(conn: &mut PgConnection, track: Uuid) -> anyhow::Re
 pub async fn create(conn: &mut PgConnection, name: &str, kind: &str, about: &About, links: &[Link], access: Option<Access>, reason: &str) -> anyhow::Result<(Uuid, Access)> {
     let name = checked_name(name)?;
     let kind = checked_kind(kind);
+    known_kind(conn, &kind).await?;
     let about = about.checked()?;
     let access = match access {
         Some(access) => access,
@@ -298,6 +310,7 @@ async fn set_restricted(conn: &mut PgConnection, extra: Uuid, restricted: bool) 
 /// Its name, kind, description and source.
 pub async fn edit(conn: &mut PgConnection, extra: Uuid, name: &str, kind: &str, about: &About, reason: &str) -> anyhow::Result<bool> {
     let (name, kind, about) = (checked_name(name)?, checked_kind(kind), about.checked()?);
+    known_kind(conn, &kind).await?;
     let now = sqlx::query!("SELECT name, kind, description, source FROM extras WHERE id = $1 FOR UPDATE", extra)
         .fetch_optional(&mut *conn)
         .await?

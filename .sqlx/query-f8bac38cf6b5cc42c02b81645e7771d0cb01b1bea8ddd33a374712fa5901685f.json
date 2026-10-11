@@ -1,0 +1,35 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT lower(word) AS \"word!\", data ->> 'mark' AS \"mark!\", COALESCE((data ->> 'substring')::boolean, false) AS \"substring!\"\n               FROM vocabulary WHERE list = 'version_word' ORDER BY word",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "word!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "mark!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "substring!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "f8bac38cf6b5cc42c02b81645e7771d0cb01b1bea8ddd33a374712fa5901685f"
+}

@@ -1,27 +1,27 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT kind, inverse_kind FROM relation_kinds",
+  "query": "SELECT word AS \"kind!\", inverse AS \"inverse_kind!\" FROM vocabulary WHERE list = 'relation_kind'",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "kind",
+        "name": "kind!",
         "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "relation_kinds",
-            "name": "kind"
+            "table": "vocabulary",
+            "name": "word"
           }
         }
       },
       {
         "ordinal": 1,
-        "name": "inverse_kind",
+        "name": "inverse_kind!",
         "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "relation_kinds",
-            "name": "inverse_kind"
+            "table": "vocabulary",
+            "name": "inverse"
           }
         }
       }
@@ -31,8 +31,8 @@
     },
     "nullable": [
       false,
-      false
+      true
     ]
   },
-  "hash": "df4c13870a83315e6a9a52d6fccf3caa48d3e276d9431effd5b92a9078ba3353"
+  "hash": "900da390f1788cbf847a263608326e3bde30cdf3ee6072a5246ee8ada5d91851"
 }

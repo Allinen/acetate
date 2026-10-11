@@ -177,6 +177,7 @@ pub struct Here<'a> {
     pub may_source: bool,
     /// Every platform's sources' fields (an artist's are those of kind "artist").
     pub shapes: &'a [SourceShape],
+    pub extra_kinds: &'a [String],
     /// Its extras (taken off ones too), every extra in the library, and whether who sees
     /// one can be said here (`manage_access`).
     pub extras: &'a [crate::details::Extra],
@@ -197,6 +198,7 @@ impl Here<'_> {
             shapes: self.shapes,
             extras: self.extras,
             library_extras: self.library_extras,
+            extra_kinds: self.extra_kinds,
             may_access: self.may_access,
             notes: self.notes,
         }
@@ -875,7 +877,7 @@ mod tests {
     use super::*;
 
     fn here<'a>(names: &'a [(Option<String>, usize)], sections: &'a [(Section, usize)]) -> Here<'a> {
-        Here { id: Uuid::nil(), own: "Zed", names, og_count: 2, sections, has_sources: true, has_notes: false, has_history: true, folds: &[(Reveal::Sources, true)], edit_mode: false, may_edit: false, may_collective: false, aliases: &[], disambiguation: "", sources: &[], may_source: false, shapes: &[], extras: &[], library_extras: &[], may_access: false, notes: &[] }
+        Here { id: Uuid::nil(), own: "Zed", names, og_count: 2, sections, has_sources: true, has_notes: false, has_history: true, folds: &[(Reveal::Sources, true)], edit_mode: false, may_edit: false, may_collective: false, aliases: &[], disambiguation: "", sources: &[], may_source: false, shapes: &[], extra_kinds: &[], extras: &[], library_extras: &[], may_access: false, notes: &[] }
     }
 
     #[test]

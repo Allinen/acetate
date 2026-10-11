@@ -428,7 +428,10 @@ impl NotImported {
             self.is_og = is_wav(&p.uploaded_filename);
             self.og_name = p.uploaded_filename.clone();
             let video = is_video(&p.uploaded_filename);
-            self.extra_kind = if video { "video".into() } else { guess_kind(&p.uploaded_filename).to_string() };
+            // (A guess the library has no such kind for is "other".)
+            let guess = if video { "video" } else { guess_kind(&p.uploaded_filename) };
+            let has = |kind: &str| shell.account.vocab.as_ref().is_none_or(|v| v.extra_kinds.iter().any(|k| k == kind));
+            self.extra_kind = if has(guess) { guess.to_string() } else { "other".to_string() };
             self.fate = if video { Fate::Extra } else { Fate::NewTrack };
             self.of = Of::Track;
             self.of_search = None;
@@ -751,7 +754,7 @@ impl NotImported {
     fn extra_of(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: &Arc<Catalog>) -> Option<(Vec<serde_json::Value>, String, Option<Uuid>)> {
         ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new("Kind:").color(P.muted));
-            for k in crate::ui::edit::extras::KINDS {
+            for k in &crate::ui::edit::extras::kinds(shell) {
                 if widgets::chip(ui, k, self.extra_kind == *k) {
                     self.extra_kind = k.to_string();
                 }

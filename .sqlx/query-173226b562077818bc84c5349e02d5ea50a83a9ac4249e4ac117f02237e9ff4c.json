@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE vocabulary SET data = jsonb_set(data, '{template}', to_jsonb($3::text)) WHERE list = $1 AND word = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "173226b562077818bc84c5349e02d5ea50a83a9ac4249e4ac117f02237e9ff4c"
+}

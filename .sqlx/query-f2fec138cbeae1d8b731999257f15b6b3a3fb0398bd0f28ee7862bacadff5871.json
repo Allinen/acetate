@@ -1,16 +1,16 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT kind FROM album_kinds ORDER BY kind",
+  "query": "SELECT word AS \"word!\" FROM vocabulary WHERE list = 'album_kind' ORDER BY word",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "kind",
+        "name": "word!",
         "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "album_kinds",
-            "name": "kind"
+            "table": "vocabulary",
+            "name": "word"
           }
         }
       }
@@ -22,5 +22,5 @@
       false
     ]
   },
-  "hash": "6f383fa51f8d9281fc39556c933ff2996ef332104079ba0dcbe67a9285b8a52f"
+  "hash": "f2fec138cbeae1d8b731999257f15b6b3a3fb0398bd0f28ee7862bacadff5871"
 }

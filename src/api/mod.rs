@@ -32,6 +32,7 @@ mod review;
 mod shares;
 mod storage;
 mod sources;
+mod vocabulary;
 mod tracks;
 mod trash;
 mod upload;
@@ -140,6 +141,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/shares/{id}", require(&[Share], delete(shares::revoke)))
         .route("/api/search", require(&[Browse], get(catalog::search)))
         .route("/api/vocab", require(&[Browse], get(catalog::vocab)))
+        .route("/api/vocabulary", require(&[Browse], get(vocabulary::list)).merge(require(&[Admin], post(vocabulary::add))))
+        .route("/api/vocabulary/{list}/{word}", require(&[Admin], put(vocabulary::change)).merge(require(&[Admin], delete(vocabulary::remove))))
         .route("/api/tracks", require(&[Browse], get(tracks::list)))
         .route("/api/tracks/{id}", require(&[Browse], get(tracks::get)))
         .route("/api/tracks/{id}/access", require(&[ManageAccess], get(access::get).put(access::set)))

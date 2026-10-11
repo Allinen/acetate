@@ -10,6 +10,7 @@ use super::settings_general::GeneralTab;
 use super::settings_mirror::MirrorSection;
 use super::settings_server::ServerTab;
 use super::settings_sound::SoundTab;
+use super::settings_vocabulary::VocabularyTab;
 use crate::playback::PlayerView;
 use crate::ui::theme::{bold, font, medium, PALETTE as P};
 use crate::ui::{widgets, Shell};
@@ -24,11 +25,13 @@ enum Tab {
     Server,
     /// Admins.
     Mirror,
+    /// Admins.
+    Vocabulary,
     General,
 }
 
 impl Tab {
-    const ALL: [Tab; 6] = [Tab::Sound, Tab::Computer, Tab::Account, Tab::Server, Tab::Mirror, Tab::General];
+    const ALL: [Tab; 7] = [Tab::Sound, Tab::Computer, Tab::Account, Tab::Server, Tab::Mirror, Tab::Vocabulary, Tab::General];
 
     fn name(self) -> &'static str {
         match self {
@@ -37,12 +40,13 @@ impl Tab {
             Tab::Account => "Account",
             Tab::Server => "Server",
             Tab::Mirror => "Mirror",
+            Tab::Vocabulary => "Vocabulary",
             Tab::General => "General",
         }
     }
 
     fn admin_only(self) -> bool {
-        matches!(self, Tab::Server | Tab::Mirror)
+        matches!(self, Tab::Server | Tab::Mirror | Tab::Vocabulary)
     }
 }
 
@@ -56,6 +60,7 @@ pub struct SettingsPage {
     server: ServerTab,
     /// The mirror, and moving the folder everything's kept in (shown in This computer).
     mirror: MirrorSection,
+    vocabulary: VocabularyTab,
     general: GeneralTab,
 }
 
@@ -70,6 +75,7 @@ impl SettingsPage {
         self.computer.opened(shell);
         self.general.opened(shell);
         if shell.account.can("admin") {
+            self.vocabulary.opened(shell);
             self.server.opened(shell);
         }
     }
@@ -110,6 +116,8 @@ impl SettingsPage {
             Tab::Server if shell.connection.is_offline() => super::offline(ui, "The server's settings"),
             Tab::Server => self.server.show(ui, shell),
             Tab::Mirror => self.mirror.show(ui, shell),
+            Tab::Vocabulary if shell.connection.is_offline() => super::offline(ui, "The vocabulary"),
+            Tab::Vocabulary => self.vocabulary.show(ui, shell),
             Tab::General => self.general.show(ui, shell),
         });
     }

@@ -1,0 +1,117 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT list, word, label, description, locked, position, inverse, data, vocabulary_uses(list, word) AS \"uses!\"\n           FROM vocabulary ORDER BY list, position, word",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "list",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "vocabulary",
+            "name": "list"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "word",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "vocabulary",
+            "name": "word"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "label",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "vocabulary",
+            "name": "label"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "description",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "vocabulary",
+            "name": "description"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "locked",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "vocabulary",
+            "name": "locked"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "position",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "vocabulary",
+            "name": "position"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "inverse",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "vocabulary",
+            "name": "inverse"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "data",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "vocabulary",
+            "name": "data"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "uses!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      null
+    ]
+  },
+  "hash": "e9cf66daec73838c1bd47fc6d51847ee5f5014fe4e6e43362a660fe633551ca6"
+}

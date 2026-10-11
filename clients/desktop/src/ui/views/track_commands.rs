@@ -108,6 +108,7 @@ impl Here<'_> {
             shapes: &self.vocab.source_shapes,
             extras: self.detail.map_or(&[][..], |d| &d.extras[..]),
             library_extras: &self.catalog.extras,
+            extra_kinds: &self.vocab.extra_kinds,
             may_access: self.may.access,
             notes: self.detail.map_or(&[][..], |d| &d.notes[..]),
         }

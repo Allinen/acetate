@@ -140,6 +140,9 @@ pub struct Vocab {
     /// For album forms (not yet).
     #[allow(dead_code)]
     pub album_kinds: Vec<String>,
+    /// The kinds of extra the library has.
+    #[serde(default)]
+    pub extra_kinds: Vec<String>,
     pub relation_kinds: Vec<RelationKind>,
     /// The kinds of review flag, in the order to show them.
     pub review_kinds: Vec<ReviewKind>,

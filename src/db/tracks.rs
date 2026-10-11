@@ -383,10 +383,10 @@ pub async fn get_track(
     let relations = sqlx::query_as!(
         RelationEntry,
         r#"
-        SELECT r.kind, r.to_track_id AS track_id, t.title, t.artist_display, k.template
+        SELECT r.kind, r.to_track_id AS track_id, t.title, t.artist_display, (k.data ->> 'template') AS "template!"
         FROM track_relations r
         JOIN tracks t ON t.id = r.to_track_id
-        JOIN relation_kinds k ON k.kind = r.kind
+        JOIN vocabulary k ON k.list = 'relation_kind' AND k.word = r.kind
         WHERE r.from_track_id = $1
         ORDER BY r.kind, t.title
         "#,

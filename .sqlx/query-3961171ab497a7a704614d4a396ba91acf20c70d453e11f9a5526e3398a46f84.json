@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM vocabulary WHERE list = $1 AND word = ANY($2)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "TextArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "3961171ab497a7a704614d4a396ba91acf20c70d453e11f9a5526e3398a46f84"
+}

@@ -494,6 +494,7 @@ pub struct Vocabularies {
     pub statuses: Vec<String>,
     pub credit_roles: Vec<String>,
     pub album_kinds: Vec<String>,
+    pub extra_kinds: Vec<String>,
     pub relation_kinds: Vec<RelationKind>,
     pub permissions: Vec<PermissionInfo>,
     /// The kinds of review flag, in the order to show them.
@@ -506,21 +507,24 @@ pub struct PermissionInfo {
     pub description: String,
 }
 
+/// The words of one list, in the order to show them.
+async fn words(conn: &mut PgConnection, list: &str) -> sqlx::Result<Vec<String>> {
+    sqlx::query_scalar!(r#"SELECT word AS "word!" FROM vocabulary WHERE list = $1 ORDER BY position, word"#, list)
+        .fetch_all(conn)
+        .await
+}
+
 /// The allowed values of the lookup tables, for clients' forms.
 pub async fn vocabularies(conn: &mut PgConnection) -> sqlx::Result<Vocabularies> {
     Ok(Vocabularies {
-        statuses: sqlx::query_scalar!("SELECT status FROM track_statuses ORDER BY status")
-            .fetch_all(&mut *conn)
-            .await?,
-        credit_roles: sqlx::query_scalar!("SELECT role FROM credit_roles ORDER BY role")
-            .fetch_all(&mut *conn)
-            .await?,
-        album_kinds: sqlx::query_scalar!("SELECT kind FROM album_kinds ORDER BY kind")
-            .fetch_all(&mut *conn)
-            .await?,
+        statuses: words(&mut *conn, "status").await?,
+        credit_roles: words(&mut *conn, "credit_role").await?,
+        album_kinds: words(&mut *conn, "album_kind").await?,
+        extra_kinds: words(&mut *conn, "extra_kind").await?,
         relation_kinds: sqlx::query_as!(
             RelationKind,
-            "SELECT kind, inverse_kind, template FROM relation_kinds ORDER BY kind"
+            r#"SELECT word AS "kind!", inverse AS "inverse_kind!", (data ->> 'template') AS "template!"
+               FROM vocabulary WHERE list = 'relation_kind' ORDER BY position, word"#
         )
         .fetch_all(&mut *conn)
         .await?,

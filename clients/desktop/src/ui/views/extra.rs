@@ -19,7 +19,7 @@ use uuid::Uuid;
 
 use crate::catalog::search::Part;
 use crate::details::Extra;
-use crate::ui::edit::extras::{access_text, file_line, files_text, merge_request, upload_all, MergeReport, KINDS};
+use crate::ui::edit::extras::{access_text, file_line, files_text, merge_request, upload_all, MergeReport};
 use super::extra_drafts::ExtraDrafts;
 use crate::ui::task::Task;
 use crate::ui::edit::inline_search::{Choice, InlineSearch};
@@ -430,7 +430,7 @@ impl ExtraPage {
         });
         ui.horizontal_wrapped(|ui| {
             ui.label("Kind");
-            for k in KINDS {
+            for k in &crate::ui::edit::extras::kinds(shell) {
                 if widgets::chip(ui, k, self.kind == *k) {
                     self.kind = k.to_string();
                 }
