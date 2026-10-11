@@ -37,7 +37,51 @@ pub enum Compat {
     ServerBehind,
 }
 
+/// How the server's release compares to this app's.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Release {
+    Same,
+    /// The server's is newer: the app can be brought up to it.
+    ServerNewer,
+    /// The server's is older: the app stays (an update isn't always usable backwards: an
+    /// older server may not read what a newer app keeps), and the server needs updating.
+    ServerOlder,
+    /// Not a version number we can order.
+    Unknown,
+}
+
+/// `1.2.3` (or `1.2.3-rc1`, `1.2.3+x`) as numbers.
+fn numbers(version: &str) -> Option<[u64; 3]> {
+    let mut parts = version.split(['-', '+']).next()?.split('.');
+    let mut out = [0; 3];
+    for n in &mut out {
+        *n = parts.next()?.parse().ok()?;
+    }
+    parts.next().is_none().then_some(out)
+}
+
 impl ServerVersion {
+    pub fn release(&self) -> Release {
+        if self.matches_app() {
+            return Release::Same;
+        }
+        match (numbers(&self.version), numbers(env!("CARGO_PKG_VERSION"))) {
+            (Some(server), Some(ours)) => match server.cmp(&ours) {
+                std::cmp::Ordering::Greater => Release::ServerNewer,
+                std::cmp::Ordering::Less => Release::ServerOlder,
+                std::cmp::Ordering::Equal => Release::Unknown,
+            },
+            _ => Release::Unknown,
+        }
+    }
+
+    /// The desktop app of this server's release, for `os` ("linux" or "windows"), to
+    /// download straight away.
+    pub fn desktop_url(&self, os: &str) -> String {
+        let ext = if os == "windows" { "zip" } else { "tar.gz" };
+        format!("{RELEASES}/download/v{0}/Acetate-v{0}-{os}-x86_64.{ext}", self.version)
+    }
+
     pub fn compat(&self) -> Compat {
         match self.api.cmp(&api_version()) {
             std::cmp::Ordering::Equal => Compat::Same,
@@ -69,6 +113,7 @@ impl ServerVersion {
             Compat::AppBehind => Some(format!("This server (Acetate {}) is newer than this app ({ours}): update the app, or some things won't work.", self.version)),
             Compat::ServerBehind => Some(format!("This app ({ours}) is newer than this server (Acetate {}): update the server, or some things won't work.", self.version)),
             Compat::Same if self.matches_app() => None,
+            Compat::Same if self.release() == Release::ServerOlder => Some(format!("This app ({ours}) is newer than this server (Acetate {}): update the server, or some things won't work.", self.version)),
             Compat::Same => Some(format!("This app ({ours}) isn't the version of this server (Acetate {0}): get the app for {0} from {1}", self.version, self.release_url())),
         }
     }
@@ -267,6 +312,21 @@ mod tests {
         let other = server("9.9.9");
         assert!(other.warning().unwrap().contains("releases/tag/v9.9.9"));
         assert_eq!(other.apk_url(), "https://github.com/Allinen/acetate/releases/download/v9.9.9/Acetate-v9.9.9-android.apk");
+    }
+
+    #[test]
+    fn releases_are_ordered_by_their_numbers() {
+        let server = |version: &str| ServerVersion { version: version.into(), api: api_version() };
+        assert_eq!(server(env!("CARGO_PKG_VERSION")).release(), Release::Same);
+        assert_eq!(server("999.0.0").release(), Release::ServerNewer);
+        assert_eq!(server("0.0.1").release(), Release::ServerOlder);
+        assert_eq!(server("0.0.1-rc1").release(), Release::ServerOlder);
+        assert_eq!(server("nightly").release(), Release::Unknown);
+        assert_eq!(numbers("0.10.2"), Some([0, 10, 2]));
+        assert_eq!(numbers("1.2"), None);
+        assert!(server("0.0.1").warning().unwrap().contains("update the server"));
+        assert_eq!(server("9.9.9").desktop_url("windows"), "https://github.com/Allinen/acetate/releases/download/v9.9.9/Acetate-v9.9.9-windows-x86_64.zip");
+        assert_eq!(server("9.9.9").desktop_url("linux"), "https://github.com/Allinen/acetate/releases/download/v9.9.9/Acetate-v9.9.9-linux-x86_64.tar.gz");
     }
 
     #[test]

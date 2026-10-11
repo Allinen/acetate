@@ -10,6 +10,7 @@ arboard = { version = "3.6", features = ["wayland-data-control"] }
 dirs = "7.0.0"
 eframe = "0.36.2"
 egui_extras = "0.36.2"
+flate2 = "1.1.10"
 fs4 = "1.1.0"
 hex = "0.4.3"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
@@ -26,8 +27,10 @@ serde_json = { version = "1.0.151", features = ["raw_value"] }
 sha2 = "0.11.0"
 souvlaki = { version = "0.8.3", default-features = false, features = ["use_zbus"] }
 symphonia = { version = "0.6.1", default-features = false, features = ["ogg", "mkv"] }
+tar = "0.4.46"
 tokio = { version = "1.53.1", features = ["fs", "io-util", "macros", "rt-multi-thread", "signal", "sync", "time"] }
 uuid = { version = "1.26.1", features = ["serde", "v4"] }
+zip = { version = "9.0.1", default-features = false, features = ["deflate"] }
 
 [build-dependencies]
 winresource = "0.1.31"
