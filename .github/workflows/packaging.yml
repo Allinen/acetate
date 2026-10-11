@@ -1,0 +1,53 @@
+# The desktop app's release packages (the same scripts the Release workflow runs), built
+# when something they use changes, so a moved file is found on a pull request or on main and
+# not when a release is tagged. (The Android app has android.yml.)
+name: Packaging
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - clients/desktop/package-*.sh
+      - clients/desktop/install.sh
+      - clients/desktop/acetate.desktop
+      - clients/desktop/assets/**
+      - clients/assets/**
+      - .github/workflows/packaging.yml
+  pull_request:
+    paths:
+      - clients/desktop/package-*.sh
+      - clients/desktop/install.sh
+      - clients/desktop/acetate.desktop
+      - clients/desktop/assets/**
+      - clients/assets/**
+      - .github/workflows/packaging.yml
+  workflow_dispatch:
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev pkg-config
+          rustup toolchain install stable --profile minimal
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: clients
+      - run: clients/desktop/package-linux.sh
+
+  windows:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mingw-w64 p7zip-full zip
+          rustup toolchain install stable --profile minimal --target x86_64-pc-windows-gnu
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: clients
+      - run: clients/desktop/package-windows.sh

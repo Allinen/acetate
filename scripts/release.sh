@@ -10,7 +10,9 @@
 # page shows. Then it sets the version with scripts/versions.py, commits "release: 0.2.0"
 # and tags v0.2.0. Then:
 #
-#   git push origin main v0.2.0
+#   git push origin main     (wait for CI), then run the Release workflow by hand on main
+#   (a dry run: it builds everything and publishes nothing), then:
+#   git push origin v0.2.0
 #
 # and the Release workflow builds the apps and the image from the tag (it checks the tag
 # against the versions again). Look at API_VERSION and CATALOG_FORMAT first: they are
@@ -60,4 +62,7 @@ git tag -a "$tag" -m "Acetate $version"
 
 echo
 echo "done: commit and tag $tag are here, nothing is pushed. To release:"
-echo "  git push origin main $tag"
+echo "  1. git push origin main            (CI runs on main; wait for it)"
+echo "  2. Actions -> Release -> Run workflow, branch main: builds the apps and the image without"
+echo "     releasing anything. Fix what fails (and move the tag: git tag -f $tag) before step 3."
+echo "  3. git push origin $tag            (only now: this publishes)"

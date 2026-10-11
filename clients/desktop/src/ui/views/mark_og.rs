@@ -4,12 +4,12 @@
 //! (every track and the name it gets, nothing kept), a warning, then the button. See the
 //! server's `db::og_files`.
 
-use std::sync::{Arc, Mutex};
 
 use eframe::egui::{self, RichText, Vec2};
 use serde::Deserialize;
 use uuid::Uuid;
 
+use crate::ui::task::Task;
 use crate::ui::theme::{font, semibold, PALETTE as P};
 use crate::ui::{thousands, widgets, Action, Shell};
 
@@ -30,28 +30,28 @@ struct Answer {
 pub struct MarkOg {
     tracks: Vec<Uuid>,
     reason: String,
-    preview: Arc<Mutex<Option<Result<Answer, String>>>>,
+    preview: Task<Result<Answer, String>>,
     loaded: Option<Result<Answer, String>>,
     sending: bool,
-    done: Arc<Mutex<Option<Result<Answer, String>>>>,
+    done: Task<Result<Answer, String>>,
     outcome: Option<Result<String, String>>,
 }
 
 impl MarkOg {
     /// Asks the server what it would do.
     pub fn open(shell: &Shell, tracks: Vec<Uuid>) -> MarkOg {
-        let popup = MarkOg { tracks, reason: String::new(), preview: Arc::default(), loaded: None, sending: false, done: Arc::default(), outcome: None };
+        let mut popup = MarkOg { tracks, reason: String::new(), preview: Task::default(), loaded: None, sending: false, done: Task::default(), outcome: None };
         popup.send(shell, true);
         popup
     }
 
     /// The popup. True when it's closed.
     pub fn show(&mut self, shell: &mut Shell) -> bool {
-        let previewed = self.preview.lock().unwrap().take();
+        let previewed = self.preview.poll();
         if let Some(result) = previewed {
             self.loaded = Some(result);
         }
-        let finished = self.done.lock().unwrap().take();
+        let finished = self.done.poll();
         if let Some(result) = finished {
             self.sending = false;
             shell.act(Action::RefreshLibrary);
@@ -142,13 +142,13 @@ impl MarkOg {
         (closed || cancel) && !self.sending
     }
 
-    fn send(&self, shell: &Shell, preview: bool) {
+    fn send(&mut self, shell: &Shell, preview: bool) {
         let body = serde_json::json!({ "track_ids": self.tracks, "reason": self.reason.trim(), "preview": preview });
-        let (api, ctx, answer) = (shell.api.clone(), shell.ctx.clone(), if preview { self.preview.clone() } else { self.done.clone() });
-        shell.runtime.spawn(async move {
-            let result = api.send_json::<Answer>(reqwest::Method::POST, "/api/tracks/mark-original", Some(body)).await.map_err(|e| e.message);
-            *answer.lock().unwrap() = Some(result);
-            ctx.request_repaint();
-        });
+        let ask = |api: crate::api::Api| async move { api.send_json::<Answer>(reqwest::Method::POST, "/api/tracks/mark-original", Some(body)).await.map_err(|e| e.message) };
+        if preview {
+            self.preview.start_with(shell, ask);
+        } else {
+            self.done.send_with(shell, ask);
+        }
     }
 }

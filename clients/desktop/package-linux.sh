@@ -21,6 +21,6 @@ install -m 755 ../target/release/acetate-desktop "$app/"
 strip "$app/acetate-desktop"
 install -m 755 install.sh "$app/"
 install -m 644 acetate.desktop "$app/"
-install -m 644 assets/acetate-512.jpg assets/fonts/Inter-LICENSE.txt "$app/assets/"
+install -m 644 assets/acetate-512.jpg ../assets/fonts/Inter-LICENSE.txt "$app/assets/"
 tar -czf "$out/Acetate-linux-x86_64.tar.gz" -C "$out" Acetate
 echo "Made $out/Acetate-linux-x86_64.tar.gz"

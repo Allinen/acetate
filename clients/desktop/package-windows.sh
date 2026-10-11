@@ -42,6 +42,6 @@ libmpv-2.dll is mpv (https://mpv.io), as built by https://github.com/shinchiro/m
 It is licensed under the GNU GPL; the sources are at
 https://github.com/mpv-player/mpv and listed by the build project above.
 EOF
-cp assets/fonts/Inter-LICENSE.txt "$app/"
+cp ../assets/fonts/Inter-LICENSE.txt "$app/"
 (cd "$out" && zip -qr Acetate-windows-x86_64.zip Acetate)
 echo "Made $out/Acetate-windows-x86_64.zip"
