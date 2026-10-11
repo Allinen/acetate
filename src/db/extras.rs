@@ -1058,6 +1058,18 @@ pub async fn made_track(conn: &mut PgConnection, extra: Uuid, track: Uuid, reaso
     Ok(())
 }
 
+/// The extra a track was made from (`made_track`), if the user can see it.
+pub async fn made_from(conn: &mut PgConnection, track: Uuid) -> sqlx::Result<Option<Uuid>> {
+    sqlx::query_scalar!(
+        r#"SELECT e.id AS "id!" FROM extra_log l JOIN extras e ON e.id = l.extra_id
+           WHERE l.what = 'made a track' AND l.details->>'track' = $1::text
+           ORDER BY l.id DESC LIMIT 1"#,
+        track.to_string()
+    )
+    .fetch_optional(conn)
+    .await
+}
+
 /// Undoes `made_track`: the track it made is hidden as a track made into an extra is, and
 /// the extra is brought back (it is then "made from" that track, which `back_to_track`
 /// reverses). Returns the track.

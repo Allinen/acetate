@@ -131,6 +131,9 @@ pub struct TrackDetail {
     pub removed_lyrics: Vec<Lyrics>,
     /// Tracks merged into this one (filled in by the API, see `revisions::merges_into`).
     pub merges: Vec<super::revisions::MergeInfo>,
+    /// The extra this track was made from (its file was an extra's; filled in by the API):
+    /// the extra's page undoes it.
+    pub made_from_extra: Option<Uuid>,
     /// The current user's plays, rating and star.
     pub annotation: super::annotations::Annotation,
     pub covers: Vec<Cover>,
@@ -498,6 +501,7 @@ pub async fn get_track(
         alias_names,
         covers,
         merges: Vec::new(),
+        made_from_extra: None,
         annotation: super::annotations::get(conn, super::annotations::Item::Track(id)).await?,
     }))
 }

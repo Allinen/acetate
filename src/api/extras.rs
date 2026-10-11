@@ -592,6 +592,10 @@ mod tests {
         let og: Option<String> = sqlx::query_scalar("SELECT original_filename FROM files WHERE id = (SELECT file_id FROM tracks WHERE id = $1)").bind(track).fetch_one(&owner).await?;
         assert_eq!(og, None);
 
+        // The track says which extra it was made from.
+        let (status, got) = send(&app, "GET", &format!("/api/tracks/{track}"), &alice, Body::empty(), None).await;
+        assert_eq!((status, got["made_from_extra"].as_str()), (StatusCode::OK, Some(id.to_string().as_str())), "{got}");
+
         // Undone: the extra is back, and the track hidden as one made into an extra is.
         let extra = {
             let mut tx = state.db(&user).await?;

@@ -66,6 +66,9 @@ pub struct TrackDetail {
     pub alias_names: HashMap<Uuid, String>,
     #[serde(default)]
     pub merges: Vec<Merge>,
+    /// The extra its file was (it was made a track from it): undone on the extra's page.
+    #[serde(default)]
+    pub made_from_extra: Option<Uuid>,
     #[serde(default)]
     pub covers: Vec<Cover>,
     /// Every revision, newest first (only for users who may see history).

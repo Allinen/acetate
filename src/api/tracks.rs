@@ -60,6 +60,7 @@ pub async fn get(
     if with_history {
         track.merges = revisions::merges_into(&mut tx, id).await?;
     }
+    track.made_from_extra = db::extras::made_from(&mut tx, id).await?;
     Ok(Json(track).into_response())
 }
 

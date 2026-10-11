@@ -596,6 +596,14 @@ impl TrackPage {
             self.to_extra = None;
         }
         let Some(view) = self.merge.as_mut() else {
+            if let Some(extra) = d.made_from_extra {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(RichText::new("Made from an extra (its file was one).").color(P.muted));
+                    if ui.button("Open the extra (to undo it)").clicked() {
+                        shell.act(Action::Go(Page::Extra(extra)));
+                    }
+                });
+            }
             ui.horizontal(|ui| {
                 if ui.button("Merge with another track…  (Ctrl+M)").on_hover_text("The same song twice: choose the other one, then compare them side by side").clicked() {
                     self.picking_merge = true;
