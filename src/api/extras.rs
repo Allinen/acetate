@@ -410,7 +410,7 @@ async fn make_track(state: &AppState, user: &CurrentUser, extra: &Extra, file: &
         status: "released".into(),
         sources: vec![track_source],
         restrict_to,
-        hints: Hints { artists, described: Some(described), track_covers: covers, no_duplicate_merge: true, original_filename: Some(file.name.clone()), ..Default::default() },
+        hints: Hints { artists, described: Some(described), track_covers: covers, no_duplicate_merge: true, ..Default::default() },
         local_path: None,
         edited_after: false,
         volume: None,
@@ -456,6 +456,17 @@ pub async fn merge(State(state): State<AppState>, user: CurrentUser, Path(id): P
         tx.commit().await?;
     }
     Ok(Json(done))
+}
+
+/// `POST /api/extras/{id}/undo-track`, JSON `{"reason"}` (optional): undoes `to-track`. The
+/// track it made is hidden as a track made into an extra is (so this extra is "made from"
+/// it, and can be made a track again), and the extra is brought back. Answers `{track_id}`.
+pub async fn undo_track(State(state): State<AppState>, user: CurrentUser, Path(id): Path<Uuid>, body: Option<Json<Hide>>) -> Result<Json<serde_json::Value>, AppError> {
+    let reason = body.map(|Json(b)| b.reason).unwrap_or_default();
+    let mut tx = state.db(&user).await?;
+    let track = db::extras::undo_made_track(&mut tx, id, &reason).await?;
+    tx.commit().await?;
+    Ok(Json(serde_json::json!({ "track_id": track })))
 }
 
 /// `POST /api/extras/{id}/back-to-track`, JSON `{"reason"}` (optional): undoes
@@ -576,6 +587,26 @@ mod tests {
         let again = super::make_track(&state, &user, &extra, &extra.files[0], video, "", false).await.map_err(|e| anyhow::anyhow!("{e:?}"))?;
         assert_eq!(serde_json::to_value(&again.report)?["status"], "duplicate");
         assert_eq!(tracks().await?, 1);
+
+        // Not an original file, whatever the extra's file was called.
+        let og: Option<String> = sqlx::query_scalar("SELECT original_filename FROM files WHERE id = (SELECT file_id FROM tracks WHERE id = $1)").bind(track).fetch_one(&owner).await?;
+        assert_eq!(og, None);
+
+        // Undone: the extra is back, and the track hidden as one made into an extra is.
+        let extra = {
+            let mut tx = state.db(&user).await?;
+            db::extras::get(&mut tx, id).await?.unwrap()
+        };
+        assert_eq!(extra.made_track, Some(track));
+        let (status, got) = send(&app, "POST", &format!("/api/extras/{id}/undo-track"), &alice, Body::from("{}"), Some("application/json")).await;
+        assert_eq!(status, StatusCode::OK, "{got}");
+        let extra = {
+            let mut tx = state.db(&user).await?;
+            db::extras::get(&mut tx, id).await?.unwrap()
+        };
+        assert_eq!((extra.hidden, extra.from_track, extra.made_track), (false, Some(track), None));
+        let (status, _) = send(&app, "POST", &format!("/api/extras/{id}/undo-track"), &alice, Body::from("{}"), Some("application/json")).await;
+        assert_ne!(status, StatusCode::OK, "once");
         Ok(())
     }
 }

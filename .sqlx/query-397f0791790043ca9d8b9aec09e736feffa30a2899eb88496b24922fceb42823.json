@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT t.id AS \"id!\" FROM extra_log l JOIN tracks t ON t.id = (l.details->>'track')::uuid\n           WHERE l.extra_id = $1 AND l.what = 'made a track' AND t.became_extra_id IS NULL AND t.merged_into IS NULL\n           ORDER BY l.id DESC LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id!",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tracks",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "397f0791790043ca9d8b9aec09e736feffa30a2899eb88496b24922fceb42823"
+}

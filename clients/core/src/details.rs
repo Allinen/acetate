@@ -164,6 +164,9 @@ pub struct Extra {
     /// Made from this track (hidden while it's an extra).
     #[serde(default)]
     pub from_track: Option<Uuid>,
+    /// Its file was made a track (from its YouTube video), which can be undone.
+    #[serde(default)]
+    pub made_track: Option<Uuid>,
     pub is_restricted: bool,
     /// Who sees it when restricted (besides admins).
     #[serde(default)]

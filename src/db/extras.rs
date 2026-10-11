@@ -121,6 +121,8 @@ pub struct Extra {
     pub source: String,
     /// Made from this track (hidden while it's an extra; `back_to_track` undoes it).
     pub from_track: Option<Uuid>,
+    /// Its file was made a track (`made_track`), which is still one: `undo_made_track`.
+    pub made_track: Option<Uuid>,
     pub is_restricted: bool,
     /// Who sees it when restricted (besides admins).
     pub groups: Vec<Group>,
@@ -813,6 +815,14 @@ pub async fn get(conn: &mut PgConnection, id: Uuid) -> sqlx::Result<Option<Extra
     else {
         return Ok(None);
     };
+    let made_track = sqlx::query_scalar!(
+        r#"SELECT t.id AS "id!" FROM extra_log l JOIN tracks t ON t.id = (l.details->>'track')::uuid
+           WHERE l.extra_id = $1 AND l.what = 'made a track' AND t.became_extra_id IS NULL AND t.merged_into IS NULL
+           ORDER BY l.id DESC LIMIT 1"#,
+        id
+    )
+    .fetch_optional(&mut *conn)
+    .await?;
     Ok(Some(Extra {
         id: row.id,
         name: row.name,
@@ -820,6 +830,7 @@ pub async fn get(conn: &mut PgConnection, id: Uuid) -> sqlx::Result<Option<Extra
         description: row.description,
         source: row.source,
         from_track: row.from_track_id,
+        made_track,
         is_restricted: row.is_restricted,
         groups: groups(conn, id).await?,
         hidden: row.hidden,
@@ -1045,6 +1056,21 @@ pub async fn made_track(conn: &mut PgConnection, extra: Uuid, track: Uuid, reaso
     sqlx::query!("UPDATE extras SET hidden_at = COALESCE(hidden_at, now()) WHERE id = $1", extra).execute(&mut *conn).await?;
     log(conn, extra, "made a track", json!({ "track": track }), reason).await?;
     Ok(())
+}
+
+/// Undoes `made_track`: the track it made is hidden as a track made into an extra is, and
+/// the extra is brought back (it is then "made from" that track, which `back_to_track`
+/// reverses). Returns the track.
+pub async fn undo_made_track(conn: &mut PgConnection, extra: Uuid, reason: &str) -> anyhow::Result<Uuid> {
+    let track = get(conn, extra).await?.ok_or(EditRejected::NotFound("extra"))?.made_track.ok_or(EditRejected::NotFound("track made from this extra"))?;
+    match sqlx::query!("SELECT track_became_extra($1, $2)", track, extra).execute(&mut *conn).await {
+        Ok(_) => {}
+        Err(sqlx::Error::Database(err)) if err.code().as_deref() == Some("P0002") => return Err(EditRejected::NotFound("track").into()),
+        Err(err) => return Err(err.into()),
+    }
+    sqlx::query!("UPDATE extras SET hidden_at = NULL WHERE id = $1", extra).execute(&mut *conn).await?;
+    log(conn, extra, "track undone", json!({ "track": track }), reason).await?;
+    Ok(track)
 }
 
 /// The extra a track became (made into an extra, so hidden), if the user can see it.

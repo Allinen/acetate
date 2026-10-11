@@ -345,6 +345,19 @@ impl ExtraPage {
                 }
                 ui.add_space(8.0);
             }
+            // Its file was made a track: that can be undone (the extra comes back).
+            if let Some(track) = extra.made_track {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(RichText::new("Its file was made a track (this extra is taken off, kept).").color(P.muted));
+                    if ui.button("Go to the track").clicked() {
+                        shell.act(Action::Go(Page::Track(track)));
+                    }
+                    if can && ui.add_enabled(!self.sending, egui::Button::new("Undo: back to an extra")).on_hover_text("The track is hidden (it can be made a track again), and this extra is brought back").clicked() {
+                        self.send(shell, format!("/api/extras/{id}/undo-track"), serde_json::json!({}), "The track is hidden; this extra is back.".into());
+                    }
+                });
+                ui.add_space(8.0);
+            }
             // A YouTube video kept as an extra can be a track, from what YouTube says of it.
             if can && extra.from_track.is_none() && !extra.hidden && shown == 1 {
                 self.make_track(ui, shell, id);
