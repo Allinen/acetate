@@ -4,7 +4,7 @@
 //! title and artists, an artist's names). Done with `nucleo-matcher`, the matcher of the
 //! Helix editor.
 
-use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
+use nucleo_matcher::pattern::{AtomKind, CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config, Matcher, Utf32Str};
 
 use super::text::Texts;
@@ -29,6 +29,14 @@ pub enum Part {
     Extras,
 }
 
+/// The pattern for what was typed, and the words it was made of: words with no letter or
+/// digit in them ("Gizmo - 401" has a "-") are left out, as they are not in the titles.
+fn parse(query: &str) -> (Pattern, String) {
+    let words: Vec<&str> = query.split_whitespace().filter(|w| w.chars().any(char::is_alphanumeric)).collect();
+    let query = words.join(" ");
+    (Pattern::parse(&query, CaseMatching::Ignore, Normalization::Smart), query)
+}
+
 pub struct Search {
     matcher: Matcher,
     buffer: Vec<char>,
@@ -43,7 +51,8 @@ impl Default for Search {
 impl Search {
     /// Up to `limit` of each kind.
     pub fn run(&mut self, catalog: &Catalog, query: &str, limit: usize) -> Hits {
-        let pattern = Pattern::parse(query, CaseMatching::Ignore, Normalization::Smart);
+        let (pattern, query) = parse(query);
+        let query = query.as_str();
         let (tracks, albums, artists) = catalog.texts();
         Hits {
             artists: self.best(&pattern, query, artists, limit),
@@ -84,7 +93,8 @@ impl Search {
 
     /// Up to `limit` of one kind only (a form's artist or album field).
     pub fn run_part(&mut self, catalog: &Catalog, query: &str, part: Part, limit: usize) -> Vec<(u32, u32)> {
-        let pattern = Pattern::parse(query, CaseMatching::Ignore, Normalization::Smart);
+        let (pattern, query) = parse(query);
+        let query = query.as_str();
         let (tracks, albums, artists) = catalog.texts();
         let texts = match part {
             Part::Artists => artists,
@@ -95,6 +105,21 @@ impl Search {
         self.best(&pattern, query, texts, limit)
     }
 
+    /// Whether every fuzzy word matched close together: its letters spread over no more
+    /// than twice its length, and a bit (so "thrd" finds "The Third", "gdspln" "God's
+    /// Plan"). Letters picked out of a long title by chance don't count.
+    fn fits(&mut self, pattern: &Pattern, text: &str, indices: &mut Vec<u32>) -> bool {
+        let haystack = Utf32Str::new(text, &mut self.buffer);
+        pattern.atoms.iter().filter(|a| !a.negative && a.kind == AtomKind::Fuzzy).all(|atom| {
+            indices.clear();
+            if atom.indices(haystack, &mut self.matcher, indices).is_none() {
+                return false;
+            }
+            let (Some(first), Some(last)) = (indices.iter().min(), indices.iter().max()) else { return true };
+            (last - first + 1) as usize <= 2 * atom.needle_text().len() + 2
+        })
+    }
+
     /// The best `limit`, best first: a name that is exactly what was typed, then ones that
     /// start with it, then by score (shorter names before longer at the same score, so
     /// "dead" comes before the hundred "deadsomething"s).
@@ -102,12 +127,16 @@ impl Search {
         if pattern.atoms.is_empty() {
             return Vec::new();
         }
-        let typed = query.trim().to_lowercase();
+        let typed = query.to_lowercase();
+        let mut indices = Vec::new();
         // (how well the name itself matches: 0 exact, 1 starts with it, 2 other; score; length)
         let mut hits: Vec<(u8, u32, u32, u32)> = Vec::new();
         for (i, text) in texts.iter().enumerate() {
             let haystack = Utf32Str::new(text, &mut self.buffer);
             if let Some(score) = pattern.score(haystack, &mut self.matcher) {
+                if !self.fits(pattern, text, &mut indices) {
+                    continue;
+                }
                 let name = text.split('\0').next().unwrap_or(text);
                 let near = if text.split('\0').any(|part| part == typed) {
                     0
@@ -192,5 +221,17 @@ mod tests {
         texts.push_lowercase(&["Something Else", "dead"]);
         let found = search.best(&pattern, "dead", &texts.finish(), 1);
         assert_eq!(found[0].0, 1);
+    }
+
+    #[test]
+    fn punctuation_is_ignored_and_scattered_letters_are_not_a_match() {
+        let mut texts = Texts::with_capacity(2);
+        texts.push_lowercase(&["gizmo 401"]);
+        texts.push_lowercase(&["g-eazy / drake type instrumental | soulful sick hip-hop {rap} instrumental beat | *2014* - 401 zoom"]);
+        let texts = texts.finish();
+        let mut search = Search::default();
+        let (pattern, typed) = parse("Gizmo - 401");
+        let found = search.best(&pattern, &typed, &texts, 5);
+        assert_eq!(found.iter().map(|h| h.0).collect::<Vec<_>>(), [0]);
     }
 }
