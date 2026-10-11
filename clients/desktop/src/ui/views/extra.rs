@@ -19,7 +19,7 @@ use uuid::Uuid;
 
 use crate::catalog::search::Part;
 use crate::details::Extra;
-use crate::ui::edit::extras::{access_text, file_line, files_text, upload_all, KINDS};
+use crate::ui::edit::extras::{access_text, file_line, files_text, merge_request, upload_all, MergeReport, KINDS};
 use crate::ui::edit::inline_search::{Choice, InlineSearch};
 use crate::ui::theme::{bold, font, medium, semibold, PALETTE as P};
 use crate::ui::{widgets, Action, Page, Shell};
@@ -39,31 +39,6 @@ struct LogEntry {
 struct Group {
     id: Uuid,
     name: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct Named {
-    name: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct Linked {
-    title: String,
-}
-
-/// What merging one extra in does (`POST /api/extras/{id}/merge`, previewed).
-#[derive(Debug, Clone, Deserialize)]
-struct MergedExtra {
-    name: String,
-    files_moved: Vec<Named>,
-    files_duplicate: Vec<Named>,
-    links_moved: Vec<Linked>,
-    links_duplicate: Vec<Linked>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct MergeReport {
-    merged: Vec<MergedExtra>,
 }
 
 /// Extras being gathered into this one: chosen, then previewed, then merged.
@@ -501,6 +476,7 @@ impl ExtraPage {
         ui.label(RichText::new("Merge into this one").font(font(14.0, semibold())));
         ui.label(RichText::new("Their files and links come here (a file or link this one has already stays behind). Each goes to the trash; an admin can purge it after a week, and taking it out before undoes the merge. They must be seen by the same people.").color(P.muted).small());
         let catalog = shell.catalog.value.clone();
+        m.search.skip = std::iter::once(id).chain(m.picked.iter().map(|(p, _)| *p)).collect();
         if let Some((Choice::Hit(i), _)) = m.search.show(ui, shell, catalog.as_deref(), egui::Id::new("extra-merge"), "type the name of an extra to add", &[])
             && let Some(e) = catalog.as_deref().and_then(|c| c.extras.get(i as usize))
             && e.id != id
@@ -523,25 +499,7 @@ impl ExtraPage {
             m.preview = None;
         }
         if let Some(report) = &m.preview {
-            for r in &report.merged {
-                let names = |files: &[Named]| files.iter().map(|f| f.name.as_str()).collect::<Vec<_>>().join(", ");
-                let mut line = format!("“{}”: {}", r.name, files_text(r.files_moved.len()));
-                if !r.files_moved.is_empty() {
-                    line += &format!(" move here ({})", names(&r.files_moved));
-                } else {
-                    line += " move here";
-                }
-                if !r.files_duplicate.is_empty() {
-                    line += &format!("; {} the same bytes as one here, left behind ({})", r.files_duplicate.len(), names(&r.files_duplicate));
-                }
-                if !r.links_moved.is_empty() {
-                    line += &format!("; belongs to {} too", r.links_moved.iter().map(|l| l.title.as_str()).collect::<Vec<_>>().join(", "));
-                }
-                if !r.links_duplicate.is_empty() {
-                    line += &format!("; {} link(s) here already", r.links_duplicate.len());
-                }
-                ui.label(RichText::new(line).color(P.muted));
-            }
+            report.show(ui);
         }
         let ready = m.preview.is_some();
         let nothing = m.picked.is_empty();
@@ -557,10 +515,9 @@ impl ExtraPage {
         } else if preview {
             self.previewing = true;
             self.result = None;
-            let body = serde_json::json!({ "sources": ids, "preview": true });
             let (api, ctx, into) = (shell.api.clone(), shell.ctx.clone(), self.preview_arrived.clone());
             shell.runtime.spawn(async move {
-                let result = api.send_json::<MergeReport>(reqwest::Method::POST, &format!("/api/extras/{id}/merge"), Some(body)).await.map_err(|e| e.message);
+                let result = merge_request(&api, id, &ids, true).await;
                 *into.lock().unwrap() = Some(result);
                 ctx.request_repaint();
             });

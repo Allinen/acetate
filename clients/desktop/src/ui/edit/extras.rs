@@ -578,3 +578,59 @@ pub async fn upload_all(api: &crate::api::Api, extra: &str, files: &[PathBuf], p
 pub fn files_text(n: usize) -> String {
     if n == 1 { "1 file".into() } else { format!("{} files", thousands(n)) }
 }
+
+// ---- Merging extras (`POST /api/extras/{id}/merge`) ----
+
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct Named {
+    pub name: String,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct Linked {
+    pub title: String,
+}
+
+/// What merging one extra in does (previewed first).
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct MergedExtra {
+    pub name: String,
+    pub files_moved: Vec<Named>,
+    pub files_duplicate: Vec<Named>,
+    pub links_moved: Vec<Linked>,
+    pub links_duplicate: Vec<Linked>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct MergeReport {
+    pub merged: Vec<MergedExtra>,
+}
+
+impl MergeReport {
+    /// One line for each extra: what moves, what stays.
+    pub fn show(&self, ui: &mut egui::Ui) {
+        for r in &self.merged {
+            let names = |files: &[Named]| files.iter().map(|f| f.name.as_str()).collect::<Vec<_>>().join(", ");
+            let mut line = format!("“{}”: {} move here", r.name, files_text(r.files_moved.len()));
+            if !r.files_moved.is_empty() {
+                line += &format!(" ({})", names(&r.files_moved));
+            }
+            if !r.files_duplicate.is_empty() {
+                line += &format!("; {} the same bytes as one here, left behind ({})", r.files_duplicate.len(), names(&r.files_duplicate));
+            }
+            if !r.links_moved.is_empty() {
+                line += &format!("; belongs to {} too", r.links_moved.iter().map(|l| l.title.as_str()).collect::<Vec<_>>().join(", "));
+            }
+            if !r.links_duplicate.is_empty() {
+                line += &format!("; {} link(s) here already", r.links_duplicate.len());
+            }
+            ui.label(RichText::new(line).color(P.muted));
+        }
+    }
+}
+
+/// Asks the server to merge `sources` into `into` (`preview`: only say what would happen).
+pub async fn merge_request(api: &crate::api::Api, into: Uuid, sources: &[Uuid], preview: bool) -> Result<MergeReport, String> {
+    let body = serde_json::json!({ "sources": sources, "preview": preview });
+    api.send_json::<MergeReport>(reqwest::Method::POST, &format!("/api/extras/{into}/merge"), Some(body)).await.map_err(|e| e.message)
+}

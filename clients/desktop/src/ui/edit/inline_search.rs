@@ -29,11 +29,13 @@ pub struct InlineSearch {
     answer: Arc<Mutex<Option<(u64, Vec<u32>)>>>,
     hits: Vec<u32>,
     selected: usize,
+    /// Extras (by id) that are never offered: the one the form is for, those chosen already.
+    pub skip: Vec<uuid::Uuid>,
 }
 
 impl InlineSearch {
     pub fn new(part: Part) -> InlineSearch {
-        InlineSearch { part, query: String::new(), asked: 0, answer: Arc::default(), hits: Vec::new(), selected: 0 }
+        InlineSearch { part, query: String::new(), asked: 0, answer: Arc::default(), hits: Vec::new(), selected: 0, skip: Vec::new() }
     }
 
     /// The field (`id`, so it can be focused from outside) and, while it has text, its
@@ -126,9 +128,13 @@ impl InlineSearch {
             self.hits.clear();
             return;
         };
-        let (number, answer, ctx, part) = (self.asked, self.answer.clone(), shell.ctx.clone(), self.part);
+        let (number, answer, ctx, part, skip) = (self.asked, self.answer.clone(), shell.ctx.clone(), self.part, self.skip.clone());
         shell.runtime.spawn_blocking(move || {
-            let hits = Search::default().run_part(&catalog, &query, part, 8).into_iter().map(|h| h.0).collect();
+            let mut hits: Vec<u32> = Search::default().run_part(&catalog, &query, part, 8 + skip.len()).into_iter().map(|h| h.0).collect();
+            if part == Part::Extras {
+                hits.retain(|&h| catalog.extras.get(h as usize).is_none_or(|e| !skip.contains(&e.id)));
+            }
+            hits.truncate(8);
             *answer.lock().unwrap() = Some((number, hits));
             ctx.request_repaint();
         });

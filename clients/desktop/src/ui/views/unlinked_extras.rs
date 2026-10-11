@@ -9,6 +9,10 @@
 //! opens the cursor's extra.
 //!
 //! Links are the same `POST /api/extras/{id}/links` the extra's own page uses, one per extra.
+//!
+//! The fifth choice merges them into another extra (the same file twice, say): the extra is
+//! chosen by name, what moves is shown, and Merge does it (`POST /api/extras/{id}/merge`; the
+//! marked ones go to the trash, where taking one out undoes it).
 
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
@@ -20,7 +24,7 @@ use super::marking::{paint_box, Key, Marking};
 use crate::catalog::model::Extra;
 use crate::catalog::search::Part;
 use crate::catalog::Catalog;
-use crate::ui::edit::extras::{files_text, Owner};
+use crate::ui::edit::extras::{files_text, merge_request, MergeReport, Owner};
 use crate::ui::edit::inline_search::{describe, Choice, InlineSearch};
 use crate::ui::theme::{font, medium, semibold, PALETTE as P};
 use crate::ui::{widgets, Action, Page, Shell};
@@ -34,10 +38,19 @@ enum Target {
     Album,
     Artist,
     Grouping,
+    /// Merged into another extra.
+    Merge,
+}
+
+/// A merge being looked over: what would move, before it's done.
+struct Pending {
+    into: (Uuid, String),
+    sources: Vec<Uuid>,
+    report: Option<MergeReport>,
 }
 
 impl Target {
-    const ALL: [Target; 4] = [Target::Track, Target::Album, Target::Artist, Target::Grouping];
+    const ALL: [Target; 5] = [Target::Track, Target::Album, Target::Artist, Target::Grouping, Target::Merge];
 
     fn name(self) -> &'static str {
         match self {
@@ -45,6 +58,7 @@ impl Target {
             Target::Album => "album",
             Target::Artist => "artist",
             Target::Grouping => "grouping",
+            Target::Merge => "merge into an extra",
         }
     }
 
@@ -54,6 +68,7 @@ impl Target {
             Target::Album => Some(Part::Albums),
             Target::Artist => Some(Part::Artists),
             Target::Grouping => None,
+            Target::Merge => Some(Part::Extras),
         }
     }
 }
@@ -75,6 +90,8 @@ pub struct UnlinkedExtras {
     sending: bool,
     result: Arc<Mutex<Option<Result<String, String>>>>,
     said: Option<Result<String, String>>,
+    pending: Option<Pending>,
+    preview: Arc<Mutex<Option<Result<MergeReport, String>>>>,
 }
 
 impl Default for UnlinkedExtras {
@@ -91,6 +108,8 @@ impl Default for UnlinkedExtras {
             sending: false,
             result: Arc::default(),
             said: None,
+            pending: None,
+            preview: Arc::default(),
         }
     }
 }
@@ -109,6 +128,19 @@ impl UnlinkedExtras {
             self.sending = false;
             self.said = Some(result);
             shell.act(Action::RefreshLibrary);
+        }
+        if let Some(result) = self.preview.lock().unwrap().take() {
+            match result {
+                Ok(report) => {
+                    if let Some(p) = self.pending.as_mut() {
+                        p.report = Some(report);
+                    }
+                }
+                Err(err) => {
+                    self.pending = None;
+                    self.said = Some(Err(err));
+                }
+            }
         }
         // Linked ones leave the list at once; forget them once the library says so too.
         self.linked.retain(|id| catalog.extras.iter().any(|e| e.id == *id && e.links.is_empty()));
@@ -225,10 +257,12 @@ impl UnlinkedExtras {
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             ui.label(RichText::new("Link to").font(font(13.0, semibold())));
+            ui.spacing_mut().item_spacing.x = 6.0;
             for target in Target::ALL {
                 if widgets::chip(ui, target.name(), self.target == target) && self.target != target {
                     self.target = target;
                     self.prefilled = None;
+                    self.pending = None;
                     if let Some(part) = target.part() {
                         self.search = InlineSearch::new(part);
                     }
@@ -250,11 +284,30 @@ impl UnlinkedExtras {
             }
         }
         let sending = self.sending;
+        if self.target == Target::Merge {
+            self.search.skip = targets.clone();
+        }
         match self.target.part() {
             Some(part) => {
-                let hint = format!("type the {}'s name, Enter links {}", self.target.name(), if targets.len() == 1 { "it".to_string() } else { format!("{} extras", targets.len()) });
+                let hint = if self.target == Target::Merge {
+                    "type the name of the extra to keep, Enter shows what would move".to_string()
+                } else {
+                    format!("type the {}'s name, Enter links {}", self.target.name(), if targets.len() == 1 { "it".to_string() } else { format!("{} extras", targets.len()) })
+                };
                 let hit = self.search.show(ui, shell, Some(catalog), egui::Id::new(SEARCH_ID), &hint, &[]);
-                if let (Some((Choice::Hit(i), _)), false) = (hit, sending) {
+                if let (Some((Choice::Hit(i), _)), false) = (hit, sending)
+                    && self.target == Target::Merge
+                {
+                    if let Some(e) = catalog.extras.get(i as usize).filter(|_| !targets.is_empty()) {
+                        self.said = None;
+                        self.pending = Some(Pending { into: (e.id, e.name.clone()), sources: targets.clone(), report: None });
+                        let (api, ctx, into, sources, id) = (shell.api.clone(), shell.ctx.clone(), self.preview.clone(), targets.clone(), e.id);
+                        shell.runtime.spawn(async move {
+                            *into.lock().unwrap() = Some(merge_request(&api, id, &sources, true).await);
+                            ctx.request_repaint();
+                        });
+                    }
+                } else if let (Some((Choice::Hit(i), _)), false) = (hit, sending) {
                     let link = match part {
                         Part::Tracks => catalog.get_track(i).map(|t| Owner::Track(t.id())),
                         Part::Albums => catalog.get_album(i).map(|a| Owner::Album(a.id())),
@@ -280,11 +333,60 @@ impl UnlinkedExtras {
                 }
             }
         }
+        let mut decided = None;
+        if let Some(p) = &self.pending {
+            ui.add_space(4.0);
+            ui.label(RichText::new(format!("Merge into “{}”", p.into.1)).font(font(13.0, semibold())));
+            match &p.report {
+                None => {
+                    ui.label(RichText::new("Looking…").color(P.muted));
+                }
+                Some(report) => {
+                    report.show(ui);
+                    ui.label(RichText::new("The merged ones go to the trash; taking one out of there undoes the merge.").color(P.faint).small());
+                    ui.horizontal(|ui| {
+                        if ui.add_enabled(!self.sending, egui::Button::new("Merge")).clicked() {
+                            decided = Some(true);
+                        }
+                        if ui.button("Cancel").clicked() {
+                            decided = Some(false);
+                        }
+                    });
+                }
+            }
+        }
+        match decided {
+            Some(true) => {
+                if let Some(p) = self.pending.take() {
+                    self.merge_all(shell, p);
+                }
+            }
+            Some(false) => self.pending = None,
+            None => {}
+        }
         if self.sending {
-            ui.label(RichText::new("Linking…").color(P.muted));
+            ui.label(RichText::new("Working…").color(P.muted));
         } else if let Some(said) = self.said.clone() {
             self.say(ui, said);
         }
+    }
+
+    fn merge_all(&mut self, shell: &Shell, pending: Pending) {
+        self.sending = true;
+        self.said = None;
+        self.prefilled = None;
+        self.linked.extend(pending.sources.iter().copied());
+        self.marking.clear();
+        let (api, ctx, result) = (shell.api.clone(), shell.ctx.clone(), self.result.clone());
+        shell.runtime.spawn(async move {
+            let (into, name) = pending.into;
+            let said = merge_request(&api, into, &pending.sources, false).await.map(|r| {
+                let n = r.merged.len();
+                format!("Merged {} into “{name}”.", if n == 1 { "1 extra".to_string() } else { format!("{n} extras") })
+            });
+            *result.lock().unwrap() = Some(said);
+            ctx.request_repaint();
+        });
     }
 
     fn link_all(&mut self, shell: &Shell, extras: Vec<Uuid>, to: Owner, label: String) {
