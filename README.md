@@ -165,7 +165,7 @@ cargo run -- serve                   # runs migrations, serves on 127.0.0.1:3000
 scripts/install-hooks.sh             # pre-commit: versions agree, generated docs current; pre-push: clippy
 ```
 
-The server, the apps and the Python library share one version: `scripts/versions.py` checks that every place that has it agrees, and `scripts/versions.py --set 0.2.0` changes them all (then tag `v0.2.0` to release; the tag has to match). `API_VERSION` and `CATALOG_FORMAT` are numbers the server and the apps are all built with: bump them when a change would break an app that doesn't have it.
+The server, the apps and the Python library share one version: `scripts/versions.py` checks that every place that has it agrees, and `scripts/versions.py --set 0.2.0` changes them all (then tag `v0.2.0` to release; the tag has to match). `API_VERSION` and `CATALOG_FORMAT` are numbers the server and the apps are all built with, and a server and an app have to have the same ones (the server turns an app of other numbers away): bump them when a change would break an app that does not have it, knowing it makes every app that is not updated stop.
 
 `sqlx::query!` checks SQL against the live database at compile time, so Postgres must be running to build.
 Reset the dev database with `scripts/reset-dev-db.sh`: empties it, reapplies the migrations and creates the user `admin` (password `adminadmin`); `--with-audio` also imports `./test-audio`. It only touches local databases whose name ends in `_dev`, `_test` or `_scratch` (so never the real library, e.g. `acetate`), and works while psql or the server is connected (restart the server afterwards).

@@ -34,7 +34,7 @@ use crate::db::library::{ALBUM_COLUMNS, ANNOTATION_COLUMNS, ARTIST_COLUMNS, EXTR
 
 /// Bumped when the format changes in a way old clients can't read: the number in the
 /// `CATALOG_FORMAT` file, which the clients are built with too.
-const FORMAT: u32 = parse_format(include_str!("../../CATALOG_FORMAT"));
+pub(crate) const FORMAT: u32 = parse_format(include_str!("../../CATALOG_FORMAT"));
 
 /// (`str::parse` isn't `const`.)
 const fn parse_format(text: &str) -> u32 {

@@ -1548,6 +1548,20 @@ impl eframe::App for App {
             self.apply(&ctx);
             return;
         };
+        // The server turned a request away for being another version (it was updated, or
+        // this app): ask which it is now.
+        if self.shell.api.take_incompatible() {
+            self.shell.account.fetch(&self.shell.api, self.shell.runtime.handle(), &self.shell.waker);
+        }
+        self.shell.account.poll();
+        // Not the same version as the server: nothing else works, so only the way out.
+        if let Some(server) = self.shell.account.server.clone().filter(|s| s.blocked()) {
+            egui::CentralPanel::default()
+                .frame(Frame::NONE.fill(P.bg).inner_margin(Margin::symmetric(40, 20)))
+                .show(ui, |ui| self.pages.incompatible.show(ui, &mut self.shell, &server));
+            self.apply(&ctx);
+            return;
+        }
         self.keys(&ctx);
         self.open_links();
         self.take_share(&ctx);

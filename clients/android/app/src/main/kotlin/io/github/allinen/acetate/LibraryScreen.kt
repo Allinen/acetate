@@ -94,11 +94,13 @@ private fun VersionPrompt(model: Model) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val warning = remember(model.accountVersion, model.session) { model.core.versionWarning() }
     val url = remember(model.accountVersion, model.session) { model.core.versionUpdateUrl() }
+    // Not the same API version: the server turns the app away, so this can't be put off.
+    val blocked = remember(model.accountVersion, model.session) { model.core.versionBlocked() }
     var dismissed by rememberSaveable { mutableStateOf<String?>(null) }
-    if (warning == null || dismissed == warning) return
+    if (warning == null || (!blocked && dismissed == warning)) return
     AlertDialog(
-        onDismissRequest = { dismissed = warning },
-        title = { Text("A different version") },
+        onDismissRequest = { if (!blocked) dismissed = warning },
+        title = { Text(if (blocked) "Update needed" else "A different version") },
         text = { Text(warning) },
         confirmButton = {
             if (url != null) TextButton({
@@ -106,7 +108,10 @@ private fun VersionPrompt(model: Model) {
                 context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url)))
             }) { Text("Download") }
         },
-        dismissButton = { TextButton({ dismissed = warning }) { Text("Later") } },
+        dismissButton = {
+            if (blocked) TextButton({ model.logout() }) { Text("Log out") }
+            else TextButton({ dismissed = warning }) { Text("Later") }
+        },
     )
 }
 

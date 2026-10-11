@@ -86,6 +86,12 @@ impl Core {
         self.shared.account.lock().unwrap().server.as_ref().and_then(|s| s.warning())
     }
 
+    /// Whether this app and the server aren't the same API version and catalog format: it can't
+    /// be used until one of them is updated (the server turns the app away).
+    pub fn version_blocked(&self) -> bool {
+        self.shared.account.lock().unwrap().server.as_ref().is_some_and(|s| s.blocked())
+    }
+
     /// Where the app of the server's version is (the APK), when this app isn't that version.
     pub fn version_update_url(&self) -> Option<String> {
         self.shared.account.lock().unwrap().server.as_ref().filter(|s| !s.matches_app()).map(|s| s.apk_url())

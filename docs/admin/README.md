@@ -20,8 +20,21 @@ different server (a new database) needs a log out and a log in, and has its own 
 
 ## Versions
 
-The server and the apps each have a release (`0.1.0`) and an *API version*, a number that
-goes up when a change would break an app that doesn't have it. `GET /api/version` (open to
-anyone) tells the server's. When an app's differs from its server's, the desktop app says so
-when it connects, under the sidebar's links (**Version mismatch**) and in **Settings →
-General**: update the app if the server is newer, the server if the app is.
+The server and the apps each have a release (`0.1.0`), an *API version* and a *catalog
+format*: numbers that go up when a change would break an app that doesn't have it. The server
+and an app **have to be the same** in both. The apps send theirs with every request
+(`X-Acetate-Api`, `X-Acetate-Catalog`); a server of other numbers answers **426 Upgrade
+Required** and says so, and an app that finds out (`GET /api/version`, open to anyone, says the
+server's) stops and shows what to do instead of its pages:
+
+* **the server is newer**: the desktop app offers **Update to {the server's release}** (it
+  downloads that release from GitHub and puts it in place; it starts the next time Acetate
+  does). The phone app links to the APK of the server's release.
+* **the app is newer** (the server wasn't updated yet): it says to update the server to the
+  app's release, and links the app that goes with the server, to install by hand: the apps
+  never go back to an older release by themselves, since what they keep on the device may not
+  be readable by one.
+
+A different release with the same two numbers (`0.1.1` against `0.1.0`) works, with a note that
+the versions differ. Scripts (curl, the Python library) and the web pages send no numbers and
+aren't turned away.

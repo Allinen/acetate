@@ -11,6 +11,7 @@ pub mod artist_commands;
 pub mod artist_merge;
 pub mod artists;
 pub mod grouping;
+pub mod incompatible;
 pub mod groupings;
 pub mod history;
 pub mod login;
@@ -61,6 +62,7 @@ pub const FILTER_ID: &str = "filter";
 #[derive(Default)]
 pub struct Pages {
     pub login: login::Login,
+    pub incompatible: incompatible::Incompatible,
     pub palette: palette::Palette,
     albums: albums::Albums,
     artists: artists::Artists,

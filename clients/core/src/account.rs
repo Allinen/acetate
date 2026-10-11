@@ -25,6 +25,9 @@ pub struct ServerVersion {
     /// Its release, for people ("0.1.0").
     pub version: String,
     pub api: u32,
+    /// The format of the catalog it sends (`CATALOG_FORMAT`).
+    #[serde(default)]
+    pub catalog_format: Option<u32>,
 }
 
 /// Whether this app and the server can work together.
@@ -82,12 +85,23 @@ impl ServerVersion {
         format!("{RELEASES}/download/v{0}/Acetate-v{0}-{os}-x86_64.{ext}", self.version)
     }
 
+    /// Whether the app and the server speak the same API and catalog format. Anything else
+    /// can't work: the server turns such an app away, and the app doesn't go on.
     pub fn compat(&self) -> Compat {
-        match self.api.cmp(&api_version()) {
+        let by = |theirs: u32, ours: u32| match theirs.cmp(&ours) {
             std::cmp::Ordering::Equal => Compat::Same,
             std::cmp::Ordering::Greater => Compat::AppBehind,
             std::cmp::Ordering::Less => Compat::ServerBehind,
+        };
+        match by(self.api, api_version()) {
+            Compat::Same => self.catalog_format.map_or(Compat::Same, |f| by(f, crate::catalog::model::FORMAT)),
+            other => other,
         }
+    }
+
+    /// The app can't be used with this server (see `compat`).
+    pub fn blocked(&self) -> bool {
+        self.compat() != Compat::Same
     }
 
     /// Whether the app is the server's release: a release is the same version everywhere
@@ -348,7 +362,7 @@ mod tests {
     #[test]
     fn a_server_of_another_release_points_to_its_app() {
         let ours = env!("CARGO_PKG_VERSION");
-        let server = |version: &str| ServerVersion { version: version.into(), api: api_version() };
+        let server = |version: &str| ServerVersion { version: version.into(), api: api_version(), catalog_format: None };
         assert!(server(ours).warning().is_none());
         let other = server("9.9.9");
         assert!(other.warning().unwrap().contains("releases/tag/v9.9.9"));
@@ -357,7 +371,7 @@ mod tests {
 
     #[test]
     fn releases_are_ordered_by_their_numbers() {
-        let server = |version: &str| ServerVersion { version: version.into(), api: api_version() };
+        let server = |version: &str| ServerVersion { version: version.into(), api: api_version(), catalog_format: None };
         assert_eq!(server(env!("CARGO_PKG_VERSION")).release(), Release::Same);
         assert_eq!(server("999.0.0").release(), Release::ServerNewer);
         assert_eq!(server("0.0.1").release(), Release::ServerOlder);
@@ -372,12 +386,24 @@ mod tests {
 
     #[test]
     fn a_server_of_another_api_version_is_warned_about() {
-        let server = |api| ServerVersion { version: env!("CARGO_PKG_VERSION").into(), api };
+        let server = |api| ServerVersion { version: env!("CARGO_PKG_VERSION").into(), api, catalog_format: None };
         assert_eq!(server(api_version()).compat(), Compat::Same);
         assert!(server(api_version()).warning().is_none());
         assert_eq!(server(api_version() + 1).compat(), Compat::AppBehind);
         assert!(server(api_version() + 1).warning().unwrap().contains("update the app"));
         assert_eq!(server(api_version() - 1).compat(), Compat::ServerBehind);
         assert!(server(api_version() - 1).warning().unwrap().contains("update the server"));
+        assert!(server(api_version() + 1).blocked() && server(api_version() - 1).blocked() && !server(api_version()).blocked());
+    }
+
+    #[test]
+    fn another_catalog_format_is_a_different_version_too() {
+        let format = crate::catalog::model::FORMAT;
+        let server = |catalog_format| ServerVersion { version: env!("CARGO_PKG_VERSION").into(), api: api_version(), catalog_format };
+        assert_eq!(server(Some(format)).compat(), Compat::Same);
+        assert_eq!(server(None).compat(), Compat::Same, "a server that doesn't say");
+        assert_eq!(server(Some(format + 1)).compat(), Compat::AppBehind);
+        assert_eq!(server(Some(format - 1)).compat(), Compat::ServerBehind);
+        assert!(server(Some(format + 1)).blocked());
     }
 }

@@ -77,7 +77,39 @@ pub fn api_version() -> u32 {
 /// `GET /api/version`, open to everyone (a client asks before logging in): the server's
 /// release and its API version.
 async fn version() -> Json<serde_json::Value> {
-    Json(json!({ "version": env!("CARGO_PKG_VERSION"), "api": api_version() }))
+    Json(json!({ "version": env!("CARGO_PKG_VERSION"), "api": api_version(), "catalog_format": library::FORMAT }))
+}
+
+/// Apps send the API version and catalog format they were built with (`X-Acetate-Api`,
+/// `X-Acetate-Catalog`). One that differs from this server's gets 426 and is told which
+/// release to get: the two have to be the same, there's no code to bridge them. Requests
+/// without the headers (the web UI, a share link, curl, the Python library) and
+/// `/api/version` itself (how an app finds out why) pass.
+async fn same_version(request: axum::extract::Request, next: middleware::Next) -> Response {
+    if let Some(refusal) = version_refusal(&request) {
+        return refusal;
+    }
+    next.run(request).await
+}
+
+fn version_refusal(request: &axum::extract::Request) -> Option<Response> {
+    let number = |name: &str| request.headers().get(name).and_then(|v| v.to_str().ok()).and_then(|v| v.trim().parse::<u32>().ok());
+    if request.uri().path() == "/api/version" {
+        return None;
+    }
+    let (api, catalog) = (number("x-acetate-api"), number("x-acetate-catalog"));
+    if api.is_some_and(|a| a != api_version()) || catalog.is_some_and(|c| c != library::FORMAT) {
+        let message = format!(
+            "this app (API {}, catalog {}) and this server (Acetate {}, API {}, catalog {}) are not the same version: update whichever is older",
+            api.map_or("?".into(), |a| a.to_string()),
+            catalog.map_or("?".into(), |c| c.to_string()),
+            env!("CARGO_PKG_VERSION"),
+            api_version(),
+            library::FORMAT
+        );
+        return Some(AppError::Incompatible(message).into_response());
+    }
+    None
 }
 
 /// Shared state handed to every handler. Cloning it is cheap: `PgPool` is a
@@ -396,6 +428,7 @@ pub fn router(state: AppState) -> Router {
         .merge(api)
         // Everything that isn't an API route: the web UI's static files.
         .fallback_service(ServeDir::new(&state.web_dir))
+        .layer(middleware::from_fn(same_version))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
 }
@@ -422,6 +455,8 @@ pub enum AppError {
     Gone(String),
     /// A tool this needs isn't on the server (e.g. yt-dlp): 503.
     Unavailable(String),
+    /// The app and the server are of different API versions or catalog formats: 426.
+    Incompatible(String),
     /// A track that was made into this extra: 404, with the extra's id (`extra_id`) to go
     /// to instead.
     BecameExtra(uuid::Uuid),
@@ -470,6 +505,7 @@ impl IntoResponse for AppError {
             AppError::Conflict(msg) => (StatusCode::CONFLICT, "conflict", msg),
             AppError::Gone(msg) => (StatusCode::GONE, "purged", msg),
             AppError::Unavailable(msg) => (StatusCode::SERVICE_UNAVAILABLE, "unavailable", msg),
+            AppError::Incompatible(msg) => (StatusCode::UPGRADE_REQUIRED, "incompatible", msg),
             AppError::Internal(err) => internal_parts(&err),
         };
         let message = human_message(code, &detail);
@@ -527,6 +563,7 @@ fn internal_parts(err: &anyhow::Error) -> (StatusCode, &'static str, String) {
 fn human_message(code: &str, detail: &str) -> String {
     let detail = sentence(detail);
     match code {
+        "incompatible" => format!("The app and the server aren't the same version: {detail}"),
         "not_found" => "This isn't there (anymore), or you can't see it.".into(),
         "unauthorized" => "You're not logged in, or your session ended. Log in again.".into(),
         "wrong_login" => "Wrong username or password.".into(),
@@ -628,5 +665,49 @@ mod error_tests {
 
         let (_, b) = body(AppError::BadRequest("a rating is 0 to 10".into())).await;
         assert_eq!(b["message"], "A rating is 0 to 10.");
+    }
+}
+
+#[cfg(test)]
+mod version_tests {
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+    use tower::ServiceExt;
+
+    use super::{api_version, library};
+    use crate::api::uploads::tests::{app, user};
+
+    #[sqlx::test]
+    async fn an_app_of_another_version_is_told_to_update(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
+        let (owner, app, _dir) = app(connect).await?;
+        let token = user(&owner, "alice").await?;
+        let ask = |path: &str, headers: &[(&str, String)]| {
+            let mut request = Request::builder().uri(path.to_string()).header("authorization", format!("Bearer {token}"));
+            for (name, value) in headers {
+                request = request.header(*name, value.as_str());
+            }
+            let app = app.clone();
+            let request = request.body(Body::empty()).unwrap();
+            async move {
+                let response = app.oneshot(request).await.unwrap();
+                let status = response.status();
+                let body = axum::body::to_bytes(response.into_body(), 100_000).await.unwrap();
+                (status, serde_json::from_slice::<serde_json::Value>(&body).unwrap_or_default())
+            }
+        };
+        let (api, catalog) = (api_version().to_string(), library::FORMAT.to_string());
+        // The same, or not saying: through.
+        assert_eq!(ask("/api/vocab", &[("x-acetate-api", api.clone()), ("x-acetate-catalog", catalog.clone())]).await.0, StatusCode::OK);
+        assert_eq!(ask("/api/vocab", &[]).await.0, StatusCode::OK);
+        // Another API version, or catalog format: 426, saying so.
+        let (status, body) = ask("/api/vocab", &[("x-acetate-api", (api_version() + 1).to_string())]).await;
+        assert_eq!((status, body["code"].as_str()), (StatusCode::UPGRADE_REQUIRED, Some("incompatible")), "{body}");
+        assert!(body["message"].as_str().unwrap().contains("not the same version"), "{body}");
+        assert_eq!(ask("/api/catalog", &[("x-acetate-api", api.clone()), ("x-acetate-catalog", (library::FORMAT + 1).to_string())]).await.0, StatusCode::UPGRADE_REQUIRED);
+        // How an app finds out, always.
+        let (status, body) = ask("/api/version", &[("x-acetate-api", "999".into())]).await;
+        assert_eq!((status, body["api"].as_u64(), body["catalog_format"].as_u64()), (StatusCode::OK, Some(api_version() as u64), Some(library::FORMAT as u64)));
+        Ok(())
     }
 }

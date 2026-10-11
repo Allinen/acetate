@@ -150,6 +150,7 @@ pub struct Api {
     session: Arc<RwLock<Option<Session>>>,
     /// A request was refused as not logged in: the session ended.
     expired: Arc<AtomicBool>,
+    incompatible: Arc<AtomicBool>,
     connection: Arc<tokio::sync::watch::Sender<Connection>>,
     /// Wakes the probe (`try_now`).
     probe_now: Arc<tokio::sync::Notify>,
@@ -175,6 +176,7 @@ impl Api {
             session_file: Arc::new(session_file),
             session: Arc::new(RwLock::new(session)),
             expired: Arc::default(),
+            incompatible: Arc::default(),
             connection: Arc::new(tokio::sync::watch::Sender::new(Connection::Online)),
             probe_now: Arc::default(),
             probe_first: PROBE_FIRST,
@@ -284,6 +286,18 @@ impl Api {
         self.session.read().unwrap().clone()
     }
 
+    /// The request, saying which API version and catalog format this app is built with: a
+    /// server of another gets it turned away (426), see `take_incompatible`.
+    fn versioned(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        request.header("x-acetate-api", crate::account::api_version()).header("x-acetate-catalog", crate::catalog::model::FORMAT)
+    }
+
+    /// Whether the server turned a request away since last asked, for being another version
+    /// than this app (it was updated, or the app was).
+    pub fn take_incompatible(&self) -> bool {
+        self.incompatible.swap(false, Relaxed)
+    }
+
     /// Whether the session ended since last asked (a request got a 401).
     pub fn take_expired(&self) -> bool {
         self.expired.swap(false, Relaxed)
@@ -294,6 +308,8 @@ impl Api {
         let request = self
             .client
             .post(format!("{server}/api/auth/login"))
+            .header("x-acetate-api", crate::account::api_version())
+            .header("x-acetate-catalog", crate::catalog::model::FORMAT)
             .json(&serde_json::json!({ "username": username, "password": password }));
         #[derive(Deserialize)]
         struct Login {
@@ -403,7 +419,7 @@ impl Api {
             extra_id: None,
         })?;
         let request = self.client.request(method, format!("{}{path}", session.server)).bearer_auth(&session.token);
-        Ok((request, session.server))
+        Ok((self.versioned(request), session.server))
     }
 
     /// Sends a request: its response if it succeeded, else why not, in words.
@@ -431,6 +447,9 @@ impl Api {
         let code = code.unwrap_or_else(|| status.as_str().to_string());
         if status == reqwest::StatusCode::UNAUTHORIZED && code != "wrong_login" {
             self.expired.store(true, Relaxed);
+        }
+        if status == reqwest::StatusCode::UPGRADE_REQUIRED {
+            self.incompatible.store(true, Relaxed);
         }
         let message = message.unwrap_or_else(|| format!("The server answered {status}."));
         Err(ApiError { status: Some(status.as_u16()), code, message, extra_id })
