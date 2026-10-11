@@ -58,10 +58,10 @@ pub fn font(size: f32, family: FontFamily) -> FontId {
 fn fonts(ctx: &egui::Context) {
     let mut fonts = FontDefinitions::default();
     let inter = [
-        ("inter", &include_bytes!("../../assets/fonts/Inter-Regular.ttf")[..]),
-        ("inter-medium", &include_bytes!("../../assets/fonts/Inter-Medium.ttf")[..]),
-        ("inter-semibold", &include_bytes!("../../assets/fonts/Inter-SemiBold.ttf")[..]),
-        ("inter-bold", &include_bytes!("../../assets/fonts/Inter-Bold.ttf")[..]),
+        ("inter", &include_bytes!("../../../assets/fonts/Inter-Regular.ttf")[..]),
+        ("inter-medium", &include_bytes!("../../../assets/fonts/Inter-Medium.ttf")[..]),
+        ("inter-semibold", &include_bytes!("../../../assets/fonts/Inter-SemiBold.ttf")[..]),
+        ("inter-bold", &include_bytes!("../../../assets/fonts/Inter-Bold.ttf")[..]),
     ];
     for (name, bytes) in inter {
         fonts.font_data.insert(name.into(), Arc::new(FontData::from_static(bytes)));

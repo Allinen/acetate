@@ -100,6 +100,12 @@ pub enum Change {
 }
 
 /// Kotlin code the core calls, from any thread.
+/// `1.5 GB`: a size in decimal units, the same as on the desktop.
+#[uniffi::export]
+pub fn format_bytes(n: u64) -> String {
+    acetate_core::format::bytes(n)
+}
+
 #[uniffi::export(with_foreign)]
 pub trait Listener: Send + Sync {
     fn changed(&self, what: Change);

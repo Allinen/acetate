@@ -61,6 +61,24 @@ abstract class UniffiBindgen @Inject constructor(private val exec: ExecOperation
     }
 }
 
+// ---- The fonts ----
+//
+// Inter is kept once, in clients/assets/fonts (the desktop includes it from there); the app
+// gets it as font resources (names lowercase, words joined with _).
+abstract class InterFonts @Inject constructor(private val files: FileSystemOperations) : DefaultTask() {
+    @get:InputDirectory abstract val fonts: DirectoryProperty
+    @get:OutputDirectory abstract val outDir: DirectoryProperty
+
+    @TaskAction
+    fun copy() {
+        files.sync {
+            from(fonts) { include("Inter-*.ttf") }
+            into(outDir.dir("font"))
+            rename { it.removeSuffix(".ttf").replace("Inter-", "inter_").lowercase() + ".ttf" }
+        }
+    }
+}
+
 android {
     namespace = "io.github.allinen.acetate"
     compileSdk { version = release(37) }
@@ -149,8 +167,14 @@ val bindgen = tasks.register<UniffiBindgen>("uniffiBindgen") {
     outDir.set(layout.buildDirectory.dir("generated/uniffi"))
 }
 
+val interFonts = tasks.register<InterFonts>("interFonts") {
+    fonts.set(clients.dir("assets/fonts"))
+    outDir.set(layout.buildDirectory.dir("generated/fonts"))
+}
+
 androidComponents {
     onVariants { variant ->
+        variant.sources.res!!.addGeneratedSourceDirectory(interFonts, InterFonts::outDir)
         variant.sources.jniLibs!!.addGeneratedSourceDirectory(cargoNdk, CargoNdk::outDir)
         variant.sources.kotlin!!.addGeneratedSourceDirectory(bindgen, UniffiBindgen::outDir)
     }

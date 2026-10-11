@@ -111,7 +111,7 @@ impl AlbumMergeView {
                                 facts.push(date.to_string());
                             }
                             let n = catalog.album_tracks(album.id()).len();
-                            facts.push(if n == 1 { "1 track".into() } else { format!("{n} tracks") });
+                            facts.push(crate::ui::count(n, "track"));
                             ui.label(RichText::new(facts.join(" · ")).color(P.faint));
                         });
                     });

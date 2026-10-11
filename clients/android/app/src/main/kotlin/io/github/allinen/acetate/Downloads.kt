@@ -25,6 +25,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import uniffi.acetate_ffi.PinKind
+import uniffi.acetate_ffi.formatBytes
 
 /**
  * Keeps something on the device: "Download", then "Stop" while files come (what came stays;
@@ -85,7 +86,7 @@ fun DownloadSettings(model: Model) {
         Switch(q.downloadOnMobile, { q.chooseDownloadOnMobile(it) })
     }
     Text(
-        "${d.files} files · ${megabytes(d.bytes.toLong())}" + if (d.queued > 0uL) " · ${d.queued} coming" else "",
+        "${d.files} files · ${formatBytes(d.bytes)}" + if (d.queued > 0uL) " · ${d.queued} coming" else "",
         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
     if (d.failed > 0uL) Text("${d.failed} couldn't be fetched", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
@@ -105,9 +106,6 @@ fun DownloadSettings(model: Model) {
     }
 }
 
-private fun megabytes(bytes: Long): String =
-    if (bytes >= 1_000_000_000) "%.1f GB".format(bytes / 1e9) else "%d MB".format(bytes / 1_000_000)
-
 /** What's kept on the device: each pin with how much of it is here and its size, to open or
  *  take away; and the downloads' state (stop, go on). */
 @Composable
@@ -120,13 +118,13 @@ fun DownloadsScreen(model: Model) {
             item {
                 Column(Modifier.padding(16.dp)) {
                     Text(
-                        "${d.files} files · ${megabytes(d.bytes.toLong())}" + if (d.queued > 0uL) " · ${d.queued} coming" else "",
+                        "${d.files} files · ${formatBytes(d.bytes)}" + if (d.queued > 0uL) " · ${d.queued} coming" else "",
                         style = MaterialTheme.typography.titleMedium,
                     )
                     if (d.queued > 0uL) Text(
                         when {
                             d.paused -> "Stopped"
-                            model.downloadSpeed > 0 -> "${speedText(model.downloadSpeed)} · ${megabytes(d.currentBytes.toLong())} of the file coming now"
+                            model.downloadSpeed > 0 -> "${speedText(model.downloadSpeed)} · ${formatBytes(d.currentBytes)} of the file coming now"
                             else -> "Waiting for the connection"
                         },
                         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -165,7 +163,7 @@ fun DownloadsScreen(model: Model) {
                             PinKind.LIKED -> "Liked songs"
                         }
                         Text(
-                            if (p.known) "$kind · ${p.have} of ${p.total} · ${megabytes(p.bytes.toLong())}" else "$kind · waiting for the playlist",
+                            if (p.known) "$kind · ${p.have} of ${p.total} · ${formatBytes(p.bytes)}" else "$kind · waiting for the playlist",
                             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }

@@ -59,16 +59,8 @@ pub struct SettingsPage {
     general: GeneralTab,
 }
 
-/// `12.3 MB`, `1.2 GB`, `3.4 TB`.
 pub fn size(bytes: i64) -> String {
-    let bytes = bytes as f64;
-    if bytes >= 1e12 {
-        format!("{:.1} TB", bytes / 1e12)
-    } else if bytes >= 1e9 {
-        format!("{:.1} GB", bytes / 1e9)
-    } else {
-        format!("{:.1} MB", bytes / 1e6)
-    }
+    acetate_core::format::bytes(bytes.max(0) as u64)
 }
 
 impl SettingsPage {

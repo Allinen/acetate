@@ -413,7 +413,7 @@ impl UnlinkedExtras {
             self.linked.extend(gone.iter().copied());
             self.marking.retain(|id| !gone.contains(id));
             extras.retain(|(id, _)| !gone.contains(id));
-            let tracks = if made.len() == 1 { "1 track".to_string() } else { format!("{} tracks", made.len()) };
+            let tracks = crate::ui::count(made.len(), "track");
             self.said = Some(Ok(format!("Made {tracks}.")));
             if extras.is_empty() {
                 self.drafts = None;

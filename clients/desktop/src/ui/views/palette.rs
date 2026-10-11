@@ -491,7 +491,7 @@ impl Palette {
             (Entry::Playlist(id), _) => {
                 let Some(p) = playlists.iter().find(|p| p.0 == id) else { return };
                 playlist_icon(&painter, cover_rect.center());
-                let n = if p.3 == 1 { "1 track".to_string() } else { format!("{} tracks", p.3) };
+                let n = crate::ui::count(p.3 as usize, "track");
                 (p.1.clone(), Some(n), "Playlist".into())
             }
             (Entry::Liked, _) => {

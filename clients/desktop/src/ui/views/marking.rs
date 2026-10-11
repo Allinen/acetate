@@ -498,8 +498,8 @@ impl Marking {
                             .await
                             .map(|v| {
                                 let (tracks, albums) = (v["tracks"].as_u64().unwrap_or(0), v["albums"].as_u64().unwrap_or(0));
-                                let singles = if albums > 0 { format!(" and {albums} single(s) they're alone on") } else { String::new() };
-                                format!("Put {tracks} track(s){singles} in “{name}” (the others were in it already).")
+                                let singles = if albums > 0 { format!(" and {} they're alone on", acetate_core::format::count(albums as usize, "single")) } else { String::new() };
+                                format!("Put {}{singles} in “{name}” (the others were in it already).", acetate_core::format::count(tracks as usize, "track"))
                             })
                             .map_err(|e| format!("Couldn't put them in “{name}”: {}", e.message));
                         *answer.lock().unwrap() = Some(result);

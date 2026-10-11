@@ -186,7 +186,7 @@ impl TrackOrder {
         crate::ui::views::album::panel(ui, "album-track-order", |ui| {
             ui.horizontal(|ui| {
                 let count = draft.wanted.len();
-                let tracks = if count == 1 { "1 track".to_string() } else { format!("{count} tracks") };
+                let tracks = crate::ui::count(count, "track");
                 ui.label(RichText::new(format!("New order: {tracks} renumbered")).color(P.text));
                 ui.add_space(8.0);
                 save = ui.add_enabled(unsaved, egui::Button::new("Save order  (Ctrl+Enter)")).clicked();

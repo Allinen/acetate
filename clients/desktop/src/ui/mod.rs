@@ -1186,7 +1186,7 @@ impl App {
                         let items: Vec<QueueItem> = tracks.iter().map(|&i| queue_item(&catalog, i)).collect();
                         controller.enqueue(items, next).await
                     });
-                    let what = if count == 1 { "1 track".to_string() } else { format!("{count} tracks") };
+                    let what = acetate_core::format::count(count, "track");
                     let text = if next { format!("Queued {what} first") } else { format!("Queued {what}") };
                     self.shell.playlists.notice = Some((text, Instant::now()));
                 }
@@ -1671,18 +1671,7 @@ pub fn queue_item(catalog: &Catalog, i: u32) -> QueueItem {
     crate::playback::queue_item(catalog, i)
 }
 
-/// 185000 → "185,000".
-pub fn thousands(n: usize) -> String {
-    let digits = n.to_string();
-    let mut out = String::new();
-    for (i, c) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i).is_multiple_of(3) {
-            out.push(',');
-        }
-        out.push(c);
-    }
-    out
-}
+pub use acetate_core::format::{count, thousands};
 
 /// What plays right now, if anything (for pages marking the playing track).
 pub fn playing_track(player: &PlayerView) -> Option<Uuid> {

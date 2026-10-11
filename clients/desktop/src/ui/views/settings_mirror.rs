@@ -49,9 +49,7 @@ fn files(count: Count) -> String {
     format!("{} files · {}", thousands(count.blobs as usize), crate::mirror::cli::bytes(count.bytes))
 }
 
-fn bytes(n: u64) -> String {
-    crate::mirror::cli::bytes(n)
-}
+use crate::mirror::cli::bytes;
 
 impl MirrorSection {
     pub fn opened(&mut self, shell: &Shell) {

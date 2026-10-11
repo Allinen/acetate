@@ -503,14 +503,7 @@ fn kind_name(kind: &str) -> &str {
     }
 }
 
-/// `12.3 MB`, `1.2 GB`.
-fn size(bytes: i64) -> String {
-    if bytes >= 1_000_000_000 {
-        format!("{:.1} GB", bytes as f64 / 1e9)
-    } else {
-        format!("{:.1} MB", bytes as f64 / 1e6)
-    }
-}
+use super::settings::size;
 
 /// `2026-09-29` from a timestamp.
 fn day(at: &str) -> &str {

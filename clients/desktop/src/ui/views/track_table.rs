@@ -838,7 +838,7 @@ pub fn count_and_length(catalog: &Catalog, tracks: impl Iterator<Item = u32>) ->
         n += 1;
         total += catalog.track_at(t).duration_ms().unwrap_or(0);
     }
-    let count = if n == 1 { "1 track".to_string() } else { format!("{} tracks", thousands(n)) };
+    let count = crate::ui::count(n, "track");
     format!("{count} · {}", widgets::clock(Duration::from_millis(total.max(0) as u64)))
 }
 

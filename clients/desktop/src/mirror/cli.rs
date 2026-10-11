@@ -303,13 +303,4 @@ fn show_progress(mirror: std::sync::Arc<Mirror>) -> tokio::task::JoinHandle<()> 
     })
 }
 
-pub fn bytes(n: u64) -> String {
-    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
-    let mut value = n as f64;
-    let mut unit = 0;
-    while value >= 1000.0 && unit < UNITS.len() - 1 {
-        value /= 1000.0;
-        unit += 1;
-    }
-    if unit == 0 { format!("{n} B") } else { format!("{value:.1} {}", UNITS[unit]) }
-}
+pub use acetate_core::format::bytes;
