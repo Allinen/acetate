@@ -18,6 +18,7 @@ pub mod keymap;
 pub mod messages;
 pub mod modal;
 pub mod share;
+pub mod task;
 pub mod theme;
 pub mod widgets;
 mod views;

@@ -21,6 +21,7 @@ use crate::catalog::search::Part;
 use crate::details::Extra;
 use crate::ui::edit::extras::{access_text, file_line, files_text, merge_request, upload_all, MergeReport, KINDS};
 use super::extra_drafts::ExtraDrafts;
+use crate::ui::task::Task;
 use crate::ui::edit::inline_search::{Choice, InlineSearch};
 use crate::ui::theme::{bold, font, medium, semibold, PALETTE as P};
 use crate::ui::{widgets, Action, Page, Shell};
@@ -53,7 +54,7 @@ struct Merging {
 pub struct ExtraPage {
     id: Option<Uuid>,
     loaded: Option<Result<Extra, String>>,
-    arrived: Slot<Extra>,
+    arrived: Task<Result<Extra, String>>,
     /// The form: name and kind (filled from what's loaded).
     name: String,
     kind: String,
@@ -62,7 +63,7 @@ pub struct ExtraPage {
     filled: bool,
     /// "Make it a track again" was clicked: asking to be sure.
     asked_back: bool,
-    back: Slot<Uuid>,
+    back: Task<Result<Uuid, String>>,
     /// "Make it a track" (from its YouTube video) is open: the video's link, blank for the
     /// id at the end of its name.
     /// Once asked for, the editor over its draft.
@@ -70,22 +71,21 @@ pub struct ExtraPage {
     /// Who sees it, being changed (`manage_access`): restricted, and the groups.
     access: Option<(bool, Vec<Uuid>)>,
     groups: Option<Result<Vec<Group>, String>>,
-    groups_arrived: Slot<Vec<Group>>,
+    groups_arrived: Task<Result<Vec<Group>, String>>,
     /// Linking it to something: which kind is being searched.
     linking: Option<(Part, InlineSearch)>,
     history: Option<Result<Vec<LogEntry>, String>>,
-    history_arrived: Slot<Vec<LogEntry>>,
+    history_arrived: Task<Result<Vec<LogEntry>, String>>,
     chosen: Arc<Mutex<Vec<PathBuf>>>,
     progress: Arc<AtomicUsize>,
     sending: bool,
-    answer: Slot<String>,
+    answer: Task<Result<String, String>>,
     saved: Slot<String>,
     result: Option<Result<String, String>>,
     /// The row the keys are on: its links first, then its files.
     selected: usize,
     merging: Option<Merging>,
-    previewing: bool,
-    preview_arrived: Slot<MergeReport>,
+    preview_arrived: Task<Result<MergeReport, String>>,
 }
 
 /// The page of what an extra belongs to.
@@ -100,12 +100,7 @@ fn link_page(l: &crate::details::ExtraLink) -> Page {
 
 impl ExtraPage {
     fn ask(&mut self, shell: &Shell, id: Uuid) {
-        let (api, ctx, into) = (shell.api.clone(), shell.ctx.clone(), self.arrived.clone());
-        shell.runtime.spawn(async move {
-            let result = api.send_json::<Extra>(reqwest::Method::GET, &format!("/api/extras/{id}"), None).await.map_err(|e| e.message);
-            *into.lock().unwrap() = Some(result);
-            ctx.request_repaint();
-        });
+        self.arrived.start_with(shell, |api| async move { api.send_json::<Extra>(reqwest::Method::GET, &format!("/api/extras/{id}"), None).await.map_err(|e| e.message) });
     }
 
     /// "Make it a track…": the video's link (or the `[id]` in its name), then the track
@@ -157,7 +152,7 @@ impl ExtraPage {
             *self = ExtraPage { id: Some(id), ..Default::default() };
             self.ask(shell, id);
         }
-        let arrived_taken = self.arrived.lock().unwrap().take();
+        let arrived_taken = self.arrived.poll();
         if let Some(result) = arrived_taken {
             if let Ok(e) = &result
                 && !self.filled
@@ -170,16 +165,16 @@ impl ExtraPage {
             }
             self.loaded = Some(result);
         }
-        let groups_arrived_taken = self.groups_arrived.lock().unwrap().take();
+        let groups_arrived_taken = self.groups_arrived.poll();
         if let Some(groups) = groups_arrived_taken {
             self.groups = Some(groups);
         }
-        let history_arrived_taken = self.history_arrived.lock().unwrap().take();
+        let history_arrived_taken = self.history_arrived.poll();
         if let Some(history) = history_arrived_taken {
             self.history = Some(history);
         }
         // Made a track again: its page.
-        let back_taken = self.back.lock().unwrap().take();
+        let back_taken = self.back.poll();
         match back_taken {
             Some(Ok(track)) => {
                 shell.act(Action::RefreshLibrary);
@@ -196,7 +191,7 @@ impl ExtraPage {
         if let Some(saved) = saved_taken {
             self.result = Some(saved);
         }
-        let answer_taken = self.answer.lock().unwrap().take();
+        let answer_taken = self.answer.poll();
         if let Some(result) = answer_taken {
             self.sending = false;
             self.result = Some(result);
@@ -304,15 +299,11 @@ impl ExtraPage {
                         ui.label(RichText::new("The track comes back as it was (its albums too), and this extra is taken off (kept).").color(P.accent));
                         if ui.add_enabled(!self.sending, egui::Button::new("Make it a track again")).clicked() {
                             self.sending = true;
-                            let (api, ctx, into) = (shell.api.clone(), shell.ctx.clone(), self.back.clone());
-                            shell.runtime.spawn(async move {
-                                let result = api
-                                    .send_json::<serde_json::Value>(reqwest::Method::POST, &format!("/api/extras/{id}/back-to-track"), Some(serde_json::json!({})))
+                            self.back.send_with(shell, |api| async move {
+                                api.send_json::<serde_json::Value>(reqwest::Method::POST, &format!("/api/extras/{id}/back-to-track"), Some(serde_json::json!({})))
                                     .await
                                     .map_err(|e| e.message)
-                                    .and_then(|v| v["track_id"].as_str().and_then(|t| t.parse::<Uuid>().ok()).ok_or_else(|| "no track in the answer".to_string()));
-                                *into.lock().unwrap() = Some(result);
-                                ctx.request_repaint();
+                                    .and_then(|v| v["track_id"].as_str().and_then(|t| t.parse::<Uuid>().ok()).ok_or_else(|| "no track in the answer".to_string()))
                             });
                         }
                         if ui.button("Cancel").clicked() {
@@ -514,9 +505,8 @@ impl ExtraPage {
     /// chosen by name, previewed (what moves, what stays), then merged in one go.
     fn merge_editor(&mut self, ui: &mut egui::Ui, shell: &mut Shell, extra: &Extra) {
         let id = extra.id;
-        let preview_taken = self.preview_arrived.lock().unwrap().take();
+        let preview_taken = self.preview_arrived.poll();
         if let Some(result) = preview_taken {
-            self.previewing = false;
             match result {
                 Ok(report) => {
                     if let Some(m) = self.merging.as_mut() {
@@ -572,21 +562,15 @@ impl ExtraPage {
         let ids: Vec<Uuid> = m.picked.iter().map(|(p, _)| *p).collect();
         let (mut preview, mut merge, mut cancel) = (false, false, false);
         ui.horizontal(|ui| {
-            preview = ui.add_enabled(!nothing && !self.previewing && !self.sending, egui::Button::new("Preview")).clicked();
+            preview = ui.add_enabled(!nothing && !self.preview_arrived.is_running() && !self.sending, egui::Button::new("Preview")).clicked();
             merge = ui.add_enabled(ready && !self.sending, egui::Button::new("Merge")).on_hover_text("Preview first, so you see what moves").clicked();
             cancel = ui.button("Cancel").clicked();
         });
         if cancel {
             self.merging = None;
         } else if preview {
-            self.previewing = true;
             self.result = None;
-            let (api, ctx, into) = (shell.api.clone(), shell.ctx.clone(), self.preview_arrived.clone());
-            shell.runtime.spawn(async move {
-                let result = merge_request(&api, id, &ids, true).await;
-                *into.lock().unwrap() = Some(result);
-                ctx.request_repaint();
-            });
+            self.preview_arrived.start_with(shell, |api| async move { merge_request(&api, id, &ids, true).await });
         } else if merge {
             self.merging = None;
             let body = serde_json::json!({ "sources": ids });
@@ -603,12 +587,7 @@ impl ExtraPage {
                 if ui.small_button("Change…").clicked() {
                     self.access = Some((extra.is_restricted, extra.groups.iter().map(|g| g.id).collect()));
                     if self.groups.is_none() {
-                        let (api, ctx, into) = (shell.api.clone(), shell.ctx.clone(), self.groups_arrived.clone());
-                        shell.runtime.spawn(async move {
-                            let result = api.send_json::<Vec<Group>>(reqwest::Method::GET, "/api/groups", None).await.map_err(|e| e.message);
-                            *into.lock().unwrap() = Some(result);
-                            ctx.request_repaint();
-                        });
+                        self.groups_arrived.start_with(shell, |api| async move { api.send_json::<Vec<Group>>(reqwest::Method::GET, "/api/groups", None).await.map_err(|e| e.message) });
                     }
                 }
             });
@@ -667,24 +646,15 @@ impl ExtraPage {
         });
         if open.body_returned.is_some() && self.history.is_none() {
             self.history = Some(Ok(Vec::new()));
-            let (api, ctx, into) = (shell.api.clone(), shell.ctx.clone(), self.history_arrived.clone());
-            shell.runtime.spawn(async move {
-                let result = api.send_json::<Vec<LogEntry>>(reqwest::Method::GET, &format!("/api/extras/{id}/history"), None).await.map_err(|e| e.message);
-                *into.lock().unwrap() = Some(result);
-                ctx.request_repaint();
-            });
+            self.history_arrived.start_with(shell, |api| async move { api.send_json::<Vec<LogEntry>>(reqwest::Method::GET, &format!("/api/extras/{id}/history"), None).await.map_err(|e| e.message) });
         }
     }
 
     fn upload(&mut self, shell: &Shell, id: Uuid, files: Vec<PathBuf>) {
         self.sending = true;
         self.result = None;
-        let (api, ctx, answer, progress) = (shell.api.clone(), shell.ctx.clone(), self.answer.clone(), self.progress.clone());
-        shell.runtime.spawn(async move {
-            let result = upload_all(&api, &id.to_string(), &files, &progress, &ctx, |added| format!("{} added.", files_text(added))).await;
-            *answer.lock().unwrap() = Some(result);
-            ctx.request_repaint();
-        });
+        let (ctx, progress) = (shell.ctx.clone(), self.progress.clone());
+        self.answer.send_with(shell, |api| async move { upload_all(&api, &id.to_string(), &files, &progress, &ctx, |added| format!("{} added.", files_text(added))).await });
     }
 
     fn send(&mut self, shell: &Shell, path: String, body: serde_json::Value, text: String) {
@@ -694,11 +664,6 @@ impl ExtraPage {
     fn send_with(&mut self, shell: &Shell, method: reqwest::Method, path: String, body: serde_json::Value, text: String) {
         self.sending = true;
         self.result = None;
-        let (api, ctx, answer) = (shell.api.clone(), shell.ctx.clone(), self.answer.clone());
-        shell.runtime.spawn(async move {
-            let result = api.send_json::<serde_json::Value>(method, &path, Some(body)).await.map(|_| text).map_err(|e| e.message);
-            *answer.lock().unwrap() = Some(result);
-            ctx.request_repaint();
-        });
+        self.answer.send_with(shell, |api| async move { api.send_json::<serde_json::Value>(method, &path, Some(body)).await.map(|_| text).map_err(|e| e.message) });
     }
 }

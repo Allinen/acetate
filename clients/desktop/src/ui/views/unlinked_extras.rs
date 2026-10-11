@@ -20,7 +20,7 @@
 //! marked ones go to the trash, where taking one out undoes it).
 
 use std::collections::HashSet;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use eframe::egui::{self, RichText, Sense, Vec2};
 use uuid::Uuid;
@@ -29,6 +29,7 @@ use super::marking::{paint_box, Key, Marking};
 use crate::catalog::model::Extra;
 use crate::catalog::search::Part;
 use crate::catalog::Catalog;
+use crate::ui::task::Task;
 use crate::ui::edit::extras::{files_text, merge_request, MergeReport, Owner};
 use super::extra_drafts::ExtraDrafts;
 use crate::ui::edit::inline_search::{describe, Choice, InlineSearch};
@@ -97,10 +98,10 @@ pub struct UnlinkedExtras {
     /// Linked here, hidden at once (the library catches up a moment later).
     linked: HashSet<Uuid>,
     sending: bool,
-    result: Arc<Mutex<Option<Result<String, String>>>>,
+    result: Task<Result<String, String>>,
     said: Option<Result<String, String>>,
     pending: Option<Pending>,
-    preview: Arc<Mutex<Option<Result<MergeReport, String>>>>,
+    preview: Task<Result<MergeReport, String>>,
     /// Making tracks: these extras (and their names), the editor over their drafts.
     drafts: Option<(Vec<(Uuid, String)>, ExtraDrafts)>,
 }
@@ -117,10 +118,10 @@ impl Default for UnlinkedExtras {
             prefilled: None,
             linked: HashSet::new(),
             sending: false,
-            result: Arc::default(),
+            result: Task::default(),
             said: None,
             pending: None,
-            preview: Arc::default(),
+            preview: Task::default(),
             drafts: None,
         }
     }
@@ -136,12 +137,12 @@ fn search_text(name: &str) -> String {
 impl UnlinkedExtras {
     /// `filter`: words in the name or kind.
     pub fn show(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: &Arc<Catalog>, filter: &str) {
-        if let Some(result) = self.result.lock().unwrap().take() {
+        if let Some(result) = self.result.poll() {
             self.sending = false;
             self.said = Some(result);
             shell.act(Action::RefreshLibrary);
         }
-        if let Some(result) = self.preview.lock().unwrap().take() {
+        if let Some(result) = self.preview.poll() {
             match result {
                 Ok(report) => {
                     if let Some(p) = self.pending.as_mut() {
@@ -316,11 +317,8 @@ impl UnlinkedExtras {
                     if let Some(e) = catalog.extras.get(i as usize).filter(|_| !targets.is_empty()) {
                         self.said = None;
                         self.pending = Some(Pending { into: (e.id, e.name.clone()), sources: targets.clone(), report: None });
-                        let (api, ctx, into, sources, id) = (shell.api.clone(), shell.ctx.clone(), self.preview.clone(), targets.clone(), e.id);
-                        shell.runtime.spawn(async move {
-                            *into.lock().unwrap() = Some(merge_request(&api, id, &sources, true).await);
-                            ctx.request_repaint();
-                        });
+                        let (sources, id) = (targets.clone(), e.id);
+                        self.preview.start_with(shell, |api| async move { merge_request(&api, id, &sources, true).await });
                     }
                 } else if let (Some((Choice::Hit(i), _)), false) = (hit, sending) {
                     let link = match part {
@@ -427,15 +425,9 @@ impl UnlinkedExtras {
         self.prefilled = None;
         self.linked.extend(pending.sources.iter().copied());
         self.marking.clear();
-        let (api, ctx, result) = (shell.api.clone(), shell.ctx.clone(), self.result.clone());
-        shell.runtime.spawn(async move {
+        self.result.send_with(shell, |api| async move {
             let (into, name) = pending.into;
-            let said = merge_request(&api, into, &pending.sources, false).await.map(|r| {
-                let n = r.merged.len();
-                format!("Merged {} into “{name}”.", if n == 1 { "1 extra".to_string() } else { format!("{n} extras") })
-            });
-            *result.lock().unwrap() = Some(said);
-            ctx.request_repaint();
+            merge_request(&api, into, &pending.sources, false).await.map(|r| format!("Merged {} into “{name}”.", crate::ui::count(r.merged.len(), "extra")))
         });
     }
 
@@ -448,8 +440,7 @@ impl UnlinkedExtras {
         self.prefilled = None;
         self.linked.extend(extras.iter().copied());
         self.marking.clear();
-        let (api, ctx, result) = (shell.api.clone(), shell.ctx.clone(), self.result.clone());
-        shell.runtime.spawn(async move {
+        self.result.send_with(shell, |api| async move {
             let (mut done, mut failed) = (0, Vec::new());
             for id in &extras {
                 let body = serde_json::json!({ "link": to.link() });
@@ -458,13 +449,11 @@ impl UnlinkedExtras {
                     Err(e) => failed.push(e.message),
                 }
             }
-            let said = if failed.is_empty() {
-                Ok(format!("Linked {} to {label}.", if done == 1 { "1 extra".to_string() } else { format!("{done} extras") }))
+            if failed.is_empty() {
+                Ok(format!("Linked {} to {label}.", crate::ui::count(done, "extra")))
             } else {
                 Err(format!("Linked {done} to {label}, {} failed: {}", failed.len(), failed[0]))
-            };
-            *result.lock().unwrap() = Some(said);
-            ctx.request_repaint();
+            }
         });
     }
 
