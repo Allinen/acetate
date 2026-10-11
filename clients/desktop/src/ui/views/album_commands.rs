@@ -1382,7 +1382,7 @@ mod tests {
                                format!("00000000-0000-7000-8000-0000000000f{n}"), null, null, null, null, "released", [], "", false, "flac"])
         };
         let body = serde_json::json!({
-            "format": 10,
+            "format": crate::catalog::model::FORMAT,
             "tracks": {"columns": ["id", "title", "artist_display", "credits", "albums", "duration_ms", "file_id", "cover_id", "cover_key",
                                     "release_date", "year", "status", "genres", "created_at", "is_restricted", "codec", "groupings", "platforms", "original_filename", "bitrate", "sample_rate", "sha256"],
                        "rows": [track(1, "Intro"), track(2, "Glass Harbor"), track(3, "Glass Harbor (Reprise)")]},

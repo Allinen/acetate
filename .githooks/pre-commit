@@ -1,3 +1,10 @@
 #!/usr/bin/env bash
 # Quick: the version numbers agree, and the generated docs are what they're generated from.
-exec "$(git rev-parse --show-toplevel)/scripts/versions.py"
+# And no test fixture spells out the catalog's format number (it goes stale with every bump):
+# they use `catalog::model::FORMAT`.
+cd "$(git rev-parse --show-toplevel)"
+if grep -rnE '"format": *[0-9]+' clients --include=*.rs; then
+    echo "pre-commit: a fixture has a catalog format number written in: use catalog::model::FORMAT" >&2
+    exit 1
+fi
+exec scripts/versions.py
