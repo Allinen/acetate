@@ -867,7 +867,7 @@ pub struct App {
     links: Option<mpsc::Receiver<String>>,
     pending_link: Option<crate::links::Link>,
     /// A share link being made: the server's answer (the link, or why not).
-    share_answer: Arc<Mutex<Option<Result<String, String>>>>,
+    share_answer: task::Task<Result<String, String>>,
     /// The share link popup, while it's open (see `share`).
     share_dialog: Option<share::ShareDialog>,
 }
@@ -984,7 +984,7 @@ impl App {
             page_since: 0.0,
             links: crate::links::listen(cc.egui_ctx.clone()),
             pending_link: link.as_deref().and_then(crate::links::parse),
-            share_answer: Arc::default(),
+            share_answer: task::Task::default(),
             share_dialog: None,
         }
     }
@@ -1070,21 +1070,17 @@ impl App {
         struct Created {
             token: String,
         }
-        let (api, answer, ctx) = (self.shell.api.clone(), self.share_answer.clone(), self.shell.ctx.clone());
-        self.shell.runtime.spawn(async move {
-            let result = api
-                .send_json::<Created>(reqwest::Method::POST, "/api/shares", Some(body))
+        self.share_answer.send_with(&self.shell, |api| async move {
+            api.send_json::<Created>(reqwest::Method::POST, "/api/shares", Some(body))
                 .await
                 .map(|c| format!("{}/s/{}", session.server.trim_end_matches('/'), c.token))
-                .map_err(|err| err.message);
-            *answer.lock().unwrap() = Some(result);
-            ctx.request_repaint();
+                .map_err(|err| err.message)
         });
     }
 
     /// A share link made: copied, and said so.
     fn take_share(&mut self, ctx: &egui::Context) {
-        let Some(result) = self.share_answer.lock().unwrap().take() else { return };
+        let Some(result) = self.share_answer.poll() else { return };
         let text = match result {
             Ok(link) => {
                 ctx.copy_text(link.clone());

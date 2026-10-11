@@ -45,6 +45,7 @@ use crate::catalog::Catalog;
 use crate::playback::{AudioSource, QueueItem};
 use crate::ui::edit::editor::{DraftOf, Imported, TrackEditor};
 use crate::ui::selection::Selection;
+use crate::ui::task::Task;
 use crate::ui::edit::inline_search::{Choice, InlineSearch};
 use crate::ui::theme::{bold, font, medium, semibold, PALETTE as P};
 use crate::ui::{widgets, Action, Page, Shell};
@@ -122,7 +123,7 @@ struct Draft {
     og: Option<String>,
     /// Waiting for a preview (its number).
     asked: Option<u64>,
-    arrived: Arc<Mutex<Option<(u64, Result<Imported, String>)>>>,
+    arrived: Task<(u64, Result<Imported, String>)>,
     /// The draft track (None: not there yet).
     track: Option<Uuid>,
     /// What the file lacks to be imported, as it is.
@@ -156,7 +157,7 @@ struct Bulk {
     editor: TrackEditor,
     /// Extras being kept: how many done, of how many; and what came of it.
     sending: Option<(Arc<std::sync::atomic::AtomicUsize>, usize)>,
-    sent: Arc<Mutex<Option<(Vec<Uuid>, Vec<String>)>>>,
+    sent: Task<(Vec<Uuid>, Vec<String>)>,
 }
 
 impl Bulk {
@@ -171,7 +172,7 @@ impl Bulk {
             started: false,
             editor: TrackEditor::default(),
             sending: None,
-            sent: Arc::default(),
+            sent: Task::default(),
         }
     }
 }
@@ -182,7 +183,7 @@ pub struct NotImported {
     pub loading: bool,
     pub error: Option<String>,
     asked: u64,
-    arrived: Arc<Mutex<Option<(u64, Result<Vec<Problem>, String>)>>>,
+    arrived: Task<(u64, Result<Vec<Problem>, String>)>,
     selected: Option<Uuid>,
     fate: Fate,
     /// The track it's a file or an extra of: found by typing, then chosen (a place in the
@@ -211,12 +212,12 @@ pub struct NotImported {
     /// The marked files, going somewhere together.
     bulk: Option<Bulk>,
     sending: bool,
-    done: Arc<Mutex<Option<Done>>>,
+    done: Task<Done>,
     /// The last thing done (or why not), with the track it went to.
     notice: Option<(Result<String, String>, Option<Uuid>)>,
     /// Videos being kept as music videos, many at once: how many done, of how many.
     batch: Option<(Arc<std::sync::atomic::AtomicUsize>, usize)>,
-    batch_done: Arc<Mutex<Option<String>>>,
+    batch_done: Task<String>,
 }
 
 impl NotImported {
@@ -224,8 +225,8 @@ impl NotImported {
     pub fn refresh(&mut self, shell: &Shell) {
         self.asked += 1;
         self.loading = true;
-        let (api, arrived, ctx, number) = (shell.api.clone(), self.arrived.clone(), shell.ctx.clone(), self.asked);
-        shell.runtime.spawn(async move {
+        let number = self.asked;
+        self.arrived.start_with(shell, |api| async move {
             let result = async {
                 let mut all: Vec<Problem> = Vec::new();
                 loop {
@@ -240,14 +241,13 @@ impl NotImported {
             }
             .await
             .map_err(|err: crate::api::ApiError| err.message);
-            *arrived.lock().unwrap() = Some((number, result));
-            ctx.request_repaint();
+            (number, result)
         });
     }
 
     /// Takes in what arrived. Call once per frame.
     pub fn poll(&mut self, shell: &mut Shell) {
-        let arrived = self.arrived.lock().unwrap().take();
+        let arrived = self.arrived.poll();
         if let Some((number, result)) = arrived
             && number == self.asked
         {
@@ -260,7 +260,7 @@ impl NotImported {
                 Err(err) => self.error = Some(err),
             }
         }
-        let done = self.done.lock().unwrap().take();
+        let done = self.done.poll();
         if let Some((problem, result)) = done {
             self.sending = false;
             match result {
@@ -305,7 +305,7 @@ impl NotImported {
         }
         // Videos among those shown: kept as music videos, all at once.
         let videos: Vec<(Uuid, String)> = shown.iter().map(|&n| &self.list[n]).filter(|p| is_video(&p.uploaded_filename)).map(|p| (p.id, searchable_name(&p.uploaded_filename))).collect();
-        let batch_done = self.batch_done.lock().unwrap().take();
+        let batch_done = self.batch_done.poll();
         if let Some(text) = batch_done {
             self.batch = None;
             self.notice = Some((Ok(text), None));
@@ -592,7 +592,7 @@ impl NotImported {
         let draft = self.draft.get_or_insert_with(|| Draft {
             og: og.clone(),
             asked: None,
-            arrived: Arc::default(),
+            arrived: Task::default(),
             track: None,
             missing: Vec::new(),
             duplicate: None,
@@ -605,7 +605,7 @@ impl NotImported {
         if !draft.editor.take_stale_drafts().is_empty() {
             draft.again = true;
         }
-        let arrived = draft.arrived.lock().unwrap().take();
+        let arrived = draft.arrived.poll();
         if let Some((number, answer)) = arrived
             && draft.asked == Some(number)
         {
@@ -639,14 +639,9 @@ impl NotImported {
             self.drafts_asked += 1;
             let number = self.drafts_asked;
             draft.asked = Some(number);
-            let (api, arrived, ctx) = (shell.api.clone(), draft.arrived.clone(), shell.ctx.clone());
             let path = format!("/api/ingest-problems/{}/import", p.id);
             let body = serde_json::json!({ "preview": true, "original_filename": og });
-            shell.runtime.spawn(async move {
-                let answer = api.send_json::<Imported>(reqwest::Method::POST, &path, Some(body)).await.map_err(|e| e.message);
-                *arrived.lock().unwrap() = Some((number, answer));
-                ctx.request_repaint();
-            });
+            draft.arrived.start_with(shell, |api| async move { (number, api.send_json::<Imported>(reqwest::Method::POST, &path, Some(body)).await.map_err(|e| e.message)) });
         }
     }
 
@@ -731,7 +726,7 @@ impl NotImported {
         draft.editor.offer(&[]);
         draft.editor.show(ui, shell, catalog, &[track], None);
         if let Some((_, made)) = draft.editor.take_imported().into_iter().next() {
-            *self.done.lock().unwrap() = Some((p.id, Ok(("Imported.".into(), Some(made)))));
+            self.done.put((p.id, Ok(("Imported.".into(), Some(made)))));
         }
     }
 
@@ -963,7 +958,7 @@ impl NotImported {
 
     /// The marked files as extras of one thing, one after another.
     fn many_extras(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: &Arc<Catalog>, marked: &[Uuid]) {
-        let sent = self.bulk.as_ref().and_then(|b| b.sent.lock().unwrap().take());
+        let sent = self.bulk.as_mut().and_then(|b| b.sent.poll());
         if let Some((kept, failed)) = sent {
             let gone: HashSet<Uuid> = kept.iter().copied().collect();
             self.list.retain(|p| !gone.contains(&p.id));
@@ -993,9 +988,9 @@ impl NotImported {
             let done = Arc::new(std::sync::atomic::AtomicUsize::new(0));
             let Some(bulk) = self.bulk.as_mut() else { return };
             bulk.sending = Some((done.clone(), files.len()));
-            let (api, ctx, sent) = (shell.api.clone(), shell.ctx.clone(), bulk.sent.clone());
+            let ctx = shell.ctx.clone();
             let (kind, reason) = (self.extra_kind.clone(), self.reason.trim().to_string());
-            shell.runtime.spawn(async move {
+            bulk.sent.send_with(shell, |api| async move {
                 let (mut kept, mut failed) = (Vec::new(), Vec::new());
                 for (id, file) in files {
                     let body = serde_json::json!({ "name": searchable_name(&file), "kind": kind, "links": links, "reason": reason });
@@ -1006,8 +1001,7 @@ impl NotImported {
                     done.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     ctx.request_repaint();
                 }
-                *sent.lock().unwrap() = Some((kept, failed));
-                ctx.request_repaint();
+                (kept, failed)
             });
         }
     }
@@ -1017,8 +1011,8 @@ impl NotImported {
     fn keep_videos(&mut self, shell: &Shell, videos: Vec<(Uuid, String)>) {
         let done = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         self.batch = Some((done.clone(), videos.len()));
-        let (api, ctx, answer) = (shell.api.clone(), shell.ctx.clone(), self.batch_done.clone());
-        shell.runtime.spawn(async move {
+        let ctx = shell.ctx.clone();
+        self.batch_done.send_with(shell, |api| async move {
             let mut failed = Vec::new();
             for (id, name) in &videos {
                 let body = serde_json::json!({ "name": name, "kind": "video", "reason": "a music video that didn't import" });
@@ -1033,8 +1027,7 @@ impl NotImported {
             if !failed.is_empty() {
                 text.push_str(&format!(" Not these: {}", failed.join("; ")));
             }
-            *answer.lock().unwrap() = Some(text);
-            ctx.request_repaint();
+            text
         });
     }
 
@@ -1048,8 +1041,7 @@ impl NotImported {
     fn send(&mut self, shell: &Shell, problem: Uuid, path: String, body: serde_json::Value, track: Option<Uuid>, text: String) {
         self.sending = true;
         self.notice = None;
-        let (api, ctx, done) = (shell.api.clone(), shell.ctx.clone(), self.done.clone());
-        shell.runtime.spawn(async move {
+        self.done.send_with(shell, |api| async move {
             let answer = api.send_json::<serde_json::Value>(reqwest::Method::POST, &path, Some(body)).await.map(Some);
             let result = answer
                 .map(|answer| {
@@ -1057,8 +1049,7 @@ impl NotImported {
                     (text, track)
                 })
                 .map_err(|e| e.message);
-            *done.lock().unwrap() = Some((problem, result));
-            ctx.request_repaint();
+            (problem, result)
         });
     }
 }

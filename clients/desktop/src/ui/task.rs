@@ -76,6 +76,11 @@ impl<T: Send + 'static> Task<T> {
         answer
     }
 
+    /// An answer that is known without asking: `poll` gives it next.
+    pub fn put(&mut self, answer: T) {
+        *self.slot.lock().unwrap() = Some(answer);
+    }
+
     /// Started and not answered yet (for a spinner).
     pub fn is_running(&self) -> bool {
         self.waiting

@@ -217,7 +217,7 @@ pub struct TrackEditor {
     for_you: Vec<String>,
     /// Metadata being imported (pasted), and what was fetched for it.
     importing: bool,
-    fetched: Arc<Mutex<Option<Result<Fetched, String>>>>,
+    fetched: crate::ui::task::Task<Result<Fetched, String>>,
     /// Every artist's names, for `parse:` (made from the catalog it's for, when asked).
     artist_names: Option<(*const Catalog, Arc<crate::title_credits::NameTable>)>,
     /// The row of the check (a staged `parse:`) the keys are on; brought into view.
@@ -292,7 +292,7 @@ impl Default for TrackEditor {
             imported: Vec::new(),
             for_you: Vec::new(),
             importing: false,
-            fetched: Arc::default(),
+            fetched: crate::ui::task::Task::default(),
             artist_names: None,
             check: None,
             check_scroll: false,
@@ -881,7 +881,7 @@ impl TrackEditor {
                 self.fetch(shell, pasted);
             }
         }
-        let fetched = self.fetched.lock().unwrap().take();
+        let fetched = self.fetched.poll();
         if let Some(result) = fetched {
             self.importing = false;
             match result {
@@ -1675,9 +1675,8 @@ impl TrackEditor {
     fn fetch(&mut self, shell: &Shell, pasted: Pasted) {
         self.importing = true;
         self.notice = None;
-        let (api, out, ctx) = (shell.api.clone(), self.fetched.clone(), shell.ctx.clone());
-        shell.runtime.spawn(async move {
-            let result = async {
+        self.fetched.send_with(shell, |api| async move {
+            async {
                 // The server reads it, with the platform's extension.
                 let meta = match pasted {
                     Pasted::Json(json) => api.send_json::<Metadata>(reqwest::Method::POST, "/api/extensions/import", Some(json)).await.map_err(|e| e.message)?,
@@ -1708,9 +1707,7 @@ impl TrackEditor {
                 }
                 Ok::<_, String>(Fetched { meta, owners, artwork })
             }
-            .await;
-            *out.lock().unwrap() = Some(result);
-            ctx.request_repaint();
+            .await
         });
     }
 
@@ -2486,12 +2483,12 @@ struct Lookup {
     want: Option<(SearchPart, String)>,
     have: Option<(SearchPart, String)>,
     hits: Vec<u32>,
-    answer: Arc<Mutex<Option<((SearchPart, String), Vec<u32>)>>>,
+    answer: crate::ui::task::Task<((SearchPart, String), Vec<u32>)>,
 }
 
 impl Lookup {
     fn hits(&mut self, shell: &Shell, part: SearchPart, query: &str) -> Vec<u32> {
-        if let Some((key, hits)) = self.answer.lock().unwrap().take()
+        if let Some((key, hits)) = self.answer.poll()
             && Some(&key) == self.want.as_ref()
         {
             self.have = Some(key);
@@ -2504,11 +2501,10 @@ impl Lookup {
         if self.want.as_ref() != Some(&key) {
             self.want = Some(key.clone());
             if let Some(catalog) = shell.catalog.value.clone() {
-                let (answer, ctx) = (self.answer.clone(), shell.ctx.clone());
-                shell.runtime.spawn_blocking(move || {
-                    let hits = Search::default().run_part(&catalog, &key.1, key.0, 8).into_iter().map(|h| h.0).collect();
-                    *answer.lock().unwrap() = Some((key, hits));
-                    ctx.request_repaint();
+                self.answer.start(shell, async move {
+                    let searched = key.clone();
+                    let hits = tokio::task::spawn_blocking(move || Search::default().run_part(&catalog, &searched.1, searched.0, 8).into_iter().map(|h| h.0).collect()).await.unwrap_or_default();
+                    (key, hits)
                 });
             }
         }
