@@ -24,6 +24,14 @@ the editor in either mode, for a quick fix.)
 - **Extras:** vocals, stems, samples, music videos: files linked to a track, album, artist
   or grouping, with their own page. A file an extra has already (the same bytes) isn't added
   again: the upload says which extra has it.
+  Extras that are really one thing (the same file twice, or the pieces of one set) are
+  merged on the page you keep: in edit mode, *Merge other extras into this one…*, pick them
+  by name, preview what moves, then merge. Their files and links come over (a file or link
+  the kept one has already stays behind), and each old extra goes to the trash. They must
+  be seen by the same people, so a merge never opens a file to more of them, and an extra
+  made from a track has to be made a track again first. Taking an old extra out of the
+  trash undoes the merge; an admin can purge it after 7 days (it stays as an empty entry
+  with its history).
 - **Original files:** mark tracks whose file is a real original ("OG") file, with the name
   it was uploaded as. Needs `edit_files`; you have to *know* it's an original.
 

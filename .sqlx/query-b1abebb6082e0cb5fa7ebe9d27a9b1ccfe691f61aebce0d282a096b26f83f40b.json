@@ -1,0 +1,52 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT merged_into, trashed_at, purged_at FROM extras WHERE id = $1 FOR UPDATE",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "merged_into",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "extras",
+            "name": "merged_into"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "trashed_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "extras",
+            "name": "trashed_at"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "purged_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "extras",
+            "name": "purged_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "b1abebb6082e0cb5fa7ebe9d27a9b1ccfe691f61aebce0d282a096b26f83f40b"
+}

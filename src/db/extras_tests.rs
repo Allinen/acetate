@@ -313,3 +313,79 @@ async fn extras_are_linked_to_groupings(_: PgPoolOptions, connect: PgConnectOpti
     assert!(db::extras::linked_to(&mut tx, Link::Grouping(crew)).await?.is_empty());
     Ok(())
 }
+
+/// Extras that are one thing, merged: files and links move over (what the other has already
+/// stays behind), the old ones go to the trash, taking them out undoes it, purging keeps
+/// the tombstone.
+#[sqlx::test]
+async fn extras_are_merged_and_the_merge_undone(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
+    let lib = setup(connect).await?;
+    let other_sha = "b".repeat(64);
+    let mut tx = db::begin(&lib.app, Some(lib.alice)).await?;
+    db::blobs::register(&mut tx, SHA, "main", Some(3)).await?;
+    db::blobs::register(&mut tx, &other_sha, "main", Some(3)).await?;
+    let (keep, _) = db::extras::create(&mut tx, "V vocals", "vocals", &About::default(), &[Link::Track(lib.v)], None, "").await?;
+    let (twin, _) = db::extras::create(&mut tx, "V vocals again", "vocals", &About::default(), &[Link::Track(lib.v), Link::Artist(lib.both)], None, "").await?;
+    let (stems, _) = db::extras::create(&mut tx, "V stems", "stems", &About::default(), &[Link::Artist(lib.both)], None, "").await?;
+    let facts = FileFacts::default();
+    let kept_file = db::extras::add_file(&mut tx, keep, SHA, "vox.wav", 3, &facts, "").await?;
+    let twin_file = db::extras::add_file(&mut tx, twin, SHA, "vox copy.wav", 3, &facts, "").await?;
+    let stems_file = db::extras::add_file(&mut tx, stems, &other_sha, "stems.zip", 3, &facts, "").await?;
+
+    // Not into itself; not while they're seen by different people.
+    assert!(db::extras::merge(&mut tx, keep, &[keep], "").await.is_err());
+    assert!(db::extras::merge(&mut tx, keep, &[], "").await.is_err());
+    let before = db::extras::history(&mut tx, keep).await?.len();
+    let friends = Access { restricted: true, groups: vec![lib.friends] };
+    assert!(db::extras::set_access(&mut tx, stems, &friends, "").await?);
+    let err = db::extras::merge(&mut tx, keep, &[stems], "").await.unwrap_err();
+    assert!(err.to_string().contains("aren't seen by the same people"), "{err}");
+    assert!(db::extras::set_access(&mut tx, stems, &Access::default(), "").await?);
+
+    let report = db::extras::merge(&mut tx, keep, &[twin, stems], "same thing").await?;
+    assert_eq!(report.merged.len(), 2);
+    let twin_report = report.merged.iter().find(|m| m.id == twin).unwrap();
+    assert_eq!((twin_report.files_moved.len(), twin_report.files_duplicate.len()), (0, 1), "the same bytes stay behind");
+    assert_eq!((twin_report.links_moved.len(), twin_report.links_duplicate.len()), (1, 1));
+    let stems_report = report.merged.iter().find(|m| m.id == stems).unwrap();
+    assert_eq!(stems_report.files_moved, [db::extras::FileMoved { id: stems_file, name: "stems.zip".into() }]);
+
+    let kept = db::extras::get(&mut tx, keep).await?.unwrap();
+    assert_eq!(kept.files.iter().map(|f| f.id).collect::<Vec<_>>(), [stems_file, kept_file]);
+    assert_eq!(kept.links.iter().map(|l| (l.kind.as_str(), l.id)).collect::<Vec<_>>(), [("track", lib.v), ("artist", lib.both)]);
+    let old = db::extras::get(&mut tx, twin).await?.unwrap();
+    assert!(old.hidden && old.merged_into == Some(keep) && old.links.is_empty());
+    assert_eq!(old.files.iter().map(|f| f.id).collect::<Vec<_>>(), [twin_file]);
+    assert_eq!(db::extras::linked_to(&mut tx, Link::Track(lib.v)).await?.iter().map(|e| e.id).collect::<Vec<_>>(), [keep]);
+    assert!(db::extras::merge(&mut tx, keep, &[twin], "").await.is_err(), "merged already");
+    assert!(db::extras::merge(&mut tx, twin, &[stems], "").await.is_err(), "not into one that's gone");
+    assert!(db::trash::list(&mut tx).await?.iter().filter(|i| i.kind == "extra").count() == 2);
+    let rows: Vec<Vec<serde_json::Value>> = serde_json::from_str(&db::library::extras_json(&mut tx, None).await?)?;
+    let hidden = db::library::EXTRA_COLUMNS.iter().position(|c| *c == "hidden").unwrap();
+    assert_eq!(rows.iter().filter(|r| r[hidden] == serde_json::json!(true)).count(), 2, "the catalog drops them");
+    assert_eq!(db::extras::history(&mut tx, keep).await?.len(), before + 2, "a line for each extra merged in");
+    tx.commit().await?;
+
+    // Taken out of the trash: its file and link back, the other's too.
+    let mut tx = db::begin(&lib.app, Some(lib.alice)).await?;
+    assert!(db::trash::restore(&mut tx, db::trash::Kind::Extra, stems).await?);
+    assert!(!db::trash::restore(&mut tx, db::trash::Kind::Extra, stems).await?, "once");
+    let back = db::extras::get(&mut tx, stems).await?.unwrap();
+    assert!(!back.hidden && back.merged_into.is_none());
+    assert_eq!(back.files.iter().map(|f| f.id).collect::<Vec<_>>(), [stems_file]);
+    assert_eq!(back.links.iter().map(|l| l.id).collect::<Vec<_>>(), [lib.both]);
+    assert_eq!(db::extras::get(&mut tx, keep).await?.unwrap().files.len(), 1);
+    tx.commit().await?;
+
+    // Purged after the grace period: a tombstone, nothing to take back.
+    sqlx::query("UPDATE extras SET trashed_at = now() - interval '8 days' WHERE id = $1").bind(twin).execute(&lib.owner).await?;
+    let dir = tempfile::tempdir()?;
+    let store = crate::storage::BlobStore::open(dir.path())?;
+    let mut tx = db::begin(&lib.app, Some(lib.alice)).await?;
+    let purged = db::trash::purge(&mut tx, &store, &[(db::trash::Kind::Extra, twin)], &twin.to_string()[..8]).await?;
+    assert_eq!((purged.items, purged.delete_blobs.len()), (1, 0));
+    assert!(!db::trash::restore(&mut tx, db::trash::Kind::Extra, twin).await?);
+    assert!(db::extras::get(&mut tx, twin).await?.is_some());
+    assert!(!db::trash::list(&mut tx).await?.iter().any(|i| i.id == twin));
+    Ok(())
+}

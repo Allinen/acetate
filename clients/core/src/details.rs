@@ -171,6 +171,9 @@ pub struct Extra {
     /// Taken off (kept).
     #[serde(default)]
     pub hidden: bool,
+    /// Merged into this extra (this one is in the trash).
+    #[serde(default)]
+    pub merged_into: Option<Uuid>,
     #[serde(default)]
     pub files: Vec<ExtraFile>,
     /// What it belongs to (those the user sees).

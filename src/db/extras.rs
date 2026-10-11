@@ -2,7 +2,8 @@
 //! samples, clips, project files), with a name, a kind, their files, and links to the
 //! tracks, albums, artists and groupings (0055) they belong to. Restricted like tracks.
 //! Nothing is deleted: an extra or a file is taken off (hidden) and brought back; links
-//! are made and undone; everything is logged (`extra_log`).
+//! are made and undone; everything is logged (`extra_log`). Extras that are one thing are
+//! merged (`merge`): the old one goes to the trash, and coming out undoes it (`unmerge`).
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -124,6 +125,8 @@ pub struct Extra {
     /// Who sees it when restricted (besides admins).
     pub groups: Vec<Group>,
     pub hidden: bool,
+    /// Merged into this extra (`merge`): go there. It's in the trash.
+    pub merged_into: Option<Uuid>,
     pub created_at: DateTime<Utc>,
     pub created_by: Option<String>,
     pub files: Vec<ExtraFile>,
@@ -444,6 +447,203 @@ pub async fn move_to_grouping(conn: &mut PgConnection, artist: Uuid, grouping: U
     Ok(moved)
 }
 
+// ---- Merging ----
+
+/// A file that moved, or stayed.
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
+pub struct FileMoved {
+    pub id: Uuid,
+    pub name: String,
+}
+
+/// What merging one extra into another did (or, previewed, would).
+#[derive(Debug, Serialize)]
+pub struct MergedExtra {
+    pub id: Uuid,
+    pub name: String,
+    /// Its files that went to the extra kept.
+    pub files_moved: Vec<FileMoved>,
+    /// Its files the extra kept has already (the same bytes): they stay on this one, in the trash.
+    pub files_duplicate: Vec<FileMoved>,
+    /// Its links that went over.
+    pub links_moved: Vec<Linked>,
+    /// Its links the other had already.
+    pub links_duplicate: Vec<Linked>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct MergeReport {
+    pub into: Uuid,
+    pub into_name: String,
+    pub merged: Vec<MergedExtra>,
+}
+
+/// What the log of a merge holds, to undo it with.
+#[derive(Debug, Serialize, Deserialize)]
+struct MergeDetails {
+    into: Uuid,
+    files: Vec<Uuid>,
+    link_ids: Vec<Uuid>,
+    dropped_links: Vec<Link>,
+}
+
+fn link_of(track: Option<Uuid>, album: Option<Uuid>, artist: Option<Uuid>, grouping: Option<Uuid>) -> Option<Link> {
+    track.map(Link::Track).or(album.map(Link::Album)).or(artist.map(Link::Artist)).or(grouping.map(Link::Grouping))
+}
+
+struct Candidate {
+    name: String,
+    restricted: bool,
+    groups: Vec<Uuid>,
+    from_track: Option<Uuid>,
+    merged_into: Option<Uuid>,
+    hidden: bool,
+}
+
+async fn candidate(conn: &mut PgConnection, id: Uuid) -> anyhow::Result<Candidate> {
+    let row = sqlx::query!(
+        r#"SELECT name, is_restricted, from_track_id, merged_into, hidden_at IS NOT NULL AS "hidden!" FROM extras WHERE id = $1 FOR UPDATE"#,
+        id
+    )
+    .fetch_optional(&mut *conn)
+    .await?
+    .ok_or(EditRejected::NotFound("extra"))?;
+    let groups = sqlx::query_scalar!("SELECT group_id FROM extra_access WHERE extra_id = $1 ORDER BY group_id", id).fetch_all(&mut *conn).await?;
+    Ok(Candidate { name: row.name, restricted: row.is_restricted, groups, from_track: row.from_track_id, merged_into: row.merged_into, hidden: row.hidden })
+}
+
+/// Merges extras into `target`: their files and links move to it (a file whose bytes it has
+/// already, and a link it has already, stay behind), and each is taken off and put in the
+/// trash, which anyone may take it out of (undoing the merge) until an admin purges it after
+/// the grace period. The target keeps its name, kind, description and source. They must be
+/// seen by the same people (else make them so first, so a merge never opens a file to more
+/// people), none made from a track (`back_to_track` first), none already merged, and the
+/// target not taken off. Everything is logged on both.
+pub async fn merge(conn: &mut PgConnection, target: Uuid, sources: &[Uuid], reason: &str) -> anyhow::Result<MergeReport> {
+    let mut sources = sources.to_vec();
+    sources.sort();
+    sources.dedup();
+    if sources.is_empty() {
+        return Err(EditRejected::Invalid("choose the extras to merge into it".into()).into());
+    }
+    if sources.contains(&target) {
+        return Err(EditRejected::Invalid("an extra can't be merged into itself".into()).into());
+    }
+    let kept = candidate(conn, target).await?;
+    if kept.merged_into.is_some() || kept.hidden {
+        return Err(EditRejected::Invalid(format!("“{}” is taken off or merged into another: merge into that one, or bring it back first", kept.name)).into());
+    }
+    if kept.from_track.is_some() {
+        return Err(EditRejected::Invalid(format!("“{}” was made from a track: make it a track again first", kept.name)).into());
+    }
+    let mut candidates = Vec::new();
+    for &id in &sources {
+        let c = candidate(conn, id).await?;
+        if c.merged_into.is_some() {
+            return Err(EditRejected::Invalid(format!("“{}” was merged into another already", c.name)).into());
+        }
+        if c.from_track.is_some() {
+            return Err(EditRejected::Invalid(format!("“{}” was made from a track: make it a track again first", c.name)).into());
+        }
+        if c.restricted != kept.restricted || c.groups != kept.groups {
+            return Err(EditRejected::Invalid(format!("“{}” and “{}” aren't seen by the same people: change that first (their files would be opened to others)", c.name, kept.name)).into());
+        }
+        candidates.push((id, c));
+    }
+
+    let mut shas: std::collections::HashSet<String> =
+        sqlx::query_scalar!("SELECT sha256 FROM extra_files WHERE extra_id = $1", target).fetch_all(&mut *conn).await?.into_iter().collect();
+    let mut merged = Vec::new();
+    for (id, c) in candidates {
+        let mut report = MergedExtra { id, name: c.name, files_moved: Vec::new(), files_duplicate: Vec::new(), links_moved: Vec::new(), links_duplicate: Vec::new() };
+        let files = sqlx::query!("SELECT id, name, sha256 FROM extra_files WHERE extra_id = $1 ORDER BY added_at, id", id).fetch_all(&mut *conn).await?;
+        for f in files {
+            let file = FileMoved { id: f.id, name: f.name };
+            if shas.insert(f.sha256) {
+                sqlx::query!("UPDATE extra_files SET extra_id = $2 WHERE id = $1", f.id, target).execute(&mut *conn).await?;
+                report.files_moved.push(file);
+            } else {
+                report.files_duplicate.push(file);
+            }
+        }
+        // Named before the move (the same way for both, so a track merged since counts once).
+        let theirs = links(conn, id).await?;
+        let ours: Vec<(String, Uuid)> = links(conn, target).await?.into_iter().map(|l| (l.kind, l.id)).collect();
+        for l in theirs {
+            if ours.contains(&(l.kind.clone(), l.id)) { report.links_duplicate.push(l) } else { report.links_moved.push(l) }
+        }
+        let link_ids = sqlx::query_scalar!(
+            r#"UPDATE extra_links l SET extra_id = $2 WHERE l.extra_id = $1
+               AND NOT EXISTS (SELECT 1 FROM extra_links o WHERE o.extra_id = $2
+                               AND COALESCE(o.track_id, o.album_id, o.artist_id, o.grouping_id) = COALESCE(l.track_id, l.album_id, l.artist_id, l.grouping_id))
+               RETURNING l.id"#,
+            id,
+            target
+        )
+        .fetch_all(&mut *conn)
+        .await?;
+        // What is left was on the other already: it comes off, so the old extra is on no page.
+        let dropped = sqlx::query!("DELETE FROM extra_links WHERE extra_id = $1 RETURNING track_id, album_id, artist_id, grouping_id", id)
+            .fetch_all(&mut *conn)
+            .await?
+            .into_iter()
+            .filter_map(|r| link_of(r.track_id, r.album_id, r.artist_id, r.grouping_id))
+            .collect::<Vec<_>>();
+        sqlx::query!(
+            "UPDATE extras SET merged_into = $2, hidden_at = COALESCE(hidden_at, now()), trashed_at = now(), trashed_by = current_app_user() WHERE id = $1",
+            id,
+            target
+        )
+        .execute(&mut *conn)
+        .await?;
+        let details = MergeDetails { into: target, files: report.files_moved.iter().map(|f| f.id).collect(), link_ids, dropped_links: dropped };
+        log(conn, id, "merged into", serde_json::to_value(&details)?, reason).await?;
+        let files: Vec<_> = report.files_moved.iter().map(|f| json!({ "id": f.id, "name": f.name })).collect();
+        log(conn, target, "merged in", json!({ "from": id, "name": report.name, "files": files, "links": report.links_moved }), reason).await?;
+        merged.push(report);
+    }
+    Ok(MergeReport { into: target, into_name: kept.name, merged })
+}
+
+/// Undoes a merge (an extra taken out of the trash): the files and links it gave go back,
+/// and it's seen again. False: it isn't in the trash as a merged one (or it was purged).
+pub async fn unmerge(conn: &mut PgConnection, extra: Uuid, reason: &str) -> anyhow::Result<bool> {
+    let row = sqlx::query!(
+        "SELECT merged_into, trashed_at, purged_at FROM extras WHERE id = $1 FOR UPDATE",
+        extra
+    )
+    .fetch_optional(&mut *conn)
+    .await?;
+    let Some(row) = row else { return Ok(false) };
+    if row.merged_into.is_none() || row.trashed_at.is_none() || row.purged_at.is_some() {
+        return Ok(false);
+    }
+    let entry = sqlx::query_scalar!(r#"SELECT details FROM extra_log WHERE extra_id = $1 AND what = 'merged into' ORDER BY id DESC LIMIT 1"#, extra)
+        .fetch_optional(&mut *conn)
+        .await?
+        .ok_or_else(|| EditRejected::Invalid("its merge isn't in its log".into()))?;
+    let details: MergeDetails = serde_json::from_value(entry)?;
+    sqlx::query!("UPDATE extra_files SET extra_id = $1 WHERE id = ANY($2)", extra, &details.files).execute(&mut *conn).await?;
+    sqlx::query!("UPDATE extra_links SET extra_id = $1 WHERE id = ANY($2)", extra, &details.link_ids).execute(&mut *conn).await?;
+    for l in &details.dropped_links {
+        let (track, album, artist, grouping) = l.ids();
+        sqlx::query!(
+            "INSERT INTO extra_links (extra_id, track_id, album_id, artist_id, grouping_id) VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING",
+            extra,
+            track,
+            album,
+            artist,
+            grouping
+        )
+        .execute(&mut *conn)
+        .await?;
+    }
+    sqlx::query!("UPDATE extras SET merged_into = NULL, hidden_at = NULL, trashed_at = NULL, trashed_by = NULL WHERE id = $1", extra).execute(&mut *conn).await?;
+    log(conn, extra, "merge undone", json!({ "from": details.into }), reason).await?;
+    log(conn, details.into, "merge undone", json!({ "extra": extra }), reason).await?;
+    Ok(true)
+}
+
 /// An extra holding a file with these bytes already.
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
 pub struct StoredAs {
@@ -560,7 +760,7 @@ pub async fn file_blob(conn: &mut PgConnection, file: Uuid) -> sqlx::Result<Opti
 pub async fn get(conn: &mut PgConnection, id: Uuid) -> sqlx::Result<Option<Extra>> {
     let Some(row) = sqlx::query!(
         r#"SELECT e.id, e.name, e.kind, e.description, e.source, e.from_track_id, e.is_restricted,
-                  e.hidden_at IS NOT NULL AS "hidden!", e.created_at, u.username AS "created_by?"
+                  e.hidden_at IS NOT NULL AS "hidden!", e.merged_into, e.created_at, u.username AS "created_by?"
            FROM extras e LEFT JOIN users u ON u.id = e.created_by WHERE e.id = $1"#,
         id
     )
@@ -579,6 +779,7 @@ pub async fn get(conn: &mut PgConnection, id: Uuid) -> sqlx::Result<Option<Extra
         is_restricted: row.is_restricted,
         groups: groups(conn, id).await?,
         hidden: row.hidden,
+        merged_into: row.merged_into,
         created_at: row.created_at,
         created_by: row.created_by,
         files: files(conn, id).await?,
@@ -593,7 +794,8 @@ pub async fn linked_to(conn: &mut PgConnection, to: Link) -> sqlx::Result<Vec<Ex
     let (track, album, artist, grouping) = to.ids();
     let ids = sqlx::query_scalar!(
         r#"SELECT e.id FROM extras e
-           WHERE EXISTS (SELECT 1 FROM extra_links l WHERE l.extra_id = e.id
+           WHERE e.merged_into IS NULL
+             AND EXISTS (SELECT 1 FROM extra_links l WHERE l.extra_id = e.id
                          AND (($1::uuid IS NOT NULL AND l.track_id IS NOT NULL AND final_track(l.track_id) = $1)
                               OR ($2::uuid IS NOT NULL AND l.album_id = $2)
                               OR ($3::uuid IS NOT NULL AND l.artist_id = $3)

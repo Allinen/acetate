@@ -44,7 +44,7 @@ pub struct Restore {
 
 /// `POST /api/trash/restore`, JSON `{"items": [{"kind": "cover", "id": "..."}]}`: takes
 /// them back out of the trash. Needs what trashing them needs: `edit_metadata` for
-/// covers, `edit_sources` for sources, `admin` for files.
+/// covers and extras, `edit_sources` for sources, `admin` for files.
 pub async fn restore(
     State(state): State<AppState>,
     user: CurrentUser,
@@ -73,6 +73,8 @@ fn check_may_trash(user: &CurrentUser, kind: Kind) -> Result<(), AppError> {
         Kind::Cover => Permission::EditMetadata,
         Kind::Source => Permission::EditSources,
         Kind::File => Permission::Admin,
+        // Merging them.
+        Kind::Extra => Permission::EditMetadata,
         // Whoever may resolve files that didn't import.
         Kind::Problem => Permission::Upload,
     };

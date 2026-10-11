@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE extra_links l SET extra_id = $2 WHERE l.extra_id = $1\n               AND NOT EXISTS (SELECT 1 FROM extra_links o WHERE o.extra_id = $2\n                               AND COALESCE(o.track_id, o.album_id, o.artist_id, o.grouping_id) = COALESCE(l.track_id, l.album_id, l.artist_id, l.grouping_id))\n               RETURNING l.id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "extra_links",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "176d6d86a0a6c2fc36c21b57f7786f138e849e80041302c6214f0523334b62a0"
+}

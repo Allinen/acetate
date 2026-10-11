@@ -7,6 +7,8 @@
 //! * a source: deleted with its snapshots;
 //! * a file: its bytes are deleted, its row stays as a tombstone (tags, origin, and its
 //!   place in the track's history), marked `purged_at`;
+//! * an extra merged into another: kept as a tombstone, with its log (`purged_at`); taking
+//!   it out of the trash undoes the merge until then;
 //! * a file that didn't import, resolved by hand (not imported): it's in the trash from
 //!   when it was resolved, if nothing else uses its audio. Its audio and the covers sent
 //!   with it are deleted, its entry stays (`audio_purged_at`). Restoring opens it again.
@@ -39,6 +41,7 @@ pub enum Kind {
     Source,
     File,
     Problem,
+    Extra,
 }
 
 impl Kind {
@@ -48,6 +51,7 @@ impl Kind {
             Kind::Source => "source",
             Kind::File => "file",
             Kind::Problem => "problem",
+            Kind::Extra => "extra",
         }
     }
 }
@@ -114,6 +118,11 @@ pub async fn list(conn: &mut PgConnection) -> sqlx::Result<Vec<TrashItem>> {
             LEFT JOIN tracks t ON t.id = h.track_id
             WHERE f.trashed_at IS NOT NULL AND f.purged_at IS NULL
             UNION ALL
+            SELECT 'extra', e.id, e.name, e.merged_into, 'extra', m.name, NULL, NULL, e.trashed_at, e.trashed_by
+            FROM extras e
+            LEFT JOIN extras m ON m.id = e.merged_into
+            WHERE e.trashed_at IS NOT NULL AND e.purged_at IS NULL
+            UNION ALL
             SELECT 'problem', p.id, p.uploaded_filename, NULL, NULL, NULL,
                    p.sha256, p.size_bytes, p.resolved_at, p.resolved_by
             FROM ingest_problems p
@@ -135,7 +144,7 @@ pub async fn list(conn: &mut PgConnection) -> sqlx::Result<Vec<TrashItem>> {
 }
 
 /// Takes something back out of the trash. False if it isn't there (or not visible).
-pub async fn restore(conn: &mut PgConnection, kind: Kind, id: Uuid) -> sqlx::Result<bool> {
+pub async fn restore(conn: &mut PgConnection, kind: Kind, id: Uuid) -> anyhow::Result<bool> {
     let result = match kind {
         Kind::Cover => {
             sqlx::query!(
@@ -164,6 +173,8 @@ pub async fn restore(conn: &mut PgConnection, kind: Kind, id: Uuid) -> sqlx::Res
             .execute(&mut *conn)
             .await?
         }
+        // The merge undone: its files and links go back.
+        Kind::Extra => return super::extras::unmerge(conn, id, "taken out of the trash").await,
         Kind::Problem => {
             // Open again, if the same file isn't listed open already.
             sqlx::query!(
@@ -371,6 +382,14 @@ pub async fn purge(
                 .execute(&mut *conn)
                 .await?;
             }
+            Kind::Extra => {
+                // Its files are on the extra it was merged into (or are the same bytes as
+                // its files): no blob is freed. It stays as a tombstone, with its log.
+                sqlx::query!("UPDATE extras SET purged_at = now(), purged_by = current_app_user() WHERE id = $1", t.id)
+                    .execute(&mut *conn)
+                    .await?;
+                sqlx::query!("INSERT INTO extra_log (extra_id, what) VALUES ($1, 'purged')", t.id).execute(&mut *conn).await?;
+            }
             Kind::Problem => {
                 sqlx::query!("UPDATE ingest_problems SET audio_purged_at = now() WHERE id = $1", t.id)
                     .execute(&mut *conn)
@@ -523,6 +542,25 @@ async fn load_target(conn: &mut PgConnection, kind: Kind, id: Uuid) -> sqlx::Res
             }),
             blobs: vec![r.sha256],
             size_bytes: r.size_bytes,
+        }),
+        Kind::Extra => sqlx::query!(
+            r#"
+            SELECT e.trashed_at, e.name, e.kind, e.merged_into, m.name AS "into_name?"
+            FROM extras e LEFT JOIN extras m ON m.id = e.merged_into
+            WHERE e.id = $1 AND e.purged_at IS NULL
+            "#,
+            id
+        )
+        .fetch_optional(&mut *conn)
+        .await?
+        .map(|r| Target {
+            kind,
+            id,
+            trashed_at: r.trashed_at,
+            confirm_key: id.to_string(),
+            description: json!({ "name": r.name, "kind": r.kind, "merged_into": r.merged_into, "merged_into_name": r.into_name }),
+            blobs: Vec::new(),
+            size_bytes: 0,
         }),
         Kind::Problem => sqlx::query!(
             r#"

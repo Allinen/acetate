@@ -281,7 +281,7 @@ impl TrashPage {
             if widgets::chip(ui, &format!("All  {} · {}", thousands(items.len()), size(total)), self.only.is_none()) {
                 self.only = None;
             }
-            for (kind, name) in [("cover", "Covers"), ("source", "Sources"), ("file", "Files"), ("problem", "Didn't import")] {
+            for (kind, name) in [("cover", "Covers"), ("source", "Sources"), ("file", "Files"), ("extra", "Merged extras"), ("problem", "Didn't import")] {
                 let count = items.iter().filter(|i| i.kind == kind).count();
                 if count > 0 && widgets::chip(ui, &format!("{name}  {}", thousands(count)), self.only.as_deref() == Some(kind)) {
                     self.only = Some(kind.to_string());
@@ -381,8 +381,9 @@ impl TrashPage {
                         ui.horizontal_wrapped(|ui| {
                             ui.label(RichText::new(format!("{} · {}", kind_name(&item.kind), item.what)).font(font(14.0, semibold())));
                             if let (Some(id), Some(kind), Some(name)) = (item.owner_id, item.owner_kind.as_deref(), item.owner.as_deref()) {
-                                ui.label(RichText::new("of").color(P.faint));
+                                ui.label(RichText::new(if kind == "extra" { "into" } else { "of" }).color(P.faint));
                                 let page = match kind {
+                                    "extra" => Page::Extra(id),
                                     "album" => Page::Album(id),
                                     "artist" => Page::Artist(id),
                                     _ => Page::Track(id),
@@ -484,7 +485,7 @@ fn may_trash_anything(shell: &Shell) -> bool {
 /// Whether the user may put this kind in the trash (and take it back out).
 fn may_trash(shell: &Shell, kind: &str) -> bool {
     match kind {
-        "cover" => shell.account.can("edit_metadata"),
+        "cover" | "extra" => shell.account.can("edit_metadata"),
         "source" => shell.account.can("edit_sources"),
         "problem" => shell.account.can("upload"),
         _ => shell.account.can("admin"),
@@ -496,6 +497,7 @@ fn kind_name(kind: &str) -> &str {
         "cover" => "Cover",
         "source" => "Source",
         "file" => "Audio file",
+        "extra" => "Merged extra",
         "problem" => "Didn't import",
         other => other,
     }

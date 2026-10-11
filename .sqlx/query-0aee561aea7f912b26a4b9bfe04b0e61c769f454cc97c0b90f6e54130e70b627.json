@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT e.id, e.name, e.kind, e.description, e.source, e.from_track_id, e.is_restricted,\n                  e.hidden_at IS NOT NULL AS \"hidden!\", e.created_at, u.username AS \"created_by?\"\n           FROM extras e LEFT JOIN users u ON u.id = e.created_by WHERE e.id = $1",
+  "query": "SELECT e.id, e.name, e.kind, e.description, e.source, e.from_track_id, e.is_restricted,\n                  e.hidden_at IS NOT NULL AS \"hidden!\", e.merged_into, e.created_at, u.username AS \"created_by?\"\n           FROM extras e LEFT JOIN users u ON u.id = e.created_by WHERE e.id = $1",
   "describe": {
     "columns": [
       {
@@ -88,6 +88,17 @@
       },
       {
         "ordinal": 8,
+        "name": "merged_into",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "extras",
+            "name": "merged_into"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -98,7 +109,7 @@
         }
       },
       {
-        "ordinal": 9,
+        "ordinal": 10,
         "name": "created_by?",
         "type_info": "Text",
         "origin": {
@@ -123,9 +134,10 @@
       true,
       false,
       null,
+      true,
       false,
       true
     ]
   },
-  "hash": "8529a58c39d4e0981dcc008c0590553ebbcea5fa74a20ab17011e4acf2ea5ca3"
+  "hash": "0aee561aea7f912b26a4b9bfe04b0e61c769f454cc97c0b90f6e54130e70b627"
 }

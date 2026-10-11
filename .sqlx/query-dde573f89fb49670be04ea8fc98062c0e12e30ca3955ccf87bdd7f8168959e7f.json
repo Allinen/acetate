@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE extras SET merged_into = $2, hidden_at = COALESCE(hidden_at, now()), trashed_at = now(), trashed_by = current_app_user() WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "dde573f89fb49670be04ea8fc98062c0e12e30ca3955ccf87bdd7f8168959e7f"
+}

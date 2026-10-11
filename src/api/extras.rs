@@ -11,7 +11,7 @@ use super::media::serve_blob;
 use super::{AppError, AppState};
 use crate::auth::{CurrentUser, Permission};
 use crate::db;
-use crate::db::extras::{About, Access, Extra, FromTrack, Link, LogEntry};
+use crate::db::extras::{About, Access, Extra, FromTrack, Link, LogEntry, MergeReport};
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -302,6 +302,33 @@ pub async fn track_to_extra(State(state): State<AppState>, user: CurrentUser, Pa
         }
     }
     tx.commit().await?;
+    Ok(Json(done))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Merge {
+    /// The extras that go into this one.
+    sources: Vec<Uuid>,
+    #[serde(default)]
+    reason: String,
+    /// Only say what would happen (nothing is kept).
+    #[serde(default)]
+    preview: bool,
+}
+
+/// `POST /api/extras/{id}/merge`, JSON `{"sources": ["…"], "reason", "preview"}`: the
+/// extras in `sources` are merged into this one (see `db::extras::merge`): their files and
+/// links move here, and each goes to the trash (taking it out undoes the merge). Answers
+/// what moved and what stayed.
+pub async fn merge(State(state): State<AppState>, user: CurrentUser, Path(id): Path<Uuid>, Json(body): Json<Merge>) -> Result<Json<MergeReport>, AppError> {
+    let mut tx = state.db(&user).await?;
+    let done = db::extras::merge(&mut tx, id, &body.sources, &body.reason).await?;
+    if body.preview {
+        tx.rollback().await?;
+    } else {
+        tx.commit().await?;
+    }
     Ok(Json(done))
 }
 

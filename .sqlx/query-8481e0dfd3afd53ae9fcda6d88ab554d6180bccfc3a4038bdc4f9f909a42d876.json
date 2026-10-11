@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE extras SET purged_at = now(), purged_by = current_app_user() WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "8481e0dfd3afd53ae9fcda6d88ab554d6180bccfc3a4038bdc4f9f909a42d876"
+}

@@ -14,7 +14,7 @@ The desktop app can keep a [mirror](mirror.md) of the blobs, per volume.
 
 ## Trash
 
-**Nothing is deleted directly.** Covers (need `edit_metadata`), sources (`edit_sources`),
+**Nothing is deleted directly.** Covers and extras merged into another (need `edit_metadata`), sources (`edit_sources`),
 old audio files (admins only) and playlists go to the trash first, and can be taken back
 out. Open it from the command palette ("Trash").
 
@@ -33,6 +33,8 @@ Details:
 
 - Purging a track's file deletes its bytes but keeps its row as a tombstone: its tags,
   origin and place in the history stay.
+- Purging a merged extra keeps its row as a tombstone with its history; no bytes are
+  freed (its files are on the extra it was merged into).
 - A blob is deleted only when nothing uses it anymore (a copied cover shares its blob),
   and only after the database change has committed. A crash can leave a stray blob, never a
   row whose blob is missing.

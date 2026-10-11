@@ -213,6 +213,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/extras/{id}/access", require(&[ManageAccess], put(extras::set_access)))
         .route("/api/extras/{id}/hidden", require(&[EditMetadata], post(extras::set_hidden)))
         .route("/api/extras/{id}/links", require(&[EditMetadata], post(extras::link)))
+        .route("/api/extras/{id}/merge", require(&[EditMetadata], post(extras::merge)))
         .route("/api/extras/{id}/back-to-track", require(&[EditMetadata], post(extras::back_to_track)))
         .route("/api/tracks/{id}/to-extra", require(&[EditMetadata], post(extras::track_to_extra)))
         .route(

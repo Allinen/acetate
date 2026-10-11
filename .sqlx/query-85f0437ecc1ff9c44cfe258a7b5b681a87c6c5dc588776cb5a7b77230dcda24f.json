@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE extras SET merged_into = NULL, hidden_at = NULL, trashed_at = NULL, trashed_by = NULL WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "85f0437ecc1ff9c44cfe258a7b5b681a87c6c5dc588776cb5a7b77230dcda24f"
+}

@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO extra_log (extra_id, what) VALUES ($1, 'purged')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f0c5d6049edd9d9c353b0e420bc018d4c8fd3206fc6c7ea559e7911b10510aed"
+}

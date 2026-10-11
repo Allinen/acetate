@@ -1,0 +1,76 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT e.trashed_at, e.name, e.kind, e.merged_into, m.name AS \"into_name?\"\n            FROM extras e LEFT JOIN extras m ON m.id = e.merged_into\n            WHERE e.id = $1 AND e.purged_at IS NULL\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "trashed_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "extras",
+            "name": "trashed_at"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "extras",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "kind",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "extras",
+            "name": "kind"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "merged_into",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "extras",
+            "name": "merged_into"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "into_name?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "extras",
+            "name": "name"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true,
+      false,
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "b0f4979dad0ab9eaa2d30e52183686570c89a50fc72ba025181c5e71518a09d8"
+}

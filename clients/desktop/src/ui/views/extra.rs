@@ -2,7 +2,8 @@
 //! saved), what it belongs to, who sees it. In edit mode: its name and kind, who sees it
 //! (`manage_access`), files added (chosen, pasted or dropped) or taken off, linked to a
 //! track, album, artist or grouping (or not anymore), the extra taken off or brought back,
-//! and what was done to it (`view_history`). See the server's `db::extras`.
+//! other extras merged into it (previewed first; the old ones go to the trash, where
+//! taking them out undoes it), and what was done to it (`view_history`). See the server's `db::extras`.
 //!
 //! Keys: what it belongs to and its files are one list. ↑/↓ or j/k move, Enter opens a
 //! link or plays (watches) a file, `d` saves the file, and in edit mode Delete takes the
@@ -40,6 +41,38 @@ struct Group {
     name: String,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+struct Named {
+    name: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct Linked {
+    title: String,
+}
+
+/// What merging one extra in does (`POST /api/extras/{id}/merge`, previewed).
+#[derive(Debug, Clone, Deserialize)]
+struct MergedExtra {
+    name: String,
+    files_moved: Vec<Named>,
+    files_duplicate: Vec<Named>,
+    links_moved: Vec<Linked>,
+    links_duplicate: Vec<Linked>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct MergeReport {
+    merged: Vec<MergedExtra>,
+}
+
+/// Extras being gathered into this one: chosen, then previewed, then merged.
+struct Merging {
+    search: InlineSearch,
+    picked: Vec<(Uuid, String)>,
+    preview: Option<MergeReport>,
+}
+
 #[derive(Default)]
 pub struct ExtraPage {
     id: Option<Uuid>,
@@ -70,6 +103,9 @@ pub struct ExtraPage {
     result: Option<Result<String, String>>,
     /// The row the keys are on: its links first, then its files.
     selected: usize,
+    merging: Option<Merging>,
+    previewing: bool,
+    preview_arrived: Slot<MergeReport>,
 }
 
 /// The page of what an extra belongs to.
@@ -214,6 +250,14 @@ impl ExtraPage {
         egui::ScrollArea::vertical().id_salt(("extra-page", id)).auto_shrink([false, false]).show(ui, |ui| {
             ui.label(RichText::new(format!("EXTRA  ·  {}", extra.kind.to_uppercase())).font(font(11.0, semibold())).color(P.accent));
             ui.label(RichText::new(&extra.name).font(font(34.0, bold())));
+            if let Some(into) = extra.merged_into {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(RichText::new("Merged into another extra: this one is in the trash (taking it out of there undoes the merge).").color(P.accent));
+                    if ui.button("Go to the extra").clicked() {
+                        shell.act(Action::Go(Page::Extra(into)));
+                    }
+                });
+            }
             let shown = extra.files.iter().filter(|f| !f.hidden).count();
             let mut facts = vec![files_text(shown), access_text(&extra)];
             if extra.hidden {
@@ -411,6 +455,8 @@ impl ExtraPage {
             }
         }
         ui.add_space(10.0);
+        self.merge_editor(ui, shell, extra);
+        ui.add_space(10.0);
 
         // Who sees it.
         if shell.account.can("manage_access") {
@@ -420,6 +466,108 @@ impl ExtraPage {
         let (text, hidden) = if extra.hidden { ("Bring it back", false) } else { ("Take it off", true) };
         if ui.add_enabled(!self.sending, egui::Button::new(text)).on_hover_text("Hidden, not deleted").clicked() {
             self.send(shell, format!("/api/extras/{id}/hidden"), serde_json::json!({ "hidden": hidden }), if hidden { "Taken off (kept)." } else { "Brought back." }.into());
+        }
+    }
+
+    /// Other extras gathered into this one (the same file twice, or pieces of one thing):
+    /// chosen by name, previewed (what moves, what stays), then merged in one go.
+    fn merge_editor(&mut self, ui: &mut egui::Ui, shell: &mut Shell, extra: &Extra) {
+        let id = extra.id;
+        let preview_taken = self.preview_arrived.lock().unwrap().take();
+        if let Some(result) = preview_taken {
+            self.previewing = false;
+            match result {
+                Ok(report) => {
+                    if let Some(m) = self.merging.as_mut() {
+                        m.preview = Some(report);
+                    }
+                }
+                Err(err) => self.result = Some(Err(err)),
+            }
+        }
+        if extra.merged_into.is_some() || extra.hidden || extra.from_track.is_some() {
+            return;
+        }
+        let Some(m) = self.merging.as_mut() else {
+            if ui
+                .button("Merge other extras into this one…")
+                .on_hover_text("Their files and links come here; they go to the trash (taking one out undoes it)")
+                .clicked()
+            {
+                self.merging = Some(Merging { search: InlineSearch::new(Part::Extras), picked: Vec::new(), preview: None });
+            }
+            return;
+        };
+        ui.label(RichText::new("Merge into this one").font(font(14.0, semibold())));
+        ui.label(RichText::new("Their files and links come here (a file or link this one has already stays behind). Each goes to the trash; an admin can purge it after a week, and taking it out before undoes the merge. They must be seen by the same people.").color(P.muted).small());
+        let catalog = shell.catalog.value.clone();
+        if let Some((Choice::Hit(i), _)) = m.search.show(ui, shell, catalog.as_deref(), egui::Id::new("extra-merge"), "type the name of an extra to add", &[])
+            && let Some(e) = catalog.as_deref().and_then(|c| c.extras.get(i as usize))
+            && e.id != id
+            && !m.picked.iter().any(|(p, _)| *p == e.id)
+        {
+            m.picked.push((e.id, e.name.clone()));
+            m.preview = None;
+        }
+        let mut remove = None;
+        for (n, (_, name)) in m.picked.iter().enumerate() {
+            ui.horizontal(|ui| {
+                ui.label(name.as_str());
+                if ui.small_button("×").on_hover_text("Leave it out").clicked() {
+                    remove = Some(n);
+                }
+            });
+        }
+        if let Some(n) = remove {
+            m.picked.remove(n);
+            m.preview = None;
+        }
+        if let Some(report) = &m.preview {
+            for r in &report.merged {
+                let names = |files: &[Named]| files.iter().map(|f| f.name.as_str()).collect::<Vec<_>>().join(", ");
+                let mut line = format!("“{}”: {}", r.name, files_text(r.files_moved.len()));
+                if !r.files_moved.is_empty() {
+                    line += &format!(" move here ({})", names(&r.files_moved));
+                } else {
+                    line += " move here";
+                }
+                if !r.files_duplicate.is_empty() {
+                    line += &format!("; {} the same bytes as one here, left behind ({})", r.files_duplicate.len(), names(&r.files_duplicate));
+                }
+                if !r.links_moved.is_empty() {
+                    line += &format!("; belongs to {} too", r.links_moved.iter().map(|l| l.title.as_str()).collect::<Vec<_>>().join(", "));
+                }
+                if !r.links_duplicate.is_empty() {
+                    line += &format!("; {} link(s) here already", r.links_duplicate.len());
+                }
+                ui.label(RichText::new(line).color(P.muted));
+            }
+        }
+        let ready = m.preview.is_some();
+        let nothing = m.picked.is_empty();
+        let ids: Vec<Uuid> = m.picked.iter().map(|(p, _)| *p).collect();
+        let (mut preview, mut merge, mut cancel) = (false, false, false);
+        ui.horizontal(|ui| {
+            preview = ui.add_enabled(!nothing && !self.previewing && !self.sending, egui::Button::new("Preview")).clicked();
+            merge = ui.add_enabled(ready && !self.sending, egui::Button::new("Merge")).on_hover_text("Preview first, so you see what moves").clicked();
+            cancel = ui.button("Cancel").clicked();
+        });
+        if cancel {
+            self.merging = None;
+        } else if preview {
+            self.previewing = true;
+            self.result = None;
+            let body = serde_json::json!({ "sources": ids, "preview": true });
+            let (api, ctx, into) = (shell.api.clone(), shell.ctx.clone(), self.preview_arrived.clone());
+            shell.runtime.spawn(async move {
+                let result = api.send_json::<MergeReport>(reqwest::Method::POST, &format!("/api/extras/{id}/merge"), Some(body)).await.map_err(|e| e.message);
+                *into.lock().unwrap() = Some(result);
+                ctx.request_repaint();
+            });
+        } else if merge {
+            self.merging = None;
+            let body = serde_json::json!({ "sources": ids });
+            self.send(shell, format!("/api/extras/{id}/merge"), body, "Merged. The old ones are in the trash (taking one out undoes it).".into());
         }
     }
 

@@ -1,0 +1,31 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT e.id FROM extras e\n           WHERE e.merged_into IS NULL\n             AND EXISTS (SELECT 1 FROM extra_links l WHERE l.extra_id = e.id\n                         AND (($1::uuid IS NOT NULL AND l.track_id IS NOT NULL AND final_track(l.track_id) = $1)\n                              OR ($2::uuid IS NOT NULL AND l.album_id = $2)\n                              OR ($3::uuid IS NOT NULL AND l.artist_id = $3)\n                              OR ($4::uuid IS NOT NULL AND l.grouping_id = $4)))\n           ORDER BY lower(e.name), e.id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "extras",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "be4f626f0f339c29aedcafc0ba488206f73ef4bfd90c11c5808fb6b752440b9d"
+}
