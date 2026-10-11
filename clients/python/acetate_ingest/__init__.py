@@ -21,6 +21,7 @@ __version__ = "0.1.0"
 from ._shapes import *  # noqa: E402,F403  (the typed sources: NetEaseTrack, SoundCloudArtist, ...)
 from ._shapes import SHAPES, __all__ as _shape_names  # noqa: E402
 from ._source import ALBUM, ARTIST, TRACK, Field, RawSource, Shape, Source  # noqa: E402
+from ._extensions import load_extension_files  # noqa: E402
 from .client import Acetate  # noqa: E402
 from .description import (  # noqa: E402
     Album,
@@ -60,6 +61,7 @@ __all__ = [
     "Lyrics",
     "Source",
     "RawSource",
+    "load_extension_files",
     "SHAPES",
     "Shape",
     "Field",

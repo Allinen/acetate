@@ -91,6 +91,13 @@ class Acetate:
         """The server's extensions (`GET /api/extensions`): each platform's source shapes and links."""
         return self._request("GET", "/api/extensions")
 
+    def load_extensions(self) -> list[str]:
+        """Makes the shapes of the platforms the server has known here, the ones of your own
+        too (`RawSource("traktrain", "track", {...})`). Returns the platforms' names."""
+        from ._extensions import register
+
+        return register(self.extensions()["extensions"])
+
     def source_shapes(self) -> list[dict[str, Any]]:
         """The server's source shapes: one for each platform and kind, from its extensions."""
         shapes = []

@@ -139,6 +139,21 @@ extension lists in `thumbnail_hosts`).
 * The Python client reads the same data instead of the generated `_shapes.py`.
 * Only the admin installs one: files on the server's disk. Never uploaded through the API.
 
+## Python ingestion scripts
+
+The Python library (`clients/python`) has typed classes for the built-in platforms only. For a
+platform of your own, use a `RawSource` once the library knows its shape:
+
+```python
+acetate = Acetate(...)            # logged in
+acetate.load_extensions()         # asks the server for its extensions, yours included
+Description(..., origin=RawSource("traktrain", "track", {"track_id": 123}))
+```
+
+Without a server (a dry run, a test), `load_extension_files("path/to/your/extensions")` reads
+the same `extension.toml` files (Python 3.11 or newer). Either way the data is checked in the
+script before anything is sent, and again by the server.
+
 ## Old data
 
 The database keeps the platform name and the data of every snapshot. When an extension is

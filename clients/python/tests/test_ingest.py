@@ -40,6 +40,25 @@ from acetate_ingest import (
 )
 
 
+class ExtensionsOfYourOwn(unittest.TestCase):
+    def test_a_platform_the_library_does_not_ship_is_known_once_its_shapes_are(self):
+        from acetate_ingest import SHAPES, load_extension_files
+
+        with self.assertRaises(InvalidDescription):
+            RawSource("beats", "track", {"track_id": 1})
+        with tempfile.TemporaryDirectory() as folder:
+            os.makedirs(os.path.join(folder, "beats"))
+            with open(os.path.join(folder, "beats", "extension.toml"), "w") as f:
+                f.write('[extension]\nname = "beats"\ntitle = "Beats"\napi = 1\n[[shape]]\nkind = "track"\nid = "track_id"\nfields = [{ name = "track_id", type = "int", required = true }]\n')
+            try:
+                self.assertEqual(load_extension_files(folder), ["beats"])
+                self.assertEqual(RawSource("beats", "track", {"track_id": 1}).to_json()["platform"], "beats")
+                with self.assertRaises(InvalidDescription):
+                    RawSource("beats", "track", {"track_id": "x"})
+            finally:
+                SHAPES.pop(("beats", "track"), None)
+
+
 class Sources(unittest.TestCase):
     def test_typed_sources_check_their_fields(self):
         self.assertEqual(NetEaseTrack(song_id=5).to_json(), {"platform": "netease", "data": {"song_id": 5}})
