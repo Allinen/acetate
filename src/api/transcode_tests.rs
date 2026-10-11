@@ -43,7 +43,7 @@ async fn user(owner: &PgPool, name: &str, group: &str) -> anyhow::Result<String>
 
 async fn setup(connect: PgConnectOptions) -> anyhow::Result<Setup> {
     let owner = PgPoolOptions::new().connect_with(connect.clone()).await?;
-    let pool = db::app_pool_options().connect_with(connect).await?;
+    let pool = db::test_app_pool(connect).await?;
     sqlx::query("INSERT INTO group_permissions SELECT id, 'share' FROM groups WHERE name = 'user'").execute(&owner).await?;
     let admin = user(&owner, "alice", "admin").await?;
     let listener = user(&owner, "bob", "user").await?;

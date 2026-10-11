@@ -38,7 +38,7 @@ async fn setup(connect: PgConnectOptions) -> anyhow::Result<Setup> {
 /// The same with `file`. One that would import is listed as if it had been refused.
 async fn setup_with(connect: PgConnectOptions, file: &str) -> anyhow::Result<Setup> {
     let owner = PgPoolOptions::new().connect_with(connect.clone()).await?;
-    let pool = db::app_pool_options().connect_with(connect).await?;
+    let pool = db::test_app_pool(connect).await?;
     let mut tx = db::begin(&owner, None).await?;
     let user = db::users::create_user(&mut tx, "alice", "not a real hash").await?;
     db::users::set_groups(&mut tx, user, &["admin".to_string()]).await?.map_err(anyhow::Error::msg)?;

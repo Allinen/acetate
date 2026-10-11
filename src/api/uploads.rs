@@ -228,7 +228,7 @@ pub(crate) mod tests {
     /// `app`'s state, for calling what the handlers call.
     pub(crate) async fn state(connect: PgConnectOptions) -> anyhow::Result<(sqlx::PgPool, AppState, tempfile::TempDir)> {
         let owner = PgPoolOptions::new().connect_with(connect.clone()).await?;
-        let pool = db::app_pool_options().connect_with(connect).await?;
+        let pool = db::test_app_pool(connect).await?;
         let dir = tempfile::tempdir()?;
         let state = AppState {
             uploads: Default::default(),

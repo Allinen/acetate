@@ -1,7 +1,7 @@
 //! Row-level security, end to end. Each test gets a fresh database with all migrations
 //! (`#[sqlx::test]` creates it, and drops it afterwards), sets up a small library as the
 //! owner (the system), then acts as different users through a pool that connects like the
-//! server does (`app_pool_options`), calling the same `db::` functions the API calls.
+//! server does (`test_app_pool`), calling the same `db::` functions the API calls.
 //!
 //! The library:
 //! * track V (public) and track H (restricted to the group `friends`), both on album A,
@@ -41,7 +41,7 @@ pub(super) struct Library {
 
 pub(super) async fn setup(connect: PgConnectOptions) -> anyhow::Result<Library> {
     let owner = PgPoolOptions::new().connect_with(connect.clone()).await?;
-    let app = db::app_pool_options().connect_with(connect).await?;
+    let app = db::test_app_pool(connect).await?;
 
     let mut tx = db::begin(&owner, None).await?;
     let friends = db::groups::create(&mut tx, "friends", "", &[]).await?;
@@ -201,6 +201,47 @@ async fn server_connections_are_rls_bound(_: PgPoolOptions, connect: PgConnectOp
     let role: String = sqlx::query_scalar("SELECT current_user::text").fetch_one(&lib.app).await?;
     assert_eq!(role, db::APP_ROLE);
     db::check_row_level_security(&lib.owner).await?;
+    Ok(())
+}
+
+/// What SQL injected into a query could do: not much. The server's login is the app role
+/// itself, so there is no owner to go back to, and the one other role it can become changes
+/// no tables.
+#[sqlx::test]
+async fn the_server_cannot_become_the_owner_or_change_the_schema(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
+    let lib = setup(connect.clone()).await?;
+    let owner_name = connect.get_username().to_string();
+    let mut conn = lib.app.acquire().await?;
+    let session_user: String = sqlx::query_scalar("SELECT session_user::text").fetch_one(&mut *conn).await?;
+    assert_eq!(session_user, db::APP_ROLE, "logged in as the app role, not the owner");
+    let superuser: String = sqlx::query_scalar("SELECT current_setting('is_superuser')").fetch_one(&mut *conn).await?;
+    assert_eq!(superuser, "off");
+    // Back to the owner: no.
+    sqlx::query("RESET ROLE").execute(&mut *conn).await?;
+    let still: String = sqlx::query_scalar("SELECT current_user::text").fetch_one(&mut *conn).await?;
+    assert_eq!(still, db::APP_ROLE);
+    assert!(sqlx::query(sqlx::AssertSqlSafe(format!("SET ROLE {owner_name}"))).execute(&mut *conn).await.is_err());
+    // Nor change the schema, make roles, or run programs.
+    assert!(sqlx::query("CREATE TABLE sneaky (x int)").execute(&mut *conn).await.is_err());
+    assert!(sqlx::query("DROP TABLE tracks").execute(&mut *conn).await.is_err());
+    assert!(sqlx::query("CREATE ROLE sneaky LOGIN").execute(&mut *conn).await.is_err());
+    assert!(sqlx::query("COPY (SELECT 1) TO PROGRAM 'true'").execute(&mut *conn).await.is_err());
+
+    // The role `as_system` becomes sees what is hidden, and changes no tables either.
+    let mut tx = db::begin(&lib.app, Some(lib.carol)).await?;
+    let hidden_before: i64 = sqlx::query_scalar("SELECT count(*) FROM tracks WHERE id = $1").bind(lib.h).fetch_one(&mut *tx).await?;
+    assert_eq!(hidden_before, 0);
+    let system = db::as_system(&mut tx).await?;
+    let hidden_now: i64 = sqlx::query_scalar("SELECT count(*) FROM tracks WHERE id = $1").bind(lib.h).fetch_one(&mut *tx).await?;
+    assert_eq!(hidden_now, 1, "the system sees the restricted track");
+    system.end(&mut tx).await?;
+    let hidden_after: i64 = sqlx::query_scalar("SELECT count(*) FROM tracks WHERE id = $1").bind(lib.h).fetch_one(&mut *tx).await?;
+    assert_eq!(hidden_after, 0, "and the app doesn't again");
+    tx.rollback().await?;
+    let mut tx = db::begin(&lib.app, Some(lib.carol)).await?;
+    let system = db::as_system(&mut tx).await?;
+    assert!(sqlx::query("DROP TABLE tracks").execute(&mut *tx).await.is_err());
+    drop(system);
     Ok(())
 }
 

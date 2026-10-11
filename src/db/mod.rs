@@ -84,17 +84,17 @@ mod changes_tests;
 
 use std::time::Duration;
 
-use sqlx::postgres::PgPoolOptions;
+use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use sqlx::{PgConnection, PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
 // ---- Row-level security ----
 //
 // Restricted tracks are hidden by Postgres itself (migration 0008), but Postgres doesn't
-// apply that to the owner of the tables, which is who we connect as. So the server's
-// connections switch to the role `acetate_app` right after connecting, and everything the
-// server does is filtered. Migrations and the CLI keep the owner's role: they're the
-// system, which sees everything.
+// apply that to the owner of the tables. So the server logs in as the role `acetate_app`
+// (migration 0069) and everything it does is filtered. Migrations and the CLI keep the
+// owner's login: they're the system, which sees everything. The few places that must see
+// or change what is hidden switch to `acetate_system` for a moment (`as_system`).
 
 /// The role the server works as.
 pub const APP_ROLE: &str = "acetate_app";
@@ -128,10 +128,26 @@ pub async fn connect_owner(url: &str) -> sqlx::Result<PgPool> {
         .await
 }
 
-/// Connects the server's pool. Every connection switches to `APP_ROLE` as soon as it's
-/// opened, so there's no request that could forget to.
-pub async fn connect_app(url: &str) -> sqlx::Result<PgPool> {
-    let pool = app_pool_options().connect(url).await?;
+/// The role the places that must see what row-level security hides work as, for a moment.
+pub const SYSTEM_ROLE: &str = "acetate_system";
+
+/// The app role's password: made from the owner's login in `url` (user, password, host
+/// and port; not the database), so it is the same at every start and for everything that
+/// shares the owner's login, and nothing has to be configured or kept. Whoever has the
+/// owner's password has it too.
+fn app_password(url: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
+    let login_and_host = rest.split(['/', '?']).next().unwrap_or("");
+    hex::encode(Sha256::digest(format!("acetate-app:{login_and_host}")))
+}
+
+/// Connects the server's pool, logged in as `APP_ROLE` (no other role is reachable from
+/// it but `SYSTEM_ROLE`): `owner` (the owner's pool, which is not used for requests) sets
+/// the role's password first.
+pub async fn connect_app(owner: &PgPool, url: &str) -> anyhow::Result<PgPool> {
+    let options: PgConnectOptions = url.parse()?;
+    let pool = app_pool(owner, &options, &app_password(url)).await?;
 
     // Belt and braces: make sure it worked.
     let role = sqlx::query_scalar!(r#"SELECT current_user::text AS "role!""#)
@@ -141,16 +157,28 @@ pub async fn connect_app(url: &str) -> sqlx::Result<PgPool> {
     Ok(pool)
 }
 
-/// The server's pool settings (also used by the tests, to connect like the server does).
-pub fn app_pool_options() -> PgPoolOptions {
+/// The server's pool, logged in as `APP_ROLE` with `password`, which it is given first (by
+/// `owner`: the role is made to log in with it, and with nothing else). `options` are the
+/// owner's, for the host and database. Also how the tests connect, like the server does.
+pub async fn app_pool(owner: &PgPool, options: &PgConnectOptions, password: &str) -> sqlx::Result<PgPool> {
+    use sqlx::Connection;
+    let login = options.clone().username(APP_ROLE).password(password);
+    // Set the password only when the role doesn't take it yet (the first start, or a new
+    // password): roles belong to the whole Postgres, and tests do this from many
+    // databases at once.
+    if sqlx::PgConnection::connect_with(&login).await.is_err() {
+        // (A hex password needs no quoting; ALTER ROLE can't take a parameter.)
+        assert!(password.bytes().all(|b| b.is_ascii_alphanumeric()), "the app role's password is plain letters and digits");
+        let mut tx = owner.begin().await?;
+        sqlx::query("SELECT pg_advisory_xact_lock(7305)").execute(&mut *tx).await?;
+        sqlx::query(sqlx::AssertSqlSafe(format!("ALTER ROLE {APP_ROLE} LOGIN PASSWORD '{password}'"))).execute(&mut *tx).await?;
+        tx.commit().await?;
+    }
     PgPoolOptions::new()
         .max_connections(10)
         .acquire_timeout(Duration::from_secs(5))
-        // Runs for each new connection. It has to return a boxed future (the pool stores
-        // the callback without knowing its exact type), hence `Box::pin(async move { .. })`.
         .after_connect(|conn, _meta| {
             Box::pin(async move {
-                sqlx::query("SET ROLE acetate_app").execute(&mut *conn).await?;
                 // No JIT compiling: the app's queries are short lookups, and a plan that looks
                 // expensive (RLS subqueries inflate the estimate) spent seconds compiling
                 // for a query that then ran in milliseconds.
@@ -158,6 +186,18 @@ pub fn app_pool_options() -> PgPoolOptions {
                 Ok(())
             })
         })
+        .connect_with(login)
+        .await
+}
+
+/// How the tests log in as the app: as the server does, with the password the
+/// `DATABASE_URL` they run with makes.
+#[cfg(test)]
+pub async fn test_app_pool(connect: PgConnectOptions) -> sqlx::Result<PgPool> {
+    let owner = PgPoolOptions::new().max_connections(2).connect_with(connect.clone()).await?;
+    let pool = app_pool(&owner, &connect, &app_password(&std::env::var("DATABASE_URL").unwrap_or_default())).await?;
+    owner.close().await;
+    Ok(pool)
 }
 
 /// Checked when the server starts (with the owner's pool), so a mistake shows up at once
@@ -232,26 +272,29 @@ pub async fn as_system(conn: &mut PgConnection) -> sqlx::Result<SystemScope> {
     let previous_role = sqlx::query_scalar!(r#"SELECT current_user::text AS "role!""#)
         .fetch_one(&mut *conn)
         .await?;
-    // 'none' = the role we connected as (the owner).
-    sqlx::query_scalar!("SELECT set_config('role', 'none', true)")
-        .fetch_one(&mut *conn)
-        .await?;
-    Ok(SystemScope { previous_role })
+    // Only the server's login switches (to the role that sees everything but changes no
+    // tables); the CLI and the migrations are the owner already.
+    let switched = previous_role == APP_ROLE;
+    if switched {
+        sqlx::query_scalar!("SELECT set_config('role', $1, true)", SYSTEM_ROLE).fetch_one(&mut *conn).await?;
+    }
+    Ok(SystemScope { previous_role, switched })
 }
 
 /// Returned by `as_system`. `#[must_use]`: the compiler warns if it's dropped without `end`.
 #[must_use = "call .end(conn) to go back to row-level security"]
 pub struct SystemScope {
     previous_role: String,
+    switched: bool,
 }
 
 impl SystemScope {
     /// Goes back to the role from before `as_system` (the app role in the server; the
-    /// owner in the CLI, where nothing changes).
+    /// owner in the CLI, where nothing changed).
     pub async fn end(self, conn: &mut PgConnection) -> sqlx::Result<()> {
-        sqlx::query_scalar!("SELECT set_config('role', $1, true)", self.previous_role)
-            .fetch_one(conn)
-            .await?;
+        if self.switched {
+            sqlx::query_scalar!("SELECT set_config('role', $1, true)", self.previous_role).fetch_one(conn).await?;
+        }
         Ok(())
     }
 }
