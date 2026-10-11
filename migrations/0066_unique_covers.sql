@@ -10,6 +10,9 @@ WHERE c.trashed_at IS NULL
         AND (k.position, k.id) < (c.position, c.id)
   );
 
+-- The update's deferred triggers run now: an index can't be built with events pending.
+SET CONSTRAINTS ALL IMMEDIATE;
+
 CREATE UNIQUE INDEX covers_track_image_idx ON covers (track_id, blob_sha256)
     WHERE track_id IS NOT NULL AND trashed_at IS NULL;
 CREATE UNIQUE INDEX covers_album_image_idx ON covers (album_id, blob_sha256)
