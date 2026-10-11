@@ -12,6 +12,7 @@ pub mod describe;
 pub mod layouts;
 pub mod probe;
 pub mod video;
+pub mod youtube;
 pub mod tags;
 
 use std::fmt;

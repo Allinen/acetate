@@ -19,7 +19,7 @@ use uuid::Uuid;
 
 use crate::catalog::search::Part;
 use crate::details::Extra;
-use crate::ui::edit::extras::{access_text, file_line, files_text, merge_request, upload_all, MergeReport, KINDS};
+use crate::ui::edit::extras::{access_text, file_line, files_text, merge_request, to_track_request, upload_all, MadeTrack, MergeReport, KINDS};
 use crate::ui::edit::inline_search::{Choice, InlineSearch};
 use crate::ui::theme::{bold, font, medium, semibold, PALETTE as P};
 use crate::ui::{widgets, Action, Page, Shell};
@@ -62,6 +62,12 @@ pub struct ExtraPage {
     /// "Make it a track again" was clicked: asking to be sure.
     asked_back: bool,
     back: Slot<Uuid>,
+    /// "Make it a track" (from its YouTube video) is open: the video's link, blank for the
+    /// id at the end of its name.
+    making: Option<String>,
+    /// What making the track would do, as the server said.
+    looked: Slot<MadeTrack>,
+    previewed: Option<MadeTrack>,
     /// Who sees it, being changed (`manage_access`): restricted, and the groups.
     access: Option<(bool, Vec<Uuid>)>,
     groups: Option<Result<Vec<Group>, String>>,
@@ -103,6 +109,60 @@ impl ExtraPage {
         });
     }
 
+    /// "Make it a track…": the video's link (or the `[id]` in its name), look at what would
+    /// be made, then make it.
+    fn make_track(&mut self, ui: &mut egui::Ui, shell: &mut Shell, id: Uuid) {
+        let Some(link) = self.making.as_mut() else {
+            if ui.button("Make it a track from its YouTube video…").clicked() {
+                self.making = Some(String::new());
+            }
+            ui.add_space(8.0);
+            return;
+        };
+        ui.label(RichText::new("It becomes a track with what YouTube says of the video (title, artist or channel, date, thumbnail). It plays this file; this extra is then taken off (kept).").color(P.muted));
+        let before = link.clone();
+        ui.add(egui::TextEdit::singleline(link).hint_text("the video's link, or blank for the [id] at the end of its name").desired_width(420.0));
+        if *link != before {
+            self.previewed = None;
+        }
+        let link = Some(link.trim().to_string()).filter(|l| !l.is_empty());
+        ui.horizontal(|ui| {
+            if ui.add_enabled(!self.sending, egui::Button::new("Look")).clicked() {
+                self.sending = true;
+                self.result = None;
+                let (api, ctx, into, link) = (shell.api.clone(), shell.ctx.clone(), self.looked.clone(), link.clone());
+                shell.runtime.spawn(async move {
+                    *into.lock().unwrap() = Some(to_track_request(&api, id, link.as_deref(), true).await);
+                    ctx.request_repaint();
+                });
+            }
+            if let Some(made) = &self.previewed
+                && !made.already()
+                && ui.add_enabled(!self.sending, egui::Button::new("Make the track")).clicked()
+            {
+                self.sending = true;
+                let (api, ctx, into) = (shell.api.clone(), shell.ctx.clone(), self.back.clone());
+                shell.runtime.spawn(async move {
+                    let result = to_track_request(&api, id, link.as_deref(), false).await.and_then(|m| m.track_id.ok_or_else(|| "no track in the answer".to_string()));
+                    *into.lock().unwrap() = Some(result);
+                    ctx.request_repaint();
+                });
+            }
+            if ui.button("Cancel").clicked() {
+                self.making = None;
+                self.previewed = None;
+            }
+        });
+        if let Some(made) = &self.previewed {
+            if made.already() {
+                ui.label(RichText::new(format!("{} is a track already: nothing to make.", made.describe())).color(P.danger));
+            } else {
+                ui.label(RichText::new(format!("Would make: {}", made.describe())).color(P.accent));
+            }
+        }
+        ui.add_space(8.0);
+    }
+
     pub fn show(&mut self, ui: &mut egui::Ui, shell: &mut Shell, id: Uuid) {
         if self.id != Some(id) {
             *self = ExtraPage { id: Some(id), ..Default::default() };
@@ -136,6 +196,18 @@ impl ExtraPage {
                 shell.act(Action::RefreshLibrary);
                 shell.act(Action::Go(Page::Track(track)));
                 return;
+            }
+            Some(Err(err)) => {
+                self.sending = false;
+                self.result = Some(Err(err));
+            }
+            None => {}
+        }
+        let looked_taken = self.looked.lock().unwrap().take();
+        match looked_taken {
+            Some(Ok(made)) => {
+                self.sending = false;
+                self.previewed = Some(made);
             }
             Some(Err(err)) => {
                 self.sending = false;
@@ -272,6 +344,10 @@ impl ExtraPage {
                     });
                 }
                 ui.add_space(8.0);
+            }
+            // A YouTube video kept as an extra can be a track, from what YouTube says of it.
+            if can && extra.from_track.is_none() && !extra.hidden && shown == 1 {
+                self.make_track(ui, shell, id);
             }
             // What it belongs to.
             if !extra.links.is_empty() {

@@ -634,3 +634,32 @@ pub async fn merge_request(api: &crate::api::Api, into: Uuid, sources: &[Uuid], 
     let body = serde_json::json!({ "sources": sources, "preview": preview });
     api.send_json::<MergeReport>(reqwest::Method::POST, &format!("/api/extras/{into}/merge"), Some(body)).await.map_err(|e| e.message)
 }
+
+/// What making a track of an extra (from its YouTube video) did, or would.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct MadeTrack {
+    pub track_id: Option<Uuid>,
+    pub video: String,
+    pub title: String,
+    pub artists: Vec<String>,
+    report: serde_json::Value,
+}
+
+impl MadeTrack {
+    /// A track has the file already (nothing is made).
+    pub fn already(&self) -> bool {
+        self.report["status"] == "duplicate"
+    }
+
+    /// "Title — Artist, Artist (youtube id)".
+    pub fn describe(&self) -> String {
+        format!("{} — {} (youtube {})", self.title, self.artists.join(", "), self.video)
+    }
+}
+
+/// Asks the server to make a track of the extra from its YouTube video (`link`: the video's
+/// link, else the id at the end of the extra's name); `preview`: only say what would happen.
+pub async fn to_track_request(api: &crate::api::Api, extra: Uuid, link: Option<&str>, preview: bool) -> Result<MadeTrack, String> {
+    let body = serde_json::json!({ "link": link, "preview": preview });
+    api.send_json::<MadeTrack>(reqwest::Method::POST, &format!("/api/extras/{extra}/to-track"), Some(body)).await.map_err(|e| e.message)
+}

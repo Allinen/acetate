@@ -1039,6 +1039,14 @@ pub async fn back_to_track(conn: &mut PgConnection, extra: Uuid, reason: &str) -
     }
 }
 
+/// An extra whose file became a track (`api::extras::to_track`): taken off (kept, and
+/// brought back like any), with the track in its history.
+pub async fn made_track(conn: &mut PgConnection, extra: Uuid, track: Uuid, reason: &str) -> anyhow::Result<()> {
+    sqlx::query!("UPDATE extras SET hidden_at = COALESCE(hidden_at, now()) WHERE id = $1", extra).execute(&mut *conn).await?;
+    log(conn, extra, "made a track", json!({ "track": track }), reason).await?;
+    Ok(())
+}
+
 /// The extra a track became (made into an extra, so hidden), if the user can see it.
 pub async fn became(conn: &mut PgConnection, track: Uuid) -> sqlx::Result<Option<Uuid>> {
     sqlx::query_scalar!(r#"SELECT id AS "id!" FROM extras WHERE id = track_became_extra($1)"#, track)

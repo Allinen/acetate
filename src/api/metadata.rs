@@ -33,6 +33,11 @@ pub struct Youtube {
 /// yt-dlp isn't installed; 422 when it can't read the video (with why).
 pub async fn youtube(State(_): State<AppState>, _user: CurrentUser, Json(body): Json<Youtube>) -> Result<Json<Value>, AppError> {
     let id = video_id(&body.link).ok_or_else(|| AppError::BadRequest("not a YouTube video's link or id".to_string()))?;
+    Ok(Json(fetch_youtube(&id).await?))
+}
+
+/// The video's metadata as `yt-dlp -J` says it (see `youtube`), for the video with this id.
+pub async fn fetch_youtube(id: &str) -> Result<Value, AppError> {
     let url = format!("https://www.youtube.com/watch?v={id}");
     let run = Command::new("yt-dlp")
         .args(["-J", "--no-playlist", "--skip-download", "--no-warnings", "--", &url])
@@ -58,7 +63,7 @@ pub async fn youtube(State(_): State<AppState>, _user: CurrentUser, Json(body): 
             map.remove(*key);
         }
     }
-    Ok(Json(json))
+    Ok(json)
 }
 
 /// A YouTube video's id from its link (watch?v=, youtu.be/, /shorts/, /embed/, /live/, on

@@ -221,10 +221,16 @@ pub(crate) mod tests {
     /// The API on a test database, with storage in a temp folder (kept while it lives), and
     /// the database's owner pool (no RLS).
     pub(crate) async fn app(connect: PgConnectOptions) -> anyhow::Result<(sqlx::PgPool, axum::Router, tempfile::TempDir)> {
+        let (owner, state, dir) = state(connect).await?;
+        Ok((owner, api::router(state), dir))
+    }
+
+    /// `app`'s state, for calling what the handlers call.
+    pub(crate) async fn state(connect: PgConnectOptions) -> anyhow::Result<(sqlx::PgPool, AppState, tempfile::TempDir)> {
         let owner = PgPoolOptions::new().connect_with(connect.clone()).await?;
         let pool = db::app_pool_options().connect_with(connect).await?;
         let dir = tempfile::tempdir()?;
-        let app = api::router(AppState {
+        let state = AppState {
             uploads: Default::default(),
             blob_changes: Default::default(),
             pool,
@@ -236,8 +242,8 @@ pub(crate) mod tests {
             images: std::sync::Arc::new(crate::storage::images::ImageCache::new(dir.path().join("cache"))),
             transcodes: std::sync::Arc::new(crate::storage::transcode::TranscodeCache::new(dir.path().join("cache"), vec![128, 64], 0)),
             upload_limits: std::sync::Arc::new(api::upload_limits::UploadLimits::new(0, 0)),
-        });
-        Ok((owner, app, dir))
+        };
+        Ok((owner, state, dir))
     }
 
     pub(crate) async fn send(app: &axum::Router, method: &str, path: &str, token: &str, body: Body, content_type: Option<&str>) -> (StatusCode, serde_json::Value) {

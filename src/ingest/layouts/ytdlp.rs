@@ -62,7 +62,7 @@ pub fn bracket_id(stem: &str) -> Option<&str> {
     (!id.is_empty()).then_some(id)
 }
 
-fn is_youtube_id(id: &str) -> bool {
+pub fn is_youtube_id(id: &str) -> bool {
     id.len() == 11 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 

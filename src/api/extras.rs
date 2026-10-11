@@ -305,6 +305,132 @@ pub async fn track_to_extra(State(state): State<AppState>, user: CurrentUser, Pa
     Ok(Json(done))
 }
 
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ToTrack {
+    /// The YouTube video it is: its link or id. Absent: the id at the end of the extra's
+    /// name (or its file's), `Title [id].mp4`.
+    link: Option<String>,
+    reason: String,
+    /// Only say what would happen (nothing is kept).
+    preview: bool,
+}
+
+/// What making a track of an extra did (or would).
+#[derive(Debug, serde::Serialize)]
+pub struct MadeTrack {
+    /// The new track; the one that has the file already (`report.status` says so; then
+    /// nothing was made).
+    track_id: Option<Uuid>,
+    video: String,
+    title: String,
+    artists: Vec<String>,
+    report: crate::ingest::describe::Report,
+}
+
+/// `POST /api/extras/{id}/to-track`, JSON `{"link", "reason", "preview"}`: a YouTube video
+/// kept as an extra becomes a track, from what YouTube says of it (read by yt-dlp, as the
+/// editor's import does): its title, artists (or the channel), date, the video as the
+/// track's source and origin, its thumbnail as the cover. The track plays the extra's file
+/// (the same bytes); the extra is taken off (kept). Needs `upload` too.
+pub async fn to_track(State(state): State<AppState>, user: CurrentUser, Path(id): Path<Uuid>, Json(body): Json<ToTrack>) -> Result<Json<MadeTrack>, AppError> {
+    if !user.has(Permission::Upload) {
+        return Err(AppError::Forbidden("making a track of an extra needs the upload permission".into()));
+    }
+    let extra = {
+        let mut tx = state.db(&user).await?;
+        db::extras::get(&mut tx, id).await?.ok_or(AppError::NotFound)?
+    };
+    if extra.hidden || extra.merged_into.is_some() {
+        return Err(AppError::BadRequest("it is taken off".into()));
+    }
+    if extra.from_track.is_some() {
+        return Err(AppError::BadRequest("it was a track: make that one a track again instead".into()));
+    }
+    let files: Vec<&db::extras::ExtraFile> = extra.files.iter().filter(|f| !f.hidden).collect();
+    let [file] = files[..] else {
+        return Err(AppError::BadRequest(format!("it has {} files; only an extra with one can become a track", files.len())));
+    };
+    let video_id = match body.link.as_deref().map(str::trim).filter(|l| !l.is_empty()) {
+        Some(link) => super::metadata::video_id(link).ok_or_else(|| AppError::BadRequest("not a YouTube video's link or id".into()))?,
+        None => crate::ingest::youtube::id_in_name(&extra.name)
+            .or_else(|| crate::ingest::youtube::id_in_name(&file.name))
+            .ok_or_else(|| AppError::BadRequest(format!("no YouTube id at the end of “{}” (“… [id]”): give the video's link", extra.name)))?,
+    };
+    let json = super::metadata::fetch_youtube(&video_id).await?;
+    let video = crate::ingest::youtube::parse(&json).map_err(AppError::BadRequest)?;
+    if video.id != video_id {
+        return Err(AppError::BadRequest(format!("YouTube answered for another video ({})", video.id)));
+    }
+    Ok(Json(make_track(&state, &user, &extra, file, video, &body.reason, body.preview).await?))
+}
+
+/// `to_track` once the video is known: the track, from `file` of `extra`.
+async fn make_track(state: &AppState, user: &CurrentUser, extra: &Extra, file: &db::extras::ExtraFile, video: crate::ingest::youtube::Video, reason: &str, preview: bool) -> Result<MadeTrack, AppError> {
+    use crate::ingest::describe::{ArtistHint, Described, DescribedCredit, Hints, ReportStatus};
+    use crate::model::sources::{self, Kind, NewSource};
+    let invalid = |err: sources::InvalidSource| AppError::BadRequest(err.to_string());
+    let track_source = sources::validate(Kind::Track, NewSource { platform: "youtube".into(), source_id: None, captured_at: None, data: video.source.clone() }).map_err(invalid)?;
+    let channel_source = match &video.channel {
+        Some(channel) => Some(sources::validate(Kind::Artist, NewSource { platform: "youtube".into(), source_id: None, captured_at: None, data: serde_json::json!({ "channel": channel }) }).map_err(invalid)?),
+        None => None,
+    };
+    let artists: Vec<ArtistHint> = video
+        .artists
+        .iter()
+        .enumerate()
+        .map(|(n, name)| ArtistHint { name: name.clone(), id: None, sources: channel_source.clone().filter(|_| n == 0).into_iter().collect(), platform_name: None })
+        .collect();
+    let described = Described {
+        title: video.title.clone(),
+        credits: video.artists.iter().enumerate().map(|(n, name)| DescribedCredit { name: name.clone(), role: "primary".into(), artist: Some(n) }).collect(),
+        release_date: video.release_date.clone(),
+        ..Default::default()
+    };
+    // Its thumbnail, if it can be had (the track doesn't wait on it).
+    let mut covers = Vec::new();
+    if let Some(url) = &video.thumbnail
+        && let Ok(client) = reqwest::Client::builder().timeout(std::time::Duration::from_secs(15)).build()
+        && let Ok(answer) = client.get(url).send().await
+        && answer.status().is_success()
+        && let Ok(bytes) = answer.bytes().await
+        && bytes.len() <= 10 << 20
+        && crate::model::image_info(&bytes).is_some()
+    {
+        covers.push(bytes.to_vec());
+    }
+    let restrict_to = extra.is_restricted.then(|| extra.groups.iter().map(|g| g.id).collect::<Vec<_>>());
+    if restrict_to.is_some() && !user.has(Permission::ManageAccess) {
+        return Err(AppError::Forbidden("this extra is restricted, and so would its track be: that needs the manage_access permission".into()));
+    }
+    let options = crate::ingest::IngestOptions {
+        user: user.id(),
+        uploaded_filename: file.name.clone(),
+        origin: track_source.clone(),
+        status: "released".into(),
+        sources: vec![track_source],
+        restrict_to,
+        hints: Hints { artists, described: Some(described), track_covers: covers, no_duplicate_merge: true, original_filename: Some(file.name.clone()), ..Default::default() },
+        local_path: None,
+        edited_after: false,
+        volume: None,
+        tags_from: None,
+    };
+    let staged = crate::ingest::StagedFile::stored(&state.store, &file.sha256, file.size_bytes as u64).await;
+    let mut tx = state.db(user).await?;
+    let report = crate::ingest::ingest_in(&mut tx, &state.store, &staged, &options, preview).await.map_err(crate::ingest::as_rejected)?;
+    let track_id = report.track_id;
+    if report.status == ReportStatus::Created && !preview {
+        if let Some(track) = track_id {
+            db::extras::made_track(&mut tx, extra.id, track, reason).await?;
+        }
+        tx.commit().await?;
+    } else {
+        tx.rollback().await?;
+    }
+    Ok(MadeTrack { track_id, video: video.id, title: video.title, artists: video.artists, report })
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Merge {
@@ -349,7 +475,7 @@ mod tests {
     use sha2::{Digest, Sha256};
     use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 
-    use crate::api::uploads::tests::{app, send, user};
+    use crate::api::uploads::tests::{app, send, state, user};
 
     /// A form with one file (and an `imported_from`).
     fn form(name: &str, bytes: &str) -> Body {
@@ -388,6 +514,68 @@ mod tests {
         assert_eq!((got["already"][0]["file"].as_str(), got["already"][0]["name"].as_str()), (Some("b.zip"), Some("First")));
         let files: i64 = sqlx::query_scalar("SELECT count(*) FROM extra_files").fetch_one(&owner).await?;
         assert_eq!(files, 1);
+        Ok(())
+    }
+
+    /// A video kept as an extra becomes a track from what YouTube says of it: looked at
+    /// first (nothing kept), then made (the extra taken off), and not twice.
+    #[sqlx::test]
+    async fn an_extra_becomes_a_track_from_its_video(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
+        use crate::auth::{CurrentUser, Login, Permission};
+        use crate::db;
+
+        let (owner, state, _dir) = state(connect.clone()).await?;
+        let app = crate::api::router(state.clone());
+        let alice = user(&owner, "alice").await?;
+        let audio = std::fs::read(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("test-audio/01 - Glass Harbor.flac"))?;
+        let name = "Glass Harbor [dQw4w9WgXcQ].flac";
+        let mut form = format!("--b\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{name}\"\r\n\r\n").into_bytes();
+        form.extend(&audio);
+        form.extend(b"\r\n--b--\r\n");
+        let (_, made) = send(&app, "POST", "/api/extras", &alice, Body::from(serde_json::json!({ "name": name, "kind": "video" }).to_string()), Some("application/json")).await;
+        let id: uuid::Uuid = made["id"].as_str().unwrap().parse()?;
+        let (status, got) = send(&app, "POST", &format!("/api/extras/{id}/files"), &alice, Body::from(form), Some("multipart/form-data; boundary=b")).await;
+        assert_eq!(status, StatusCode::OK, "{got}");
+
+        let alice_id: uuid::Uuid = sqlx::query_scalar("SELECT id FROM users WHERE username = 'alice'").fetch_one(&owner).await?;
+        let user = CurrentUser { login: Some(Login { id: alice_id, username: "alice".into(), session_id: uuid::Uuid::nil() }), permissions: vec![Permission::Admin] };
+        let extra = {
+            let mut tx = state.db(&user).await?;
+            db::extras::get(&mut tx, id).await?.unwrap()
+        };
+        let video = crate::ingest::youtube::parse(&serde_json::json!({
+            "id": "dQw4w9WgXcQ", "title": "Mira Vale - Glass Harbor (Official Video)", "channel": "Mira Vale", "channel_id": "UCabc",
+            "upload_date": "20210604"
+        }))
+        .unwrap();
+        let tracks = || async { sqlx::query_scalar::<_, i64>("SELECT count(*) FROM tracks").fetch_one(&owner).await };
+
+        let looked = super::make_track(&state, &user, &extra, &extra.files[0], video.clone(), "", true).await.map_err(|e| anyhow::anyhow!("{e:?}"))?;
+        assert_eq!((looked.title.as_str(), looked.artists.clone()), ("Mira Vale - Glass Harbor (Official Video)", vec!["Mira Vale".to_string()]));
+        assert_eq!(tracks().await?, 0, "only looked at");
+        let hidden: bool = sqlx::query_scalar("SELECT hidden_at IS NOT NULL FROM extras WHERE id = $1").bind(id).fetch_one(&owner).await?;
+        assert!(!hidden);
+
+        let made = super::make_track(&state, &user, &extra, &extra.files[0], video.clone(), "from YouTube", false).await.map_err(|e| anyhow::anyhow!("{e:?}"))?;
+        let track = made.track_id.expect("a track");
+        assert_eq!(tracks().await?, 1);
+        let (title, release, artist): (String, Option<String>, String) = sqlx::query_as(
+            "SELECT t.title, t.release_date::text, a.name FROM tracks t JOIN track_credits c ON c.track_id = t.id AND c.role = 'primary' JOIN artists a ON a.id = c.artist_id WHERE t.id = $1",
+        )
+        .bind(track)
+        .fetch_one(&owner)
+        .await?;
+        assert_eq!((title.as_str(), release.as_deref(), artist.as_str()), ("Mira Vale - Glass Harbor (Official Video)", Some("2021-06-04"), "Mira Vale"));
+        let sources: Vec<(String, Option<String>)> = sqlx::query_as("SELECT s.platform, s.external_id FROM sources s ORDER BY s.platform, s.external_id").fetch_all(&owner).await?;
+        assert!(sources.contains(&("youtube".to_string(), Some("dQw4w9WgXcQ".to_string()))), "the video is its source: {sources:?}");
+        assert!(sources.contains(&("youtube".to_string(), Some("UCabc".to_string()))), "the channel is the artist's: {sources:?}");
+        let hidden: bool = sqlx::query_scalar("SELECT hidden_at IS NOT NULL FROM extras WHERE id = $1").bind(id).fetch_one(&owner).await?;
+        assert!(hidden, "the extra is taken off");
+
+        // Again: the file is a track's already.
+        let again = super::make_track(&state, &user, &extra, &extra.files[0], video, "", false).await.map_err(|e| anyhow::anyhow!("{e:?}"))?;
+        assert_eq!(serde_json::to_value(&again.report)?["status"], "duplicate");
+        assert_eq!(tracks().await?, 1);
         Ok(())
     }
 }

@@ -10,6 +10,11 @@
 //!
 //! Links are the same `POST /api/extras/{id}/links` the extra's own page uses, one per extra.
 //!
+//! The sixth choice makes tracks of them, from their YouTube videos (the id at the end of the
+//! name, "Title [id].mp4"): Look asks the server what each would become (title, artists,
+//! video; `POST /api/extras/{id}/to-track` with `preview`), and Make does it for those that
+//! can be. Each extra is taken off (kept), its file now a track's.
+//!
 //! The fifth choice merges them into another extra (the same file twice, say): the extra is
 //! chosen by name, what moves is shown, and Merge does it (`POST /api/extras/{id}/merge`; the
 //! marked ones go to the trash, where taking one out undoes it).
@@ -24,7 +29,7 @@ use super::marking::{paint_box, Key, Marking};
 use crate::catalog::model::Extra;
 use crate::catalog::search::Part;
 use crate::catalog::Catalog;
-use crate::ui::edit::extras::{files_text, merge_request, MergeReport, Owner};
+use crate::ui::edit::extras::{files_text, merge_request, to_track_request, MadeTrack, MergeReport, Owner};
 use crate::ui::edit::inline_search::{describe, Choice, InlineSearch};
 use crate::ui::theme::{font, medium, semibold, PALETTE as P};
 use crate::ui::{widgets, Action, Page, Shell};
@@ -40,7 +45,12 @@ enum Target {
     Grouping,
     /// Merged into another extra.
     Merge,
+    /// Made into tracks, from their YouTube videos.
+    Tracks,
 }
+
+/// What an extra would become as a track, or why not.
+type Looked = (Uuid, String, Result<MadeTrack, String>);
 
 /// A merge being looked over: what would move, before it's done.
 struct Pending {
@@ -50,7 +60,7 @@ struct Pending {
 }
 
 impl Target {
-    const ALL: [Target; 5] = [Target::Track, Target::Album, Target::Artist, Target::Grouping, Target::Merge];
+    const ALL: [Target; 6] = [Target::Track, Target::Album, Target::Artist, Target::Grouping, Target::Merge, Target::Tracks];
 
     fn name(self) -> &'static str {
         match self {
@@ -59,6 +69,7 @@ impl Target {
             Target::Artist => "artist",
             Target::Grouping => "grouping",
             Target::Merge => "merge into an extra",
+            Target::Tracks => "make tracks (YouTube)",
         }
     }
 
@@ -67,7 +78,7 @@ impl Target {
             Target::Track => Some(Part::Tracks),
             Target::Album => Some(Part::Albums),
             Target::Artist => Some(Part::Artists),
-            Target::Grouping => None,
+            Target::Grouping | Target::Tracks => None,
             Target::Merge => Some(Part::Extras),
         }
     }
@@ -92,6 +103,10 @@ pub struct UnlinkedExtras {
     said: Option<Result<String, String>>,
     pending: Option<Pending>,
     preview: Arc<Mutex<Option<Result<MergeReport, String>>>>,
+    /// Making tracks: what each of these would become, once looked at.
+    plan: Option<Vec<Looked>>,
+    looking: bool,
+    looked: Arc<Mutex<Option<Vec<Looked>>>>,
 }
 
 impl Default for UnlinkedExtras {
@@ -110,6 +125,9 @@ impl Default for UnlinkedExtras {
             said: None,
             pending: None,
             preview: Arc::default(),
+            plan: None,
+            looking: false,
+            looked: Arc::default(),
         }
     }
 }
@@ -141,6 +159,10 @@ impl UnlinkedExtras {
                     self.said = Some(Err(err));
                 }
             }
+        }
+        if let Some(plan) = self.looked.lock().unwrap().take() {
+            self.looking = false;
+            self.plan = Some(plan);
         }
         // Linked ones leave the list at once; forget them once the library says so too.
         self.linked.retain(|id| catalog.extras.iter().any(|e| e.id == *id && e.links.is_empty()));
@@ -263,6 +285,7 @@ impl UnlinkedExtras {
                     self.target = target;
                     self.prefilled = None;
                     self.pending = None;
+                    self.plan = None;
                     if let Some(part) = target.part() {
                         self.search = InlineSearch::new(part);
                     }
@@ -318,6 +341,7 @@ impl UnlinkedExtras {
                     }
                 }
             }
+            None if self.target == Target::Tracks => self.tracks_ui(ui, shell, catalog, &targets),
             None => {
                 let mut picked = None;
                 egui::ComboBox::from_id_salt("unlinked-extras-grouping").selected_text("Choose a grouping…").show_ui(ui, |ui| {
@@ -368,6 +392,70 @@ impl UnlinkedExtras {
         } else if let Some(said) = self.said.clone() {
             self.say(ui, said);
         }
+    }
+
+    /// Making tracks: look at what each marked extra would become, then make them.
+    fn tracks_ui(&mut self, ui: &mut egui::Ui, shell: &Shell, catalog: &Arc<Catalog>, targets: &[Uuid]) {
+        // What was looked at is for those extras only.
+        if self.plan.as_ref().is_some_and(|p| p.iter().map(|l| l.0).collect::<Vec<_>>() != targets) {
+            self.plan = None;
+        }
+        ui.label(RichText::new("Each becomes a track from its YouTube video, found by the [id] at the end of its name: title, artist (or channel), date and thumbnail as YouTube says. The extra is taken off (kept); the track plays its file.").color(P.muted));
+        ui.horizontal(|ui| {
+            if ui.add_enabled(!targets.is_empty() && !self.looking && !self.sending, egui::Button::new(format!("Look at {}", if targets.len() == 1 { "it".to_string() } else { format!("{} extras", targets.len()) }))).clicked() {
+                self.looking = true;
+                self.said = None;
+                self.plan = None;
+                let named: Vec<(Uuid, String)> = targets.iter().filter_map(|id| catalog.extras.iter().find(|e| e.id == *id)).map(|e| (e.id, e.name.clone())).collect();
+                let (api, ctx, into) = (shell.api.clone(), shell.ctx.clone(), self.looked.clone());
+                shell.runtime.spawn(async move {
+                    let mut plan = Vec::new();
+                    for (id, name) in named {
+                        let result = to_track_request(&api, id, None, true).await;
+                        plan.push((id, name, result));
+                    }
+                    *into.lock().unwrap() = Some(plan);
+                    ctx.request_repaint();
+                });
+            }
+            if self.looking {
+                ui.label(RichText::new("Asking YouTube…").color(P.muted));
+            }
+        });
+        let Some(plan) = &self.plan else { return };
+        let makeable: Vec<Uuid> = plan.iter().filter(|(_, _, r)| r.as_ref().is_ok_and(|m| !m.already())).map(|l| l.0).collect();
+        for (_, name, result) in plan {
+            match result {
+                Ok(made) if made.already() => ui.label(RichText::new(format!("{name}: {} is a track already", made.describe())).color(P.faint)),
+                Ok(made) => ui.label(RichText::new(format!("{name} → {}", made.describe())).color(P.text)),
+                Err(err) => ui.label(RichText::new(format!("{name}: {err}")).color(P.danger)),
+            };
+        }
+        if ui.add_enabled(!makeable.is_empty() && !self.sending, egui::Button::new(format!("Make {} track{}", makeable.len(), if makeable.len() == 1 { "" } else { "s" }))).clicked() {
+            self.make_all(shell, makeable);
+        }
+    }
+
+    fn make_all(&mut self, shell: &Shell, extras: Vec<Uuid>) {
+        self.sending = true;
+        self.said = None;
+        self.plan = None;
+        self.linked.extend(extras.iter().copied());
+        self.marking.clear();
+        let (api, ctx, result) = (shell.api.clone(), shell.ctx.clone(), self.result.clone());
+        shell.runtime.spawn(async move {
+            let (mut done, mut failed) = (0, Vec::new());
+            for id in &extras {
+                match to_track_request(&api, *id, None, false).await {
+                    Ok(_) => done += 1,
+                    Err(e) => failed.push(e),
+                }
+            }
+            let tracks = if done == 1 { "1 track".to_string() } else { format!("{done} tracks") };
+            let said = if failed.is_empty() { Ok(format!("Made {tracks}.")) } else { Err(format!("Made {tracks}, {} failed: {}", failed.len(), failed[0])) };
+            *result.lock().unwrap() = Some(said);
+            ctx.request_repaint();
+        });
     }
 
     fn merge_all(&mut self, shell: &Shell, pending: Pending) {

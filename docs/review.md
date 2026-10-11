@@ -46,6 +46,12 @@ Shift+click or Shift+↑/↓ for a range, `Ctrl+A` for all shown, `Esc` to clear
 narrows the list first). Then choose what they belong to (track, album, artist or grouping),
 type its name and press Enter: every marked extra is linked to it, and leaves the list.
 
+The last choice, **make tracks (YouTube)**, is for videos downloaded from YouTube (their
+names end with the video's id, `Title [id].mp4`): **Look** asks YouTube what each marked
+extra would become (title, artist, video), and lists the ones that can't (no id, a video
+YouTube can't read, a file that is a track already); **Make** turns the rest into tracks and
+takes the extras off (kept). Needs yt-dlp on the server.
+
 With nothing marked, the extra under the cursor is the one, and its name is typed into the
 search for you: click a row (or move to it), check the match, Enter. Enter on a row puts the
 cursor in the search, `Esc` takes it out. `i`, "Open" on a row or a double-click goes to the

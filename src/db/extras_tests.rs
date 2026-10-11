@@ -419,3 +419,16 @@ async fn extras_are_merged_and_the_merge_undone(_: PgPoolOptions, connect: PgCon
     assert!(!db::trash::list(&mut tx).await?.iter().any(|i| i.id == twin));
     Ok(())
 }
+
+#[sqlx::test]
+async fn an_extra_that_became_a_track_is_taken_off(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
+    let lib = setup(connect).await?;
+    let mut tx = db::begin(&lib.app, Some(lib.carol)).await?;
+    let (id, _) = db::extras::create(&mut tx, "Clip [dQw4w9WgXcQ].mp4", "video", &About::default(), &[], None, "").await?;
+    db::extras::made_track(&mut tx, id, lib.o, "from YouTube").await?;
+    assert!(db::extras::get(&mut tx, id).await?.unwrap().hidden, "taken off, kept");
+    let log = db::extras::history(&mut tx, id).await?;
+    assert_eq!(log.first().map(|l| l.what.as_str()), Some("made a track"));
+    assert!(db::extras::set_hidden(&mut tx, id, false, "").await?, "and can be brought back");
+    Ok(())
+}

@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE extras SET hidden_at = COALESCE(hidden_at, now()) WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "473fd3e32149bb57b887b5a11e417473d4cbe6bbdd8cd915910a2c0a59221e7e"
+}
