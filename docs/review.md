@@ -41,11 +41,15 @@ all of them.
 ## Unlinked extras
 
 The **Unlinked extras** chip lists extras that belong to nothing yet (videos imported from
-disk, for one). Click rows to select them (Shift+click for a range, or "Select all shown";
-the text filter narrows the list first). Then choose what they belong to (track, album, artist
-or grouping), type its name and press Enter: every selected extra is linked to it, and leaves
-the list. With a single extra selected, its name is typed into the search for you. "Open" on a
-row (or a double-click) goes to the extra's own page; unlinking is done there.
+disk, for one). They are marked like tracks are: the box in front, `x`, Ctrl+click,
+Shift+click or Shift+↑/↓ for a range, `Ctrl+A` for all shown, `Esc` to clear (the text filter
+narrows the list first). Then choose what they belong to (track, album, artist or grouping),
+type its name and press Enter: every marked extra is linked to it, and leaves the list.
+
+With nothing marked, the extra under the cursor is the one, and its name is typed into the
+search for you: click a row (or move to it), check the match, Enter. Enter on a row puts the
+cursor in the search, `Esc` takes it out. `i`, "Open" on a row or a double-click goes to the
+extra's own page; unlinking is done there.
 
 ## Bulk tools
 
