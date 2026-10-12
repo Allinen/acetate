@@ -9,7 +9,7 @@ into staged changes, you look at the preview, and `Ctrl+Enter` applies.
 
 ```
 artist:Ann role:featured
-album:Some EP #1
+album:Some EP n:1
 status:demo | date:2020
 -genre:rap
 ```
@@ -19,13 +19,16 @@ status:demo | date:2020
   language. On a [track's page](track-page.md) this commandline is the page's: it has the
   page's keys too, and it's there in listen mode.) If any of them can't be understood (no artist by that name), *none* of it is
   staged, and you're told why.
-- A change is a key, its value, and that key's own extras: `role:` and `as:` after an
-  artist, `kind:` after an album, a grouping or a related track, a source's fields after
-  `source:`. Anything else is part of the value, so `title:Intro: Part 2` needs no quotes.
+- A change is a key, its value, and that key's own arguments, in any order: `role:`, `as:`
+  and `n:` (its place) after an artist, `kind:` and `n:` (its numbers: `n:5`, `n:2-5` for
+  disc 2 track 5, `n:1+` in order from 1) after an album, `kind:` after a grouping or a
+  related track, a source's fields after `source:`. Anything else is part of the value, so
+  `title:Intro: Part 2` needs no quotes.
   A value with a `|` in it is quoted (`title:"guy | more"`) or escaped (`title:guy \| more`).
 - While you type a part, the choices appear under the commandline (artists, albums, roles,
-  statuses…). `↑`/`↓` choose, `Tab` takes the choice and starts the next part (after an
-  artist: `role:`, then `as:`, then its place `#`), `Enter` takes it and stages it.
+  statuses…). `↑`/`↓` choose, `Tab` takes the choice and leaves a space, after which the
+  list shows what can follow it (after an artist: `role:`, `as:`, `n:`), and `Enter` takes
+  it and stages it. The filter's keys can be typed by their start (`art:`, `gen:`, `stat:`).
 - `-genre:rap` takes one value off; `-artist` clears all of them.
 - Plain words find things to change by name, or tools: `credited as`, merging two marked
   tracks… On a track's page they find the page's actions too: `merge`, `extra`, `lyrics`,
@@ -48,22 +51,23 @@ With many tracks, each field shows how many tracks differ.
 These are changes like the rest, applied together with them:
 
 - `cover:paste` (or `Ctrl+V` with an image, or drop an image file), `cover:file`,
-  `cover:<album or track>` (a copy of its cover), `-cover:#2`. A track or album has each
-  image once: adding one it has already is refused.
-- `source:<link>`, `-source:#1`, `origin:#2`
+  `cover:<album or track>` (a copy of its cover: `which:2` its second one), `-cover:2`.
+  `n:` says where a new one goes (`cover:paste n:1`: the main one), and `cover:3 n:1` makes
+  its third cover the main one. A track or album has each image once: adding one it has
+  already is refused.
+- `source:<link>`, `-source:1` (its first to the trash), `source:1` (correct its first),
+  `origin:2` (the file came from its second)
 - `source:custom vk, sent by a friend`: a source with no platform. The label goes before
   the comma; anything after it is the description.
 - `source:qq song_id:1234 song_mid:0039MnYb0qxYhV`: a platform
   and its fields, typed one by one. Use this when a link doesn't say enough. It works for
-  every platform, and fields chain like `artist:` → `role:` → `as:`. `Tab` on a platform
-  adds its first field (`source:q` → `source:qq song_id:`). After a value,
-  `Tab` adds the next field not given yet, needed ones first. The choices under the commandline
-  say what each field takes. A value runs until the next field, and a list field is given
+  every platform: after the platform and a space, the list shows its fields (needed ones
+  first) and what each takes. A value runs until the next field, and a list field is given
   once per item (`song_permalinks:a/b song_permalinks:a/c`).
 - Fields can follow a link or a custom label too: `source:<link> description:sent by a
   friend`, `source:custom vk url:https://…`.
-- `name:` and `status:` are editor keys (the title, the status), so a platform's fields of
-  those names can't be typed after `source:`: they'd change the track's title or status.
+- After `source:`, any `name:` is one of its fields, `name:` and `status:` too (a change of
+  the track's title or status goes after a `|`).
 - `source:=…` makes it the track's only source, and the file comes from it. This is generally
   the preferred method for fixing generic sources.
 

@@ -7,8 +7,9 @@ use std::sync::{Arc, Mutex};
 
 use acetate_core::editor::engine::{Env, Phase};
 use acetate_core::editor::panel::{self, Flag, RowKind};
-use acetate_core::editor::parse::quoted;
-use acetate_core::editor::resolve::Candidate;
+use acetate_core::commandline::schema::{self, Take};
+use acetate_core::editor::parse::LINE;
+use acetate_core::editor::resolve::Pick;
 use acetate_core::editor::session::{Chooser, Finish, Session, Undoer};
 use uuid::Uuid;
 
@@ -103,7 +104,8 @@ pub struct EditorChoice {
     pub sub: String,
     /// The line with this choice in (then `choose` it, so the name stands for it).
     pub line: String,
-    /// The same, with what comes next after it (`role:`…) added: Tab's.
+    /// The same with a space after it when something can follow it (the list then shows
+    /// what); else the same as `line`.
     pub line_next: String,
 }
 
@@ -137,13 +139,26 @@ impl acetate_core::Wake for EditorWake {
     }
 }
 
+/// No choices of its own: what a line can go on with is the keys that can follow.
+struct Nothing;
+
+impl schema::Lists<Pick> for Nothing {
+    fn choices(&self, _: schema::Kind, _: &str, _: &schema::Node, _: &schema::Node) -> Vec<schema::Row<Pick>> {
+        Vec::new()
+    }
+
+    fn offers(&self, spec: &schema::Spec) -> bool {
+        !acetate_core::editor::parse::is_page(spec)
+    }
+}
+
 #[derive(uniffi::Object)]
 pub struct Editor {
     shared: Arc<Shared>,
     runtime: tokio::runtime::Handle,
     session: Arc<Mutex<Session>>,
-    /// The list last made, for `choose`.
-    listed: Mutex<Vec<(Candidate, usize, usize)>>,
+    /// The list last made, for `choose`: what each choice stands for, and its name.
+    listed: Mutex<Vec<Option<(Pick, String)>>>,
     finish: Arc<Mutex<Option<Finish>>>,
     undoer: Mutex<Option<Undoer>>,
     /// The tracks written by the edit that finished.
@@ -327,22 +342,27 @@ impl Editor {
         let chooser: Chooser = self.session.lock().unwrap().chooser();
         let text = line.clone();
         let found = self.runtime.spawn_blocking(move || chooser.choices(&text)).await.unwrap_or_default();
-        let (from, to) = found.value;
-        let (before, after) = (&line[..from.min(line.len())], &line[to.min(line.len())..]);
         let mut listed = Vec::new();
         let mut out = Vec::new();
-        for c in &found.candidates {
-            let value = if c.text == line[from.min(line.len())..to.min(line.len())] { c.text.clone() } else { quoted(&c.text) };
-            let line = format!("{before}{value}{after}");
-            let line_next = match &c.next {
-                Some(next) => format!("{line} {next}"),
-                None => line.clone(),
+        let mut pins = schema::Pins::default();
+        for row in &found.rows {
+            let (line, line_next) = match &row.take {
+                // A thing to change by that name: the line it starts.
+                Take::Page(Pick::Line(text)) => (text.clone(), text.clone()),
+                _ => {
+                    let now = schema::take(&LINE, &line, row, false, &mut pins);
+                    // With a space after it, when something can follow it (an artist's role:…);
+                    // else the line is done (a tap stages it).
+                    let after = schema::take(&LINE, &line, row, true, &mut pins);
+                    let follows = !schema::rows(&LINE, &schema::parse(&LINE, &after), &after, &Nothing).is_empty();
+                    (now.clone(), if follows { after } else { now })
+                }
             };
-            out.push(EditorChoice { label: c.label.clone(), sub: c.sub.clone(), line, line_next });
-            listed.push((c.clone(), from, to));
-        }
-        for (label, text) in &found.actions {
-            out.push(EditorChoice { label: label.clone(), sub: String::new(), line: text.clone(), line_next: text.clone() });
+            out.push(EditorChoice { label: row.label.clone(), sub: row.sub.clone(), line, line_next });
+            listed.push(match &row.take {
+                Take::Choose(name, pick) => Some((pick.clone(), name.clone())),
+                _ => None,
+            });
         }
         *self.listed.lock().unwrap() = listed;
         EditorChoices { choices: out, waiting: found.waiting }
@@ -352,8 +372,8 @@ impl Editor {
     /// artist chosen, or a new one to make).
     pub fn choose(&self, place: u32) {
         let listed = self.listed.lock().unwrap();
-        if let Some((c, _, _)) = listed.get(place as usize) {
-            self.session.lock().unwrap().take(c);
+        if let Some(Some((pick, name))) = listed.get(place as usize) {
+            self.session.lock().unwrap().take(pick, name);
         }
     }
 

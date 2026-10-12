@@ -15,7 +15,8 @@ use std::collections::HashMap;
 use uuid::Uuid;
 
 use super::model::{Image, Numbers, Op};
-use super::parse::{self, Part, K};
+use super::parse::{self, Node};
+use crate::commandline::schema::{self, Row, Take};
 use super::title_parse::{Credited, TitlesParsed};
 use crate::account::Vocab;
 use crate::catalog::query::loosely_in;
@@ -231,126 +232,113 @@ pub struct Resolved {
     pub page: Option<Opaque>,
 }
 
-/// The line's parts as units (a part with the `role:`, `as:`, `kind:` after it), each
-/// resolved. Also says whether something was still loading (then it's worth asking again).
+/// The line's commands as units, each resolved (the track page's say they're the page's:
+/// the page resolves them). Also says whether something was still loading (then it's worth
+/// asking again).
 pub fn resolve(line: &str, ctx: &Ctx, look: &mut dyn Lookups) -> (Vec<Unit>, bool) {
     let parsed = parse::parse(line);
     let mut units = Vec::new();
     let mut waiting = false;
-    let mut before = 0;
-    for command in parsed.commands() {
-        let (main, mods) = (&command[0], &command[1..]);
-        let start = line[..main.value_start].rfind(|c: char| c.is_whitespace() || c == '|').map_or(0, |w| w + 1);
-        let end = command[command.len() - 1].end;
-        let text = line[start..end].trim().to_string();
+    for (n, c) in parsed.commands.iter().enumerate() {
+        let text = schema::command_text(line, c).to_string();
         // A line album for `disc:` / `track:` after it.
-        let line_album = parsed.parts[..before].iter().rev().find(|p| p.key == K::Album && !p.minus).and_then(|p| album(&p.value, ctx).ok()).map(|a| a.0);
-        before += command.len();
+        let line_album = parsed.commands[..n].iter().rev().find(|p| p.spec.key == "album" && !p.minus).and_then(|p| album(&p.value, ctx).ok()).map(|a| a.0);
         // `parse:` reads what's typed after it itself (its own quotes and words).
-        let result = match main.key {
-            K::Parse => parse_titles(&line[main.value_start..end], ctx, look, &mut waiting),
-            _ => unit(main, mods, ctx, line_album, look, &mut waiting),
+        let result = match c.spec.key {
+            "parse" => parse_titles(&line[c.value_start..c.text_end()], ctx, look, &mut waiting),
+            _ if parse::is_page(c.spec) => Err(format!("{}: on a track's page", c.spec.key)),
+            _ => unit(c, ctx, line_album, look, &mut waiting),
         };
         units.push(Unit { text, result });
+    }
+    // Words that aren't a command (an argument without its command: where it goes).
+    if let Some(word) = parsed.words.first().filter(|w| w.contains(':') || w.starts_with('-')) {
+        units.push(Unit { text: word.clone(), result: Err(parse::LINE.not_a_command(word)) });
     }
     (units, waiting)
 }
 
-fn unit(
-    main: &Part,
-    mods: &[Part],
-    ctx: &Ctx,
-    line_album: Option<Uuid>,
-    look: &mut dyn Lookups,
-    waiting: &mut bool,
-) -> Result<Resolved, String> {
-    let value = main.value.trim();
+/// A place typed after `n:` or as a value (from 1), as one from 0.
+fn place(typed: &str, what: &str) -> Result<usize, String> {
+    let typed = typed.trim();
+    typed.parse::<usize>().ok().filter(|n| *n >= 1).map(|n| n - 1).ok_or_else(|| format!("{typed}: a {what}'s place is a number from 1"))
+}
+
+/// Whether a value is a number (a place).
+fn number(value: &str) -> bool {
+    !value.is_empty() && value.chars().all(|c| c.is_ascii_digit())
+}
+
+fn unit(c: &Node, ctx: &Ctx, line_album: Option<Uuid>, look: &mut dyn Lookups, waiting: &mut bool) -> Result<Resolved, String> {
+    let value = c.value.trim();
     let none = |v: &str| v.is_empty() || v.eq_ignore_ascii_case("none");
     let many = ctx.targets > 1;
     let done = |label: String, ops: Vec<Op>| Ok(Resolved { label, ops, ..Default::default() });
-    // `role:`, `as:` and `kind:` belong after something; `#` only after some.
-    let modifier = |k: K| mods.iter().find(|p| p.key == k);
-    let hash = mods.iter().rev().chain(std::iter::once(main)).find_map(|p| p.hash.clone());
-    let only = |allowed: &[K]| -> Result<(), String> {
-        match mods.iter().find(|p| !allowed.contains(&p.key)) {
-            Some(p) => Err(format!("{}: doesn't go after {}:", p.name(), main.key.name())),
-            None => Ok(()),
-        }
-    };
-    match main.key {
-        K::Title => {
-            only(&[])?;
-            if main.minus || value.is_empty() {
+    let arg = |k: &str| c.arg(k);
+    // How it's typed first (the page's own words after).
+    let wrong = schema::problems(c).into_iter().filter(|p| !p.ends_with("needs a value")).collect::<Vec<_>>();
+    if !wrong.is_empty() {
+        return Err(wrong.join(" · "));
+    }
+    match c.spec.key {
+        "title" => {
+            if c.minus || value.is_empty() {
                 return Err("title: type it after the colon (a track needs one)".into());
             }
             let warning = many.then(|| format!("every one of the {} tracks gets this title", ctx.targets));
             Ok(Resolved { label: format!("title → “{value}”"), ops: vec![Op::Title(value.into())], warning, ..Default::default() })
         }
-        K::Date => {
-            only(&[])?;
-            if main.minus || none(value) {
+        "date" => {
+            if c.minus || none(value) {
                 done("release date → none".into(), vec![Op::Date(None)])
             } else {
                 done(format!("release date → {value}"), vec![Op::Date(Some(value.into()))])
             }
         }
-        K::Comment => {
-            only(&[])?;
-            if main.minus || none(value) {
+        "comment" => {
+            if c.minus || none(value) {
                 done("comment → none".into(), vec![Op::Comment(None)])
             } else {
                 done(format!("comment → “{value}”"), vec![Op::Comment(Some(value.into()))])
             }
         }
-        K::Status => {
-            only(&[])?;
-            match find_in(&ctx.vocab.statuses, value) {
-                Some(s) => done(format!("status → {s}"), vec![Op::Status(s)]),
-                None if value.is_empty() => Err("status: choose one".into()),
-                None => Err(format!("no status like “{value}”")),
+        "status" => match find_in(&ctx.vocab.statuses, value) {
+            Some(s) => done(format!("status → {s}"), vec![Op::Status(s)]),
+            None if value.is_empty() => Err("status: choose one".into()),
+            None => Err(format!("no status like “{value}”")),
+        },
+        "genre" => match (c.minus, c.colon) {
+            (true, false) => done("genres → none".into(), vec![Op::NoGenres]),
+            (true, true) if value.is_empty() => Err("-genre: which one (or -genre alone: all of them)".into()),
+            (true, true) => done(format!("genres: − {value}"), vec![Op::NoGenre(value.into())]),
+            _ if none(value) => done("genres → none".into(), vec![Op::NoGenres]),
+            _ => {
+                let genres: Vec<&str> = value.split(',').map(str::trim).filter(|g| !g.is_empty()).collect();
+                done(format!("genres: + {}", genres.join(", ")), genres.iter().map(|g| Op::Genre(g.to_string())).collect())
             }
-        }
-        K::Genre => {
-            only(&[])?;
-            match (main.minus, main.colon) {
-                (true, false) => done("genres → none".into(), vec![Op::NoGenres]),
-                (true, true) if value.is_empty() => Err("-genre: which one (or -genre alone: all of them)".into()),
-                (true, true) => done(format!("genres: − {value}"), vec![Op::NoGenre(value.into())]),
-                _ if none(value) => done("genres → none".into(), vec![Op::NoGenres]),
-                _ => {
-                    let genres: Vec<&str> = value.split(',').map(str::trim).filter(|g| !g.is_empty()).collect();
-                    done(format!("genres: + {}", genres.join(", ")), genres.iter().map(|g| Op::Genre(g.to_string())).collect())
-                }
-            }
-        }
-        K::Artist | K::Featured => {
-            only(&[K::Role, K::As])?;
-            if main.minus && !main.colon {
-                if main.key == K::Featured {
-                    return Err("-feat alone isn't anything: -artist takes every artist off".into());
-                }
+        },
+        "artist" | "feat" => {
+            let featured = c.spec.key == "feat";
+            if c.minus && !c.colon {
                 return done("artists → none".into(), vec![Op::NoCredits]);
             }
             if value.is_empty() {
-                return Err(format!("{}: type a name", main.key.name()));
+                return Err(format!("{}: type a name", c.spec.key));
             }
             let (id, name) = artist(value, ctx)?;
-            let role = match (modifier(K::Role), main.key) {
+            let role = match (arg("role"), featured) {
                 (Some(p), _) => Some(find_in(&ctx.vocab.credit_roles, &p.value).ok_or_else(|| format!("no role like “{}”", p.value))?),
-                (None, K::Featured) => Some("featured".to_string()),
+                (None, true) => Some("featured".to_string()),
                 _ => None,
             };
-            if main.minus {
-                if modifier(K::As).is_some() || hash.is_some() {
-                    return Err("taking an artist off needs no as: or #".into());
-                }
+            if c.minus {
                 let label = match &role {
                     Some(r) => format!("artists: − {name} ({r})"),
                     None => format!("artists: − {name}"),
                 };
                 return done(label, vec![Op::Uncredit { artist: id, role }]);
             }
-            let alias = match modifier(K::As) {
+            let alias = match arg("as") {
                 None => None,
                 Some(p) if none(&p.value) || p.value.trim().eq_ignore_ascii_case(&name) || p.value.trim().eq_ignore_ascii_case("own") => Some(None),
                 Some(p) => {
@@ -370,12 +358,8 @@ fn unit(
                     }
                 }
             };
-            let at = match &hash {
-                Some(h) if h.is_empty() => None,
-                Some(h) => match h.parse::<usize>() {
-                    Ok(n) if n >= 1 => Some(n - 1),
-                    _ => return Err(format!("#{h}: an artist's place is a number from 1")),
-                },
+            let at = match arg("n") {
+                Some(n) => Some(place(&n.value, "artist")?),
                 None => None,
             };
             let mut label = format!("artists: + {name}");
@@ -391,37 +375,36 @@ fn unit(
                 label.push_str(&format!(", credited as “{shown}”"));
             }
             if let Some(at) = at {
-                label.push_str(&format!(", #{}", at + 1));
+                label.push_str(&format!(", place {}", at + 1));
             }
             done(label, vec![Op::Credit { artist: id, role, alias, at }])
         }
-        K::Album => {
-            only(&[K::Kind])?;
-            if main.minus && !main.colon {
+        "album" => {
+            if c.minus && !c.colon {
                 return done("albums → none".into(), vec![Op::NoAlbums]);
             }
             if value.is_empty() {
                 return Err("album: type its title".into());
             }
             let (id, title) = album(value, ctx)?;
-            if main.minus {
+            if c.minus {
                 return done(format!("albums: − “{title}”"), vec![Op::NoAlbum(id)]);
             }
             let new = ctx.names.is_new(id);
-            let kind = match modifier(K::Kind) {
+            let kind = match arg("kind") {
                 Some(_) if !new => return Err("kind: only for a new album (an album's own kind is changed on its page)".into()),
                 Some(p) => Some(find_in(&ctx.vocab.album_kinds, &p.value).ok_or_else(|| format!("no album kind like “{}”", p.value))?),
                 None => None,
             };
-            let numbers = match hash.as_deref().map(parse::numbers) {
+            let numbers = match arg("n").map(|n| (n.value.trim().to_string(), schema::place(&n.value))) {
                 None => Numbers::Keep,
-                Some(None) => return Err("#: a track number (#5), disc and track (#2-5), or in order from (#1+)".into()),
-                Some(Some((_, Some(from), true))) => Numbers::InOrder(from),
-                Some(Some((disc, number, _))) => {
-                    if many && number.is_some() {
-                        return Err(format!("#{}: one number for {} tracks; #{}+ numbers them in order", hash.unwrap_or_default(), ctx.targets, number.unwrap_or(1)));
+                Some((typed, None)) => return Err(format!("n:{typed}: a track number (5), disc and track (2-5), or in order from (1+)")),
+                Some((_, Some(p))) if p.in_order => Numbers::InOrder(p.n),
+                Some((typed, Some(p))) => {
+                    if many {
+                        return Err(format!("n:{typed}: one number for {} tracks; n:{}+ numbers them in order", ctx.targets, p.n));
                     }
-                    Numbers::At { disc, number }
+                    Numbers::At { disc: p.disc, number: Some(p.n) }
                 }
             };
             let mut label = if new {
@@ -437,70 +420,59 @@ fn unit(
             }
             Ok(Resolved { label, ops: vec![Op::Album { album: id, numbers }], new_kind: kind.map(|k| (id, k)), ..Default::default() })
         }
-        K::Disc | K::Number => {
-            only(&[])?;
+        "disc" | "track" => {
             let Some(on) = line_album.or(ctx.context_album).or(ctx.staged_album) else {
-                return Err(format!("{}: on which album? (album:… first, or on an album's page)", main.key.name()));
+                return Err(format!("{}: on which album? (album:… first, or on an album's page)", c.spec.key));
             };
             let title = album_title(ctx, on);
             let (digits, in_order) = match value.strip_suffix('+') {
                 Some(d) => (d, true),
                 None => (value, false),
             };
-            let n: i16 = digits.trim().parse().ok().filter(|n| *n > 0).ok_or_else(|| format!("{}: “{value}” isn't a number", main.key.name()))?;
-            match (main.key, in_order) {
-                (K::Disc, false) => done(format!("disc on “{title}” → {n}"), vec![Op::Album { album: on, numbers: Numbers::At { disc: Some(n), number: None } }]),
-                (K::Disc, true) => Err("disc: one number (track:N+ numbers in order)".into()),
+            let n: i16 = digits.trim().parse().ok().filter(|n| *n > 0).ok_or_else(|| format!("{}: “{value}” isn't a number", c.spec.key))?;
+            match (c.spec.key, in_order) {
+                ("disc", false) => done(format!("disc on “{title}” → {n}"), vec![Op::Album { album: on, numbers: Numbers::At { disc: Some(n), number: None } }]),
+                ("disc", true) => Err("disc: one number (track:N+ numbers in order)".into()),
                 (_, true) => done(format!("track numbers on “{title}”: in order from {n}"), vec![Op::Album { album: on, numbers: Numbers::InOrder(n) }]),
                 (_, false) => {
                     let warning = many.then(|| format!("every one of the {} tracks gets number {n} (track:{n}+ numbers them in order)", ctx.targets));
-                    Ok(Resolved {
-                        label: format!("track number on “{title}” → {n}"),
-                        ops: vec![Op::Album { album: on, numbers: Numbers::At { disc: None, number: Some(n) } }],
-                        warning,
-                        ..Default::default()
-                    })
+                    Ok(Resolved { label: format!("track number on “{title}” → {n}"), ops: vec![Op::Album { album: on, numbers: Numbers::At { disc: None, number: Some(n) } }], warning, ..Default::default() })
                 }
             }
         }
-        K::Related => {
-            only(&[K::Kind])?;
+        "related" => {
             if !ctx.may_relate {
                 return Err("related tracks need the edit_relations permission".into());
             }
-            if main.minus && !main.colon {
+            if c.minus && !c.colon {
                 return done("related → none".into(), vec![Op::NoRelations]);
             }
             if value.is_empty() {
                 return Err("related: type the other track's title".into());
             }
             let (id, title) = track(value, ctx)?;
-            if main.minus {
+            if c.minus {
                 return done(format!("related: − “{title}”"), vec![Op::Unrelate(id)]);
             }
-            let kind = match modifier(K::Kind) {
+            let kind = match arg("kind") {
                 Some(p) => relation_kind(ctx.vocab, &p.value).ok_or_else(|| format!("no relation like “{}”", p.value))?,
                 None => ctx.vocab.relation_kinds.first().map(|k| k.kind.clone()).ok_or("no relation kinds")?,
             };
             let warning = many.then(|| format!("every one of the {} tracks gets this relation; usually it's one track's", ctx.targets));
             Ok(Resolved { label: format!("related: {}", relation_sentence(ctx.vocab, &kind, &title)), ops: vec![Op::Relate { track: id, kind }], warning, ..Default::default() })
         }
-        K::Group => {
-            only(&[K::Kind])?;
-            if main.minus && !main.colon {
-                return Err("-group alone isn't anything: -group:name takes it out of that one".into());
-            }
+        "group" => {
             if value.is_empty() {
-                return Err(format!("{}group: type its name", if main.minus { "-" } else { "" }));
+                return Err(format!("{}group: type its name", if c.minus { "-" } else { "" }));
             }
             let (id, name, kind, new) = grouping(value, ctx)?;
-            if main.minus {
+            if c.minus {
                 if new {
                     return Err(format!("“{name}” isn't made yet: nothing is in it"));
                 }
                 return done(format!("grouping: − “{name}” ({kind}), and a single it's alone on"), vec![Op::Ungroup(id)]);
             }
-            let kind = match modifier(K::Kind) {
+            let kind = match arg("kind") {
                 Some(_) if !new => return Err("kind: only for a new grouping (a grouping's own kind is changed on its page)".into()),
                 Some(p) if valid_grouping_kind(p.value.trim()) => p.value.trim().to_string(),
                 Some(p) => return Err(format!("“{}” isn't a kind of grouping (lowercase letters: collective, era, project…)", p.value)),
@@ -509,17 +481,13 @@ fn unit(
             let label = if new { format!("grouping: + “{name}” (new {kind})") } else { format!("grouping: + “{name}” ({kind})") };
             Ok(Resolved { label: format!("{label}, and a single it's alone on"), ops: vec![Op::Group(id)], new_kind: new.then_some((id, kind)), ..Default::default() })
         }
-        K::Flag => {
-            only(&[])?;
-            if main.minus && !main.colon {
-                return Err("-flag alone isn't anything: -flag:name settles that kind of flag on it".into());
-            }
+        "flag" => {
             if value.is_empty() {
-                return Err(format!("{}flag: type its name", if main.minus { "-" } else { "" }));
+                return Err(format!("{}flag: type its name", if c.minus { "-" } else { "" }));
             }
             let typed = value.split_whitespace().collect::<Vec<_>>().join(" ");
             let same = ctx.vocab.review_kinds.iter().find(|k| k.name.eq_ignore_ascii_case(&typed) || k.kind.eq_ignore_ascii_case(&typed));
-            if main.minus {
+            if c.minus {
                 let k = same.ok_or_else(|| format!("no kind of flag named “{typed}”"))?;
                 return done(format!("flag: settles its “{}” flags", k.name), vec![Op::Unflag { kind: k.kind.clone(), name: k.name.clone() }]);
             }
@@ -529,180 +497,175 @@ fn unit(
                 None => done(format!("flag: + “{typed}” (a new kind of flag, listed on Review)"), vec![Op::Flag { kind: typed.clone(), name: typed, new: true }]),
             }
         }
-        K::Single => {
-            only(&[])?;
-            if main.minus || !value.is_empty() {
+        "single" => {
+            if c.minus || !value.is_empty() {
                 return Err("single: alone (a single of its own for each track); nothing after it".into());
             }
             done("a single of its own, for each (named after it as it'll be; its primary artists, date and covers)".into(), vec![Op::Single])
         }
-        K::Suffix => {
-            only(&[])?;
-            let v = main.value.trim();
-            if main.minus {
-                return match v {
+        "suffix" => {
+            if c.minus {
+                return match value {
                     "" => Err("-suffix: from what on to take off: -suffix:\\| or -suffix:( or -suffix:\"| Some Tape\" (a | alone separates changes: \\| or quotes)".into()),
-                    _ => done(format!("title: from the last “{v}” to the end taken off, where it has one (suffix: alone puts it back)"), vec![Op::CutSuffix(v.into())]),
+                    _ => done(format!("title: from the last “{value}” to the end taken off, where it has one (suffix: alone puts it back)"), vec![Op::CutSuffix(value.into())]),
                 };
             }
-            match v {
+            match value {
                 "" => done("title: what -suffix: took off, put back".into(), vec![Op::AddSuffix(None)]),
-                _ => done(format!("title: + “{v}” at the end, where it doesn't end with it"), vec![Op::AddSuffix(Some(v.into()))]),
+                _ => done(format!("title: + “{value}” at the end, where it doesn't end with it"), vec![Op::AddSuffix(Some(value.into()))]),
             }
         }
-        K::Why => {
-            only(&[])?;
-            done(format!("why: “{value}”"), vec![Op::Why(value.into())])
-        }
-        K::Along => {
-            only(&[])?;
-            match value.to_lowercase().as_str() {
-                // (Left out, they follow what changes; typed, they're made to match.)
-                "on" | "yes" | "" => done("albums it's alone on: made to match it (title, date, performers), changed or not".into(), vec![Op::Sync]),
-                "off" | "no" => done("albums it's alone on: left as they are".into(), vec![Op::Along(false)]),
-                _ => Err("along: on (made to match) or off".into()),
-            }
-        }
-        K::Cover => {
-            only(&[])?;
-            let warning = many.then(|| format!("each of the {} tracks gets this cover", ctx.targets));
-            if main.minus {
-                return match (main.colon, main.hashes.as_slice()) {
-                    (false, _) => done("covers → none (to the trash)".into(), vec![Op::NoCovers]),
-                    (true, [h]) if value.is_empty() => {
-                        let n = place(h, "cover")?;
-                        done(format!("cover #{} → the trash", n + 1), vec![Op::NoCover(n)])
-                    }
-                    _ => Err("-cover:#N puts the Nth in the trash; -cover alone, all of them".into()),
-                };
-            }
-            let lower = value.to_lowercase();
-            match lower.as_str() {
-                "" => match main.hashes.as_slice() {
-                    [from, to] => {
-                        let (from, to) = (place(from, "cover")?, place(to, "cover")?);
-                        done(format!("cover #{}{}", from + 1, goes(Some(to))), vec![Op::MoveCover { from, to }])
-                    }
-                    _ => Err("cover: paste, file, or a track or album to copy one of its covers from (cover:#3 #1 makes the third the main one)".into()),
-                },
-                "paste" | "clipboard" | "file" | "browse" => {
-                    let at = match main.hashes.as_slice() {
-                        [] => None,
-                        [h] => Some(place(h, "cover")?),
-                        _ => return Err("one # after it: where it goes".into()),
-                    };
-                    let (what, want) = match lower.as_str() {
-                        "paste" | "clipboard" => ("the image in the clipboard", Want::Paste { at }),
-                        _ => ("an image from a file (choose it next)", Want::File { at }),
-                    };
-                    Ok(Resolved { label: format!("cover: + {what}{}", goes(at)), warning, want: Some(want), ..Default::default() })
-                }
-                _ => {
-                    let name = if lower.starts_with("from:") { value[5..].trim() } else { value };
-                    let (kind, id, title) = cover_owner(name, ctx)?;
-                    let (which, at) = match main.hashes.as_slice() {
-                        [] => (0, None),
-                        [which] => (place(which, "cover")?, None),
-                        [which, at] => (place(which, "cover")?, Some(place(at, "cover")?)),
-                        _ => return Err("cover:… #which #where".into()),
-                    };
-                    let whose = match kind {
-                        PinKind::Album => format!("the album “{title}”"),
-                        _ => format!("the track “{title}”"),
-                    };
-                    let Some(covers) = look.covers(kind, id) else {
-                        *waiting = true;
-                        return Err(format!("looking up {whose}'s covers…"));
-                    };
-                    let Some((cover, sha)) = covers.get(which).cloned() else {
-                        return Err(match covers.len() {
-                            0 => format!("{whose} has no covers of its own"),
-                            n => format!("{whose} has {n} covers"),
-                        });
-                    };
-                    let which = if covers.len() > 1 { format!(" {}", which + 1) } else { String::new() };
-                    Ok(Resolved {
-                        label: format!("cover: + {whose}'s cover{which}{}", goes(at)),
-                        ops: vec![Op::Cover { image: Image::CopyOf(cover), sha, at }],
-                        warning,
-                        ..Default::default()
-                    })
-                }
-            }
-        }
-        K::Source => {
-            only(&[K::Field])?;
-            if !ctx.may_source {
-                return Err("sources need the edit_sources permission".into());
-            }
-            if main.minus {
-                return match (main.colon, main.hashes.as_slice()) {
-                    (false, _) => done("sources → none (to the trash)".into(), vec![Op::NoSources]),
-                    (true, [h]) if value.is_empty() => {
-                        let n = place(h, "source")?;
-                        done(format!("source #{} → the trash", n + 1), vec![Op::NoSource(n)])
-                    }
-                    _ => Err("-source:#N puts the Nth in the trash; -source alone, all of them".into()),
-                };
-            }
-            // `source:=…`: its only source from now on, and where its file came from.
-            let (replace, value) = match value.strip_prefix('=') {
-                Some(rest) => (true, rest.trim()),
-                None => (false, value),
-            };
-            if replace && value.is_empty() {
-                return Err("source:= and a link (or custom and where it's from): its only source, the file from there too".into());
-            }
-            if value.is_empty() {
-                return match main.hashes.as_slice() {
-                    [h] if !many => {
-                        let n = place(h, "source")?;
-                        Ok(Resolved { label: format!("source #{}: correct it (its form opens)", n + 1), want: Some(Want::Correct(n)), ..Default::default() })
-                    }
-                    [_] => Err("correcting a source is one track's".into()),
-                    _ => Err("source: a link, or custom and where it's from (custom vk, sent by a friend)".into()),
-                };
-            }
-            let fields: Vec<(&str, &str)> = mods.iter().map(|p| (p.name(), p.value.trim())).collect();
-            let typed = super::source_line::typed(value, &fields, "track", &ctx.vocab.source_shapes)?;
-            let (platform, name, data, shown) = (typed.platform, typed.name, typed.data, typed.shown);
-            let id = {
-                use std::hash::{Hash, Hasher};
-                let mut h = std::hash::DefaultHasher::new();
-                (&platform, data.to_string()).hash(&mut h);
-                Uuid::from_u128(0xACE7_5000_0000_4000_8000_0000_0000_0000 | h.finish() as u128)
-            };
-            let source = Op::Source { id, platform, name, data };
-            if replace {
-                let label = format!("sources → only {shown}, and the file came from it (the others to the trash)");
-                return done(label, vec![Op::NoSources, source, Op::Origin(0)]);
-            }
-            let warning = many.then(|| format!("every one of the {} tracks gets this source; usually it's one track's", ctx.targets));
-            Ok(Resolved { label: format!("source: + {shown}"), ops: vec![source], warning, ..Default::default() })
-        }
-        K::Origin => {
-            only(&[])?;
+        "why" => done(format!("why: “{value}”"), vec![Op::Why(value.into())]),
+        "along" => match value.to_lowercase().as_str() {
+            // (Left out, they follow what changes; typed, they're made to match.)
+            "on" | "yes" | "" => done("albums it's alone on: made to match it (title, date, performers), changed or not".into(), vec![Op::Sync]),
+            "off" | "no" => done("albums it's alone on: left as they are".into(), vec![Op::Along(false)]),
+            _ => Err("along: on (made to match) or off".into()),
+        },
+        "cover" => cover(c, ctx, look, waiting),
+        "source" => source(c, ctx),
+        "origin" => {
             if !ctx.may_source {
                 return Err("where a file came from needs the edit_sources permission".into());
             }
             if many {
                 return Err("where a file came from is one track's".into());
             }
-            match main.hashes.as_slice() {
-                [h] if value.is_empty() && !main.minus => {
-                    let n = place(h, "source")?;
-                    done(format!("the file came from source #{}", n + 1), vec![Op::Origin(n)])
-                }
-                _ => Err("origin:#N: the file came from its Nth source".into()),
+            if c.minus || !number(value) {
+                return Err("origin:N: the file came from its Nth source".into());
             }
+            let n = place(value, "source")?;
+            done(format!("the file came from source {}", n + 1), vec![Op::Origin(n)])
         }
-        K::Role | K::As | K::Kind => Err(format!("{}: goes after what it's about (artist:… role:…)", main.key.name())),
-        K::Parse => Err("parse: on its own".into()),
-        K::Field => Err(format!("{}: goes after source: and its platform (source:distrokid album_uuid:…)", main.name())),
-        K::Split | K::Whole | K::Keep | K::Word => Err(format!("{}: goes after parse: (parse:feat prod {}:…)", main.key.name(), main.key.name())),
-        K::Other(k) => Err(format!("{}: not something to change here", k.name())),
-        K::Page(k) => Err(format!("{}: on a track's page", k.name())),
+        key => Err(format!("{key}: not something to change here")),
     }
+}
+
+/// `cover:…`: an image added (`paste`, `file`, another album's or track's), one of its own
+/// moved (`cover:3 n:1`), or taken off (`-cover:2`, `-cover`).
+fn cover(c: &Node, ctx: &Ctx, look: &mut dyn Lookups, waiting: &mut bool) -> Result<Resolved, String> {
+    let value = c.value.trim();
+    let done = |label: String, ops: Vec<Op>| Ok(Resolved { label, ops, ..Default::default() });
+    let warning = (ctx.targets > 1).then(|| format!("each of the {} tracks gets this cover", ctx.targets));
+    let at = match c.arg("n") {
+        Some(n) => Some(place(&n.value, "cover")?),
+        None => None,
+    };
+    if c.minus {
+        return match (c.colon, number(value)) {
+            (false, _) => done("covers → none (to the trash)".into(), vec![Op::NoCovers]),
+            (true, true) => {
+                let n = place(value, "cover")?;
+                done(format!("cover {} → the trash", n + 1), vec![Op::NoCover(n)])
+            }
+            _ => Err("-cover:N puts the Nth in the trash; -cover alone, all of them".into()),
+        };
+    }
+    if c.arg("which").is_some() && (number(value) || cover_word(value)) {
+        return Err("which: is for another album's or track's covers (cover:Long Player which:2)".into());
+    }
+    let lower = value.to_lowercase();
+    match lower.as_str() {
+        "" => Err("cover: paste, file, or a track or album to copy one of its covers from (cover:3 n:1 makes the third the main one)".into()),
+        _ if number(value) => {
+            let from = place(value, "cover")?;
+            let to = at.unwrap_or(0);
+            if from == to {
+                return Err(format!("cover {} is there already", from + 1));
+            }
+            done(format!("cover {}{}", from + 1, goes(Some(to))), vec![Op::MoveCover { from, to }])
+        }
+        "paste" | "clipboard" | "file" | "browse" => {
+            let (what, want) = match lower.as_str() {
+                "paste" | "clipboard" => ("the image in the clipboard", Want::Paste { at }),
+                _ => ("an image from a file (choose it next)", Want::File { at }),
+            };
+            Ok(Resolved { label: format!("cover: + {what}{}", goes(at)), warning, want: Some(want), ..Default::default() })
+        }
+        _ => {
+            let (kind, id, title) = cover_owner(value, ctx)?;
+            let which = match c.arg("which") {
+                Some(w) => place(&w.value, "cover")?,
+                None => 0,
+            };
+            let whose = match kind {
+                PinKind::Album => format!("the album “{title}”"),
+                _ => format!("the track “{title}”"),
+            };
+            let Some(covers) = look.covers(kind, id) else {
+                *waiting = true;
+                return Err(format!("looking up {whose}'s covers…"));
+            };
+            let Some((cover, sha)) = covers.get(which).cloned() else {
+                return Err(match covers.len() {
+                    0 => format!("{whose} has no covers of its own"),
+                    n => format!("{whose} has {n} covers"),
+                });
+            };
+            let which = if covers.len() > 1 { format!(" {}", which + 1) } else { String::new() };
+            Ok(Resolved { label: format!("cover: + {whose}'s cover{which}{}", goes(at)), ops: vec![Op::Cover { image: Image::CopyOf(cover), sha, at }], warning, ..Default::default() })
+        }
+    }
+}
+
+/// The words a cover's value can be instead of a name.
+fn cover_word(value: &str) -> bool {
+    ["paste", "clipboard", "file", "browse"].contains(&value.trim().to_lowercase().as_str())
+}
+
+/// `source:…` (a link, a platform and its fields, custom; `=`: its only one), `source:N` (its
+/// form, to correct it), `-source:N`, `-source`.
+fn source(c: &Node, ctx: &Ctx) -> Result<Resolved, String> {
+    let value = c.value.trim();
+    let many = ctx.targets > 1;
+    let done = |label: String, ops: Vec<Op>| Ok(Resolved { label, ops, ..Default::default() });
+    if !ctx.may_source {
+        return Err("sources need the edit_sources permission".into());
+    }
+    if c.minus {
+        return match (c.colon, number(value)) {
+            (false, _) => done("sources → none (to the trash)".into(), vec![Op::NoSources]),
+            (true, true) => {
+                let n = place(value, "source")?;
+                done(format!("source {} → the trash", n + 1), vec![Op::NoSource(n)])
+            }
+            _ => Err("-source:N puts the Nth in the trash; -source alone, all of them".into()),
+        };
+    }
+    if number(value) {
+        if many {
+            return Err("correcting a source is one track's".into());
+        }
+        let n = place(value, "source")?;
+        return Ok(Resolved { label: format!("source {}: correct it (its form opens)", n + 1), want: Some(Want::Correct(n)), ..Default::default() });
+    }
+    // `source:=…`: its only source from now on, and where its file came from.
+    let (replace, value) = match value.strip_prefix('=') {
+        Some(rest) => (true, rest.trim()),
+        None => (false, value),
+    };
+    if replace && value.is_empty() {
+        return Err("source:= and a link (or custom and where it's from): its only source, the file from there too".into());
+    }
+    if value.is_empty() {
+        return Err("source: a link, or custom and where it's from (custom vk, sent by a friend)".into());
+    }
+    let fields: Vec<(&str, &str)> = c.fields().map(|(n, v)| (n, v.trim())).collect();
+    let typed = super::source_line::typed(value, &fields, "track", &ctx.vocab.source_shapes)?;
+    let (platform, name, data, shown) = (typed.platform, typed.name, typed.data, typed.shown);
+    let id = {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::hash::DefaultHasher::new();
+        (&platform, data.to_string()).hash(&mut h);
+        Uuid::from_u128(0xACE7_5000_0000_4000_8000_0000_0000_0000 | h.finish() as u128)
+    };
+    let source = Op::Source { id, platform, name, data };
+    if replace {
+        let label = format!("sources → only {shown}, and the file came from it (the others to the trash)");
+        return done(label, vec![Op::NoSources, source, Op::Origin(0)]);
+    }
+    let warning = many.then(|| format!("every one of the {} tracks gets this source; usually it's one track's", ctx.targets));
+    Ok(Resolved { label: format!("source: + {shown}"), ops: vec![source], warning, ..Default::default() })
 }
 
 /// `parse:` and what goes with it (`raw`, as typed): every target's title parsed with the
@@ -813,17 +776,12 @@ fn valid_grouping_kind(kind: &str) -> bool {
     kind.starts_with(|c: char| c.is_ascii_lowercase()) && kind.chars().all(|c| c.is_ascii_lowercase() || c == '_')
 }
 
-/// `#N` as a place from 0.
-fn place(hash: &str, what: &str) -> Result<usize, String> {
-    hash.parse::<usize>().ok().filter(|n| *n >= 1).map(|n| n - 1).ok_or_else(|| format!("#{hash}: a {what}'s place is a number from 1"))
-}
-
 /// Where a cover goes, in words (None: last).
 fn goes(at: Option<usize>) -> String {
     match at {
         None => String::new(),
         Some(0) => " as the main one".into(),
-        Some(n) => format!(" as #{}", n + 1),
+        Some(n) => format!(" in place {}", n + 1),
     }
 }
 
@@ -943,208 +901,233 @@ pub fn relation_sentence(vocab: &Vocab, kind: &str, other: &str) -> String {
     }
 }
 
-/// A choice listed under the line, for the part being typed.
-#[derive(Debug, Clone)]
-pub struct Candidate {
-    pub label: String,
-    pub sub: String,
-    /// What goes in the line for the value.
-    pub text: String,
-    /// What the text stands for from then on.
-    pub pick: Option<Pick>,
-    /// The next part to type after it, on Tab (`role:`, `as:`, `kind:`, `#`, a source's
-    /// first needed field).
-    pub next: Option<String>,
-}
-
-#[derive(Debug, Clone)]
+/// What a choice in the list stands for (the line has its name): one in the library, or a
+/// new one to make by that name. `Line`: a line to type, for plain words (`actions`).
+#[derive(Debug, Clone, PartialEq)]
 pub enum Pick {
     Pin(PinKind, Uuid),
     NewArtist,
     NewAlbum,
     NewGrouping,
+    Line(String),
 }
 
-/// Which library search the part being typed needs, if any (a cover's: albums, and
+/// Which library search the value being typed needs, if any (a cover's: albums, and
 /// tracks too, see `cover_value`).
-pub fn search_for(part: &Part) -> Option<SearchPart> {
-    match part.key {
-        K::Artist | K::Featured => Some(SearchPart::Artists),
-        K::Album => Some(SearchPart::Albums),
-        K::Related => Some(SearchPart::Tracks),
-        K::Cover if cover_value(part).is_some() => Some(SearchPart::Albums),
+pub fn search_for(node: &Node) -> Option<SearchPart> {
+    if node.field.is_some() || node.minus {
+        return None;
+    }
+    match node.spec.key {
+        "artist" | "feat" if !parse::is_page(node.spec) => Some(SearchPart::Artists),
+        "album" => Some(SearchPart::Albums),
+        "related" => Some(SearchPart::Tracks),
+        "cover" if cover_value(node).is_some() => Some(SearchPart::Albums),
         _ => None,
     }
 }
 
 /// A cover's value when it names a track or album to copy from (not `paste`, `file`, a
-/// `#`…).
-pub fn cover_value(part: &Part) -> Option<String> {
-    let value = part.value.trim();
-    let value = if value.to_lowercase().starts_with("from:") { value[5..].trim() } else { value };
+/// number…).
+pub fn cover_value(node: &Node) -> Option<String> {
+    let value = node.value.trim();
     let word = ["paste", "clipboard", "file", "browse"].iter().any(|w| w.starts_with(&value.to_lowercase()));
-    (part.key == K::Cover && !part.minus && !value.is_empty() && !word && part.hash.is_none()).then(|| value.to_string())
+    (node.spec.key == "cover" && node.field.is_none() && !node.minus && !value.is_empty() && !word && !number(value)).then(|| value.to_string())
 }
 
-/// The choices for the last part of the line. `group`: for a modifier, the part it goes
-/// with (`role:` after `artist:`…) and the modifiers between (a source's fields given
-/// already); `hits`: the library's matches for its value (see `search_for`); `track_hits`:
-/// tracks' too, for a cover.
-pub fn candidates(part: &Part, group: &[Part], ctx: &Ctx, hits: &[u32], track_hits: &[u32], look: &mut dyn Lookups) -> Vec<Candidate> {
-    let owner = group.first();
-    let value = part.value.trim();
-    let simple = |list: &[String], label: &dyn Fn(&str) -> String| -> Vec<Candidate> {
+/// The choices for the value being typed (`node`, in `command`): `hits` are the library's
+/// matches for it (see `search_for`), `track_hits` tracks' too, for a cover.
+pub fn choices(node: &Node, command: &Node, ctx: &Ctx, hits: &[u32], track_hits: &[u32], look: &mut dyn Lookups) -> Vec<Row<Pick>> {
+    let value = node.value.trim();
+    let row = |label: String, sub: String, take: Take<Pick>| Row { label, sub, take };
+    let simple = |list: &[String], label: &dyn Fn(&str) -> String| -> Vec<Row<Pick>> {
         list.iter()
             .filter(|s| value.is_empty() || s.to_lowercase().starts_with(&value.to_lowercase()) || loosely_in(value, s))
-            .map(|s| Candidate { label: label(s), sub: String::new(), text: s.clone(), pick: None, next: None })
+            .map(|s| row(label(s), String::new(), Take::Value(s.clone())))
             .collect()
     };
+    if node.field.is_some() {
+        return Vec::new();
+    }
+    let is_command = std::ptr::eq(node, command);
     let mut out = Vec::new();
-    match part.key {
-        K::Artist | K::Featured => {
+    match (command.spec.key, node.spec.key) {
+        ("artist" | "feat", _) if is_command => {
             for &i in hits {
                 let (name, sub) = crate::catalog::search::describe(ctx.catalog, SearchPart::Artists, i);
                 let a = &ctx.catalog.artists[i as usize];
-                out.push(Candidate { label: name.clone(), sub, text: a.label(), pick: Some(Pick::Pin(PinKind::Artist, a.id)), next: (!part.minus).then(|| "role:".into()) });
+                out.push(row(name, sub, Take::Choose(a.label(), Pick::Pin(PinKind::Artist, a.id))));
             }
-            if !value.is_empty() && !part.minus {
-                out.push(Candidate { label: format!("New artist “{value}”"), sub: "made when it's applied".into(), text: value.to_string(), pick: Some(Pick::NewArtist), next: Some("role:".into()) });
+            if !value.is_empty() && !node.minus {
+                out.push(row(format!("New artist “{value}”"), "made when it's applied".into(), Take::Choose(value.to_string(), Pick::NewArtist)));
             }
         }
-        K::Album => {
+        ("album", "album") => {
             for &i in hits {
                 let (title, sub) = crate::catalog::search::describe(ctx.catalog, SearchPart::Albums, i);
                 let a = &ctx.catalog.album_at(i);
-                out.push(Candidate { label: title, sub, text: a.title().to_string(), pick: Some(Pick::Pin(PinKind::Album, a.id())), next: (!part.minus).then(|| "#".into()) });
+                out.push(row(title, sub, Take::Choose(a.title().to_string(), Pick::Pin(PinKind::Album, a.id()))));
             }
-            if !value.is_empty() && !part.minus {
-                out.push(Candidate { label: format!("New album “{value}”"), sub: "made when it's applied".into(), text: value.to_string(), pick: Some(Pick::NewAlbum), next: Some("kind:".into()) });
+            if !value.is_empty() && !node.minus {
+                out.push(row(format!("New album “{value}”"), "made when it's applied".into(), Take::Choose(value.to_string(), Pick::NewAlbum)));
             }
         }
-        K::Related => {
+        ("related", "related") => {
             for &i in hits {
                 let (title, sub) = crate::catalog::search::describe(ctx.catalog, SearchPart::Tracks, i);
                 let t = &ctx.catalog.track_at(i);
-                out.push(Candidate { label: title, sub, text: t.title().to_string(), pick: Some(Pick::Pin(PinKind::Track, t.id())), next: (!part.minus).then(|| "kind:".into()) });
+                out.push(row(title, sub, Take::Choose(t.title().to_string(), Pick::Pin(PinKind::Track, t.id()))));
             }
         }
-        K::Status => out = simple(&ctx.vocab.statuses, &|s| super::capitalized(s)),
-        K::Parse => {
+        ("status", _) => out = simple(&ctx.vocab.statuses, &|s| super::capitalized(s)),
+        ("parse", "parse") => {
             // The rules not typed yet, for the word being typed.
             let mut words: Vec<&str> = value.split_whitespace().collect();
-            let typing = if value.is_empty() || part.value.ends_with(char::is_whitespace) { "" } else { words.pop().unwrap_or("") };
+            let typing = if value.is_empty() || node.value.ends_with(char::is_whitespace) { "" } else { words.pop().unwrap_or("") };
             // (`loose` only after `prefix`.)
             let fits = |r: &str| r != "loose" || words.last().is_some_and(|w| w.to_lowercase().starts_with("prefix"));
             for (rule, what) in crate::title_credits::RULES.iter().filter(|(r, _)| !words.contains(r) && fits(r) && r.starts_with(&typing.to_lowercase())) {
                 let text = words.iter().copied().chain([*rule]).collect::<Vec<_>>().join(" ");
-                out.push(Candidate { label: rule.to_string(), sub: what.to_string(), text, pick: None, next: None });
+                out.push(row(rule.to_string(), what.to_string(), Take::Raw(text)));
             }
         }
-        K::Whole => out = simple(&["on".to_string(), "off".to_string()], &|s| format!("whole:{s} (names that are an artist's kept whole)")),
-        K::Role => {
-            out = simple(&ctx.vocab.credit_roles, &|s| super::capitalized(s));
-            for c in &mut out {
-                c.next = Some("as:".into());
-            }
-        }
-        K::As => {
-            let artist = owner.filter(|o| matches!(o.key, K::Artist | K::Featured)).and_then(|o| artist(&o.value, ctx).ok());
-            if let Some((id, name)) = artist {
+        ("artist" | "feat", "role") => out = simple(&ctx.vocab.credit_roles, &|s| super::capitalized(s)),
+        ("artist" | "feat", "as") => {
+            if let Ok((id, name)) = artist(&command.value, ctx) {
                 let mut names = vec![name.clone()];
                 if !ctx.names.is_new(id) {
                     names.extend(look.aliases(id).unwrap_or_default().into_iter().map(|a| a.name));
                 }
                 out = simple(&names, &|s| if s == name { format!("{s} (its own name)") } else { s.to_string() });
-                for c in &mut out {
-                    c.next = Some("#".into());
-                }
             }
         }
-        K::Kind => match owner.map(|o| o.key) {
-            Some(K::Album) => out = simple(&ctx.vocab.album_kinds, &|s| format!("New {s}")),
-            Some(K::Group) => {
-                let kinds: Vec<String> = super::GROUPING_KINDS.iter().map(|k| k.to_string()).collect();
-                out = simple(&kinds, &|s| format!("New {s}"));
-            }
-            Some(K::Related) => {
-                let other = owner.and_then(|o| track(&o.value, ctx).ok()).map(|t| t.1).unwrap_or_else(|| "…".into());
-                out = ctx
-                    .vocab
-                    .relation_kinds
-                    .iter()
-                    .filter(|k| value.is_empty() || loosely_in(value, &k.kind.replace('_', " ")) || loosely_in(value, &k.template))
-                    .map(|k| Candidate { label: relation_sentence(ctx.vocab, &k.kind, &other), sub: String::new(), text: k.kind.clone(), pick: None, next: None })
-                    .collect();
-            }
-            _ => {}
-        },
-        K::Flag => {
+        ("album", "kind") => out = simple(&ctx.vocab.album_kinds, &|s| format!("New {s}")),
+        ("group", "kind") => {
+            let kinds: Vec<String> = super::GROUPING_KINDS.iter().map(|k| k.to_string()).collect();
+            out = simple(&kinds, &|s| format!("New {s}"));
+        }
+        ("related", "kind") => {
+            let other = track(&command.value, ctx).ok().map(|t| t.1).unwrap_or_else(|| "…".into());
+            out = ctx
+                .vocab
+                .relation_kinds
+                .iter()
+                .filter(|k| value.is_empty() || loosely_in(value, &k.kind.replace('_', " ")) || loosely_in(value, &k.template))
+                .map(|k| row(relation_sentence(ctx.vocab, &k.kind, &other), String::new(), Take::Value(k.kind.clone())))
+                .collect();
+        }
+        ("flag", _) => {
             let typed = value.split_whitespace().collect::<Vec<_>>().join(" ");
-            for k in ctx.vocab.review_kinds.iter().filter(|k| (part.minus || k.by_hand()) && (typed.is_empty() || k.name.to_lowercase().starts_with(&typed.to_lowercase()) || loosely_in(&typed, &k.name))) {
+            for k in ctx.vocab.review_kinds.iter().filter(|k| (node.minus || k.by_hand()) && (typed.is_empty() || k.name.to_lowercase().starts_with(&typed.to_lowercase()) || loosely_in(&typed, &k.name))) {
                 let sub = if k.custom { "made by people" } else if k.automatic { "the server's" } else { "" };
-                out.push(Candidate { label: k.name.clone(), sub: sub.into(), text: k.name.clone(), pick: None, next: None });
+                out.push(row(k.name.clone(), sub.into(), Take::Value(k.name.clone())));
             }
-            if !typed.is_empty() && !part.minus && !ctx.vocab.review_kinds.iter().any(|k| k.name.eq_ignore_ascii_case(&typed)) {
-                out.push(Candidate { label: format!("New flag “{typed}”"), sub: "a kind of flag, made when it's applied".into(), text: typed.clone(), pick: None, next: None });
+            if !typed.is_empty() && !node.minus && !ctx.vocab.review_kinds.iter().any(|k| k.name.eq_ignore_ascii_case(&typed)) {
+                out.push(row(format!("New flag “{typed}”"), "a kind of flag, made when it's applied".into(), Take::Value(typed.clone())));
             }
         }
-        K::Group => {
+        ("group", "group") => {
             for g in ctx.catalog.groupings.iter().filter(|g| value.is_empty() || g.name.to_lowercase().starts_with(&value.to_lowercase()) || loosely_in(value, &g.name)) {
-                out.push(Candidate { label: g.name.clone(), sub: g.kind.clone(), text: g.name.clone(), pick: Some(Pick::Pin(PinKind::Grouping, g.id)), next: None });
+                out.push(row(g.name.clone(), g.kind.clone(), Take::Choose(g.name.clone(), Pick::Pin(PinKind::Grouping, g.id))));
             }
-            if !value.is_empty() && !part.minus && !ctx.catalog.groupings.iter().any(|g| g.name.eq_ignore_ascii_case(value)) {
-                out.push(Candidate { label: format!("New grouping “{value}”"), sub: "made when it's applied".into(), text: value.to_string(), pick: Some(Pick::NewGrouping), next: Some("kind:".into()) });
+            if !value.is_empty() && !node.minus && !ctx.catalog.groupings.iter().any(|g| g.name.eq_ignore_ascii_case(value)) {
+                out.push(row(format!("New grouping “{value}”"), "made when it's applied".into(), Take::Choose(value.to_string(), Pick::NewGrouping)));
             }
         }
-        K::Cover if !part.minus && part.hash.is_none() => {
+        ("cover", "cover") if !node.minus => {
             let words = [("paste", "the image in the clipboard (or Ctrl+V anywhere here)"), ("file", "choose an image file")];
             for (word, sub) in words {
                 if value.is_empty() || word.starts_with(&value.to_lowercase()) {
-                    out.push(Candidate { label: word.into(), sub: sub.into(), text: word.into(), pick: None, next: Some("#".into()) });
+                    out.push(row(word.into(), sub.into(), Take::Value(word.into())));
                 }
             }
             for &i in hits.iter().take(5) {
                 let (title, sub) = crate::catalog::search::describe(ctx.catalog, SearchPart::Albums, i);
                 let a = &ctx.catalog.album_at(i);
-                out.push(Candidate { label: format!("its cover: {title}"), sub, text: a.title().to_string(), pick: Some(Pick::Pin(PinKind::Album, a.id())), next: Some("#".into()) });
+                out.push(row(format!("its cover: {title}"), sub, Take::Choose(a.title().to_string(), Pick::Pin(PinKind::Album, a.id()))));
             }
             for &i in track_hits.iter().take(5) {
                 let (title, sub) = crate::catalog::search::describe(ctx.catalog, SearchPart::Tracks, i);
                 let t = &ctx.catalog.track_at(i);
-                out.push(Candidate { label: format!("its cover: {title}"), sub, text: t.title().to_string(), pick: Some(Pick::Pin(PinKind::Track, t.id())), next: Some("#".into()) });
+                out.push(row(format!("its cover: {title}"), sub, Take::Choose(t.title().to_string(), Pick::Pin(PinKind::Track, t.id()))));
             }
         }
-        K::Source if !part.minus && part.hash.is_none() && ctx.may_source => {
+        ("source", "source") if !node.minus && ctx.may_source && !number(value) => {
             let (equals, rest) = match value.strip_prefix('=') {
                 Some(rest) => ("=", rest.trim()),
                 None => ("", value),
             };
             for c in super::source_line::platform_choices(rest, equals, "track", &ctx.vocab.source_shapes) {
-                out.push(Candidate { label: c.label, sub: c.sub, text: c.text, pick: None, next: c.next });
+                out.push(row(c.label, c.sub, Take::Raw(c.text)));
             }
-        }
-        // A source's field: what it takes, and on Tab the next field (needed ones first).
-        K::Field => {
-            let Some(owner) = owner.filter(|o| o.key == K::Source) else { return out };
-            let given: Vec<&str> = group.iter().skip(1).chain([part]).map(|p| p.name()).collect();
-            for c in super::source_line::field_choices(&owner.value, part.name(), value, &given, "track", &ctx.vocab.source_shapes) {
-                out.push(Candidate { label: c.label, sub: c.sub, text: c.text, pick: None, next: c.next });
-            }
-        }
-        K::Along => {
-            let label = |s: &str| match s {
-                "on" => "on: albums it's alone on made to match it, changed or not".to_string(),
-                _ => "off: only the tracks".to_string(),
-            };
-            out = simple(&["on".to_string(), "off".to_string()], &label);
         }
         _ => {}
     }
     // (Every rule of `parse:`: there are a dozen, and the last ones were cut off.)
-    if part.key != K::Parse {
+    if command.spec.key != "parse" {
         out.truncate(10);
     }
     out
+}
+
+/// The fields a `source:` can be given after its platform, besides `given`: (name, what
+/// it takes).
+pub fn source_fields(node: &Node, given: &[&str], ctx: &Ctx) -> Vec<(String, String)> {
+    if node.spec.key != "source" || node.minus || !ctx.may_source {
+        return Vec::new();
+    }
+    let value = node.value.trim().trim_start_matches('=');
+    let Some(shape) = super::source_line::shape_of(value, "track", &ctx.vocab.source_shapes) else { return Vec::new() };
+    shape
+        .fields
+        .iter()
+        .filter(|f| !given.iter().any(|g| f.name.eq_ignore_ascii_case(g)))
+        .map(|f| {
+            let what = match f.kind.as_str() {
+                "int" => "a number",
+                "strs" => "text; the field again for another",
+                _ => "text",
+            };
+            (f.name.clone(), format!("{what}{}", if f.required { " (needed)" } else { "" }))
+        })
+        .collect()
+}
+
+/// The node being typed at the end of the line, if a command is being typed.
+pub fn typed(line: &parse::Line) -> Option<&Node> {
+    line.current().map(|c| c.typed())
+}
+
+/// The editor's choices, as a schema's list has them: `hits` and `track_hits` are the
+/// library's matches for the value being typed (see `search_for`, `cover_value`). `page`:
+/// the track page's commands are offered too.
+pub struct Listing<'a> {
+    pub ctx: &'a Ctx<'a>,
+    pub hits: &'a [u32],
+    pub track_hits: &'a [u32],
+    pub look: std::cell::RefCell<&'a mut dyn Lookups>,
+    pub page: bool,
+}
+
+impl schema::Lists<Pick> for Listing<'_> {
+    fn choices(&self, _kind: schema::Kind, _typed: &str, node: &Node, command: &Node) -> Vec<Row<Pick>> {
+        choices(node, command, self.ctx, self.hits, self.track_hits, &mut **self.look.borrow_mut())
+    }
+
+    fn words(&self, typed: &str) -> Vec<Row<Pick>> {
+        if typed.trim().is_empty() {
+            return Vec::new();
+        }
+        actions(typed, self.ctx).into_iter().map(|(label, line)| Row { sub: line.clone(), label, take: Take::Page(Pick::Line(line)) }).collect()
+    }
+
+    fn fields(&self, node: &Node, given: &[&str]) -> Vec<(String, String)> {
+        source_fields(node, given, self.ctx)
+    }
+
+    fn offers(&self, spec: &schema::Spec) -> bool {
+        self.page || !parse::is_page(spec)
+    }
 }
 
 /// For plain words: the things to change by that name, each with what it puts in the line.
@@ -1192,13 +1175,15 @@ pub fn actions(words: &str, ctx: &Ctx) -> Vec<(String, String)> {
             ("Source: add a link…".to_string(), "source:".to_string()),
             ("Source: custom (where it's from)…".into(), "source:custom ".into()),
             ("Sources: replace them all with one, the file from there too…".into(), "source:=".into()),
-            ("Source: the file came from… (origin)".into(), "origin:#".into()),
+            ("Source: the file came from… (origin)".into(), "origin:".into()),
         ]);
     }
     for g in &ctx.catalog.groupings {
         all.push((format!("Grouping: into “{}” ({})", g.name, g.kind), format!("group:{}", parse::quoted(&g.name))));
     }
-    all.into_iter().filter(|(label, _)| loosely_in(words, label)).take(10).collect()
+    // (A key alone is listed as a key already: `title:`.)
+    let a_key = |line: &str| line.strip_suffix(':').is_some_and(|k| parse::LINE.command(k).is_some_and(|c| c.key == k));
+    all.into_iter().filter(|(label, line)| !a_key(line) && loosely_in(words, label)).take(10).collect()
 }
 
 #[cfg(test)]
@@ -1420,7 +1405,7 @@ mod tests {
 
     #[test]
     fn artists_with_role_place_and_replacing() {
-        assert_eq!(ops("artist:Bo role:prod #1"), [Op::Credit { artist: id(BO), role: Some("producer".into()), alias: None, at: Some(0) }]);
+        assert_eq!(ops("artist:Bo role:prod n:1"), [Op::Credit { artist: id(BO), role: Some("producer".into()), alias: None, at: Some(0) }]);
         assert_eq!(ops("feat:Bo"), [Op::Credit { artist: id(BO), role: Some("featured".into()), alias: None, at: None }]);
         assert_eq!(ops("-artist | artist:Bo"), [Op::NoCredits, Op::Credit { artist: id(BO), role: None, alias: None, at: None }]);
         assert_eq!(ops("-artist:Bo role:producer"), [Op::Uncredit { artist: id(BO), role: Some("producer".into()) }]);
@@ -1444,13 +1429,13 @@ mod tests {
     #[test]
     fn albums_and_their_numbers() {
         let lp = id(LP);
-        assert_eq!(ops("album:long player #2-5"), [Op::Album { album: lp, numbers: Numbers::At { disc: Some(2), number: Some(5) } }]);
+        assert_eq!(ops("album:long player n:2-5"), [Op::Album { album: lp, numbers: Numbers::At { disc: Some(2), number: Some(5) } }]);
         assert_eq!(ops("-album | album:long player | track:1+"), [Op::NoAlbums, Op::Album { album: lp, numbers: Numbers::Keep }, Op::Album { album: lp, numbers: Numbers::InOrder(1) }]);
         // Numbers need an album.
         assert!(run("track:3", &Names::default(), 1)[0].is_err());
         // One number for many tracks: refused (#N+ numbers them in order).
-        assert!(run("album:long player #3", &Names::default(), 3)[0].is_err());
-        assert!(run("album:long player #3+", &Names::default(), 3)[0].is_ok());
+        assert!(run("album:long player n:3", &Names::default(), 3)[0].is_err());
+        assert!(run("album:long player n:3+", &Names::default(), 3)[0].is_ok());
         // A new album's kind; an existing one's isn't changed here.
         let mut names = Names::default();
         let ep = names.new_album("Fresh EP");
@@ -1477,14 +1462,14 @@ mod tests {
     fn covers_copied_moved_and_trashed() {
         let copy = |n: u128, at| Op::Cover { image: Image::CopyOf(Uuid::from_u128(n)), sha: n.to_string().repeat(64), at };
         assert_eq!(ops("cover:long player"), [copy(1, None)]);
-        assert_eq!(ops("cover:from:Long Player #2 #1"), [copy(2, Some(0))]);
-        assert_eq!(ops("cover:#3 #1 | -cover:#2 | -cover"), [Op::MoveCover { from: 2, to: 0 }, Op::NoCover(1), Op::NoCovers]);
-        assert!(run("cover:long player #3", &Names::default(), 1)[0].is_err(), "it has two");
+        assert_eq!(ops("cover:Long Player which:2 n:1"), [copy(2, Some(0))]);
+        assert_eq!(ops("cover:3 n:1 | -cover:2 | -cover"), [Op::MoveCover { from: 2, to: 0 }, Op::NoCover(1), Op::NoCovers]);
+        assert!(run("cover:long player which:3", &Names::default(), 1)[0].is_err(), "it has two");
         assert!(run("cover:other song", &Names::default(), 1)[0].is_err(), "no covers of its own");
         // Pasted, and from a file: asked for first.
         let (catalog, vocab, names) = (catalog(), vocab(), Names::default());
         let ctx = Ctx { catalog: &catalog, vocab: &vocab, targets: 2, context_album: None, staged_album: None, names: &names, may_relate: true, may_source: true, titles: None, artist_names: None };
-        let (units, _) = resolve("cover:paste #1 | cover:file", &ctx, &mut Known);
+        let (units, _) = resolve("cover:paste n:1 | cover:file", &ctx, &mut Known);
         let r = units[0].result.as_ref().unwrap();
         assert_eq!((r.want.clone(), r.ops.is_empty(), r.warning.is_some()), (Some(Want::Paste { at: Some(0) }), true, true));
         assert_eq!(units[1].result.as_ref().unwrap().want, Some(Want::File { at: None }));
@@ -1505,12 +1490,12 @@ mod tests {
         ];
         let (catalog, names) = (catalog(), Names::default());
         let ctx = Ctx { catalog: &catalog, vocab: &vocab, targets: 1, context_album: None, staged_album: None, names: &names, may_relate: true, may_source: true, titles: None, artist_names: None };
-        let (units, _) = resolve("source:https://music.163.com/#/song?id=123 | source:custom vk, sent by a friend | origin:#2 | -source:#1", &ctx, &mut Known);
+        let (units, _) = resolve("source:https://music.163.com/#/song?id=123 | source:custom vk, sent by a friend | origin:2 | -source:1", &ctx, &mut Known);
         let ops: Vec<Op> = units.iter().flat_map(|u| u.result.clone().unwrap().ops).collect();
         let [Op::Source { platform, name, data, .. }, Op::Source { data: custom, .. }, Op::Origin(1), Op::NoSource(0)] = ops.as_slice() else { panic!("{ops:?}") };
         assert_eq!((platform.as_str(), name.as_str(), data.clone()), ("netease", "123", serde_json::json!({ "song_id": 123 })));
         assert_eq!(custom, &serde_json::json!({ "label": "vk", "description": "sent by a friend" }));
-        assert_eq!(resolve("source:#1", &ctx, &mut Known).0[0].result.as_ref().unwrap().want, Some(Want::Correct(0)));
+        assert_eq!(resolve("source:1", &ctx, &mut Known).0[0].result.as_ref().unwrap().want, Some(Want::Correct(0)));
         // Replacing them all, for many tracks too: every one off, this one on, the file from it.
         let many = Ctx { targets: 3, ..ctx };
         let (units, _) = resolve("source:= custom google drive, a shared folder", &many, &mut Known);
@@ -1523,7 +1508,7 @@ mod tests {
         // Not a link; and without the permission.
         assert!(resolve("source:somewhere", &ctx, &mut Known).0[0].result.is_err());
         let ctx = Ctx { may_source: false, ..ctx };
-        assert!(resolve("origin:#1", &ctx, &mut Known).0[0].result.is_err());
+        assert!(resolve("origin:1", &ctx, &mut Known).0[0].result.is_err());
     }
 
     #[test]
@@ -1580,21 +1565,31 @@ mod tests {
         assert_eq!(data, &serde_json::json!({ "label": "vk", "url": "https://vk.com/x" }));
         assert!(one("source:distrokid 0b358691 index:1").is_err(), "a platform's value is its name alone");
 
-        // The choices, as `artist:` → `role:` → `as:`: Tab adds the next field, needed first.
-        let choices = |line: &str| {
-            let parsed = parse::parse(line);
-            let last = parsed.parts.last().unwrap();
-            candidates(last, parsed.last_goes_with(), &ctx, &[], &[], &mut Known).into_iter().map(|c| (c.label, c.next)).collect::<Vec<_>>()
+        // The choices: the platforms, then (a space after one) its fields, needed first.
+        let labels = |line: &str| {
+            let mut known = Known;
+            let listing = Listing { ctx: &ctx, hits: &[], track_hits: &[], look: std::cell::RefCell::new(&mut known), page: false };
+            schema::rows(&parse::LINE, &parse::parse(line), line, &listing).into_iter().map(|r| r.label).collect::<Vec<_>>()
         };
-        let next = |s: &str| Some(s.to_string());
-        assert_eq!(choices("source:distr"), [("distrokid".to_string(), next("album_uuid:"))]);
-        assert_eq!(choices("source:=s"), [("=soundcloud".to_string(), next("song_id:"))]);
-        assert_eq!(choices("source:cus"), [("custom".to_string(), None)]);
-        assert_eq!(choices("source:distrokid album_uuid:"), [("album_uuid:…".to_string(), None)]);
-        assert_eq!(choices("source:distrokid album_uuid:0b358691"), [("album_uuid:0b358691".to_string(), next("index:"))]);
-        assert_eq!(choices("source:distrokid album_uuid:0b358691 index:3"), [("index:3".to_string(), None)]);
-        assert_eq!(choices("source:distrokid index:3"), [("index:3".to_string(), next("album_uuid:"))]);
-        assert_eq!(choices("source:distrokid uuid:x"), [("album_uuid:… (needed)".to_string(), None), ("index:…".to_string(), None)]);
+        assert_eq!(labels("source:distr"), ["distrokid"]);
+        assert_eq!(labels("source:=s"), ["=soundcloud"]);
+        assert_eq!(labels("source:distrokid "), ["album_uuid:", "index:"]);
+        assert_eq!(labels("source:distrokid album_uuid:0b358691 "), ["index:"]);
+        assert_eq!(labels("source:distrokid ind"), ["index:"], "a field's name being typed");
+    }
+
+    #[test]
+    fn every_state_of_the_line_leads_somewhere_valid() {
+        let (catalog, vocab, names) = (catalog(), vocab(), Names::default());
+        let ctx = Ctx { catalog: &catalog, vocab: &vocab, targets: 1, context_album: None, staged_album: None, names: &names, may_relate: true, may_source: true, titles: None, artist_names: None };
+        let hits: Vec<u32> = vec![0];
+        let mut known = Known;
+        let listing = Listing { ctx: &ctx, hits: &hits, track_hits: &[], look: std::cell::RefCell::new(&mut known), page: true };
+        schema::walk(&parse::LINE, &listing, &|k| match k.looked_up() {
+            schema::Kind::Words(w) => w.iter().map(|w| w.word.to_string()).collect(),
+            _ => vec!["x".into()],
+        }, 2)
+        .unwrap();
     }
 
     #[test]
@@ -1619,8 +1614,8 @@ mod tests {
         let (catalog, vocab) = (catalog(), vocab());
         let names = Names::default();
         let ctx = Ctx { catalog: &catalog, vocab: &vocab, targets: 1, context_album: None, staged_album: None, names: &names, may_relate: true, may_source: true, titles: None, artist_names: None };
-        let (units, _) = resolve("status:demo | artist:Bo role:featured #2", &ctx, &mut Known);
+        let (units, _) = resolve("status:demo | artist:Bo role:featured n:2", &ctx, &mut Known);
         let texts: Vec<&str> = units.iter().map(|u| u.text.as_str()).collect();
-        assert_eq!(texts, ["status:demo", "artist:Bo role:featured #2"]);
+        assert_eq!(texts, ["status:demo", "artist:Bo role:featured n:2"]);
     }
 }

@@ -12,8 +12,7 @@ use eframe::egui::{self, RichText};
 use uuid::Uuid;
 
 use crate::account::SourceShape;
-use crate::commandline::schema::{self, Kind, Minus, Next, Node, Spec};
-use crate::commandline::{self, Keys, Line, Part};
+use crate::commandline::schema::{self, Node, Spec};
 use crate::details::Source;
 use crate::ui::edit::commandline::{self as cl, CommandLine};
 use crate::ui::edit::extras::GroupChoice;
@@ -121,6 +120,7 @@ impl Known {
         self.pins.get_tag(kind.tag(), name)
     }
 
+    #[cfg(test)]
     pub fn pin(&mut self, kind: Pinned, name: &str, id: Uuid) {
         self.pins.set_tag(kind.tag(), name, id);
     }
@@ -205,12 +205,10 @@ pub enum Choice<A, E> {
     Act(A),
     /// Staged as it is: (typed as, what it does, the change).
     Stage(String, String, E),
-    /// The value being typed becomes this, as it is (not quoted: `#2`); on Tab, the next
-    /// part to type after it.
-    Raw(String, Option<String>),
-    /// A name chosen: in the line, and that one from now on (an extra, a note, an artist…);
-    /// on Tab, the next part to type after it.
-    Pin(Pinned, String, Uuid, Option<String>),
+    /// The value being typed becomes this, as it is (a path).
+    Raw(String),
+    /// A name chosen: in the line, and that one from now on (an extra, a note, an artist…).
+    Pin(Pinned, String, Uuid),
 }
 
 /// What taking a row leaves to the page.
@@ -221,54 +219,6 @@ pub enum Taken<A, E> {
     Inserted,
     Act(A),
     Stage(Staged<E>),
-}
-
-/// Takes `choice` for the last part of `line` (`tab`: Tab, which also writes the next part).
-pub fn take<K: Keys, A: Clone, E: Clone>(cl: &mut CommandLine, ctx: &egui::Context, known: &mut Known, line: &Line<K>, choice: &Choice<A, E>, tab: bool) -> Taken<A, E> {
-    let last = line.parts.last();
-    match choice {
-        Choice::Pin(kind, name, id, next) => {
-            known.pin(*kind, name, *id);
-            if let Some(part) = last {
-                let text = (*name != part.value).then(|| commandline::quoted::<K>(name));
-                cl.take(ctx, part.value_start, part.end, text.as_deref(), next.as_deref().filter(|_| tab));
-            }
-            Taken::Filled
-        }
-        Choice::Raw(text, next) => {
-            if let Some(part) = last {
-                let text = (*text != part.value).then_some(text.as_str());
-                cl.take(ctx, part.value_start, part.end, text, next.as_deref().filter(|_| tab));
-            }
-            Taken::Filled
-        }
-        Choice::Value(text) => {
-            if let Some(part) = last {
-                let text = (*text != part.value).then(|| commandline::quoted::<K>(text));
-                cl.take(ctx, part.value_start, part.end, text.as_deref(), None);
-            }
-            Taken::Filled
-        }
-        Choice::Insert(text) => {
-            cl.text = text.clone();
-            cl.cursor_to_end(ctx);
-            Taken::Inserted
-        }
-        Choice::Act(a) => {
-            cl.text.clear();
-            Taken::Act(a.clone())
-        }
-        Choice::Stage(text, label, edit) => {
-            // Only this command: the rest of the line stays to go on with.
-            if let Some(part) = last {
-                let start = cl.text[..part.value_start].rfind(|c: char| c.is_whitespace() || c == '|').map_or(0, |w| w + 1);
-                let start = cl.text[..start].trim_end().trim_end_matches('|').trim_end().len();
-                cl.text.truncate(start);
-            }
-            cl.cursor_to_end(ctx);
-            Taken::Stage(Staged { text: text.clone(), label: label.clone(), edit: edit.clone(), failed: None })
-        }
-    }
 }
 
 /// A page's own row taken on a schema commandline: an action (the line emptied), a
@@ -498,23 +448,11 @@ pub struct Dialog<'a> {
     pub many: bool,
 }
 
-/// In `text`, the parts `is_file` says are files (`file:` after an extra, a cover):
-/// `paste` (if `paste`) becomes the files copied in a file manager (`key:/…` each);
-/// `choose` opens the dialog and comes out of the line (`chosen` puts its paths in when
-/// they're chosen: Enter again). Err: why not now (no files copied; the dialog is open).
-pub fn expand_files<K: Keys>(text: &mut String, shell: &Shell, is_file: impl Fn(&Part<K>) -> bool, paste: bool, dialog: Dialog, chosen: &Chosen) -> Result<(), String> {
-    let line = commandline::parse::<K>(text);
-    let spans: Vec<(usize, usize, String)> = line
-        .parts
-        .iter()
-        .filter(|p| is_file(p))
-        .map(|p| (text[..p.value_start].rfind(char::is_whitespace).map_or(0, |w| w + 1), p.end, p.value.trim().to_string()))
-        .collect();
-    expand_file_spans(text, shell, spans, paste, dialog, chosen)
-}
-
-/// `expand_files` for the parts at these spans (where `key:` starts, where it ends, its
-/// value), in the order typed.
+/// In `text`, the file parts at these spans (where `key:` starts, where it ends, its value;
+/// in the order typed: `file:` after an extra, a cover): `paste` (if `paste`) becomes the
+/// files copied in a file manager (`key:/…` each); `choose` opens the dialog and comes out
+/// of the line (`chosen` puts its paths in when they're chosen: Enter again). Err: why not
+/// now (no files copied; the dialog is open).
 pub fn expand_file_spans(text: &mut String, shell: &Shell, spans: Vec<(usize, usize, String)>, paste: bool, dialog: Dialog, chosen: &Chosen) -> Result<(), String> {
     let mut choosing = false;
     for (start, end, value) in spans.into_iter().rev() {
@@ -573,7 +511,7 @@ pub fn path_rows<A, E>(value: &str) -> Vec<Row<A, E>> {
     if !value.starts_with('/') && !value.starts_with('~') {
         return Vec::new();
     }
-    paths_like(value).into_iter().map(|p| Row { sub: if p.ends_with('/') { "a folder".into() } else { "a file".into() }, label: p.clone(), choice: Choice::Raw(p, None) }).collect()
+    paths_like(value).into_iter().map(|p| Row { sub: if p.ends_with('/') { "a folder".into() } else { "a file".into() }, label: p.clone(), choice: Choice::Raw(p) }).collect()
 }
 
 /// `paste` and `choose`, as typed so far, with what each does.
@@ -581,7 +519,7 @@ pub fn file_words<A, E>(typed: &str, paste: &str, choose: &str) -> Vec<Row<A, E>
     [("paste", paste), ("choose", choose)]
         .into_iter()
         .filter(|(w, _)| w.starts_with(&typed.trim().to_lowercase()))
-        .map(|(w, sub)| Row { label: w.into(), sub: sub.into(), choice: Choice::Raw(w.into(), None) })
+        .map(|(w, sub)| Row { label: w.into(), sub: sub.into(), choice: Choice::Raw(w.into()) })
         .collect()
 }
 
@@ -625,9 +563,9 @@ pub fn source_rows<A, E>(minus: bool, value: &str, t: &Things) -> Vec<Row<A, E>>
         return Vec::new();
     }
     if minus {
-        return t.sources.iter().enumerate().map(|(n, s)| Row { label: format!("{} {}", n + 1, source_label(s)), sub: "to the trash".into(), choice: Choice::Raw(format!("{}", n + 1), None) }).collect();
+        return t.sources.iter().enumerate().map(|(n, s)| Row { label: format!("{} {}", n + 1, source_label(s)), sub: "to the trash".into(), choice: Choice::Raw(format!("{}", n + 1)) }).collect();
     }
-    crate::ui::edit::sources::platform_choices(value.trim(), "", t.whose.word(), t.shapes).into_iter().map(|c| Row { label: c.label, sub: c.sub, choice: Choice::Raw(c.text, c.next) }).collect()
+    crate::ui::edit::sources::platform_choices(value.trim(), "", t.whose.word(), t.shapes).into_iter().map(|c| Row { label: c.label, sub: c.sub, choice: Choice::Raw(c.text) }).collect()
 }
 
 // ---- Extras ----
@@ -791,14 +729,14 @@ pub fn extra_rows<A, E>(minus: bool, value: &str, t: &Things) -> Vec<Row<A, E>> 
             .extras
             .iter()
             .filter(|e| !e.hidden && e.name.to_lowercase().contains(&typed))
-            .map(|e| Row { label: format!("− {}", e.name), sub: format!("{} · not on {this} anymore", e.kind), choice: Choice::Pin(Pinned::Extra, e.name.clone(), e.id, None) })
+            .map(|e| Row { label: format!("− {}", e.name), sub: format!("{} · not on {this} anymore", e.kind), choice: Choice::Pin(Pinned::Extra, e.name.clone(), e.id) })
             .collect();
     }
     let mut rows: Vec<Row<A, E>> = t
         .extras
         .iter()
         .filter(|e| !e.hidden && e.name.to_lowercase().contains(&typed))
-        .map(|e| Row { label: e.name.clone(), sub: format!("{} · on {this}: change it", e.kind), choice: Choice::Pin(Pinned::Extra, e.name.clone(), e.id, None) })
+        .map(|e| Row { label: e.name.clone(), sub: format!("{} · on {this}: change it", e.kind), choice: Choice::Pin(Pinned::Extra, e.name.clone(), e.id) })
         .collect();
     let linked = |id: Uuid| t.extras.iter().any(|e| e.id == id);
     rows.extend(
@@ -806,11 +744,11 @@ pub fn extra_rows<A, E>(minus: bool, value: &str, t: &Things) -> Vec<Row<A, E>> 
             .iter()
             .filter(|e| !e.hidden && !linked(e.id) && !typed.is_empty() && e.name.to_lowercase().contains(&typed))
             .take(12)
-            .map(|e| Row { label: e.name.clone(), sub: format!("{} · in the library: linked here", e.kind), choice: Choice::Pin(Pinned::Extra, e.name.clone(), e.id, None) }),
+            .map(|e| Row { label: e.name.clone(), sub: format!("{} · in the library: linked here", e.kind), choice: Choice::Pin(Pinned::Extra, e.name.clone(), e.id) }),
     );
     let value = value.trim();
     if !value.is_empty() {
-        rows.push(Row { label: format!("New extra “{value}”"), sub: "made when it's saved · Tab: its kind".into(), choice: Choice::Raw(value.to_string(), Some("kind:".into())) });
+        rows.push(Row { label: format!("New extra “{value}”"), sub: "made when it's saved (then kind:)".into(), choice: Choice::Raw(value.to_string()) });
     }
     rows
 }
@@ -822,7 +760,7 @@ pub fn extra_arg_rows<A, E>(arg: Arg, value: &str, t: &Things, known: &Known) ->
     }
     let typed = value.trim().to_lowercase();
     match arg {
-        Arg::Kind => t.extra_kinds.iter().filter(|k| k.starts_with(&typed)).map(|k| Row { label: k.to_string(), sub: "a kind of extra here".into(), choice: Choice::Raw(k.to_string(), None) }).collect(),
+        Arg::Kind => t.extra_kinds.iter().filter(|k| k.starts_with(&typed)).map(|k| Row { label: k.to_string(), sub: "a kind of extra here".into(), choice: Choice::Raw(k.to_string()) }).collect(),
         Arg::File => {
             let mut rows = file_words(&typed, "the files copied in a file manager", "the file dialog");
             rows.extend(path_rows(value.trim()));
@@ -833,19 +771,13 @@ pub fn extra_arg_rows<A, E>(arg: Arg, value: &str, t: &Things, known: &Known) ->
             let mut rows: Vec<Row<A, E>> = [("everyone", "seen by everyone".to_string()), (t.whose.word(), default)]
                 .into_iter()
                 .filter(|(w, _)| w.starts_with(&typed))
-                .map(|(w, sub)| Row { label: w.into(), sub, choice: Choice::Raw(w.into(), None) })
+                .map(|(w, sub)| Row { label: w.into(), sub, choice: Choice::Raw(w.into()) })
                 .collect();
-            rows.extend(known.groups.iter().flatten().filter(|g| g.name != "admin" && g.name.to_lowercase().starts_with(&typed)).map(|g| Row { label: g.name.clone(), sub: "admins and this group (more: Group A, Group B)".into(), choice: Choice::Raw(g.name.clone(), None) }));
+            rows.extend(known.groups.iter().flatten().filter(|g| g.name != "admin" && g.name.to_lowercase().starts_with(&typed)).map(|g| Row { label: g.name.clone(), sub: "admins and this group (more: Group A, Group B)".into(), choice: Choice::Raw(g.name.clone()) }));
             rows
         }
         _ => Vec::new(),
     }
-}
-
-/// The groups, asked for once `visibility:` is typed (it names them).
-pub fn ask_groups_if<K: Keys>(text: &str, is_visibility: impl Fn(K) -> bool, t: &Things, shell: &Shell, known: &mut Known, groups: &crate::ui::edit::extras::Groups) {
-    let typed = commandline::parse::<K>(text).parts.iter().any(|p| is_visibility(p.key));
-    ask_groups_when(typed, t, shell, known, groups);
 }
 
 /// The groups, asked for once `typed` (`visibility:` is in the line).
@@ -906,15 +838,15 @@ pub fn note_rows<A, E>(minus: bool, value: &str, t: &Things) -> Vec<Row<A, E>> {
         .notes
         .iter()
         .filter(|n| !n.hidden && note_title(n).to_lowercase().contains(&typed))
-        .map(|n| Row { label: format!("{}{}", if minus { "− " } else { "" }, note_title(n)), sub: if minus { "taken off (kept)".into() } else { "edit it".into() }, choice: Choice::Pin(Pinned::Note, note_title(n), n.id, None) })
+        .map(|n| Row { label: format!("{}{}", if minus { "− " } else { "" }, note_title(n)), sub: if minus { "taken off (kept)".into() } else { "edit it".into() }, choice: Choice::Pin(Pinned::Note, note_title(n), n.id) })
         .collect();
     if !minus {
         if "paste".starts_with(&typed) {
-            rows.push(Row { label: "paste".into(), sub: "the text files copied in a file manager: a note each".into(), choice: Choice::Raw("paste".into(), None) });
+            rows.push(Row { label: "paste".into(), sub: "the text files copied in a file manager: a note each".into(), choice: Choice::Raw("paste".into()) });
         }
         let value = value.trim();
         if !value.is_empty() && !value.eq_ignore_ascii_case("paste") && !t.notes.iter().any(|n| !n.hidden && note_title(n).eq_ignore_ascii_case(value)) {
-            rows.push(Row { label: format!("New note “{value}”"), sub: "its text next".into(), choice: Choice::Raw(value.to_string(), None) });
+            rows.push(Row { label: format!("New note “{value}”"), sub: "its text next".into(), choice: Choice::Raw(value.to_string()) });
         }
     }
     rows
@@ -922,21 +854,8 @@ pub fn note_rows<A, E>(minus: bool, value: &str, t: &Things) -> Vec<Row<A, E>> {
 
 // ---- On a schema commandline ----
 
-/// `extra:`'s arguments.
-const EXTRA_ARGS: &[Spec] = &[
-    Spec::new("kind", Kind::Text, "vocals, stems, sample… (any word)").aliases(&["type"]),
-    Spec::new("file", Kind::Path, "a path (Tab completes it), paste, or choose").aliases(&["files"]),
-    Spec::new("description", Kind::Text, "what it is").aliases(&["desc"]),
-    Spec::new("source", Kind::Text, "where it came from"),
-    Spec::new("visibility", Kind::Text, "who sees it: everyone, or groups (Group A, Group B)").aliases(&["vis", "seen"]),
-];
-
-/// `source:`, as a page's command: any `name:` after a platform is one of its fields.
-pub const SOURCE: Spec = Spec::new("source", Kind::Text, "a link, a platform and its fields, or custom (-source:N: to the trash)").minus(Minus::Off).next(Next::Fields(&[]));
-/// `extra:Name` and its arguments; `-extra:Name`.
-pub const EXTRA: Spec = Spec::new("extra", Kind::Text, "a new one, one of its own to change, or one in the library").minus(Minus::Off).next(Next::Args(EXTRA_ARGS));
-/// `note:Title`, `note:paste`; `-note:Title`.
-pub const NOTE: Spec = Spec::new("note", Kind::Text, "a new one, one of its notes to edit, or paste").minus(Minus::Off);
+/// `source:`, `extra:` and `note:` as a page's commands (shared with the track editor's line).
+pub use acetate_core::editor::page_key::{EXTRA, NOTE, SOURCE};
 
 /// Whether a command is one of these (`source:`, `extra:`, `note:`).
 pub fn is_thing(spec: &Spec) -> bool {
@@ -947,8 +866,8 @@ pub fn is_thing(spec: &Spec) -> bool {
 pub fn to_schema<A, E>(row: Row<A, E>) -> schema::Row<Choice<A, E>> {
     let take = match row.choice {
         Choice::Value(v) => schema::Take::Value(v),
-        Choice::Raw(v, _) => schema::Take::Raw(v),
-        Choice::Pin(kind, name, id, _) => schema::Take::Pin { tag: kind.tag(), name, id },
+        Choice::Raw(v) => schema::Take::Raw(v),
+        Choice::Pin(kind, name, id) => schema::Take::Pin { tag: kind.tag(), name, id },
         other => schema::Take::Page(other),
     };
     schema::Row { label: row.label, sub: row.sub, take }

@@ -1,341 +1,115 @@
-//! The editor's keys: the same keys (and abbreviations) as a filter (`catalog::query`)
-//! plus the editor's own (`comment:`, `related:`, `why:`, `role:`, `as:`, `along:`,
-//! `cover:`, `source:`, `origin:`, `single:`, `suffix:`, `parse:` with `split:`, `whole:`,
-//! `keep:`, `word:`; `flag:` is the filter's), and on a track's page the page's own
-//! (`K::Page`: `play:`, `note:`, `og:`…, see `views::track_commands`). The syntax is the
-//! commandline's
-//! (`crate::commandline`): `|` between changes, quotes, `-key`, `#…`. What a value means is
-//! worked out by the editor, which knows the library.
+//! The editor's line, declared once (`LINE`, the language is `crate::commandline::schema`'s):
+//! the editor's commands, then the track page's (`page_key::PAGE`: `play:`, `note:`, `og:`…,
+//! meaningful on a track's page only). What a value means is worked out by `resolve`, which
+//! knows the library.
 //!
-//! * Arguments: `role:` and `as:` go with an artist (`artist:Ann role:featured as:Annie
-//!   #2`), `kind:` with an album, grouping or related track, `split:`, `whole:`, `keep:`,
-//!   `word:` with `parse:`. After `source:`, any other `name:` is one of its fields
-//!   (`source:distrokid album_uuid:… index:1`).
+//! * Arguments: `role:`, `as:` and `n:` go with an artist (`artist:Ann role:featured
+//!   as:Annie n:2`), `kind:` and `n:` with an album (`album:X n:2-5`: disc 2, track 5;
+//!   `n:1+`: in order from 1), `kind:` with a grouping or related track, `n:` and `which:`
+//!   with a cover, `split:`, `whole:`, `keep:`, `word:` with `parse:`. After `source:`, any
+//!   other `name:` is one of its fields (`source:distrokid album_uuid:… index:1`).
+//! * Places: the value is what, `n:` is where. `cover:3 n:1` makes the third cover the main
+//!   one, `-cover:2` puts the second in the trash, `source:1` corrects the first source,
+//!   `origin:2` says the file came from the second.
+//! * The filter's keys (`art:`, `gen:`, `stat:`…) are typed by any start of their names,
+//!   two letters at least; the editor's own by their names.
 //! * Anything else in a value is the value: `title:No: Way`, `keep:cdq -cover`.
-//! * `#…` after an artist or album: its place (`#2`) or numbers (`#2-5` disc 2 track 5,
-//!   `#1+` in order from 1). After a cover or source, which one (`-cover:#2`), and where
-//!   it goes (`cover:#3 #1`: the third made the main one).
 
-use crate::catalog::query::Key as QueryKey;
-use crate::commandline::{self, Keys};
-use super::page_key::PageKey;
+use super::page_key::PAGE;
+use crate::commandline::schema::{self, Kind, Minus, Next, Schema, Spec, Word};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum K {
-    Title,
-    Date,
-    Comment,
-    Status,
-    Genre,
-    Artist,
-    Featured,
-    Album,
-    Disc,
-    Number,
-    Related,
-    Group,
-    Why,
-    Role,
-    As,
-    Kind,
-    Along,
-    Cover,
-    Source,
-    Origin,
-    Single,
-    Flag,
-    /// `suffix:` adds to the end of the title, `-suffix:` takes off it.
-    Suffix,
-    /// `parse:` the credits in the title, with the rules typed (`crate::title_credits`).
-    Parse,
-    Split,
-    Whole,
-    Keep,
-    Word,
-    /// One of a source's fields, after `source:<platform>` (`album_uuid:`, `index:`): its
-    /// name is the part's `field`.
-    Field,
-    /// A filter's key that isn't something to change (`format:`, `codec:`…).
-    Other(QueryKey),
-    /// One of the track page's keys (`play:`, `note:`, `og:`…): the page says what it
-    /// means; elsewhere it's nothing.
-    Page(PageKey),
-}
+const ALONG: &[Word] = &[Word { word: "on", help: "albums it's alone on made to match it, changed or not" }, Word { word: "off", help: "only the tracks" }];
+const WHOLE: &[Word] = &[Word { word: "on", help: "names that are an artist's kept whole" }, Word { word: "off", help: "split them by the rules" }];
 
-impl K {
-    /// Its name, as written in chips.
-    pub fn name(self) -> &'static str {
-        match self {
-            K::Title => "title",
-            K::Date => "date",
-            K::Comment => "comment",
-            K::Status => "status",
-            K::Genre => "genre",
-            K::Artist => "artist",
-            K::Featured => "feat",
-            K::Album => "album",
-            K::Disc => "disc",
-            K::Number => "track",
-            K::Related => "related",
-            K::Group => "group",
-            K::Why => "why",
-            K::Role => "role",
-            K::As => "as",
-            K::Kind => "kind",
-            K::Along => "along",
-            K::Cover => "cover",
-            K::Source => "source",
-            K::Origin => "origin",
-            K::Single => "single",
-            K::Suffix => "suffix",
-            K::Flag => "flag",
-            K::Parse => "parse",
-            K::Split => "split",
-            K::Whole => "whole",
-            K::Keep => "keep",
-            K::Word => "word",
-            K::Field => "field",
-            K::Other(k) => k.name(),
-            K::Page(k) => k.name(),
-        }
-    }
+/// An artist's arguments (`artist:` and `feat:`).
+const CREDIT: &[Spec] = &[
+    Spec::new("role", Kind::Text, "its role: primary, featured, producer… (another role: a credit of its own)").with_minus(),
+    Spec::new("as", Kind::Or(&[Word { word: "own", help: "its own name" }], &Kind::AliasOf(&[])), "the name it's credited under"),
+    Spec::new("n", Kind::Place, "its place among the artists"),
+];
 
-    /// Whether `-key` alone means "clear it".
-    pub fn is_list(self) -> bool {
-        match self {
-            K::Page(k) => k.is_list(),
-            _ => matches!(self, K::Genre | K::Artist | K::Featured | K::Album | K::Related | K::Group | K::Cover | K::Source),
-        }
-    }
-}
+/// The editor's commands, in the order the list offers them.
+const EDITOR: &[Spec] = &[
+    Spec::new("title", Kind::Text, "its title").aliases(&["name"]).prefix(),
+    Spec::new("artist", Kind::Artist, "credit one, or change one's name or place (-artist:Name takes one off; -artist: all)").aliases(&["artists", "by"]).prefix().minus(Minus::OffOrClear).next(Next::Args(CREDIT)),
+    Spec::new("feat", Kind::Artist, "credit one as featured").aliases(&["featuring", "ft", "featured"]).prefix().minus(Minus::Off).next(Next::Args(CREDIT)),
+    Spec::new("album", Kind::Album, "on it as well (n: its numbers; -album:X off one; -album: all)").aliases(&["on"]).prefix().minus(Minus::OffOrClear).next(Next::Args(&[
+        Spec::new("n", Kind::Place, "its numbers: 5, 2-5 (disc 2, track 5), or 1+ (in order from 1)"),
+        Spec::new("kind", Kind::Text, "a new album's kind: album, ep, single…"),
+    ])),
+    Spec::new("date", Kind::Text, "released, as the source wrote it (none: no date)").aliases(&["year", "released"]).prefix().minus(Minus::OffOrClear),
+    Spec::new("genre", Kind::Text, "genres to add, by commas (-genre:x takes one off; -genre: all)").aliases(&["genres"]).prefix().minus(Minus::OffOrClear),
+    Spec::new("status", Kind::Text, "released, demo…").prefix(),
+    Spec::new("flag", Kind::Text, "a flag raised by hand (-flag:x settles that kind)").aliases(&["missing", "issue"]).prefix().minus(Minus::Off),
+    Spec::new("disc", Kind::Number, "its disc on the album").aliases(&["disk", "cd"]).prefix(),
+    Spec::new("track", Kind::Text, "its track number on the album (N+: in order from N)").aliases(&["number", "numbers", "no", "renumber"]).prefix(),
+    Spec::new("group", Kind::Grouping, "into a grouping, or a new one (kind:)").aliases(&["grouping"]).prefix().minus(Minus::Off).next(Next::Args(&[Spec::new("kind", Kind::Text, "a new grouping's kind: collective, era, project…")])),
+    Spec::new("comment", Kind::Text, "its comment (none: no comment)").minus(Minus::Off),
+    Spec::new("related", Kind::Track, "a related track (-related:X takes one off; -related: all)").aliases(&["relation"]).minus(Minus::OffOrClear).next(Next::Args(&[Spec::new("kind", Kind::Text, "how: a remix of it, an instrumental…")])),
+    Spec::new("cover", Kind::Text, "paste, file, another album's or track's (n: where it goes); a number: that one moved (-cover:N to the trash; -cover: all)")
+        .aliases(&["covers"])
+        .minus(Minus::OffOrClear)
+        .next(Next::Args(&[Spec::new("n", Kind::Place, "where it goes (1: the main one)"), Spec::new("which", Kind::Number, "which of that album's or track's covers")])),
+    Spec::new("source", Kind::Text, "a link, a platform and its fields, or custom; = its only one; a number: correct that one (-source:N to the trash)").aliases(&["sources"]).minus(Minus::OffOrClear).next(Next::Fields(&[])),
+    Spec::new("origin", Kind::Number, "the file came from its Nth source"),
+    Spec::new("suffix", Kind::Text, "added to the end of the title (-suffix:x takes from the last x on off; alone: put back)").minus(Minus::Off),
+    Spec::new("parse", Kind::Text, "the credits in the title, by the rules typed (feat prod…)").next(Next::Args(&[
+        Spec::new("split", Kind::Text, "split names at these too"),
+        Spec::new("whole", Kind::Words(WHOLE), "names that are an artist's kept whole"),
+        Spec::new("keep", Kind::Text, "words kept in the title"),
+        Spec::new("word", Kind::Text, "a word that credits: \"beat by\"=prod"),
+    ])),
+    Spec::new("single", Kind::Nothing, "a single of its own, for each"),
+    Spec::new("along", Kind::Words(ALONG), "albums it's alone on: made to match it, or left as they are"),
+    Spec::new("why", Kind::Text, "kept with the change").aliases(&["reason"]),
+];
 
-/// The key a typed name means: the editor's own names exactly, then the track page's
-/// (exactly), then a filter's key (any start of its names, see
-/// `catalog::query::Key::parse`).
-pub fn key(name: &str) -> Option<K> {
-    let own = match name.to_lowercase().as_str() {
-        "comment" => Some(K::Comment),
-        "related" | "relation" => Some(K::Related),
-        "why" | "reason" => Some(K::Why),
-        "role" => Some(K::Role),
-        "as" => Some(K::As),
-        "along" => Some(K::Along),
-        "cover" | "covers" => Some(K::Cover),
-        "source" | "sources" => Some(K::Source),
-        "origin" => Some(K::Origin),
-        "single" => Some(K::Single),
-        "suffix" => Some(K::Suffix),
-        "parse" => Some(K::Parse),
-        "split" => Some(K::Split),
-        "whole" => Some(K::Whole),
-        "keep" => Some(K::Keep),
-        "word" => Some(K::Word),
-        _ => None,
-    };
-    if own.is_some() {
-        return own;
-    }
-    if let Some(page) = PageKey::of(name) {
-        return Some(K::Page(page));
-    }
-    Some(match QueryKey::parse(name)? {
-        QueryKey::Artist => K::Artist,
-        QueryKey::Featured => K::Featured,
-        QueryKey::Album => K::Album,
-        QueryKey::Title => K::Title,
-        QueryKey::Year => K::Date,
-        QueryKey::Genre => K::Genre,
-        QueryKey::Status => K::Status,
-        QueryKey::Disc => K::Disc,
-        QueryKey::Number => K::Number,
-        QueryKey::Group => K::Group,
-        QueryKey::Kind => K::Kind,
-        QueryKey::Flag => K::Flag,
-        other => K::Other(other),
-    })
-}
+/// The editor's line: its commands, then the track page's.
+pub static LINE: Schema = Schema { commands: EDITOR, also: PAGE };
 
-pub type Part = commandline::Part<K>;
-pub type Line = commandline::Line<K>;
-
-impl Keys for K {
-    fn key(name: &str) -> Option<K> {
-        key(name)
-    }
-
-    fn name(self) -> &'static str {
-        K::name(self)
-    }
-
-    fn is_list(self) -> bool {
-        K::is_list(self)
-    }
-
-    fn takes_hash(self) -> bool {
-        match self {
-            K::Page(k) => k.takes_hash(),
-            _ => matches!(self, K::Artist | K::Featured | K::Album | K::Role | K::As | K::Kind | K::Cover | K::Source | K::Origin),
-        }
-    }
-
-    fn takes(main: K, arg: K) -> bool {
-        match main {
-            K::Page(k) => k.takes(arg),
-            K::Artist | K::Featured => matches!(arg, K::Role | K::As),
-            K::Album | K::Group | K::Related => arg == K::Kind,
-            K::Parse => matches!(arg, K::Split | K::Whole | K::Keep | K::Word),
-            _ => false,
-        }
-    }
-
-    fn field(main: K) -> Option<K> {
-        (main == K::Source).then_some(K::Field)
-    }
-}
+pub type Line = schema::Line;
+pub type Node = schema::Node;
 
 pub fn parse(text: &str) -> Line {
-    commandline::parse::<K>(text)
+    schema::parse(&LINE, text)
 }
 
-/// `#…` as numbers: (disc, track, in order). `2` → track 2; `2-5` → disc 2, track 5;
-/// `1+` → in order from 1. None: not numbers.
-pub fn numbers(hash: &str) -> Option<(Option<i16>, Option<i16>, bool)> {
-    let (rest, in_order) = match hash.strip_suffix('+') {
-        Some(rest) => (rest, true),
-        None => (hash, false),
-    };
-    if rest.is_empty() {
-        return if in_order { None } else { Some((None, None, false)) };
-    }
-    match rest.split_once('-') {
-        Some((disc, track)) => Some((Some(disc.parse().ok()?), Some(track.parse().ok()?), in_order)),
-        None => Some((None, Some(rest.parse().ok()?), in_order)),
-    }
-}
-
-/// Quotes a value where it needs it, to be typed back (see `commandline::quoted`).
+/// A value as it is to be typed in the line (quoted where it needs it).
 pub fn quoted(value: &str) -> String {
-    commandline::quoted::<K>(value)
+    LINE.quoted(value)
+}
+
+/// Whether a command is one of the track page's (not the editor's own).
+pub fn is_page(spec: &Spec) -> bool {
+    LINE.also.iter().any(|s| std::ptr::eq(s, spec))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn parts(text: &str) -> Vec<(K, bool, String, Option<String>)> {
-        parse(text).parts.into_iter().map(|p| (p.key, p.minus, p.value, p.hash)).collect()
+    fn shape(text: &str) -> Vec<(String, Vec<(String, String)>)> {
+        parse(text).commands.iter().map(|c| (format!("{}{}={}", if c.minus { "-" } else { "" }, c.name(), c.value), c.args.iter().map(|a| (a.name().to_string(), a.value.clone())).collect())).collect()
     }
 
     #[test]
-    fn changes_are_apart_by_bars() {
-        assert_eq!(
-            parts("artist:lil quill | year:2017 | status:demo"),
-            [(K::Artist, false, "lil quill".into(), None), (K::Date, false, "2017".into(), None), (K::Status, false, "demo".into(), None)]
-        );
-        // Without one, another key is part of the value.
-        assert_eq!(parts("status:demo date:2020"), [(K::Status, false, "demo date:2020".into(), None)]);
-        assert_eq!(parts("title:Intro: Part 2")[0].2, "Intro: Part 2");
-        assert_eq!(parts("title:No: Way | year:2020")[0].2, "No: Way");
-        // Words before any key.
-        assert_eq!(parse("no date").words, ["no", "date"]);
-        assert_eq!(parse("no date").parts, []);
+    fn commands_their_arguments_and_starts() {
+        let s = |k: &str, v: &str, args: &[(&str, &str)]| (format!("{k}={v}"), args.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect::<Vec<_>>());
+        assert_eq!(shape("art:Ann role:featured as:Annie n:2 | title:No: Way"), [s("artist", "Ann", &[("role", "featured"), ("as", "Annie"), ("n", "2")]), s("title", "No: Way", &[])]);
+        assert_eq!(shape("album:Long Player n:2-5 | -genre"), [s("album", "Long Player", &[("n", "2-5")]), s("-genre", "", &[])]);
+        assert_eq!(shape("parse:feat split:-x keep:tape -cover"), [s("parse", "feat", &[("split", "-x"), ("keep", "tape -cover")])]);
+        assert_eq!(shape("source:distrokid album_uuid:x index:1"), [s("source", "distrokid", &[("album_uuid", "x"), ("index", "1")])]);
+        assert_eq!(shape("re:2020"), [s("date", "2020", &[])], "released: a start of the date's names, as a filter's");
+        assert_eq!(shape("rate:4 | play:"), [s("rating", "4", &[]), s("play", "", &[])], "the page's, exactly");
+        assert_eq!(shape("extra:Stems kind:stems source:a friend"), [s("extra", "Stems", &[("kind", "stems"), ("source", "a friend")])]);
+        assert!(parse("format:flac").commands.is_empty(), "a filter's key that isn't a change: words");
+        assert!(parse("c:x").commands.is_empty(), "one letter isn't a start");
     }
 
     #[test]
-    fn a_bar_ends_the_part_being_typed() {
-        assert_eq!(parse("artist:Ann").current().map(|p| p.value.as_str()), Some("Ann"));
-        assert!(parse("artist:Ann |").current().is_none(), "a new command: nothing to choose for yet");
-        assert!(parse("artist:Ann | ").current().is_none());
-        assert_eq!(parse("artist:Ann | status:").current().map(|p| p.key), Some(K::Status));
-        assert_eq!(parse("artist:Ann \\|").current().map(|p| p.value.as_str()), Some("Ann |"), "escaped: still the value");
-    }
-
-    #[test]
-    fn quotes_keep_bars() {
-        assert_eq!(parts("title:\"guy | more\" | status:demo")[0].2, "guy | more");
-        assert_eq!(parts("-suffix:\" | Prod\"")[0].2, " | Prod", "spaces in quotes kept");
-        assert_eq!(quoted("guy|more"), "\"guy|more\"");
+    fn values_are_quoted_where_they_would_split() {
         assert_eq!(quoted("No: Way"), "\"No: Way\"");
-        assert_eq!(quoted("Plain song"), "Plain song");
-    }
-
-    #[test]
-    fn minus_hash_and_arguments() {
-        assert_eq!(parts("-artist | artist:A"), [(K::Artist, true, "".into(), None), (K::Artist, false, "A".into(), None)]);
-        assert!(!parse("-artist").parts[0].colon);
-        assert_eq!(parts("-genre:rap"), [(K::Genre, true, "rap".into(), None)]);
-        // `-title` alone isn't anything: a plain word.
-        assert_eq!(parse("-title").words, ["-title"]);
-        let line = parse("artist:Ann Lee role:feat as:Annie #2");
-        assert_eq!(line.parts.iter().map(|p| (p.key, p.arg)).collect::<Vec<_>>(), [(K::Artist, false), (K::Role, true), (K::As, true)]);
-        assert_eq!(line.parts[2].hash.as_deref(), Some("2"));
-        assert_eq!(parts("album:Some LP #2-5"), [(K::Album, false, "Some LP".into(), Some("2-5".into()))]);
-        assert_eq!(parts("title:Track #1")[0].2, "Track #1", "a title keeps its #");
-        assert_eq!(numbers("2-5"), Some((Some(2), Some(5), false)));
-        assert_eq!(numbers("1+"), Some((None, Some(1), true)));
-        assert_eq!(numbers(""), Some((None, None, false)));
-        assert_eq!(numbers("x"), None);
-        // `role:` after a bar: a change of its own (which the editor says is wrong).
-        assert!(!parse("status:demo | role:x").parts[1].arg);
-    }
-
-    #[test]
-    fn covers_and_sources_take_hashes() {
-        let line = parse("cover:#3 #1 | -cover:#2 | cover:Long Player #2 | source:https://youtu.be/x | origin:#1");
-        let p = &line.parts;
-        assert_eq!((p[0].key, p[0].value.as_str(), p[0].hashes.clone()), (K::Cover, "", vec!["3".to_string(), "1".to_string()]));
-        assert_eq!((p[1].minus, p[1].hashes.clone()), (true, vec!["2".to_string()]));
-        assert_eq!((p[2].value.as_str(), p[2].hash.as_deref()), ("Long Player", Some("2")));
-        assert_eq!((p[3].key, p[3].value.as_str()), (K::Source, "https://youtu.be/x"));
-        assert_eq!((p[4].key, p[4].hash.as_deref()), (K::Origin, Some("1")));
-        assert!(!parse("-cover").parts[0].colon);
-    }
-
-    #[test]
-    fn a_sources_fields() {
-        let line = parse("source:distrokid album_uuid:x-1 index:2 url:https://a.b/c status:demo");
-        let p: Vec<(K, &str, &str)> = line.parts.iter().map(|p| (p.key, p.name(), p.value.as_str())).collect();
-        assert_eq!(p, [(K::Source, "source", "distrokid"), (K::Field, "album_uuid", "x-1"), (K::Field, "index", "2"), (K::Field, "url", "https://a.b/c"), (K::Field, "status", "demo")]);
-        // A link's `https:` isn't a field; elsewhere a field is part of the value.
-        assert_eq!(parts("source:custom vk, see https://a.b")[0].2, "custom vk, see https://a.b");
-        assert_eq!(parts("title:a index:1")[0].2, "a index:1");
-        assert_eq!(parts("-source:#1 index:1")[0].0, K::Source);
-        assert_eq!(parse("-source:#1 index:1").parts.len(), 1);
-        // A change after the fields: after a bar.
-        assert_eq!(parse("source:distrokid index:1 | status:demo").parts[2].key, K::Status);
-    }
-
-    #[test]
-    fn keys_are_the_filters_plus_the_editors() {
-        assert_eq!(key("art"), Some(K::Artist));
-        assert_eq!(key("yr"), None);
-        assert_eq!(key("released"), Some(K::Date));
-        assert_eq!(key("no"), Some(K::Number));
-        assert_eq!(key("related"), Some(K::Related));
-        assert_eq!(key("rel"), Some(K::Date), "a start of a filter's key (released)");
-        assert_eq!(key("why"), Some(K::Why));
-        assert_eq!(key("format"), Some(K::Other(QueryKey::Format)));
-    }
-
-    #[test]
-    fn parse_and_what_goes_with_it() {
-        assert_eq!(
-            parts("parse:feat prod [prod] split:-x -and keep:cdq -cover word:vs=featured"),
-            [
-                (K::Parse, false, "feat prod [prod]".into(), None),
-                (K::Split, false, "-x -and".into(), None),
-                (K::Keep, false, "cdq -cover".into(), None),
-                (K::Word, false, "vs=featured".into(), None),
-            ]
-        );
-        // After a bar `-cover` is still "no covers".
-        assert_eq!(parts("status:demo | -cover")[1].0, K::Cover);
-    }
-
-    #[test]
-    fn where_a_choice_goes() {
-        let line = "status:demo | artist:an";
-        let p = &parse(line).parts[1];
-        assert_eq!(&line[p.value_start..p.end], "an");
+        assert_eq!(quoted("a | b"), "\"a | b\"");
+        assert_eq!(quoted("Plain"), "Plain");
     }
 }

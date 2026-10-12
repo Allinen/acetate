@@ -1,5 +1,6 @@
 //! The track page's commandline: the track editor's line (`ui::edit::editor`), with the
-//! page's own keys added (`K::Page`). One language: the editor's keys (`title:`,
+//! page's own commands added (`page_key::PAGE`, after the editor's in its schema). One
+//! language: the editor's keys (`title:`,
 //! `artist:`, `cover:`, `source:`…) and these, which this module gives the meaning of
 //! (what the pages share is in `page_commands`). In listen mode only the line is shown,
 //! for listening and moving around; edit mode has the editor under it.
@@ -10,7 +11,7 @@
 //! * `lyrics`, `credits`, `file`, `notes`, `extras`, `versions`, `tags`, `history` (and
 //!   `merges` in edit mode) open that part of the page and scroll to it; one that's open is
 //!   closed. Words find the rest (related tracks, sources, covers). `lyrics:English` (or
-//!   `lyrics:#2`) shows that entry of its lyrics.
+//!   `lyrics:2`) shows that entry of its lyrics.
 //! * Plain words find these too, its artists, albums, groupings and related tracks (to go
 //!   to), its music video, its cover in full, and copying its link or a share link.
 //!
@@ -21,9 +22,9 @@
 //! * `note:`, `-note:`, `extra:` (with `kind:`, `file:`, `description:`, `source:`,
 //!   `visibility:`), `-extra:`: as on the artist and album pages.
 //! * `og:` says its file is an original file (named as uploaded, or `og:Name`), `-og` that
-//!   it isn't (`edit_files`). `file:#2` plays its second earlier file again, the file it
+//!   it isn't (`edit_files`). `file:2` plays its second earlier file again, the file it
 //!   plays now becoming an earlier one (`replace_file`).
-//! * `unmerge:` undoes the newest merge into it (`replace_file`), `restore:#3` restores its
+//! * `unmerge:` undoes the newest merge into it (`replace_file`), `restore:3` restores its
 //!   third revision (`restore_revision`). The words *Duplicate this track* stage a copy of
 //!   it (its page opens once it's made); *Undo the last origin change* puts back where its
 //!   file came from.
@@ -37,15 +38,13 @@
 use uuid::Uuid;
 
 use super::album_commands::{place, rating, stars};
-use super::page_commands::{self as pc, Arg, Change, Known, NoteDoes, Things, Whose};
+use super::page_commands::{self as pc, Change, Known, NoteDoes, ThingDoes, Things, Whose};
 use crate::account::Vocab;
 use crate::catalog::Catalog;
-use crate::commandline;
+use crate::commandline::schema::{self, Node, Spec, Take};
 use crate::details::TrackDetail;
-use crate::ui::edit::editor::K;
+use crate::ui::edit::editor::parse;
 use crate::ui::Page;
-
-type Part = commandline::Part<K>;
 
 pub use acetate_core::editor::page_key::{PageKey, Reveal};
 
@@ -179,8 +178,10 @@ pub enum Does {
     Edit(Edit),
 }
 
-pub type Row = pc::Row<Act, Edit>;
-type Choice = pc::Choice<Act, Edit>;
+pub type Choice = pc::Choice<Act, Edit>;
+/// A row of the list, as the page makes it.
+type PcRow = pc::Row<Act, Edit>;
+pub type Row = schema::Row<Choice>;
 
 /// Whether it can be changed here (else why not).
 fn editing(here: &Here) -> Result<(), String> {
@@ -188,20 +189,27 @@ fn editing(here: &Here) -> Result<(), String> {
 }
 
 /// Why one of the editor's keys does nothing in listen mode.
-pub fn listening(key: K) -> String {
-    format!("{}: changing the track is in edit mode: e", key.name())
+pub fn listening(key: &str) -> String {
+    format!("{key}: changing the track is in edit mode: e")
 }
 
-/// An `extra:` argument's key, as the shared ones know it.
-fn arg_of(key: K) -> Option<Arg> {
-    Some(match key {
-        K::Kind => Arg::Kind,
-        K::Page(PageKey::File) => Arg::File,
-        K::Page(PageKey::Description) => Arg::Description,
-        K::Source => Arg::Source,
-        K::Page(PageKey::Visibility) => Arg::Visibility,
-        _ => return None,
-    })
+/// Whether one of the page's commands is offered in the list now (what can be done with
+/// it: the permissions, and its details for some).
+pub fn offers(spec: &Spec, here: &Here) -> bool {
+    let d = here.detail;
+    let edit = editing(here).is_ok();
+    match PageKey::of(spec.key) {
+        None => true,
+        Some(PageKey::Note | PageKey::Extra) => edit && here.may.metadata,
+        Some(PageKey::Version) => edit && here.may.metadata && d.is_some(),
+        Some(PageKey::Og) => edit && here.may.files && d.is_some(),
+        Some(PageKey::Unmerge) => edit && here.may.replace && d.and_then(open_merge).is_some_and(|m| m.undo_blockers.is_empty()),
+        Some(PageKey::Restore) => edit && here.may.restore && d.is_some_and(|d| revisions(d).iter().any(|r| !r.1)),
+        Some(PageKey::Sync) => edit,
+        Some(PageKey::Reveal(r)) => here.sections.contains(&r),
+        Some(PageKey::Play | PageKey::Queue) => here.track().is_some(),
+        Some(_) => true,
+    }
 }
 
 /// What showing a part of the page does: an open one closes, the rest open (scrolled to).
@@ -272,18 +280,26 @@ fn origin_undo(d: &TrackDetail) -> Option<Uuid> {
 }
 
 /// What a command with one of the page's keys does, or why it can't.
-pub fn resolve(command: &[Part], here: &Here, known: &Known) -> Result<(String, Does), String> {
-    let main = &command[0];
-    let K::Page(key) = main.key else { return Err(listening(main.key)) };
-    let value = main.value.trim();
-    let minus_ok = matches!(key, PageKey::Star | PageKey::Rating | PageKey::Note | PageKey::Extra | PageKey::Og);
-    if main.minus && !minus_ok {
-        return Err(format!("-{}: nothing to take off here", key.name()));
-    }
+pub fn resolve(c: &Node, here: &Here, known: &Known) -> Result<(String, Does), String> {
+    let Some(key) = PageKey::of(c.spec.key) else { return Err(listening(c.spec.key)) };
+    let value = c.value.trim();
     let act = |label: &str, act: Act| Ok((label.to_string(), Does::Act(act)));
     let edit = |label: String, edit: Edit| Ok((label, Does::Edit(edit)));
-    let nothing_after = |label: &str, a: Act| if value.is_empty() && main.hashes.is_empty() { act(label, a) } else { Err(format!("{}: nothing after it", key.name())) };
+    let nothing_after = |label: &str, a: Act| if value.is_empty() { act(label, a) } else { Err(format!("{}: nothing after it", key.name())) };
     let reveal = |r: Reveal| if here.sections.contains(&r) { act(&reveal_label(here, r), Act::Reveal(r)) } else { Err(format!("no {} here", r.title().to_lowercase())) };
+    let number = !value.is_empty() && value.chars().all(|ch| ch.is_ascii_digit());
+    if matches!(key, PageKey::Note | PageKey::Extra) {
+        let done = pc::resolve_thing(c, &here.things(), known).unwrap_or_else(|| Err("not one of these".into()));
+        return done.map(|(label, does)| {
+            let does = match does {
+                ThingDoes::Change(change) => Does::Edit(Edit::Thing(change)),
+                ThingDoes::Note(NoteDoes::Open(note, title)) => Does::Act(Act::Note(note, title)),
+                ThingDoes::Note(NoteDoes::Paste) => Does::Act(Act::PasteNotes),
+                ThingDoes::Note(NoteDoes::Hide(note)) => Does::Edit(Edit::Thing(Change::HideNote(note))),
+            };
+            (label, does)
+        });
+    }
     match key {
         PageKey::Play if here.track().is_none() => Err("it isn't in the library you can see".into()),
         PageKey::Play => {
@@ -296,72 +312,56 @@ pub fn resolve(command: &[Part], here: &Here, known: &Known) -> Result<(String, 
             "next" | "first" => act("queued, next", Act::Queue(true)),
             _ => Err("queue: next, or nothing (at the end)".into()),
         },
-        PageKey::Star if main.minus => act("not starred", Act::Star(false)),
+        PageKey::Star if c.minus => act("not starred", Act::Star(false)),
         PageKey::Star => match value.to_lowercase().as_str() {
             "" => act(if here.starred { "not starred" } else { "starred" }, Act::Star(!here.starred)),
             "yes" | "y" | "on" => act("starred", Act::Star(true)),
             "no" | "n" | "off" => act("not starred", Act::Star(false)),
             _ => Err("star: yes or no (or nothing: the other way)".into()),
         },
-        PageKey::Rating if main.minus => act("no rating", Act::Rate(0)),
+        PageKey::Rating if c.minus => act("no rating", Act::Rate(0)),
         PageKey::Rating if value.is_empty() => Err("rating: 0 to 5 stars (3.5 too)".into()),
         PageKey::Rating => rating(value).and_then(|r| act(&format!("your rating → {}", stars(r)), Act::Rate(r))),
-        PageKey::Reveal(r) if !value.is_empty() || !main.hashes.is_empty() => Err(format!("{}: nothing after it", r.title().to_lowercase())),
+        PageKey::Reveal(r) if !value.is_empty() => Err(format!("{}: nothing after it", r.title().to_lowercase())),
         PageKey::Reveal(r) => reveal(r),
-        PageKey::Lyrics if value.is_empty() && main.hashes.is_empty() => reveal(Reveal::Lyrics),
+        PageKey::Lyrics if value.is_empty() => reveal(Reveal::Lyrics),
         PageKey::Lyrics => {
             let d = here.loaded()?;
-            let n = match main.hashes.first() {
-                Some(h) => place(h, d.lyrics.len(), "lyrics entries")?,
-                None => {
-                    let found: Vec<usize> = (0..d.lyrics.len()).filter(|&n| crate::catalog::query::loosely_in(value, &lyrics_name(&d.lyrics[n], n))).collect();
-                    match found.as_slice() {
-                        [n] => *n,
-                        [] => return Err(format!("no lyrics like “{value}” (it has {})", d.lyrics.len())),
-                        _ => return Err(format!("{} lyrics entries like “{value}”: choose one in the list", found.len())),
-                    }
+            let n = if number {
+                place(value, d.lyrics.len(), "lyrics entries")?
+            } else {
+                let found: Vec<usize> = (0..d.lyrics.len()).filter(|&n| crate::catalog::query::loosely_in(value, &lyrics_name(&d.lyrics[n], n))).collect();
+                match found.as_slice() {
+                    [n] => *n,
+                    [] => return Err(format!("no lyrics like “{value}” (it has {})", d.lyrics.len())),
+                    _ => return Err(format!("{} lyrics entries like “{value}”: choose one in the list", found.len())),
                 }
             };
             act(&format!("its lyrics: {}", lyrics_name(&d.lyrics[n], n)), Act::Lyrics(n))
         }
-        PageKey::File => match main.hashes.as_slice() {
-            [] if value.is_empty() => reveal(Reveal::File),
-            [h] if value.is_empty() => {
-                editing(here)?;
-                if !here.may.replace {
-                    return Err("playing an earlier file needs the replace_file permission".into());
-                }
-                let d = here.loaded()?;
-                let files = earlier_files(d);
-                if files.is_empty() {
-                    return Err("it has no earlier files to play again".into());
-                }
-                let n = place(h, files.len(), "earlier files")?;
-                let label = format!("it plays earlier file #{} again ({}); the one it plays now becomes an earlier file", n + 1, earlier_label(files[n]));
-                edit(label, Edit::UseFile(files[n].old_file_id))
+        PageKey::File if value.is_empty() => reveal(Reveal::File),
+        PageKey::File if number => {
+            editing(here)?;
+            if !here.may.replace {
+                return Err("playing an earlier file needs the replace_file permission".into());
             }
-            _ => Err("file: opens the File part; file:#2 plays its second earlier file again (edit mode)".into()),
-        },
-        PageKey::Note => pc::note(value, main.minus, &here.things(), known).map(|(label, does)| {
-            let does = match does {
-                NoteDoes::Open(note, title) => Does::Act(Act::Note(note, title)),
-                NoteDoes::Paste => Does::Act(Act::PasteNotes),
-                NoteDoes::Hide(note) => Does::Edit(Edit::Thing(Change::HideNote(note))),
-            };
-            (label, does)
-        }),
-        PageKey::Extra => {
-            let args: Vec<(Arg, &str)> = command[1..].iter().filter_map(|a| Some((arg_of(a.key)?, a.value.as_str()))).collect();
-            pc::extra(value, main.minus, &args, &here.things(), known).map(|(label, change)| (label, Does::Edit(Edit::Thing(change))))
+            let d = here.loaded()?;
+            let files = earlier_files(d);
+            if files.is_empty() {
+                return Err("it has no earlier files to play again".into());
+            }
+            let n = place(value, files.len(), "earlier files")?;
+            let label = format!("it plays earlier file {} again ({}); the one it plays now becomes an earlier file", n + 1, earlier_label(files[n]));
+            edit(label, Edit::UseFile(files[n].old_file_id))
         }
-        PageKey::Description | PageKey::Visibility => Err(format!("{}: goes after extra:Name", key.name())),
+        PageKey::File => Err("file: opens the File part; file:2 plays its second earlier file again (edit mode)".into()),
         PageKey::Og => {
             editing(here)?;
             if !here.may.files {
                 return Err("whether its file is an original file: that needs the edit_files permission".into());
             }
             let f = &here.loaded()?.file;
-            if main.minus {
+            if c.minus {
                 if f.original_filename.is_none() {
                     return Err("its file isn't an original file".into());
                 }
@@ -378,7 +378,7 @@ pub fn resolve(command: &[Part], here: &Here, known: &Known) -> Result<(String, 
             let new = here.detail.is_some_and(|d| d.lyrics.is_empty());
             nothing_after(if new { "time new lyrics (the sync popup)" } else { "time the lyrics (the sync popup)" }, Act::Sync)
         }
-        PageKey::Version => version(command, here),
+        PageKey::Version => version(c, here),
         PageKey::Unmerge => {
             editing(here)?;
             if !here.may.replace {
@@ -400,19 +400,22 @@ pub fn resolve(command: &[Part], here: &Here, known: &Known) -> Result<(String, 
             }
             let d = here.loaded()?;
             let all = revisions(d);
-            let [h] = main.hashes.as_slice() else { return Err("restore:#N restores its Nth revision (the list has them, newest first)".into()) };
-            let n = place(h, all.len(), "revisions")?;
+            if !number {
+                return Err("restore:N restores its Nth revision (the list has them, newest first)".into());
+            }
+            let n = place(value, all.len(), "revisions")?;
             let (r, now) = all[n];
             if now {
-                return Err(format!("#{} is what's there now", n + 1));
+                return Err(format!("{} is what's there now", n + 1));
             }
-            edit(format!("restore #{} ({}): a new revision with its data", n + 1, revision_label(d, r)), Edit::Restore(r.id))
+            edit(format!("restore {} ({}): a new revision with its data", n + 1, revision_label(d, r)), Edit::Restore(r.id))
         }
+        PageKey::Note | PageKey::Extra => unreachable!(),
     }
 }
 
 /// `version:Name` (edit it, or a new one), `version:Name as:New name` (renamed).
-fn version(command: &[Part], here: &Here) -> Result<(String, Does), String> {
+fn version(c: &Node, here: &Here) -> Result<(String, Does), String> {
     editing(here)?;
     if !here.may.metadata {
         return Err("versions need the edit_metadata permission".into());
@@ -421,14 +424,14 @@ fn version(command: &[Part], here: &Here) -> Result<(String, Does), String> {
     if here.staged {
         return Err("apply or discard the changes first: they're for the version they were typed for".into());
     }
-    let name = command[0].value.trim();
+    let name = c.value.trim();
     if name.is_empty() {
         return Err("version: one of its versions (to edit it), or a new one's name".into());
     }
     let found = d.variants.iter().find(|v| v.label.eq_ignore_ascii_case(name));
     let edited = d.variants.iter().find(|v| Some(v.id) == here.version).map_or("the one edited", |v| v.label.as_str());
     let act = |label: String, a: Act| Ok((label, Does::Act(a)));
-    match (found, command[1..].iter().find(|p| p.key == K::As)) {
+    match (found, c.arg("as")) {
         (Some(v), Some(p)) if p.value.trim().is_empty() => Err(format!("as: “{}”'s new name", v.label)),
         (Some(v), Some(p)) => act(format!("the version “{}” renamed “{}” (at once)", v.label, p.value.trim()), Act::RenameVersion(v.id, p.value.trim().to_string())),
         (None, Some(_)) => Err(format!("no version “{name}” to rename")),
@@ -440,67 +443,64 @@ fn version(command: &[Part], here: &Here) -> Result<(String, Does), String> {
 
 /// The groups, asked for once `visibility:` is typed (it names them).
 pub fn ask_groups(text: &str, here: &Here, shell: &crate::ui::Shell, known: &mut Known, groups: &crate::ui::edit::extras::Groups) {
-    pc::ask_groups_if::<K>(text, |k| k == K::Page(PageKey::Visibility), &here.things(), shell, known, groups);
+    let typed = parse::parse(text).commands.iter().any(|c| c.spec.key == "extra" && c.arg("visibility").is_some());
+    pc::ask_groups_when(typed, &here.things(), shell, known, groups);
 }
 
 /// Each command of a line typed in listen mode: what it does, or why it can't (the
 /// editor's keys can't, there).
 pub fn resolve_line(text: &str, here: &Here, known: &Known) -> Vec<Result<(String, Does), String>> {
-    commandline::parse::<K>(text).commands().map(|c| resolve(c, here, known)).collect()
-}
-
-/// Whether the part being typed is the page's (its key, or an argument of one of its keys).
-pub fn is_page_part(part: &Part, group: &[Part]) -> bool {
-    match group.first() {
-        Some(owner) if part.arg => matches!(owner.key, K::Page(_)),
-        _ => matches!(part.key, K::Page(_)),
+    let line = parse::parse(text);
+    let mut out: Vec<Result<(String, Does), String>> = line.commands.iter().map(|c| resolve(c, here, known)).collect();
+    if let Some(word) = line.words.first().filter(|w| w.contains(':') || w.starts_with('-')) {
+        out.push(Err(parse::LINE.not_a_command(word)));
     }
+    out
 }
 
-/// The choices for the value being typed (`group`: what it goes with, if it's an argument).
-pub fn choices(part: &Part, group: &[Part], here: &Here, known: &Known) -> Vec<Row> {
-    let value = part.value.trim();
+/// The choices for a value of one of the page's commands being typed (`node`, in `c`).
+pub fn choices(node: &Node, c: &Node, here: &Here, known: &Known) -> Vec<Row> {
+    if let Some(rows) = pc::thing_choices(node, c, &here.things(), known) {
+        return rows;
+    }
+    let value = node.value.trim();
     let typed = value.to_lowercase();
-    let things = here.things();
     let can = editing(here).is_ok();
-    let raw = |label: String, sub: &str, text: String| Row { label, sub: sub.into(), choice: Choice::Raw(text, None) };
-    if let Some(arg) = arg_of(part.key).filter(|_| group.first().is_some_and(|g| g.key == K::Page(PageKey::Extra))) {
-        return pc::extra_arg_rows(arg, value, &things, known);
-    }
-    let K::Page(key) = part.key else { return Vec::new() };
+    let raw = |label: String, sub: &str, text: String| PcRow { label, sub: sub.into(), choice: Choice::Raw(text) };
+    let Some(key) = PageKey::of(c.spec.key).filter(|_| std::ptr::eq(node, c)) else { return Vec::new() };
     let d = here.detail;
-    match key {
-        PageKey::Note => pc::note_rows(part.minus, value, &things),
-        PageKey::Extra => pc::extra_rows(part.minus, value, &things),
-        PageKey::Queue => [("end", "at the end of the queue"), ("next", "before what's queued")].into_iter().filter(|(w, _)| w.starts_with(&typed)).map(|(w, sub)| raw(w.into(), sub, w.into())).collect(),
-        PageKey::Star if typed.is_empty() && !part.minus => [("yes", "starred"), ("no", "not starred")].into_iter().map(|(w, sub)| raw(w.into(), sub, w.into())).collect(),
-        PageKey::Lyrics if part.hashes.is_empty() => d
+    let rows: Vec<PcRow> = match key {
+        PageKey::Lyrics => d
             .map(|d| &d.lyrics[..])
             .unwrap_or_default()
             .iter()
             .enumerate()
             .filter(|(n, l)| typed.is_empty() || crate::catalog::query::loosely_in(value, &lyrics_name(l, *n)))
-            .map(|(n, l)| raw(format!("#{} {}", n + 1, lyrics_name(l, n)), "show these", format!("#{}", n + 1)))
+            .map(|(n, l)| raw(format!("{} {}", n + 1, lyrics_name(l, n)), "show these", format!("{}", n + 1)))
             .collect(),
-        PageKey::File if can && here.may.replace && part.hashes.is_empty() && typed.is_empty() => d
+        PageKey::File if can && here.may.replace && typed.is_empty() => d
             .map(earlier_files)
             .unwrap_or_default()
             .iter()
             .enumerate()
-            .map(|(n, h)| raw(format!("#{} {}", n + 1, earlier_label(h)), "plays it again", format!("#{}", n + 1)))
+            .map(|(n, h)| raw(format!("{} {}", n + 1, earlier_label(h)), "plays it again", format!("{}", n + 1)))
             .collect(),
-        PageKey::Restore if can && here.may.restore && part.hashes.is_empty() => {
+        PageKey::Restore if can && here.may.restore => {
             let Some(d) = d else { return Vec::new() };
-            revisions(d).into_iter().enumerate().filter(|(_, (_, now))| !now).map(|(n, (r, _))| raw(format!("#{} {}", n + 1, revision_label(d, r)), "restore it", format!("#{}", n + 1))).collect()
+            revisions(d).into_iter().enumerate().filter(|(_, (_, now))| !now).map(|(n, (r, _))| raw(format!("{} {}", n + 1, revision_label(d, r)), "restore it", format!("{}", n + 1))).collect()
         }
-        PageKey::Og if can && here.may.files && typed.is_empty() && !part.minus => {
+        PageKey::Og if can && here.may.files && typed.is_empty() && !c.minus => {
             let Some(f) = d.map(|d| &d.file) else { return Vec::new() };
             let name = f.original_filename.clone().unwrap_or_else(|| f.uploaded_filename.clone());
-            vec![Row { label: name.clone(), sub: "its name (as uploaded, or another)".into(), choice: Choice::Value(name) }]
+            vec![PcRow { label: name.clone(), sub: "its name (as uploaded, or another)".into(), choice: Choice::Value(name) }]
+        }
+        PageKey::Rating if typed.is_empty() && here.rating > 0 && !c.minus => {
+            let now = format!("{}", here.rating as f32 / 2.0);
+            vec![raw(now.clone(), &format!("yours now: {}", stars(here.rating)), now)]
         }
         PageKey::Version if can && here.may.metadata => {
             let Some(d) = d else { return Vec::new() };
-            let mut rows: Vec<Row> = d
+            let mut rows: Vec<PcRow> = d
                 .variants
                 .iter()
                 .filter(|v| typed.is_empty() || v.label.to_lowercase().contains(&typed))
@@ -509,24 +509,25 @@ pub fn choices(part: &Part, group: &[Part], here: &Here, known: &Known) -> Vec<R
                     if d.primary_variant_id == Some(v.id) {
                         sub.push_str(" · shown");
                     }
-                    Row { label: v.label.clone(), sub: format!("{sub} · Tab, as: renames it"), choice: Choice::Value(v.label.clone()) }
+                    PcRow { label: v.label.clone(), sub: format!("{sub} · as: renames it"), choice: Choice::Value(v.label.clone()) }
                 })
                 .collect();
             if !value.is_empty() && !d.variants.iter().any(|v| v.label.eq_ignore_ascii_case(value)) {
-                rows.push(Row { label: format!("New version “{value}”"), sub: "a copy of the one edited".into(), choice: Choice::Value(value.to_string()) });
+                rows.push(PcRow { label: format!("New version “{value}”"), sub: "a copy of the one edited".into(), choice: Choice::Value(value.to_string()) });
             }
             rows
         }
         _ => Vec::new(),
-    }
+    };
+    rows.into_iter().map(pc::to_schema).collect()
 }
 
-/// The actions plain words find (and the keys to type, for the rest).
+/// The actions plain words find (the keys are listed after them).
 pub fn actions(typed: &str, here: &Here) -> Vec<Row> {
     let mut rows = Vec::new();
     let found = |label: &str, also: &[&str]| crate::catalog::query::loosely_in(typed, label) || also.iter().any(|a| a.starts_with(&typed.to_lowercase()));
-    let act = |label: &str, sub: &str, act: Act| Row { label: label.into(), sub: sub.into(), choice: Choice::Act(act) };
-    let insert = |label: &str, sub: &str, key: &str| Row { label: label.into(), sub: sub.into(), choice: Choice::Insert(key.into()) };
+    let act = |label: &str, sub: &str, act: Act| Row { label: label.into(), sub: sub.into(), take: Take::Page(Choice::Act(act)) };
+    let insert = |label: &str, sub: &str, line: &str| Row { label: label.into(), sub: sub.into(), take: Take::Page(Choice::Insert(line.into())) };
     let track = here.track();
     if track.is_some() {
         if found("Play", &[]) {
@@ -543,10 +544,6 @@ pub fn actions(typed: &str, here: &Here) -> Vec<Row> {
     let star = if here.starred { "Unstar" } else { "Star" };
     if found(star, &["star", "favourite", "favorite", "like"]) {
         rows.push(act(star, "yours", Act::Star(!here.starred)));
-    }
-    if found("Rate", &["rating", "stars"]) {
-        let now = if here.rating > 0 { format!("now {}", stars(here.rating)) } else { "0 to 5 stars".into() };
-        rows.push(insert("Rate (rating:)", &now, "rating:"));
     }
     if found("Copy link", &["link", "share"]) {
         rows.push(act("Copy link", "for someone with an account (Ctrl+L)", Act::CopyLink));
@@ -570,16 +567,10 @@ pub fn actions(typed: &str, here: &Here) -> Vec<Row> {
             rows.push(act(section.title(), sub, Act::Reveal(section)));
         }
     }
-    if let Some(d) = here.detail.filter(|d| d.lyrics.len() > 1)
-        && found("Lyrics: another entry", &["lyrics", "language"])
-    {
-        let names: Vec<String> = d.lyrics.iter().enumerate().map(|(n, l)| lyrics_name(l, n)).collect();
-        rows.push(insert("Lyrics: another entry (lyrics:)", &names.join(", "), "lyrics:"));
-    }
     // Its artists, albums, groupings and related tracks: their pages.
     if !typed.trim().is_empty() {
         let mut go = |label: &str, sub: &str, page: Page| {
-            if found(label, &[]) && !rows.iter().any(|r| matches!(&r.choice, Choice::Act(Act::Go(p)) if *p == page)) {
+            if found(label, &[]) && !rows.iter().any(|r| matches!(&r.take, Take::Page(Choice::Act(Act::Go(p))) if *p == page)) {
                 rows.push(act(label, sub, Act::Go(page)));
             }
         };
@@ -627,22 +618,6 @@ pub fn actions(typed: &str, here: &Here) -> Vec<Row> {
     if found("Turn into an extra", &["extra"]) {
         rows.push(act("Turn into an extra…", "vocals, a stem, a clip of another song", Act::ToExtra));
     }
-    let mut keys = vec![
-        ("note:", "Note (note:)", "a new one, or one of its notes to edit", here.may.metadata),
-        ("extra:", "Extra (extra:)", "a new one, one of its own to change, or one in the library", here.may.metadata),
-        ("version:", "Version (version:)", "edit another, or a new one by that name", here.may.metadata && d.is_some()),
-        ("og:", "Original file (og:)", "its file is the artist's own (-og: it isn't)", here.may.files && d.is_some()),
-        ("file:#", "Play an earlier file again (file:)", "#N: the file it plays now becomes an earlier one", here.may.replace && d.is_some_and(|d| !earlier_files(d).is_empty())),
-        ("restore:#", "Restore a revision (restore:)", "#N, from its history", here.may.restore && d.is_some_and(|d| revisions(d).iter().any(|r| !r.1))),
-    ];
-    if d.and_then(open_merge).is_some_and(|m| here.may.replace && m.undo_blockers.is_empty()) {
-        keys.push(("unmerge:", "Undo the merge (unmerge:)", "the newest merge into it", true));
-    }
-    for (key, label, sub, may) in keys {
-        if may && found(label, &[key.trim_end_matches(['#', ':'])]) {
-            rows.push(insert(label, sub, key));
-        }
-    }
     let Some(d) = d else { return rows };
     if here.may.metadata && !here.staged {
         let edited = d.variants.iter().find(|v| Some(v.id) == here.version);
@@ -654,7 +629,7 @@ pub fn actions(typed: &str, here: &Here) -> Vec<Row> {
         if let Some(v) = edited
             && found("Rename this version", &["version", "rename"])
         {
-            rows.push(insert("Rename this version", &format!("“{}”", v.label), &format!("version:{} as:", crate::ui::edit::editor::quoted(&v.label))));
+            rows.push(insert("Rename this version", &format!("“{}”", v.label), &format!("version:{} as:", parse::quoted(&v.label))));
         }
     }
     if here.may.upload && found("Duplicate this track", &["copy", "duplicate"]) {
@@ -662,14 +637,14 @@ pub fn actions(typed: &str, here: &Here) -> Vec<Row> {
             "a new track: “{}” with this metadata and status, playing the same file, with the same earlier files, copies of the covers and the same access; not its albums, relations, lyrics, sources or plays (its page opens once it's made)",
             d.title
         );
-        rows.push(Row { label: "Duplicate this track".into(), sub: "staged".into(), choice: Choice::Stage("Duplicate this track".into(), label, Edit::Duplicate) });
+        rows.push(Row { label: "Duplicate this track".into(), sub: "staged".into(), take: Take::Page(Choice::Stage("Duplicate this track".into(), label, Edit::Duplicate)) });
     }
     if here.may.sources
         && let Some(snapshot) = origin_undo(d)
         && found("Undo the last origin change", &["origin", "undo"])
     {
         let label = "where its file came from: back to where it was before the last change".to_string();
-        rows.push(Row { label: "Undo the last origin change".into(), sub: "staged".into(), choice: Choice::Stage("Undo the last origin change".into(), label, Edit::UndoOrigin(d.file.id, snapshot)) });
+        rows.push(Row { label: "Undo the last origin change".into(), sub: "staged".into(), take: Take::Page(Choice::Stage("Undo the last origin change".into(), label, Edit::UndoOrigin(d.file.id, snapshot))) });
     }
     rows
 }
@@ -790,26 +765,15 @@ mod tests {
 
     #[test]
     fn page_keys_are_the_editors_too() {
-        use crate::ui::edit::editor::parse_line;
-        let line = parse_line("play: | title:Intro: Part 2 | extra:Stems kind:stems source:a friend | -og");
-        let keys: Vec<(K, bool)> = line.parts.iter().map(|p| (p.key, p.arg)).collect();
-        assert_eq!(
-            keys,
-            [
-                (K::Page(PageKey::Play), false),
-                (K::Title, false),
-                (K::Page(PageKey::Extra), false),
-                (K::Kind, true),
-                (K::Source, true),
-                (K::Page(PageKey::Og), false)
-            ]
-        );
-        assert_eq!(line.parts[1].value, "Intro: Part 2");
+        let line = parse::parse("play: | title:Intro: Part 2 | extra:Stems kind:stems source:a friend | -og");
+        let keys: Vec<(&str, bool, Vec<&str>)> = line.commands.iter().map(|c| (c.spec.key, parse::is_page(c.spec), c.args.iter().map(|a| a.spec.key).collect())).collect();
+        assert_eq!(keys, [("play", true, vec![]), ("title", false, vec![]), ("extra", true, vec!["kind", "source"]), ("og", true, vec![])]);
+        assert_eq!(line.commands[1].value, "Intro: Part 2");
         // Without a colon, a word (plain words find actions).
-        assert_eq!(parse_line("play").words, ["play"]);
+        assert_eq!(parse::parse("play").words, ["play"]);
         // `rate` is the page's here (in a filter it's the sample rate).
-        assert_eq!(parse_line("rate:4").parts[0].key, K::Page(PageKey::Rating));
-        assert_eq!(parse_line("cover:paste").parts[0].key, K::Cover, "the editor's own come first");
+        assert_eq!(parse::parse("rate:4").commands[0].spec.key, "rating");
+        assert!(!parse::is_page(parse::parse("cover:paste").commands[0].spec), "the editor's own come first");
     }
 
     #[test]
@@ -820,16 +784,12 @@ mod tests {
         assert_eq!(does("queue:next | star: | rating:3.5", &h), [Ok(Does::Act(Act::Queue(true))), Ok(Does::Act(Act::Star(true))), Ok(Does::Act(Act::Rate(7)))]);
         assert_eq!(does("-rating", &h), [Ok(Does::Act(Act::Rate(0)))]);
         assert_eq!(does("lyrics:finn", &h), [Ok(Does::Act(Act::Lyrics(1)))]);
-        assert_eq!(does("lyrics:#1", &h), [Ok(Does::Act(Act::Lyrics(0)))]);
+        assert_eq!(does("lyrics:1", &h), [Ok(Does::Act(Act::Lyrics(0)))]);
         assert_eq!(does("file:", &h), [Ok(Does::Act(Act::Reveal(Reveal::File)))]);
         assert!(does("tags:", &h)[0].as_ref().is_err_and(|e| e.contains("no tags in the file")));
         // An open one is closed, and says so.
-        let (label, _) = resolve(&parse("lyrics:").parts, &h, &Known::default()).unwrap();
+        let (label, _) = resolve(&parse::parse("lyrics:").commands[0], &h, &Known::default()).unwrap();
         assert!(label.contains("close"), "{label}");
-    }
-
-    fn parse(text: &str) -> commandline::Line<K> {
-        crate::ui::edit::editor::parse_line(text)
     }
 
     #[test]
@@ -845,14 +805,15 @@ mod tests {
     fn changes_say_edit_mode_outside_it() {
         let (c, v, d) = (catalog(), Vocab::default(), detail());
         let h = here(&c, &v, &d, false);
-        for text in ["title:New", "og:", "file:#1", "unmerge:", "restore:#3", "note:Hi", "extra:Stems", "version:Other"] {
+        for text in ["title:New", "og:", "file:1", "unmerge:", "restore:3", "note:Hi", "extra:Stems", "version:Other"] {
             let out = does(text, &h);
             assert!(out[0].as_ref().is_err_and(|e| e.contains("edit mode: e")), "{text}: {out:?}");
         }
         // Not suggested either.
         let rows = actions("merge", &h);
         assert!(rows.iter().all(|r| !r.label.starts_with("Merge")));
-        assert!(choices(&parse("file:").parts[0], &[], &h, &Known::default()).is_empty());
+        let line = parse::parse("file:");
+        assert!(choices(&line.commands[0], &line.commands[0], &h, &Known::default()).is_empty());
     }
 
     #[test]
@@ -863,13 +824,13 @@ mod tests {
         assert_eq!(does("og:", &h), [Ok(Does::Edit(Edit::Og(u(3), Some("glass.flac".into()))))]);
         assert!(does("-og", &h)[0].is_err(), "not an original file already");
         // The purged earlier file isn't one to play again.
-        assert_eq!(does("file:#1", &h), [Ok(Does::Edit(Edit::UseFile(u(30))))]);
-        assert!(does("file:#2", &h)[0].as_ref().is_err_and(|e| e.contains("it has 1")));
+        assert_eq!(does("file:1", &h), [Ok(Does::Edit(Edit::UseFile(u(30))))]);
+        assert!(does("file:2", &h)[0].as_ref().is_err_and(|e| e.contains("it has 1")));
         assert_eq!(does("unmerge:", &h), [Ok(Does::Edit(Edit::Unmerge(u(80))))]);
         // The newest of its kind is what's there now.
-        assert!(does("restore:#1", &h)[0].as_ref().is_err_and(|e| e.contains("there now")));
-        assert!(does("restore:#2", &h)[0].as_ref().is_err_and(|e| e.contains("there now")));
-        assert_eq!(does("restore:#3", &h), [Ok(Does::Edit(Edit::Restore(u(92))))]);
+        assert!(does("restore:1", &h)[0].as_ref().is_err_and(|e| e.contains("there now")));
+        assert!(does("restore:2", &h)[0].as_ref().is_err_and(|e| e.contains("there now")));
+        assert_eq!(does("restore:3", &h), [Ok(Does::Edit(Edit::Restore(u(92))))]);
         assert_eq!(does("note:Hi", &h), [Ok(Does::Act(Act::Note(None, "Hi".into())))]);
         assert!(matches!(&does("extra:Stems kind:stems", &h)[0], Ok(Does::Edit(Edit::Thing(Change::Extra(e)))) if e.name == "Stems" && e.about.as_ref().is_some_and(|a| a.0 == "stems")));
         assert!(does("description:x", &h)[0].as_ref().is_err_and(|e| e.contains("after extra:")));
@@ -898,12 +859,13 @@ mod tests {
         assert!(labels("dup").contains(&"Duplicate this track".to_string()));
         assert!(labels("origin").contains(&"Undo the last origin change".to_string()));
         assert!(labels("merge").contains(&"Merge with another track…".to_string()));
-        assert!(labels("unmerge").contains(&"Undo the merge (unmerge:)".to_string()));
+        assert!(offers(parse::LINE.command("unmerge").unwrap(), &h), "unmerge: is offered (the merge can be undone)");
+        assert!(!offers(parse::LINE.command("unmerge").unwrap(), &here(&c, &v, &d, false)), "not outside edit mode");
         assert!(labels("history").contains(&"History".to_string()));
         // The version edited is shown already: nothing to show.
         assert!(!labels("show").contains(&"Show this version".to_string()));
         let rename = actions("rename", &h).into_iter().find(|r| r.label == "Rename this version").unwrap();
-        assert!(matches!(rename.choice, Choice::Insert(ref t) if t == "version:File tags as:"));
+        assert!(matches!(rename.take, Take::Page(Choice::Insert(ref t)) if t == "version:File tags as:"));
     }
 
     #[test]
@@ -911,16 +873,17 @@ mod tests {
         let (c, v, d) = (catalog(), Vocab { extra_kinds: vec!["stems".into(), "video".into()], ..Vocab::default() }, detail());
         let h = here(&c, &v, &d, true);
         let rows = |text: &str| {
-            let line = parse(text);
-            choices(line.parts.last().unwrap(), line.last_goes_with(), &h, &Known::default()).into_iter().map(|r| r.label).collect::<Vec<_>>()
+            let line = parse::parse(text);
+            let c = line.commands.last().unwrap();
+            choices(c.typed(), c, &h, &Known::default()).into_iter().map(|r| r.label).collect::<Vec<_>>()
         };
-        assert_eq!(rows("lyrics:"), ["#1 English · official", "#2 Finnish"]);
+        assert_eq!(rows("lyrics:"), ["1 English · official", "2 Finnish"]);
         assert_eq!(rows("file:").len(), 1);
         assert_eq!(rows("restore:").len(), 1);
         assert_eq!(rows("version:"), ["File tags", "Leak title"]);
         assert_eq!(rows("version:Demo"), ["New version “Demo”"]);
         assert!(rows("extra:Stems kind:st").contains(&"stems".to_string()));
-        assert!(is_page_part(&parse("extra:x kind:").parts[1], parse("extra:x kind:").last_goes_with()));
-        assert!(!is_page_part(&parse("album:x kind:").parts[1], parse("album:x kind:").last_goes_with()));
+        assert!(parse::is_page(parse::parse("extra:x kind:").commands[0].spec));
+        assert!(!parse::is_page(parse::parse("album:x kind:").commands[0].spec));
     }
 }

@@ -33,7 +33,7 @@ const ARGS: &[Spec] = &[
     Spec::new("why", Kind::Text, "kept with every change").aliases(&["reason"]),
 ];
 
-pub static SCHEMA: Schema = Schema { commands: &[Spec::new("artist", Kind::Artist, "whose credits change").aliases(&["from"]).next(Next::Args(ARGS))] };
+pub static SCHEMA: Schema = Schema { also: &[], commands: &[Spec::new("artist", Kind::Artist, "whose credits change").aliases(&["from"]).next(Next::Args(ARGS))] };
 
 /// What a command asks for: the artist, which of its credits, and the artist and name they
 /// become (alias None: that artist's own name).

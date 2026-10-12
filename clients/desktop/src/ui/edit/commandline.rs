@@ -184,7 +184,9 @@ impl CommandLine {
         self.text = schema::take(schema, &self.text, row, !run, pins);
         self.highlighted = 0;
         self.cursor_to_end(ui.ctx());
-        Driven { took: true, run, page: None }
+        // (A choice the page is told of: what it stands for.)
+        let page = if let schema::Take::Choose(_, p) = &row.take { Some(p.clone()) } else { None };
+        Driven { took: true, run, page }
     }
 }
 
@@ -195,7 +197,8 @@ pub struct Driven<P> {
     pub took: bool,
     /// Enter: the line is to be run.
     pub run: bool,
-    /// A page's own row taken.
+    /// A page's own row taken (or a choice it's told of: the value is in the line, and
+    /// this says what it stands for).
     pub page: Option<P>,
 }
 

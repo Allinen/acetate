@@ -21,8 +21,9 @@ use uuid::Uuid;
 use super::engine::{self, Change, Engine, Env, Outcome, Phase, PlanState};
 use super::model::{self, Op};
 use super::panel::{self, Row};
-use super::parse::{self, K};
-use super::resolve::{self, Candidate, Ctx, Lookups, Names, Pick, PinKind, Want};
+use super::parse;
+use super::resolve::{self, Ctx, Lookups, Names, Pick, PinKind, Want};
+use crate::commandline::schema;
 use crate::account::Vocab;
 use crate::catalog::search::{Part as SearchPart, Search};
 use crate::catalog::Catalog;
@@ -285,23 +286,24 @@ impl Session {
         (n < self.staged.len()).then(|| self.staged.remove(n)).filter(|s| s.editable).map(|s| s.text)
     }
 
-    /// A choice made in a list: what its text stands for from now on.
-    pub fn take(&mut self, c: &Candidate) {
-        match &c.pick {
-            Some(Pick::Pin(kind, id)) => self.names.pin(*kind, &c.text, *id),
-            Some(Pick::NewArtist) => {
-                let id = self.names.new_artist(&c.text);
-                self.names.pin(PinKind::Artist, &c.text, id);
+    /// A choice made in a list: what `text` (its name, as put in the line) stands for from
+    /// now on.
+    pub fn take(&mut self, pick: &Pick, text: &str) {
+        match pick {
+            Pick::Pin(kind, id) => self.names.pin(*kind, text, *id),
+            Pick::NewArtist => {
+                let id = self.names.new_artist(text);
+                self.names.pin(PinKind::Artist, text, id);
             }
-            Some(Pick::NewAlbum) => {
-                let id = self.names.new_album(&c.text);
-                self.names.pin(PinKind::Album, &c.text, id);
+            Pick::NewAlbum => {
+                let id = self.names.new_album(text);
+                self.names.pin(PinKind::Album, text, id);
             }
-            Some(Pick::NewGrouping) => {
-                let id = self.names.new_grouping(&c.text);
-                self.names.pin(PinKind::Grouping, &c.text, id);
+            Pick::NewGrouping => {
+                let id = self.names.new_grouping(text);
+                self.names.pin(PinKind::Grouping, text, id);
             }
-            None => {}
+            Pick::Line(_) => {}
         }
     }
 
@@ -623,12 +625,9 @@ pub struct Chooser {
 /// The choices for a line being typed.
 #[derive(Debug, Clone, Default)]
 pub struct Choices {
-    /// The last part's values (artists, roles, statuses…).
-    pub candidates: Vec<Candidate>,
-    /// For plain words: the things to change by that name, each with the line it starts.
-    pub actions: Vec<(String, String)>,
-    /// The last part, where its value starts and ends in the line (a choice replaces it).
-    pub value: (usize, usize),
+    /// The list (see `commandline::schema::rows`): values, the keys that can follow, and for
+    /// plain words the things to change by that name (`Pick::Line`).
+    pub rows: Vec<schema::Row<Pick>>,
     /// What was asked for in the background and hasn't come: ask again later.
     pub waiting: bool,
 }
@@ -636,21 +635,13 @@ pub struct Choices {
 impl Chooser {
     pub fn choices(&self, text: &str) -> Choices {
         let parsed = parse::parse(text);
-        let last = parsed.current().cloned();
-        let group = parsed.last_goes_with();
-        let query = |l: &parse::Part| if l.key == K::Cover { resolve::cover_value(l).unwrap_or_default() } else { l.value.clone() };
+        let typed = resolve::typed(&parsed);
         let find = |part: SearchPart, value: &str| -> Vec<u32> {
             if value.trim().is_empty() { Vec::new() } else { Search::default().run_part(&self.catalog, &value.trim().to_lowercase(), part, 8).into_iter().map(|h| h.0).collect() }
         };
-        let hits = match last.as_ref().and_then(|l| resolve::search_for(l).map(|sp| (sp, query(l)))) {
-            Some((sp, value)) => find(sp, &value),
-            None => Vec::new(),
-        };
-        let track_hits = match last.as_ref().and_then(resolve::cover_value) {
-            Some(value) => find(SearchPart::Tracks, &value),
-            None => Vec::new(),
-        };
-        let words = parsed.parts.is_empty() && !parsed.words.is_empty();
+        let query = |n: &parse::Node| if n.spec.key == "cover" { resolve::cover_value(n).unwrap_or_default() } else { n.value.clone() };
+        let hits = typed.and_then(|n| resolve::search_for(n).map(|sp| find(sp, &query(n)))).unwrap_or_default();
+        let track_hits = typed.and_then(resolve::cover_value).map(|v| find(SearchPart::Tracks, &v)).unwrap_or_default();
         let ctx = Ctx {
             catalog: &self.catalog,
             vocab: &self.vocab,
@@ -664,13 +655,12 @@ impl Chooser {
             artist_names: None,
         };
         let mut library = self.library.clone();
-        let candidates = match &last {
-            Some(l) if !words => resolve::candidates(l, group, &ctx, &hits, &track_hits, &mut library),
-            _ => Vec::new(),
+        let rows = {
+            let listing = resolve::Listing { ctx: &ctx, hits: &hits, track_hits: &track_hits, look: std::cell::RefCell::new(&mut library), page: false };
+            // (Nothing typed: no list.)
+            if text.trim().is_empty() { Vec::new() } else { schema::rows(&parse::LINE, &parsed, text, &listing) }
         };
-        let actions = if words { resolve::actions(&parsed.words.join(" "), &ctx) } else { Vec::new() };
-        let value = last.map(|l| (l.value_start, l.end)).unwrap_or((text.len(), text.len()));
-        Choices { candidates, actions, value, waiting: library.waiting() }
+        Choices { rows, waiting: library.waiting() }
     }
 }
 
@@ -710,6 +700,6 @@ mod tests {
     fn choices_for_a_status_are_the_servers_statuses() {
         let s = session();
         let c = s.chooser().choices("status:de");
-        assert!(c.candidates.iter().any(|c| c.text == "demo"), "{c:?}");
+        assert!(c.rows.iter().any(|r| r.written() == Some("demo")), "{c:?}");
     }
 }

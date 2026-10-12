@@ -214,12 +214,14 @@ pub struct Spec {
     /// Whether it goes with `key:…`, `-key…`, or both (an argument of a command that takes
     /// something off).
     pub on: On,
+    /// A command typed by any start of its names (`art:` for `artist:`), as a filter's keys are.
+    pub prefix: bool,
     pub help: &'static str,
 }
 
 impl Spec {
     pub const fn new(key: &'static str, value: Kind, help: &'static str) -> Spec {
-        Spec { key, aliases: &[], value, minus: Minus::No, need: Need::Optional, next: Next::None, on: On::Plus, help }
+        Spec { key, aliases: &[], value, minus: Minus::No, need: Need::Optional, next: Next::None, on: On::Plus, prefix: false, help }
     }
 
     pub const fn aliases(self, aliases: &'static [&'static str]) -> Spec {
@@ -241,6 +243,11 @@ impl Spec {
     /// It goes with `-key…` too.
     pub const fn with_minus(self) -> Spec {
         Spec { on: On::Both, ..self }
+    }
+
+    /// Typed by any start of its names too.
+    pub const fn prefix(self) -> Spec {
+        Spec { prefix: true, ..self }
     }
 
     /// It goes with `-key…` only.
@@ -284,17 +291,34 @@ pub static FIELD: Spec = Spec::new("field", Kind::Text, "");
 #[derive(Debug, Clone, Copy)]
 pub struct Schema {
     pub commands: &'static [Spec],
+    /// More commands, after those (a page's own, added to a shared set).
+    pub also: &'static [Spec],
 }
 
 impl Schema {
+    /// Its commands, in order.
+    pub fn all(&self) -> impl Iterator<Item = &'static Spec> + Clone {
+        let (commands, also): (&'static [Spec], &'static [Spec]) = (self.commands, self.also);
+        commands.iter().chain(also.iter())
+    }
+
+    /// The command a typed name means: one named so exactly (any case), else (two letters
+    /// at least) the first of those that take starts of their names that one starts.
     pub fn command(&self, name: &str) -> Option<&'static Spec> {
-        self.commands.iter().find(|s| s.is(name))
+        if let Some(s) = self.all().find(|s| s.is(name)) {
+            return Some(s);
+        }
+        let lower = name.to_lowercase();
+        if lower.chars().count() < 2 {
+            return None;
+        }
+        self.all().find(|s| s.prefix && std::iter::once(&s.key).chain(s.aliases).any(|k| k.starts_with(&lower)))
     }
 
     /// Every spec in it, once (the branches' too, for the values `samples` gives).
     pub fn every(&self, samples: &dyn Fn(Kind) -> Vec<String>) -> Vec<&'static Spec> {
         let mut out: Vec<&'static Spec> = Vec::new();
-        let mut todo: Vec<&'static Spec> = self.commands.iter().collect();
+        let mut todo: Vec<&'static Spec> = self.all().collect();
         while let Some(s) = todo.pop() {
             if out.iter().any(|o| std::ptr::eq(*o, s)) {
                 continue;
@@ -317,7 +341,7 @@ impl Schema {
     /// of another command ("kind: goes after extra:"), else not a command.
     pub fn not_a_command(&self, word: &str) -> String {
         let name = word.trim_start_matches('-').split(':').next().unwrap_or("");
-        let owner = word.contains(':').then(|| self.commands.iter().find(|c| self.every(&|_| Vec::new()).iter().any(|s| !std::ptr::eq(*s, *c) && s.is(name) && takes_somewhere(c, s)))).flatten();
+        let owner = word.contains(':').then(|| self.all().find(|c| self.every(&|_| Vec::new()).iter().any(|s| !std::ptr::eq(*s, *c) && s.is(name) && takes_somewhere(c, s)))).flatten();
         match owner {
             Some(c) => format!("{name}: goes after {}:", c.key),
             None => format!("“{word}”: not a command"),
@@ -386,6 +410,16 @@ impl Node {
     /// The kind its value is (`-key` alone: nothing).
     pub fn kind(&self) -> Kind {
         if self.colon { self.spec.value } else { Kind::Nothing }
+    }
+
+    /// Where its text ends, its arguments' too.
+    pub fn text_end(&self) -> usize {
+        self.last_chain().last().unwrap().end
+    }
+
+    /// The node being typed under it (the last; itself when it has no arguments).
+    pub fn typed(&self) -> &Node {
+        self.last_chain().last().unwrap()
     }
 
     /// The last node typed under it (itself when it has no arguments), and the nodes on the
@@ -581,6 +615,9 @@ pub enum Take<P = ()> {
     /// One of several with the same name: the value becomes the name, and that one is
     /// meant by it from now on (kept under `tag`, see `Pins`).
     Pin { tag: &'static str, name: String, id: Uuid },
+    /// The value being typed becomes this (quoted where it needs it), and the page is told
+    /// what was chosen (an artist in the library, or a new one by that name).
+    Choose(String, P),
     /// The page's own: the line isn't changed by taking it.
     Page(P),
 }
@@ -601,10 +638,23 @@ impl<P> Row<P> {
         matches!(self.take, Take::Key { .. })
     }
 
+    /// The same row, with the page's part of it made another's.
+    pub fn map<Q>(self, f: impl FnOnce(P) -> Q) -> Row<Q> {
+        let take = match self.take {
+            Take::Key { key, at } => Take::Key { key, at },
+            Take::Value(v) => Take::Value(v),
+            Take::Raw(v) => Take::Raw(v),
+            Take::Pin { tag, name, id } => Take::Pin { tag, name, id },
+            Take::Choose(v, p) => Take::Choose(v, f(p)),
+            Take::Page(p) => Take::Page(f(p)),
+        };
+        Row { label: self.label, sub: self.sub, take }
+    }
+
     /// The value it writes, if it writes one.
     pub fn written(&self) -> Option<&str> {
         match &self.take {
-            Take::Value(v) | Take::Raw(v) | Take::Pin { name: v, .. } => Some(v),
+            Take::Value(v) | Take::Raw(v) | Take::Pin { name: v, .. } | Take::Choose(v, _) => Some(v),
             _ => None,
         }
     }
@@ -670,10 +720,10 @@ pub fn rows<P>(schema: &Schema, line: &Line, text: &str, lists: &dyn Lists<P>) -
             let at = word.map(|(at, _)| at);
             // `-…`: the commands that take something off.
             if let Some(minus) = typed.strip_prefix('-') {
-                out.extend(schema.commands.iter().filter(|s| s.minus != Minus::No && starts(s, minus) && lists.offers(s)).map(|s| key_row(&format!("-{}", s.key), s.help, at)));
+                out.extend(schema.all().filter(|s| s.minus != Minus::No && starts(s, minus) && lists.offers(s)).map(|s| key_row(&format!("-{}", s.key), s.help, at)));
                 return out;
             }
-            let mut specs: Vec<&'static Spec> = schema.commands.iter().filter(|s| starts(s, &typed) && lists.offers(s)).collect();
+            let mut specs: Vec<&'static Spec> = schema.all().filter(|s| starts(s, &typed) && lists.offers(s)).collect();
             specs.sort_by_key(|s| line.commands.iter().any(|c| std::ptr::eq(c.spec, *s)));
             out.extend(specs.into_iter().map(|s| key_row(s.key, s.help, at)));
             out
@@ -746,7 +796,7 @@ pub fn take<P>(schema: &Schema, text: &str, row: &Row<P>, space: bool, pins: &mu
             if base.is_empty() { format!("{key}:") } else { format!("{base} {key}:") }
         }
         Take::Page(_) => text.to_string(),
-        Take::Value(_) | Take::Raw(_) | Take::Pin { .. } => {
+        Take::Value(_) | Take::Raw(_) | Take::Pin { .. } | Take::Choose(..) => {
             let line = parse(schema, text);
             let Some(command) = line.current() else { return text.to_string() };
             let node = *command.last_chain().last().unwrap();
@@ -756,7 +806,7 @@ pub fn take<P>(schema: &Schema, text: &str, row: &Row<P>, space: bool, pins: &mu
                     schema.quoted(name)
                 }
                 Take::Raw(v) => v.clone(),
-                Take::Value(v) => schema.quoted(v),
+                Take::Value(v) | Take::Choose(v, _) => schema.quoted(v),
                 _ => unreachable!(),
             };
             let after = if space { " " } else { "" };
@@ -861,7 +911,7 @@ pub fn walk<P>(schema: &Schema, lists: &dyn Lists<P>, samples: &dyn Fn(Kind) -> 
         }
         // And each command a word could start.
         if text.is_empty() {
-            for s in schema.commands {
+            for s in schema.all() {
                 todo.push((format!("{}:", s.key), d + 1));
                 if s.minus != Minus::No {
                     todo.push((format!("-{}:", s.key), d + 1));
@@ -880,7 +930,7 @@ pub fn walk<P>(schema: &Schema, lists: &dyn Lists<P>, samples: &dyn Fn(Kind) -> 
                         return Err(format!("“{text}”: taking {key}: gave “{next}”, which isn't {key}: being typed"));
                     }
                 }
-                Take::Value(v) | Take::Raw(v) | Take::Pin { name: v, .. } => {
+                Take::Value(v) | Take::Raw(v) | Take::Pin { name: v, .. } | Take::Choose(v, _) => {
                     let typed = typed_now(&after);
                     if typed.is_none_or(|n| n.value != *v && !matches!(row.take, Take::Raw(_))) {
                         return Err(format!("“{text}”: taking “{v}” gave “{next}”, which doesn't have it as the value"));
@@ -929,6 +979,7 @@ mod tests {
     }
 
     static SCHEMA: Schema = Schema {
+        also: &[],
         commands: &[
             Spec::new("artist", Kind::Artist, "whose credits").aliases(&["from"]).next(Next::Args(ARTIST_ARGS)),
             Spec::new("source", Kind::Words(&[Word { word: "soundcloud", help: "" }, Word { word: "web", help: "" }]), "a source").minus(Minus::Off).next(Next::Branch(platform)),

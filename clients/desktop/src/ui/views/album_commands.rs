@@ -106,6 +106,7 @@ const EDITS: &[&str] = &["title", "kind", "date", "why", "artist", "feat", "cove
 
 /// Every command, in the order the list offers them.
 pub static SCHEMA: Schema = Schema {
+    also: &[],
     commands: &[
         Spec::new("play", Kind::Maybe(&Kind::Track), "the album, or from a track (its number or title)"),
         Spec::new("queue", Kind::Maybe(&Kind::Words(QUEUE)), "at the end, or next").aliases(&["enqueue"]),
@@ -788,13 +789,13 @@ fn track_rows(here: &Here, typed: &str, sub: &str) -> Vec<PcRow> {
         .iter()
         .enumerate()
         .filter(|&(_, &t)| typed.is_empty() || crate::catalog::query::loosely_in(typed, here.catalog.track_at(t).title()))
-        .map(|(n, &t)| PcRow { label: format!("{} {}", n + 1, here.catalog.track_at(t).title()), sub: sub.into(), choice: Choice::Raw(format!("{}", n + 1), None) })
+        .map(|(n, &t)| PcRow { label: format!("{} {}", n + 1, here.catalog.track_at(t).title()), sub: sub.into(), choice: Choice::Raw(format!("{}", n + 1)) })
         .collect()
 }
 
 /// Rows for a list of words: each as it is.
 fn word_rows(words: &[String], typed: &str, sub: &str) -> Vec<PcRow> {
-    words.iter().filter(|w| w.to_lowercase().starts_with(&typed.to_lowercase())).map(|w| PcRow { label: w.clone(), sub: sub.into(), choice: Choice::Raw(w.clone(), None) }).collect()
+    words.iter().filter(|w| w.to_lowercase().starts_with(&typed.to_lowercase())).map(|w| PcRow { label: w.clone(), sub: sub.into(), choice: Choice::Raw(w.clone()) }).collect()
 }
 
 /// What the page knows, for the list.
@@ -822,7 +823,7 @@ impl Lists<Choice> for Lister<'_> {
 
     fn offers(&self, spec: &Spec) -> bool {
         // (Arguments come after their command, which was offered.)
-        if !SCHEMA.commands.iter().any(|c| std::ptr::eq(c, spec)) {
+        if !SCHEMA.all().any(|c| std::ptr::eq(c, spec)) {
             return true;
         }
         match spec.key {
@@ -840,17 +841,17 @@ fn album_choices(node: &Node, c: &Node, here: &Here, known: &Known) -> Vec<PcRow
     let typed = value.to_lowercase();
     let can = editing(here).is_ok();
     let is_command = std::ptr::eq(node, c);
-    let covers = |sub: &str| -> Vec<PcRow> { here.covers.iter().enumerate().map(|(n, cv)| PcRow { label: format!("{} {}{}", n + 1, cover_label(cv), if n == 0 { " · main" } else { "" }), sub: sub.into(), choice: Choice::Raw(format!("{}", n + 1), None) }).collect() };
+    let covers = |sub: &str| -> Vec<PcRow> { here.covers.iter().enumerate().map(|(n, cv)| PcRow { label: format!("{} {}{}", n + 1, cover_label(cv), if n == 0 { " · main" } else { "" }), sub: sub.into(), choice: Choice::Raw(format!("{}", n + 1)) }).collect() };
     match (c.spec.key, node.spec.key) {
         ("play", "play") => track_rows(here, value, "play from here"),
         ("rating", "rating") if typed.is_empty() && here.rating > 0 && !c.minus => {
             let now = format!("{}", here.rating as f32 / 2.0);
-            vec![PcRow { label: now.clone(), sub: format!("yours now: {}", stars(here.rating)), choice: Choice::Raw(now, None) }]
+            vec![PcRow { label: now.clone(), sub: format!("yours now: {}", stars(here.rating)), choice: Choice::Raw(now) }]
         }
         ("edit", "edit") if here.may_metadata => {
             let mut rows = Vec::new();
             if here.edit_mode && "all".starts_with(&typed) {
-                rows.push(PcRow { label: "all".into(), sub: "every track, marked".into(), choice: Choice::Raw("all".into(), None) });
+                rows.push(PcRow { label: "all".into(), sub: "every track, marked".into(), choice: Choice::Raw("all".into()) });
             }
             rows.extend(track_rows(here, value, "in the track editor"));
             rows
@@ -869,21 +870,21 @@ fn album_choices(node: &Node, c: &Node, here: &Here, known: &Known) -> Vec<PcRow
             .credits
             .iter()
             .filter(|cr| cr.artist_name.to_lowercase().contains(&typed))
-            .map(|cr| PcRow { label: format!("− {}", cr.artist_name), sub: format!("{}: taken off", cr.role), choice: Choice::Pin(Pinned::Artist, cr.artist_name.clone(), cr.artist_id, None) })
+            .map(|cr| PcRow { label: format!("− {}", cr.artist_name), sub: format!("{}: taken off", cr.role), choice: Choice::Pin(Pinned::Artist, cr.artist_name.clone(), cr.artist_id) })
             .collect(),
         ("artist" | "feat", _) if can && is_command => {
             let mut rows: Vec<PcRow> = Vec::new();
             if typed.is_empty() {
-                rows.extend(here.credits.iter().map(|cr| PcRow { label: cr.artist_name.clone(), sub: format!("{}: credited, change it", cr.role), choice: Choice::Pin(Pinned::Artist, cr.artist_name.clone(), cr.artist_id, None) }));
+                rows.extend(here.credits.iter().map(|cr| PcRow { label: cr.artist_name.clone(), sub: format!("{}: credited, change it", cr.role), choice: Choice::Pin(Pinned::Artist, cr.artist_name.clone(), cr.artist_id) }));
                 return rows;
             }
             for (i, _) in Search::default().run_part(here.catalog, value, SearchPart::Artists, 8) {
                 let (name, sub) = crate::catalog::search::describe(here.catalog, SearchPart::Artists, i);
                 let a = &here.catalog.artists[i as usize];
                 let sub = if here.credits.iter().any(|cr| cr.artist_id == a.id) { format!("{sub} · credited") } else { sub };
-                rows.push(PcRow { label: name.clone(), sub, choice: Choice::Pin(Pinned::Artist, name, a.id, None) });
+                rows.push(PcRow { label: name.clone(), sub, choice: Choice::Pin(Pinned::Artist, name, a.id) });
             }
-            rows.push(PcRow { label: format!("New artist “{value}”"), sub: "made when it's saved".into(), choice: Choice::Pin(Pinned::Artist, value.to_string(), pc::NEW, None) });
+            rows.push(PcRow { label: format!("New artist “{value}”"), sub: "made when it's saved".into(), choice: Choice::Pin(Pinned::Artist, value.to_string(), pc::NEW) });
             rows
         }
         ("artist" | "feat", "role") if can => word_rows(&here.vocab.credit_roles, value, "a role"),
@@ -906,7 +907,7 @@ fn album_choices(node: &Node, c: &Node, here: &Here, known: &Known) -> Vec<PcRow
                             Pinned::Album => here.catalog.album_at(i).id(),
                             _ => here.catalog.track_at(i).id(),
                         };
-                        rows.push(PcRow { label: title.clone(), sub: format!("{sub} · a copy of its cover"), choice: Choice::Pin(kind, title, id, None) });
+                        rows.push(PcRow { label: title.clone(), sub: format!("{sub} · a copy of its cover"), choice: Choice::Pin(kind, title, id) });
                     }
                 }
             }
@@ -917,7 +918,7 @@ fn album_choices(node: &Node, c: &Node, here: &Here, known: &Known) -> Vec<PcRow
             .iter()
             .filter_map(|id| here.catalog.grouping(*id))
             .filter(|g| g.name.to_lowercase().contains(&typed))
-            .map(|g| PcRow { label: format!("− {}", g.name), sub: format!("{}: taken out of it", g.kind), choice: Choice::Pin(Pinned::Grouping, g.name.clone(), g.id, None) })
+            .map(|g| PcRow { label: format!("− {}", g.name), sub: format!("{}: taken out of it", g.kind), choice: Choice::Pin(Pinned::Grouping, g.name.clone(), g.id) })
             .collect(),
         ("group", "group") if can => {
             let mut rows: Vec<PcRow> = here
@@ -926,10 +927,10 @@ fn album_choices(node: &Node, c: &Node, here: &Here, known: &Known) -> Vec<PcRow
                 .iter()
                 .filter(|g| !here.groupings.contains(&g.id) && g.name.to_lowercase().contains(&typed))
                 .take(12)
-                .map(|g| PcRow { label: g.name.clone(), sub: format!("{}: put it in", g.kind), choice: Choice::Pin(Pinned::Grouping, g.name.clone(), g.id, None) })
+                .map(|g| PcRow { label: g.name.clone(), sub: format!("{}: put it in", g.kind), choice: Choice::Pin(Pinned::Grouping, g.name.clone(), g.id) })
                 .collect();
             if !value.is_empty() && !here.catalog.groupings.iter().any(|g| g.name.eq_ignore_ascii_case(value)) {
-                rows.push(PcRow { label: format!("New grouping “{value}”"), sub: "made when it's saved (then kind:)".into(), choice: Choice::Raw(value.to_string(), None) });
+                rows.push(PcRow { label: format!("New grouping “{value}”"), sub: "made when it's saved (then kind:)".into(), choice: Choice::Raw(value.to_string()) });
             }
             rows
         }

@@ -65,6 +65,7 @@ const EDITS: &[&str] = &["name", "disambiguation", "why", "recredit", "source", 
 
 /// Every command, in the order the list offers them.
 pub static SCHEMA: Schema = Schema {
+    also: &[],
     commands: &[
         Spec::new("alias", Kind::Or(ALL, &Kind::AliasOf(&[])), "only what's credited under a name (or several); a new name in edit mode")
             .aliases(&["aliases"])
@@ -525,7 +526,7 @@ impl Lists<Choice> for Page<'_> {
 
     fn offers(&self, spec: &Spec) -> bool {
         // (Arguments come after their command, which was offered.)
-        if !EDITS.contains(&spec.key) || !SCHEMA.commands.iter().any(|c| std::ptr::eq(c, spec)) {
+        if !EDITS.contains(&spec.key) || !SCHEMA.all().any(|c| std::ptr::eq(c, spec)) {
             return true;
         }
         editing(self.here).is_ok() && (spec.key != "source" || self.here.may_source)
