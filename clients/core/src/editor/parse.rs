@@ -242,6 +242,15 @@ mod tests {
     }
 
     #[test]
+    fn a_bar_ends_the_part_being_typed() {
+        assert_eq!(parse("artist:Ann").current().map(|p| p.value.as_str()), Some("Ann"));
+        assert!(parse("artist:Ann |").current().is_none(), "a new command: nothing to choose for yet");
+        assert!(parse("artist:Ann | ").current().is_none());
+        assert_eq!(parse("artist:Ann | status:").current().map(|p| p.key), Some(K::Status));
+        assert_eq!(parse("artist:Ann \\|").current().map(|p| p.value.as_str()), Some("Ann |"), "escaped: still the value");
+    }
+
+    #[test]
     fn quotes_keep_bars() {
         assert_eq!(parts("title:\"guy | more\" | status:demo")[0].2, "guy | more");
         assert_eq!(parts("-suffix:\" | Prod\"")[0].2, " | Prod", "spaces in quotes kept");

@@ -41,7 +41,8 @@ if you type one anyway it tells you why it can't be done.
   differs only in case is a different name.
 - `-alias:Name` takes a name off. The server is asked first where it's still credited. If
   it's credited anywhere, it isn't staged; the credits are listed as links, so you can
-  change them first, and *Credit those tracks another way…* opens *Credited as…* with that
+  change them first. Add `recredit:yes` (`-alias:Name recredit:yes`) to go straight on from
+  the check, or use the button, *Credit those tracks another way…*, which opens *Credited as…* with that
   name's credits already chosen: say what they become (`as:own`, `as:Other name`, or
   `to:Another artist`), look at what it would change, and `Ctrl+Enter` does it. Then
   `-alias:Name` works.

@@ -72,6 +72,8 @@ pub enum K {
     Description,
     Visibility,
     Note,
+    /// After `-alias:Name`: when it is still credited, go on to credit those tracks otherwise.
+    Recredit,
 }
 
 /// Every key's names: its own first. Exact names only (no starts of them: `release:`
@@ -97,6 +99,7 @@ const KEYS: &[(K, &[&str])] = &[
     (K::Description, &["description", "desc"]),
     (K::Visibility, &["visibility", "vis", "seen"]),
     (K::Note, &["note"]),
+    (K::Recredit, &["recredit"]),
 ];
 
 impl Keys for K {
@@ -118,7 +121,7 @@ impl Keys for K {
     }
 
     fn takes(main: K, arg: K) -> bool {
-        main == K::Extra && matches!(arg, K::Kind | K::File | K::Description | K::Source | K::Visibility)
+        (main == K::Extra && matches!(arg, K::Kind | K::File | K::Description | K::Source | K::Visibility)) || (main == K::Alias && arg == K::Recredit)
     }
 
     fn field(main: K) -> Option<K> {
@@ -296,7 +299,7 @@ pub struct ArtistCommands {
     /// Other artists' changes staged, not saved yet.
     kept: std::collections::HashMap<Uuid, Vec<Staged>>,
     /// Names to take off, asked where they're credited first: (alias, typed as, name).
-    asking: Vec<(Uuid, String, String)>,
+    asking: Vec<(Uuid, String, String, bool)>,
     uses: UsesAnswer,
     /// A name that couldn't go, and where it's still credited.
     blocked: Option<(Uuid, String, Uses)>,
@@ -421,11 +424,13 @@ fn resolve(text: &str, here: &Here, known: &Known) -> Vec<Result<(String, Does),
             K::Alias if main.minus => match editing(here) {
                 Err(err) => Err(err),
                 Ok(()) if value.is_empty() => Err("-alias:Name takes that name off it".into()),
+                Ok(()) if command[1..].iter().any(|p| p.key == K::Recredit && !matches!(p.value.trim().to_lowercase().as_str(), "yes" | "no")) => Err("recredit: yes or no".into()),
                 Ok(()) => match alias_named(here, value) {
                     Some(a) => Ok((format!("− other name “{}” (if nothing's credited as it)", a.name), Does::Edit(Edit::RemoveAlias(a.id, a.name.clone())))),
                     None => Err(format!("it has no other name “{value}”")),
                 },
             },
+            K::Recredit => Err("recredit: goes after -alias:Name (recredit:yes opens Credited as… when it is still credited)".into()),
             K::Alias if value.is_empty() => Err("alias: a name it's credited under (the list), or all".into()),
             K::Alias if value.eq_ignore_ascii_case("all") => Ok(("all names".into(), Does::AllNames)),
             K::Alias => match name_of(here, value) {
@@ -563,13 +568,18 @@ fn choices(part: &commandline::Part<K>, group: &[commandline::Part<K>], here: &H
             .aliases
             .iter()
             .filter(|a| a.name.to_lowercase().contains(&typed))
-            .map(|a| Row { label: format!("− {}", a.name), sub: "taken off, if nothing's credited as it".into(), choice: Choice::Value(a.name.clone()) })
+            .map(|a| Row { label: format!("− {}", a.name), sub: "taken off, if nothing's credited as it".into(), choice: Choice::Raw(commandline::quoted::<K>(&a.name), Some("recredit:".into())) })
             .collect();
     }
     if let Some(arg) = arg_of(part.key).filter(|_| group.first().is_some_and(|g| g.key == K::Extra)) {
         return pc::extra_arg_rows(arg, &part.value, &things, known);
     }
     match part.key {
+        K::Recredit => ["yes", "no"]
+            .into_iter()
+            .filter(|w| w.starts_with(&typed))
+            .map(|w| Row { label: w.into(), sub: if w == "yes" { "if it is still credited: credit those tracks another way".into() } else { "just say where it is credited".into() }, choice: Choice::Raw(w.into(), None) })
+            .collect(),
         K::Alias => {
             let mut rows: Vec<Row> = here
                 .names
@@ -655,8 +665,8 @@ impl ArtistCommands {
         pc::arrive(&mut self.cl, &ctx, shell, &mut self.last_pass);
         let focused = self.cl.hold_focus(&ctx);
         let line = commandline::parse::<K>(&self.cl.text);
-        let words = line.parts.is_empty() && !line.words.is_empty();
-        let rows: Vec<Row> = match line.parts.last() {
+        let words = line.current().is_none() && !line.words.is_empty();
+        let rows: Vec<Row> = match line.current() {
             _ if words => actions(&line.words.join(" "), here),
             Some(last) => choices(last, line.last_goes_with(), here, &self.known, filters),
             None => Vec::new(),
@@ -749,7 +759,8 @@ impl ArtistCommands {
                             Does::Act(a) => act = Some(a),
                             Does::Edit(Edit::RemoveAlias(alias, name)) => {
                                 artist_form::ask_uses(shell, id, alias, &self.uses);
-                                self.asking.push((alias, text, name));
+                                let recredit = commandline::parse::<K>(&text).parts.iter().any(|p| p.key == K::Recredit && p.value.trim().eq_ignore_ascii_case("yes"));
+                                self.asking.push((alias, text, name, recredit));
                             }
                             Does::Edit(edit) => self.staged.push(Staged { text, label, edit, failed: None }),
                             does => apply(filters, does),
@@ -769,7 +780,7 @@ impl ArtistCommands {
             let shown: Vec<Result<(String, Option<String>), String>> = resolve(&self.cl.text, here, &self.known).into_iter().map(|r| r.map(|(label, _)| (label, None))).collect();
             cl::would_do(ui, &shown, "Nothing to do by that name");
         }
-        for (_, _, name) in &self.asking {
+        for (_, _, name, _) in &self.asking {
             ui.label(RichText::new(format!("Checking where “{name}” is credited…")).color(P.faint).small());
         }
         if let Some((alias, name, uses)) = &self.blocked {
@@ -817,14 +828,22 @@ impl ArtistCommands {
             }
         }
         for (alias, result) in std::mem::take(&mut *self.uses.lock().unwrap()) {
-            let Some(at) = self.asking.iter().position(|(a, _, _)| *a == alias) else { continue };
-            let (_, text, name) = self.asking.remove(at);
+            let Some(at) = self.asking.iter().position(|(a, _, _, _)| *a == alias) else { continue };
+            let (_, text, name, recredit) = self.asking.remove(at);
             match result {
                 Ok(uses) if uses.is_empty() => {
                     let label = format!("− other name “{name}”");
                     self.staged.push(Staged { text, label, edit: Edit::RemoveAlias(alias, name), failed: None });
                 }
-                Ok(uses) => self.blocked = Some((alias, name, uses)),
+                Ok(uses) => {
+                    // `recredit:yes`: on to crediting those tracks otherwise.
+                    if recredit && !uses.tracks.is_empty() {
+                        let mut tracks: Vec<Uuid> = uses.tracks.iter().map(|t| t.track_id).collect();
+                        tracks.dedup();
+                        self.credit_request = Some((alias, tracks));
+                    }
+                    self.blocked = Some((alias, name, uses));
+                }
                 Err(err) => self.notice = Some(format!("Couldn't check where “{name}” is credited: {err}")),
             }
         }
@@ -961,6 +980,9 @@ mod tests {
         assert_eq!(does("alias:Zed", &edit), [Ok(Does::Name(None))], "its own name filters");
         // Taking one off, renaming, what tells it apart: edit mode's.
         assert_eq!(does("-alias:unused", &edit), [Ok(Does::Edit(Edit::RemoveAlias(Uuid::from_u128(2), "Unused".into())))]);
+        assert_eq!(does("-alias:unused recredit:yes", &edit), does("-alias:unused", &edit), "recredit: is for after the check");
+        assert!(does("-alias:unused recredit:maybe", &edit)[0].is_err());
+        assert!(does("recredit:yes", &edit)[0].is_err(), "it goes with -alias:");
         assert!(does("-alias:Nobody", &edit)[0].is_err());
         assert!(does("-alias:Zee", &listen)[0].is_err());
         assert_eq!(does("name:Zed Two | disambiguation:US rapper", &edit), [Ok(Does::Edit(Edit::Rename("Zed Two".into()))), Ok(Does::Edit(Edit::Disambiguation("US rapper".into())))]);

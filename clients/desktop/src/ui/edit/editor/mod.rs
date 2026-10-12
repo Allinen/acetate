@@ -455,8 +455,8 @@ impl TrackEditor {
         pc::arrive(&mut self.cl, &ctx, shell, &mut self.last_pass);
         let focused = self.cl.hold_focus(&ctx);
         let line = parse::parse(&self.cl.text);
-        let words = line.parts.is_empty() && !line.words.is_empty();
-        let rows: Vec<tc::Row> = match line.parts.last() {
+        let words = line.current().is_none() && !line.words.is_empty();
+        let rows: Vec<tc::Row> = match line.current() {
             _ if words => tc::actions(&line.words.join(" "), page),
             Some(last) if tc::is_page_part(last, line.last_goes_with()) => tc::choices(last, line.last_goes_with(), page, &self.page_known),
             _ => Vec::new(),
@@ -930,7 +930,7 @@ impl TrackEditor {
             self.cl.place_cursor = true;
         }
         let parsed = parse::parse(&self.cl.text);
-        let last = parsed.parts.last().cloned();
+        let last = parsed.current().cloned();
         // What the last part goes with: the part before its modifiers, and those (none: it
         // isn't a modifier).
         let group: &[parse::Part] = parsed.last_goes_with();

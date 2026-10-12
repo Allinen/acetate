@@ -317,8 +317,8 @@ impl Marking {
                 }
             }
         }
-        // Alt+C: credited as… for the marked tracks (none marked: the selected one).
-        if !self.popup_open() && self.tools(shell) && shell.account.can("edit_metadata") && ctx.input_mut(|i| i.consume_key(egui::Modifiers::ALT, egui::Key::C)) {
+        // Ctrl+B: credited as… for the marked tracks (none marked: the selected one).
+        if !self.popup_open() && self.tools(shell) && shell.account.can("edit_metadata") && ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::B)) {
             let mut tracks = self.ordered(len, id_at);
             if tracks.is_empty() {
                 tracks.extend(id_at(selected).map(|k| k.0));
@@ -463,7 +463,7 @@ impl Marking {
                     });
                 }
             }
-            if ui.button("Credited as…  (Alt+C)").on_hover_text("An artist's name on these tracks and their albums (an alias, or its own name)").clicked() {
+            if ui.button("Credited as…  (Ctrl+B)").on_hover_text("An artist's name on these tracks and their albums (an alias, or its own name)").clicked() {
                 self.credited_as = Some(super::credited_as::CreditedAs::open(self.ordered(len, id_at)));
             }
             // Only for someone allowed to correct files (admins): a very specific fix.

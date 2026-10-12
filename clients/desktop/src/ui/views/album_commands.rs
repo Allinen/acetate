@@ -1094,8 +1094,8 @@ impl AlbumCommands {
         pc::arrive(&mut self.cl, &ctx, shell, &mut self.last_pass);
         let focused = self.cl.hold_focus(&ctx);
         let line = commandline::parse::<K>(&self.cl.text);
-        let words = line.parts.is_empty() && !line.words.is_empty();
-        let rows: Vec<Row> = match line.parts.last() {
+        let words = line.current().is_none() && !line.words.is_empty();
+        let rows: Vec<Row> = match line.current() {
             _ if words => actions(&line.words.join(" "), here),
             Some(last) => choices(last, line.last_goes_with(), here, &self.known),
             None => Vec::new(),

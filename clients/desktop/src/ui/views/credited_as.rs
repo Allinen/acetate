@@ -144,6 +144,18 @@ impl CreditedAs {
             let artist = self.rows[0].artist;
             self.set(shell, Setting::Artist(artist));
         }
+        // The artist (and the one credited instead) typed and gone on from: set at once, so
+        // the choices after it are its own.
+        let artist_list: Vec<(Uuid, String)> = self.rows.iter().map(|r| (r.artist, r.name.clone())).collect();
+        let before_line = self.choice();
+        let early = line::World { catalog: &catalog, artists: &artist_list, from: self.artist, from_names: &[], to_name: None, to_names: &[] };
+        for setting in line::settled(&self.cl.text, &early, &self.known) {
+            self.set(shell, setting);
+        }
+        if self.choice() != before_line {
+            self.outcome = None;
+            self.ask(shell);
+        }
         let choice = self.choice();
         let previewed = self.preview.poll();
         if let Some((asked, result)) = previewed
@@ -169,7 +181,6 @@ impl CreditedAs {
         };
         let from_names = names(self.artist);
         let to_names = names(self.to.as_ref().map(|t| t.0).or(self.artist));
-        let artist_list: Vec<(Uuid, String)> = self.rows.iter().map(|r| (r.artist, r.name.clone())).collect();
         let to_name: Option<String> = self.to.as_ref().map(|t| t.1.clone()).or_else(|| self.artist.and_then(|a| self.rows.iter().find(|r| r.artist == a).map(|r| r.name.clone())));
         // Ctrl+Enter credits them so (when what it does is shown); with a line typed it sets that first.
         let ctrl_enter = shell.ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Enter));
@@ -191,7 +202,7 @@ impl CreditedAs {
             let world = line::World { catalog: &catalog, artists: &artist_list, from: self.artist, from_names: &from_names, to_name: to_name.as_deref(), to_names: &to_names };
             let focused = self.cl.hold_focus(&ctx);
             let parsed = crate::commandline::parse::<line::K>(&self.cl.text);
-            let list_rows = parsed.parts.last().map(|p| line::choices(p, &world)).unwrap_or_default();
+            let list_rows = parsed.current().map(|p| line::choices(p, &world)).unwrap_or_default();
             self.cl.highlighted = self.cl.highlighted.min(list_rows.len().saturating_sub(1));
             let mut take = None;
             let mut enter = false;

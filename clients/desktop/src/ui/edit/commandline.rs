@@ -12,6 +12,9 @@ use eframe::egui::{self, Key, Modifiers, RichText};
 
 use crate::ui::theme::{font, medium, PALETTE as P};
 
+/// Where a key an empty commandline passes on to the app waits (`ctx.data`).
+pub const NAV: &str = "commandline-nav";
+
 pub struct CommandLine {
     id: egui::Id,
     pub text: String,
@@ -85,6 +88,26 @@ impl CommandLine {
     /// Backspace is taken (on an empty field) only if `can_take_back`.
     pub fn keys(&mut self, ctx: &egui::Context, choices: usize, down_too: bool, can_take_back: bool) -> Pressed {
         let empty = self.text.is_empty();
+        // Nothing typed yet: a digit is a page key (or the volume's), Backspace goes back
+        // (unless it takes a staged change back). Passed on to the app, and not typed.
+        if empty {
+            const DIGITS: [Key; 10] = [Key::Num0, Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5, Key::Num6, Key::Num7, Key::Num8, Key::Num9];
+            let nav = ctx.input_mut(|i| {
+                let digit = i.events.iter().find_map(|e| match e {
+                    egui::Event::Text(t) if t.len() == 1 && t.as_bytes()[0].is_ascii_digit() && !i.modifiers.any() => Some(DIGITS[(t.as_bytes()[0] - b'0') as usize]),
+                    _ => None,
+                });
+                if digit.is_some() {
+                    i.events.retain(|e| !matches!(e, egui::Event::Text(t) if t.len() == 1 && t.as_bytes()[0].is_ascii_digit()));
+                    return digit;
+                }
+                (!can_take_back && i.consume_key(Modifiers::NONE, Key::Backspace)).then_some(Key::Backspace)
+            });
+            if let Some(key) = nav {
+                ctx.data_mut(|d| d.insert_temp(egui::Id::new(NAV), Some(key)));
+                ctx.request_repaint();
+            }
+        }
         let pressed = ctx.input_mut(|i| Pressed {
             up: choices > 0 && i.consume_key(Modifiers::NONE, Key::ArrowUp),
             down: (choices > 0 || (empty && down_too)) && i.consume_key(Modifiers::NONE, Key::ArrowDown),

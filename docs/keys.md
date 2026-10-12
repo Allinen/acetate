@@ -10,8 +10,9 @@ matched by the character you type, so it works on non-US layouts.
 | Keys | Does |
 |---|---|
 | `Ctrl+K` | command palette: find anything, run a command |
-| `Ctrl+1 … 6` | albums, artists, tracks, now playing, queue, review |
-| `1 … 6` | the same, outside a text field |
+| `Ctrl+1 … 7` | albums, artists, tracks, now playing, queue, review, liked songs |
+| `digit  /  Backspace` | first in an empty commandline: the same as outside it (pages, volume)  /  back to the page before |
+| `1 … 7` | the same, outside a text field |
 | `Ctrl+,` | settings (h / l or the arrows: next tab) |
 | `Ctrl+L` | copy a link to the track, album or artist shown (for someone with an account) |
 | `Ctrl+Shift+L` | share link popup for the track or album shown (anyone can open it) |
@@ -77,7 +78,7 @@ matched by the character you type, so it works on non-US layouts.
 | `s  /  + −  /  p, Shift+P  /  q, Shift+Q` | star (all starred: unstar)  /  rate  /  add to, take out of a playlist  /  queue the marked tracks |
 | `Ctrl+E` | change the marked tracks (the editor, below; none marked: the selected one) |
 | `Ctrl+M` | edit mode, two marked: merge them (a popup, the merge keys below) |
-| `Alt+C` | edit mode: credited as… for the marked tracks (none marked: the selected one); its popup has a commandline: artist: only: to: as: why:, Ctrl+Enter credits them so |
+| `Ctrl+B` | edit mode: credited as… for the marked tracks (none marked: the selected one); its popup has a commandline: artist: only: to: as: why:, Ctrl+Enter credits them so |
 
 ## The track editor (a track's page in edit mode, Review, Ctrl+E)
 

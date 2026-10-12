@@ -4,7 +4,7 @@
 //! keyboard (and later the command palette) do the same, so there's one way to do each
 //! thing.
 //!
-//! Keys, see `keys`: Ctrl+1–6 (anywhere) or 1–6 (outside text fields): albums, artists,
+//! Keys, see `keys`: Ctrl+1–7 (anywhere) or 1–7 (outside text fields, or first in an empty commandline): albums, artists,
 //! tracks, now playing, queue, review · q add to the queue · Shift+Q play next · Esc / Alt+← back · Alt+→ forward · / filter · Space pause · Ctrl+←/→
 //! previous/next · Shift+←/→ seek 10 s · s star the selected one · Shift+S star what
 //! plays · 9/0 volume down/up · m mute · i the selected track's page · +/− rate the selected one · r loop the track · z shuffle · F5 refresh the library · arrows or hjkl move ·
@@ -1387,12 +1387,15 @@ impl App {
 
     /// Keys that work everywhere (outside text fields).
     fn keys(&mut self, ctx: &egui::Context) {
+        // A key an empty commandline passed on (a digit first, or Backspace on nothing): the
+        // page keys, as if outside a text field (see `edit::commandline::CommandLine::keys`).
+        let nav: Option<Key> = ctx.data_mut(|d| d.remove_temp::<Option<Key>>(egui::Id::new(edit::commandline::NAV))).flatten();
         // The key overlay takes its own keys (Esc closes it, not "back"); so does a popup.
         if self.keys_open || self.shell.modal_open || self.shell.messages.open {
             return;
         }
         let m = ctx.input(|i| i.modifiers);
-        let key = |k: Key| ctx.input(|i| i.key_pressed(k));
+        let key = |k: Key| ctx.input(|i| i.key_pressed(k)) || nav == Some(k);
         // By the character typed, not the key: "/" and "?" are on different keys (and
         // need Shift or not) on different keyboard layouts.
         let typed = |text: &str| ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Text(t) if t == text)));
@@ -1403,6 +1406,7 @@ impl App {
             (Key::Num4, Page::NowPlaying),
             (Key::Num5, Page::Queue),
             (Key::Num6, Page::Review),
+            (Key::Num7, Page::Liked),
         ];
 
         // Everywhere, text fields included.
@@ -1453,7 +1457,7 @@ impl App {
 
         // Outside text fields (there the arrows and letters are for the text), and when the
         // page doesn't take the keys itself.
-        if ctx.egui_wants_keyboard_input() || self.shell.page_takes_keys {
+        if (ctx.egui_wants_keyboard_input() && nav.is_none()) || self.shell.page_takes_keys {
             return;
         }
         if m.ctrl && key(Key::ArrowLeft) {

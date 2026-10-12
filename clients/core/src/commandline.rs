@@ -69,6 +69,9 @@ pub struct Line<K> {
     /// Words before any key.
     pub words: Vec<String>,
     pub parts: Vec<Part<K>>,
+    /// The last command (after a `|`) has no key yet: what was typed before it is done
+    /// with, so no choices for it.
+    pub fresh: bool,
 }
 
 impl<K: Keys> Part<K> {
@@ -80,7 +83,7 @@ impl<K: Keys> Part<K> {
 
 impl<K> Default for Line<K> {
     fn default() -> Self {
-        Line { words: Vec::new(), parts: Vec::new() }
+        Line { words: Vec::new(), parts: Vec::new(), fresh: true }
     }
 }
 
@@ -97,9 +100,14 @@ impl<K: Keys> Line<K> {
         })
     }
 
+    /// The part being typed: the last, unless a `|` has started a command after it.
+    pub fn current(&self) -> Option<&Part<K>> {
+        if self.fresh { None } else { self.parts.last() }
+    }
+
     /// What the last part goes with, when it's an argument: its command up to it.
     pub fn last_goes_with(&self) -> &[Part<K>] {
-        match self.parts.last() {
+        match self.current() {
             Some(last) if last.arg => {
                 let before = &self.parts[..self.parts.len() - 1];
                 let at = before.iter().rposition(|p| !p.arg).unwrap_or(0);
@@ -169,8 +177,10 @@ fn opens_quote(token: &str) -> bool {
 
 pub fn parse<K: Keys>(text: &str) -> Line<K> {
     let mut line = Line::default();
+    let mut last_first = 0;
     for command in commands_of(text) {
         let first = line.parts.len();
+        last_first = first;
         // The command's key (its first part), unless that takes something off.
         let mut main: Option<(K, bool)> = None;
         for token in command {
@@ -203,6 +213,7 @@ pub fn parse<K: Keys>(text: &str) -> Line<K> {
             part.end = end;
         }
     }
+    line.fresh = line.parts.len() == last_first;
     for part in &mut line.parts {
         let raw = text[part.value_start..part.end].trim();
         // The `#…`s aren't part of the value.

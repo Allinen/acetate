@@ -636,7 +636,7 @@ pub struct Choices {
 impl Chooser {
     pub fn choices(&self, text: &str) -> Choices {
         let parsed = parse::parse(text);
-        let last = parsed.parts.last().cloned();
+        let last = parsed.current().cloned();
         let group = parsed.last_goes_with();
         let query = |l: &parse::Part| if l.key == K::Cover { resolve::cover_value(l).unwrap_or_default() } else { l.value.clone() };
         let find = |part: SearchPart, value: &str| -> Vec<u32> {

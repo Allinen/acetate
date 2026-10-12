@@ -111,7 +111,6 @@ fn artist_to(world: &World, known: &Known, typed: &str) -> Result<(Uuid, String)
 pub fn resolve(text: &str, world: &World, known: &Known) -> Vec<Result<(String, Setting), String>> {
     let line = commandline::parse::<K>(text);
     let mut out = Vec::new();
-    let mut moved = false;
     for part in &line.parts {
         let value = part.value.trim();
         out.push(match part.key {
@@ -134,11 +133,9 @@ pub fn resolve(text: &str, world: &World, known: &Known) -> Vec<Result<(String, 
             },
             K::To if world.from.is_none() => Err("choose the artist first (artist:)".to_string()),
             K::To if value.is_empty() || value.eq_ignore_ascii_case("same") => {
-                moved = true;
                 Ok(("credited to the same artist".to_string(), Setting::To(None)))
             }
             K::To => artist_to(world, known, value).map(|(id, name)| {
-                moved = true;
                 if Some(id) == world.from {
                     ("credited to the same artist".to_string(), Setting::To(None))
                 } else {
@@ -146,8 +143,6 @@ pub fn resolve(text: &str, world: &World, known: &Known) -> Vec<Result<(String, 
                 }
             }),
             K::As if world.from.is_none() => Err("choose the artist first (artist:)".to_string()),
-            // (The other artist's names are looked up once it's set: not in the same line.)
-            K::As if moved => Err("as: goes after to: has been set (Enter), as its names load first".to_string()),
             K::As => {
                 let own = world.to_name.unwrap_or("");
                 match value.to_lowercase().as_str() {
@@ -162,6 +157,33 @@ pub fn resolve(text: &str, world: &World, known: &Known) -> Vec<Result<(String, 
             }
             K::Why => Ok((format!("why: {value}"), Setting::Why(value.to_string()))),
         });
+    }
+    out
+}
+
+/// The artist and the artist credited to, as soon as the line has gone on past them (a
+/// part after them has begun): set at once, so the choices for what follows (its other
+/// names) are theirs while it's still being typed.
+pub fn settled(text: &str, world: &World, known: &Known) -> Vec<Setting> {
+    let line = commandline::parse::<K>(text);
+    let done = if line.fresh { line.parts.len() } else { line.parts.len().saturating_sub(1) };
+    let mut out = Vec::new();
+    for part in &line.parts[..done] {
+        let value = part.value.trim();
+        match part.key {
+            K::Artist => {
+                let pinned = known.pinned(Pinned::Artist, value).filter(|id| world.artists.iter().any(|(a, _)| a == id));
+                if let Ok(id) = pinned.ok_or(()).or_else(|()| find(world.artists, value)) {
+                    out.push(Setting::Artist(id));
+                }
+            }
+            K::To if !value.is_empty() && !value.eq_ignore_ascii_case("same") => {
+                if let Ok((id, name)) = artist_to(world, known, value) {
+                    out.push(Setting::To(Some((id, name))));
+                }
+            }
+            _ => {}
+        }
     }
     out
 }
@@ -276,9 +298,20 @@ mod tests {
         assert!(set("only:zed")[0].is_err());
         assert!(set("artist:nobody")[0].is_err());
         assert!(set("to:Nobody")[0].is_err(), "no such artist in the library");
-        assert!(set("to:same as:Annie")[1].is_err(), "its names are looked up once it is set");
         assert_eq!(set("to:di"), [Ok(Setting::To(Some((id(5), "Di".into()))))], "exact name, any case");
         assert!(set("to:cy")[0].as_ref().is_err_and(|e| e.contains("2 artists")), "two are called that: the list chooses");
+    }
+
+    #[test]
+    fn the_artist_is_set_once_the_line_has_gone_on_past_it() {
+        let catalog = catalog();
+        let artists = [(id(1), "Ann".to_string()), (id(2), "Bo".to_string())];
+        let world = World { catalog: &catalog, artists: &artists, from: None, from_names: &[], to_name: None, to_names: &[] };
+        let known = Known::default();
+        assert!(settled("artist:Ann", &world, &known).is_empty(), "still being typed");
+        assert_eq!(settled("artist:Ann only:", &world, &known), [Setting::Artist(id(1))]);
+        assert_eq!(settled("artist:Bo | to:di as:", &world, &known), [Setting::Artist(id(2)), Setting::To(Some((id(5), "Di".into())))]);
+        assert_eq!(settled("artist:Ann |", &world, &known), [Setting::Artist(id(1))], "a bar: done with it");
     }
 
     #[test]
