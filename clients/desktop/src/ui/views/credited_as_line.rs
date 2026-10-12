@@ -232,10 +232,15 @@ fn key_rows(line: &commandline::Line<K>, text: &str, world: &World) -> Vec<Row> 
 /// after it, or a `|`) or nothing is typed yet, the keys to go on with.
 pub fn choices(line: &commandline::Line<K>, text: &str, world: &World) -> Vec<Row> {
     let ended = text.ends_with(char::is_whitespace);
-    match line.current() {
-        Some(part) if !(ended && !part.value.trim().is_empty()) => part_choices(part, world),
-        _ => key_rows(line, text, world),
+    let Some(part) = line.current() else { return key_rows(line, text, world) };
+    let rows = part_choices(part, world);
+    let value = part.value.trim();
+    // A space after a value: it's done when it is exactly one of the choices, or none goes
+    // on from it. (A name can hold spaces: "Ann " still lists "Ann Lee".)
+    if ended && !value.is_empty() && (rows.iter().any(|r| r.label.eq_ignore_ascii_case(value)) || rows.is_empty()) {
+        return key_rows(line, text, world);
     }
+    rows
 }
 
 /// The choices for the value being typed.
@@ -354,6 +359,8 @@ mod tests {
         assert_eq!(labels("artist:Ann | "), ["only:", "to:", "as:", "why:"], "after a bar");
         assert_eq!(labels("only:"), ["all", "own", "Annie"], "a value being typed: its choices");
         assert_eq!(labels("only:an"), ["Annie"]);
+        assert_eq!(labels("only:annie "), ["artist:", "to:", "as:", "why:"], "exactly one of them: done");
+        assert_eq!(labels("only:ann "), ["Annie"], "a space can be inside a name: the choices go on");
         let rows = choices(&commandline::parse::<K>("only:own "), "only:own ", &world);
         assert!(matches!(&rows[1].choice, Choice::Insert(t) if t == "only:own to:"), "the key goes on after what's there");
     }
