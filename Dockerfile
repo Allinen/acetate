@@ -18,10 +18,13 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 # The user guide (docs/, an mdBook), served by the server at /docs.
 FROM debian:trixie-slim AS book
 ARG MDBOOK_VERSION=0.5.4
+# Draws the command graphs (docs/commands.md); a release for mdBook 0.5.
+ARG MDBOOK_MERMAID_VERSION=0.17.1
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
     && rm -rf /var/lib/apt/lists/* \
     && case "$(uname -m)" in aarch64) target=aarch64-unknown-linux-musl ;; *) target=x86_64-unknown-linux-gnu ;; esac \
-    && curl -sSfL "https://github.com/rust-lang/mdBook/releases/download/v$MDBOOK_VERSION/mdbook-v$MDBOOK_VERSION-$target.tar.gz" | tar -xz -C /usr/local/bin
+    && curl -sSfL "https://github.com/rust-lang/mdBook/releases/download/v$MDBOOK_VERSION/mdbook-v$MDBOOK_VERSION-$target.tar.gz" | tar -xz -C /usr/local/bin \
+    && curl -sSfL "https://github.com/badboy/mdbook-mermaid/releases/download/v$MDBOOK_MERMAID_VERSION/mdbook-mermaid-v$MDBOOK_MERMAID_VERSION-$target.tar.gz" | tar -xz -C /usr/local/bin
 COPY docs /src/docs
 # (book.toml writes it to ../target/book.)
 RUN cd /src && mdbook build docs

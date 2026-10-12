@@ -264,3 +264,19 @@ async fn permissions_are_listed_for_those_who_hand_them_out(_: PgPoolOptions, co
     assert_eq!(s.go("GET", "/api/permissions", Some(&listener), None).await.0, StatusCode::FORBIDDEN);
     Ok(())
 }
+
+/// The user guide opens at `/docs` too: it's sent on to `/docs/`, where the book's relative
+/// links (its styles and scripts) resolve under `/docs/`.
+#[sqlx::test]
+async fn the_guide_at_docs_goes_on_to_docs_slash(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
+    let s = setup(connect).await?;
+    std::fs::create_dir_all(s._dir.path().join("docs/css"))?;
+    std::fs::write(s._dir.path().join("docs/index.html"), "<link rel=\"stylesheet\" href=\"css/book.css\">")?;
+    std::fs::write(s._dir.path().join("docs/css/book.css"), "body {}")?;
+    let response = s.app.clone().oneshot(Request::builder().uri("/docs?x=1").body(Body::empty()).unwrap()).await.unwrap();
+    assert_eq!(response.status(), StatusCode::PERMANENT_REDIRECT);
+    assert_eq!(response.headers()["location"], "/docs/?x=1");
+    assert_eq!(s.go("GET", "/docs/", None, None).await.0, StatusCode::OK);
+    assert_eq!(s.go("GET", "/docs/css/book.css", None, None).await.0, StatusCode::OK);
+    Ok(())
+}

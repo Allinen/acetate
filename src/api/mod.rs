@@ -88,6 +88,16 @@ async fn version() -> Json<serde_json::Value> {
 /// release to get: the two have to be the same, there's no code to bridge them. Requests
 /// without the headers (the web UI, a share link, curl, the Python library) and
 /// `/api/version` itself (how an app finds out why) pass.
+/// `/docs` (no slash) redirected to `/docs/`: the book's pages link their styles and
+/// scripts relatively, so from `/docs` they'd be looked for at the server's root.
+async fn docs_slash(axum::extract::OriginalUri(uri): axum::extract::OriginalUri, request: axum::extract::Request, next: middleware::Next) -> Response {
+    if uri.path() == "/docs" {
+        let query = uri.query().map(|q| format!("?{q}")).unwrap_or_default();
+        return axum::response::Redirect::permanent(&format!("/docs/{query}")).into_response();
+    }
+    next.run(request).await
+}
+
 async fn same_version(request: axum::extract::Request, next: middleware::Next) -> Response {
     if let Some(refusal) = version_refusal(&request) {
         return refusal;
@@ -434,8 +444,8 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .merge(public)
         .merge(api)
-        // The user guide.
-        .nest_service("/docs", ServeDir::new(&state.docs_dir).append_index_html_on_directories(true))
+        // The user guide. (`/docs` itself goes to `/docs/`: the book's links are relative.)
+        .nest_service("/docs", tower::Layer::layer(&middleware::from_fn(docs_slash), ServeDir::new(&state.docs_dir).append_index_html_on_directories(true)))
         // Everything that isn't an API route: the few static files (the share and open pages).
         .fallback_service(ServeDir::new(&state.web_dir))
         .layer(middleware::from_fn(same_version))
