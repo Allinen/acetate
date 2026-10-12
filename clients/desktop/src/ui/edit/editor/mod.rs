@@ -455,7 +455,7 @@ impl TrackEditor {
         pc::arrive(&mut self.cl, &ctx, shell, &mut self.last_pass);
         let focused = self.cl.hold_focus(&ctx);
         let line = parse::parse(&self.cl.text);
-        let words = line.current().is_none() && !line.words.is_empty();
+        let words = line.current().is_none() && (!line.words.is_empty() || !line.parts.is_empty());
         let rows: Vec<tc::Row> = match line.current() {
             _ if words => tc::actions(&line.words.join(" "), page),
             Some(last) if tc::is_page_part(last, line.last_goes_with()) => tc::choices(last, line.last_goes_with(), page, &self.page_known),
@@ -951,7 +951,8 @@ impl TrackEditor {
             None => Vec::new(),
         };
         // (A name kept whole is typed as plain words: they find nothing then.)
-        let words = parsed.parts.is_empty() && !parsed.words.is_empty() && !matches!(self.prompt, Some(Prompt::Whole(..)));
+        // (After a `|`, with nothing typed yet: the tools and actions to go on with.)
+        let words = ((parsed.parts.is_empty() && !parsed.words.is_empty()) || (parsed.fresh && !parsed.parts.is_empty())) && !matches!(self.prompt, Some(Prompt::Whole(..)));
         let (candidates, actions, units) = {
             let mut look = Look(&mut *shell);
             let rctx = here.ctx(&self.names);

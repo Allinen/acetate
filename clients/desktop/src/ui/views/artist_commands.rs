@@ -669,6 +669,8 @@ impl ArtistCommands {
         let rows: Vec<Row> = match line.current() {
             _ if words => actions(&line.words.join(" "), here),
             Some(last) => choices(last, line.last_goes_with(), here, &self.known, filters),
+            // After a `|`: the commands to go on with.
+            None if line.fresh && !line.parts.is_empty() => actions("", here),
             None => Vec::new(),
         };
         self.cl.highlighted = self.cl.highlighted.min(rows.len().saturating_sub(1));

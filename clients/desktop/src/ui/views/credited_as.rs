@@ -202,13 +202,15 @@ impl CreditedAs {
             let world = line::World { catalog: &catalog, artists: &artist_list, from: self.artist, from_names: &from_names, to_name: to_name.as_deref(), to_names: &to_names };
             let focused = self.cl.hold_focus(&ctx);
             let parsed = crate::commandline::parse::<line::K>(&self.cl.text);
-            let list_rows = parsed.current().map(|p| line::choices(p, &world)).unwrap_or_default();
+            let list_rows = line::choices(&parsed, &self.cl.text, &world);
             self.cl.highlighted = self.cl.highlighted.min(list_rows.len().saturating_sub(1));
             let mut take = None;
             let mut enter = false;
             if focused {
                 let pressed = self.cl.keys(&ctx, list_rows.len(), false, false);
-                if (pressed.tab || pressed.enter) && !list_rows.is_empty() {
+                // (Enter doesn't take a key to go on with: it sets what's typed.)
+                let key_row = list_rows.get(self.cl.highlighted).is_some_and(|r| matches!(r.choice, super::page_commands::Choice::Insert(_)));
+                if (pressed.tab || (pressed.enter && !key_row)) && !list_rows.is_empty() {
                     take = Some((self.cl.highlighted, pressed.tab));
                 }
                 enter = pressed.enter;
@@ -228,8 +230,9 @@ impl CreditedAs {
             }
             if let Some((n, tab)) = take
                 && let Some(r) = list_rows.get(n)
+                && matches!(super::page_commands::take::<line::K, (), ()>(&mut self.cl, &ctx, &mut self.known, &parsed, &r.choice, tab), super::page_commands::Taken::Inserted)
             {
-                super::page_commands::take::<line::K, (), ()>(&mut self.cl, &ctx, &mut self.known, &parsed, &r.choice, tab);
+                enter = false;
             }
             if enter && !self.cl.text.trim().is_empty() {
                 let done = line::resolve(&self.cl.text, &world, &self.known);

@@ -97,11 +97,11 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell, page: Page, username: &str) {
         .auto_shrink([false, true])
         .show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
-            if playlist_item(ui, "Liked songs", true, page == Page::Liked, true) {
+            if playlist_item(ui, "Liked songs", true, page == Page::Liked, true, Some("7")) {
                 shell.act(Action::Go(Page::Liked));
             }
             for (id, name, mine) in playlists {
-                if playlist_item(ui, &name, mine, page == Page::Playlist(id), false) {
+                if playlist_item(ui, &name, mine, page == Page::Playlist(id), false, None) {
                     shell.act(Action::Go(Page::Playlist(id)));
                 }
             }
@@ -199,7 +199,7 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell, page: Page, username: &str) {
 }
 
 /// One playlist in the sidebar. `mine`: others' are shown dimmer. `liked`: with a star.
-fn playlist_item(ui: &mut egui::Ui, name: &str, mine: bool, current: bool, liked: bool) -> bool {
+fn playlist_item(ui: &mut egui::Ui, name: &str, mine: bool, current: bool, liked: bool, key: Option<&str>) -> bool {
     let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 30.0), Sense::click());
     let hover = ui.ctx().animate_bool_with_time(response.id, response.hovered(), 0.12);
     // Hover is a fainter pill, the current one a full pill (fading between).
@@ -212,6 +212,14 @@ fn playlist_item(ui: &mut egui::Ui, name: &str, mine: bool, current: bool, liked
         widgets::draw_star(ui.painter(), Pos2::new(left + 5.0, rect.center().y), 6.0, P.accent);
         left += 18.0;
     }
-    widgets::text_in(ui.painter(), Rect::from_min_max(Pos2::new(left, rect.top()), Pos2::new(rect.right() - 6.0, rect.bottom())), name, font(13.5, medium()), color);
+    // The key that goes there (Liked songs: 7), as the sections show theirs.
+    let right = match key {
+        Some(key) => {
+            ui.painter().text(rect.right_center() - Vec2::new(10.0, 0.0), Align2::RIGHT_CENTER, key, font(11.0, medium()), P.faint);
+            rect.right() - 26.0
+        }
+        None => rect.right() - 6.0,
+    };
+    widgets::text_in(ui.painter(), Rect::from_min_max(Pos2::new(left, rect.top()), Pos2::new(right, rect.bottom())), name, font(13.5, medium()), color);
     response.clicked()
 }

@@ -200,18 +200,46 @@ fn names_rows(names: &[(Uuid, String)], typed: &str, sub: &str, next: Option<&st
     names
         .iter()
         .filter(|(_, n)| n.to_lowercase().contains(&typed))
-        .map(|(_, n)| row(n.clone(), sub, Choice::Value(n.clone())))
-        .map(|mut r| {
-            if let (Some(next), Choice::Value(n)) = (next, &r.choice) {
-                r.choice = Choice::Raw(commandline::quoted::<K>(n), Some(next.to_string()));
-            }
-            r
-        })
+        .map(|(_, n)| row(n.clone(), sub, Choice::Raw(commandline::quoted::<K>(n), next.map(str::to_string))))
         .collect()
 }
 
+/// What the keys are for.
+const KEY_HELP: &[(K, &str)] = &[
+    (K::Artist, "whose credits change"),
+    (K::Only, "which of its credits: all, own, or one of its other names"),
+    (K::To, "credit them to another artist instead"),
+    (K::As, "the name they're credited under: own, or an other name"),
+    (K::Why, "kept with every change"),
+];
+
+/// The keys not typed yet, to go on with: each takes the line on with `key:` after what's
+/// there. (Without an artist chosen, its key first.)
+fn key_rows(line: &commandline::Line<K>, text: &str, world: &World) -> Vec<Row> {
+    let prefix = match text.trim_end() {
+        "" => String::new(),
+        typed => format!("{typed} "),
+    };
+    KEY_HELP
+        .iter()
+        .filter(|(k, _)| !line.parts.iter().any(|p| p.key == *k))
+        .filter(|(k, _)| world.from.is_some() || matches!(k, K::Artist | K::Why))
+        .map(|(k, help)| row(format!("{}:", k.name()), help, Choice::Insert(format!("{prefix}{}:", k.name()))))
+        .collect()
+}
+
+/// The choices for what's typed: for the value being typed, or, when it is done (a space
+/// after it, or a `|`) or nothing is typed yet, the keys to go on with.
+pub fn choices(line: &commandline::Line<K>, text: &str, world: &World) -> Vec<Row> {
+    let ended = text.ends_with(char::is_whitespace);
+    match line.current() {
+        Some(part) if !(ended && !part.value.trim().is_empty()) => part_choices(part, world),
+        _ => key_rows(line, text, world),
+    }
+}
+
 /// The choices for the value being typed.
-pub fn choices(part: &commandline::Part<K>, world: &World) -> Vec<Row> {
+fn part_choices(part: &commandline::Part<K>, world: &World) -> Vec<Row> {
     let value = part.value.trim();
     let typed = value.to_lowercase();
     match part.key {
@@ -219,13 +247,13 @@ pub fn choices(part: &commandline::Part<K>, world: &World) -> Vec<Row> {
             .artists
             .iter()
             .filter(|(_, n)| n.to_lowercase().contains(&typed))
-            .map(|(id, n)| row(n.clone(), "credited on these tracks", Choice::Pin(Pinned::Artist, n.clone(), *id, Some("only:".into()))))
+            .map(|(id, n)| row(n.clone(), "credited on these tracks", Choice::Pin(Pinned::Artist, n.clone(), *id, Some(String::new()))))
             .collect(),
         K::Only if world.from.is_some() => {
             let mut rows: Vec<Row> = [("all", "under any of its names"), ("own", "under its own name")]
                 .into_iter()
                 .filter(|(w, _)| w.starts_with(&typed))
-                .map(|(w, sub)| row(w, sub, Choice::Raw(w.into(), Some("as:".into()))))
+                .map(|(w, sub)| row(w, sub, Choice::Raw(w.into(), Some(String::new()))))
                 .collect();
             rows.extend(names_rows(world.from_names, value, "credited as it, now", Some("as:")));
             rows
@@ -233,13 +261,13 @@ pub fn choices(part: &commandline::Part<K>, world: &World) -> Vec<Row> {
         K::To if world.from.is_some() => {
             let mut rows = Vec::new();
             if typed.is_empty() || "same".starts_with(&typed) {
-                rows.push(row("same", "the same artist", Choice::Raw("same".into(), Some("as:".into()))));
+                rows.push(row("same", "the same artist", Choice::Raw("same".into(), Some(String::new()))));
             }
             if !typed.is_empty() {
                 for (i, _) in Search::default().run_part(world.catalog, value, SearchPart::Artists, 8) {
                     let (name, sub) = crate::ui::edit::inline_search::describe(world.catalog, SearchPart::Artists, i);
                     let a = &world.catalog.artists[i as usize];
-                    rows.push(row(name.clone(), &sub, Choice::Pin(Pinned::Artist, name, a.id, None)));
+                    rows.push(row(name.clone(), &sub, Choice::Pin(Pinned::Artist, name, a.id, Some(String::new()))));
                 }
             }
             rows
@@ -312,6 +340,22 @@ mod tests {
         assert_eq!(settled("artist:Ann only:", &world, &known), [Setting::Artist(id(1))]);
         assert_eq!(settled("artist:Bo | to:di as:", &world, &known), [Setting::Artist(id(2)), Setting::To(Some((id(5), "Di".into())))]);
         assert_eq!(settled("artist:Ann |", &world, &known), [Setting::Artist(id(1))], "a bar: done with it");
+    }
+
+    #[test]
+    fn once_a_value_is_done_the_keys_to_go_on_with_are_listed() {
+        let catalog = catalog();
+        let artists = [(id(1), "Ann".to_string())];
+        let names = [(id(10), "Annie".to_string())];
+        let world = World { catalog: &catalog, artists: &artists, from: Some(id(1)), from_names: &names, to_name: Some("Ann"), to_names: &names };
+        let labels = |text: &str| -> Vec<String> { choices(&commandline::parse::<K>(text), text, &world).into_iter().map(|r| r.label).collect() };
+        assert_eq!(labels(""), ["artist:", "only:", "to:", "as:", "why:"], "nothing typed yet: the keys");
+        assert_eq!(labels("only:own "), ["artist:", "to:", "as:", "why:"], "done: the keys not typed yet");
+        assert_eq!(labels("artist:Ann | "), ["only:", "to:", "as:", "why:"], "after a bar");
+        assert_eq!(labels("only:"), ["all", "own", "Annie"], "a value being typed: its choices");
+        assert_eq!(labels("only:an"), ["Annie"]);
+        let rows = choices(&commandline::parse::<K>("only:own "), "only:own ", &world);
+        assert!(matches!(&rows[1].choice, Choice::Insert(t) if t == "only:own to:"), "the key goes on after what's there");
     }
 
     #[test]
