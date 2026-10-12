@@ -29,7 +29,7 @@ const CREDIT: &[Spec] = &[
 ];
 
 /// The editor's commands, in the order the list offers them.
-const EDITOR: &[Spec] = &[
+const COMMANDS: &[Spec] = &[
     Spec::new("title", Kind::Text, "its title").aliases(&["name"]).prefix(),
     Spec::new("artist", Kind::Artist, "credit one, or change one's name or place (-artist:Name takes one off; -artist: all)").aliases(&["artists", "by"]).prefix().minus(Minus::OffOrClear).next(Next::Args(CREDIT)),
     Spec::new("feat", Kind::Artist, "credit one as featured").aliases(&["featuring", "ft", "featured"]).prefix().minus(Minus::Off).next(Next::Args(CREDIT)),
@@ -65,7 +65,11 @@ const EDITOR: &[Spec] = &[
 ];
 
 /// The editor's line: its commands, then the track page's.
-pub static LINE: Schema = Schema { commands: EDITOR, also: PAGE };
+pub static LINE: Schema = Schema { commands: COMMANDS, also: PAGE };
+
+/// The editor's commands alone, and the track page's alone (for the help and the docs).
+pub static EDITOR: Schema = Schema { commands: COMMANDS, also: &[] };
+pub static TRACK_PAGE: Schema = Schema { commands: PAGE, also: &[] };
 
 pub type Line = schema::Line;
 pub type Node = schema::Node;

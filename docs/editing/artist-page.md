@@ -31,6 +31,8 @@ tracks:year:2019
 - Releases on their own are a grid: arrows or `hjkl` move, `Enter` opens one, `Shift+Enter`
   plays it.
 
+Every key, what it takes and what can follow it, generated from the app: [Commands](../commands.md).
+
 ## Changing the artist (edit mode)
 
 Changes are staged as chips under the commandline. `Ctrl+Enter` saves them all, and `Backspace` on

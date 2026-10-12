@@ -28,6 +28,8 @@ rating:4.5
   which). `rating:3.5` is your rating, in half stars; `-rating` clears it.
 - *Copy link* and *Make a share link…* (as words) copy its link or open the share popup.
 
+Every key, what it takes and what can follow it, generated from the app: [Commands](../commands.md).
+
 ## Filtering and moving around
 
 ```

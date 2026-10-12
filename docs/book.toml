@@ -9,3 +9,9 @@ src = "."
 build-dir = "../target/book"
 
 [output.html]
+# The command graphs (docs/commands.md) are mermaid: drawn by mermaid.min.js, which the
+# mdbook-mermaid preprocessor installed here (`mdbook-mermaid install docs`).
+additional-js = ["mermaid.min.js", "mermaid-init.js"]
+
+[preprocessor.mermaid]
+command = "mdbook-mermaid"

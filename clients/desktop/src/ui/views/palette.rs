@@ -94,10 +94,11 @@ pub enum Mode {
 
 /// The palette's line: the search's keys (they go with each other, as in a track list), and
 /// `go:` and `do:`, which take a command's word.
-static PALETTE: Schema = Schema {
-    commands: &crate::catalog::query::KEYS,
-    also: &[Spec::new("go", Kind::Text, "go to a page").aliases(&["goto"]), Spec::new("do", Kind::Text, "run a command").aliases(&["run"])],
-};
+pub(crate) static PALETTE: Schema = Schema { commands: &crate::catalog::query::KEYS, also: GO_DO };
+
+/// Its own: `go:` and `do:` (for the help: the search's are described with searching).
+const GO_DO: &[Spec] = &[Spec::new("go", Kind::Text, "go to a page").aliases(&["goto"]), Spec::new("do", Kind::Text, "run a command").aliases(&["run"])];
+pub(crate) static PALETTE_OWN: Schema = Schema { commands: GO_DO, also: &[] };
 
 /// Keys listed when nothing (or the start of one) is typed: what to type, and what it's for.
 const INSERTS: &[(&str, &str)] = &[

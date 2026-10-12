@@ -885,6 +885,139 @@ pub fn set_arg(schema: &Schema, text: &str, command: usize, key: &str, value: &s
     }
 }
 
+/// What a kind of value is, in words.
+pub fn kind_words(kind: Kind) -> String {
+    let words = |w: &[Word]| w.iter().map(|w| w.word).collect::<Vec<_>>().join(", ");
+    match kind {
+        Kind::Nothing => "nothing".into(),
+        Kind::Text => "text".into(),
+        Kind::Number => "a number".into(),
+        Kind::YesNo => "yes or no".into(),
+        Kind::Place => "a place: 2, 2-5 (disc 2, track 5), 1+ (in order from 1)".into(),
+        Kind::Words(w) => words(w),
+        Kind::Or(w, k) => format!("{}, or {}", words(w), kind_words(*k)),
+        Kind::Maybe(k) => format!("{}, or nothing", kind_words(*k)),
+        Kind::Artist => "an artist".into(),
+        Kind::AliasOf(_) => "one of the artist's names".into(),
+        Kind::Track => "a track".into(),
+        Kind::Album => "an album".into(),
+        Kind::Grouping => "a grouping".into(),
+        Kind::Path => "a path".into(),
+    }
+}
+
+/// One line of a commandline's description: a command, or (`depth` > 0) an argument.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Entry {
+    pub depth: usize,
+    /// `key:` with its forms: `key:`, `-key:`, `-key`.
+    pub forms: String,
+    /// Its other names.
+    pub aliases: Vec<&'static str>,
+    pub value: String,
+    pub help: &'static str,
+    /// Needed, one of a group, only with another, for `-key` only…
+    pub note: String,
+    /// Typed by any start of its names too.
+    pub prefix: bool,
+}
+
+impl Schema {
+    /// Whether every command takes every command as its arguments (a search's line).
+    pub fn flat(&self) -> bool {
+        self.commands.iter().all(|c| matches!(c.next, Next::Args(a) if std::ptr::eq(a, self.commands)))
+    }
+
+    /// The commands and their arguments, in order, as described in the help and the docs.
+    pub fn entries(&self) -> Vec<Entry> {
+        let mut out = Vec::new();
+        let flat = self.flat();
+        for c in self.all() {
+            describe(c, 0, flat, &mut out, None, &[]);
+        }
+        out
+    }
+
+    /// The commands and what can follow them, as a mermaid graph (None: nothing follows
+    /// anything, or everything follows everything: a flat line).
+    pub fn graph(&self) -> Option<String> {
+        if self.flat() || self.all().all(|c| matches!(c.next, Next::None)) {
+            return None;
+        }
+        let mut out = vec!["graph LR".to_string()];
+        let id = |path: &str| path.replace([':', '-'], "_");
+        fn edges(spec: &Spec, path: &str, out: &mut Vec<String>, id: &dyn Fn(&str) -> String) {
+            let args: &[Spec] = match spec.next {
+                Next::Args(a) | Next::Fields(a) => a,
+                _ => &[],
+            };
+            for a in args {
+                let child = format!("{path}_{}", a.key);
+                let notes = need_note(a, Some(spec), args);
+                let label = if notes.is_empty() { format!("{}:", a.key) } else { format!("{}: ({})", a.key, notes.join("; ")) };
+                out.push(format!("    {}[\"{}:\"] --> {}[\"{label}\"]", id(path), spec.key, id(&child)));
+                edges(a, &child, out, id);
+            }
+            match spec.next {
+                Next::Fields(_) => out.push(format!("    {}[\"{}:\"] -.-> {}_fields([\"its platform's fields\"])", id(path), spec.key, id(path))),
+                Next::Branch(_) => out.push(format!("    {}[\"{}:\"] -.-> {}_by([\"by its value\"])", id(path), spec.key, id(path))),
+                _ => {}
+            }
+        }
+        for c in self.all().filter(|c| !matches!(c.next, Next::None)) {
+            edges(c, c.key, &mut out, &id);
+        }
+        Some(out.join("\n"))
+    }
+}
+
+/// A note on how an argument is needed or goes with its command (`parent`; `siblings`: the
+/// arguments it's among).
+fn need_note(spec: &Spec, parent: Option<&Spec>, siblings: &[Spec]) -> Vec<String> {
+    let mut notes = Vec::new();
+    match spec.need {
+        Need::Required => notes.push("needed".to_string()),
+        Need::OneOf(group) => {
+            let members: Vec<String> = siblings.iter().filter(|s| s.need == Need::OneOf(group)).map(|s| format!("{}:", s.key)).collect();
+            notes.push(format!("one of {} is needed", members.join(" and ")));
+        }
+        Need::With(other) => notes.push(format!("only with {other}:")),
+        Need::Optional => {}
+    }
+    if let Some(p) = parent {
+        match spec.on {
+            On::Minus => notes.push(format!("only after -{}:", p.key)),
+            On::Both => notes.push(format!("after -{}: too", p.key)),
+            On::Plus => {}
+        }
+    }
+    notes
+}
+
+fn describe(spec: &'static Spec, depth: usize, flat: bool, out: &mut Vec<Entry>, parent: Option<&Spec>, siblings: &[Spec]) {
+    let mut forms = vec![format!("{}:", spec.key)];
+    match spec.minus {
+        Minus::Off => forms.push(format!("-{}:", spec.key)),
+        Minus::OffOrClear => forms.extend([format!("-{}:", spec.key), format!("-{}", spec.key)]),
+        Minus::No => {}
+    }
+    let mut notes = need_note(spec, parent, siblings);
+    match spec.next {
+        Next::Fields(_) => notes.push("then its platform's fields (name:value)".into()),
+        Next::Branch(_) => notes.push("what follows depends on its value".into()),
+        _ => {}
+    }
+    out.push(Entry { depth, forms: forms.join("  "), aliases: spec.aliases.to_vec(), value: kind_words(spec.value), help: spec.help, note: notes.join("; "), prefix: spec.prefix });
+    if flat || depth > 3 {
+        return;
+    }
+    if let Next::Args(args) | Next::Fields(args) = spec.next {
+        for a in args {
+            describe(a, depth + 1, false, out, Some(spec), args);
+        }
+    }
+}
+
 /// Walks every state the list can lead to from an empty line (`depth` rows taken at most),
 /// taking every row, and checks that each one taken parses as what it said (a key row
 /// leaves that key being typed, a value row that value) and that every declared key is

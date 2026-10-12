@@ -1,6 +1,8 @@
 //! Every key, in one table: what the `?` overlay shows. (Each key is handled where it
 //! acts: `ui::App::keys` for the ones that work everywhere, `widgets::move_selection`
-//! for lists, the pages for their own. A key added there belongs here too.)
+//! for lists, the pages for their own. A key added there belongs here too.) The
+//! commandlines' commands aren't here: the overlay's Commands tab lists them from their
+//! declarations (`ui::commands`).
 
 use eframe::egui::{self, Align2, Color32, Key, Modifiers, Pos2, RichText, Sense, Shadow};
 
@@ -35,11 +37,7 @@ pub const GROUPS: &[(&str, &[Binding])] = &[
         "Searching and filtering (everywhere)",
         &[
             ("words", "anywhere in title, artists, album"),
-            ("artist:…  album:…  title:…", "only there (artist:lil quill, no quotes)"),
-            ("year:2019  genre:…  status:demo", "released, genre, status"),
-            ("format:flac  flag:cover  kind:ep", "file format, a flag's kind, album kind"),
-            ("disc:2  track:5", "disc and track number"),
-            ("keys shorten", "art: al: st: … (any start)"),
+            ("key:value", "only there: artist:, year:, status:… (the Commands tab has them all)"),
         ],
     ),
     (
@@ -124,55 +122,25 @@ pub const GROUPS: &[(&str, &[Binding])] = &[
         "An artist's page",
         &[
             ("/", "its commandline (it has the cursor when the page opens; | between commands; a word finds the rest, edit too)"),
-            ("alias:Name  /  alias:all", "that name's chip on or off (several at once)  /  all names"),
-            ("og:yes  /  og:no", "only original files, or all"),
-            ("releases  tracks:…", "that section on its own (also featured, produced, extras; tracks:words filters it)"),
-            ("sources  notes  history", "opened and scrolled to (a folded one that's open: closed)"),
-            ("alias:New  /  -alias:Name", "edit mode: another name  /  one taken off (if nothing's credited as it)"),
-            ("name:  disambiguation:  why:", "edit mode: rename, what tells it apart, why (-disambiguation clears)"),
-            ("source:<link>  /  -source:2", "edit mode: a source added  /  the second to the trash"),
-            ("extra:Name kind:… file:…", "edit mode: an extra made, changed or linked here (also description:, source:, visibility:; file:paste, file:choose, Tab completes paths)"),
-            ("-extra:Name", "edit mode: not on this artist anymore"),
-            ("note:Title  /  -note:Title", "edit mode: the note editor  /  one taken off (note:paste: copied text files as notes)"),
             ("Ctrl+Enter", "save the changes staged (each kind on its own)"),
             ("Backspace (empty commandline)", "take the last change back to edit"),
+            ("commands", "alias:, og:, name:, source:, extra:, note:… (the Commands tab)"),
         ],
     ),
     (
         "A track's page",
         &[
             ("/", "its commandline: the editor's (listen mode: the line alone; a word finds the rest, edit too)"),
-            ("play:  queue:next", "play it, then its album  /  queue it next (queue: at the end)"),
-            ("star:  rating:3.5", "star it (-star: unstar)  /  your rating (-rating clears it)"),
-            ("lyrics  file  history", "opened and scrolled to, or closed if open (also credits, notes, extras, tags, versions)"),
-            ("lyrics:English", "that entry of its lyrics (or lyrics:2)"),
-            ("note:  extra:", "edit mode: as on an artist's page"),
-            ("og:  /  -og", "edit mode: its file is an original file (og:Name)  /  it isn't"),
-            ("file:2", "edit mode: its second earlier file played again"),
-            ("sync", "edit mode: the lyrics' timing popup"),
-            ("unmerge:  restore:3", "edit mode: the newest merge undone  /  its third revision restored"),
-            ("version:Name", "edit mode: edit that version, or a new one (as:New name renames it; at once)"),
             ("Ctrl+Enter", "apply the editor's changes and save the page's (each on its own)"),
+            ("commands", "play:, star:, lyrics:, file:, version:… (the Commands tab)"),
         ],
     ),
     (
         "An album's page",
         &[
             ("/", "its commandline (it has the cursor when the page opens; | between commands; a word finds the rest, edit too)"),
-            ("play:  play:3", "play it  /  from its third track (or a title)"),
-            ("queue:  queue:next", "queue it at the end  /  next"),
-            ("star:  rating:3.5", "star it (-star: unstar)  /  your rating (-rating clears it)"),
-            ("tracks:…  /  og:yes", "filter its tracks (tracks: alone: all)  /  only original files"),
-            ("credits  covers  history", "opened and scrolled to, or closed if open (also sources, notes, extras; merges in edit mode)"),
-            ("edit:3  /  edit:all", "a track in the track editor (Ctrl+E)  /  all of them, marked (edit mode)"),
-            ("title:  kind:  date:  why:", "edit mode: its title, kind, release date (-date clears it), why"),
-            ("artist:Name role:… as:… n:…", "edit mode: credit an artist (another role: a credit of its own), or change one's name, place (feat:Name; -artist:Name role:… takes one off)"),
-            ("cover:paste  /  -cover:2", "edit mode: a cover added (also choose, a path, an album or track)  /  the second to the trash"),
-            ("cover:3", "edit mode: the third cover made the main one (cover:3 n:2 moves it)"),
-            ("group:Name  /  -group:Name", "edit mode: into a grouping (a new one: kind:era)  /  out of it"),
-            ("move:5 n:2", "edit mode: the fifth track to the second place (the tracklist's draft)"),
-            ("source:  extra:  note:", "edit mode: as on an artist's page"),
             ("Ctrl+Enter", "save the changes staged (the album's own as one revision)"),
+            ("commands", "play:, tracks:, artist:, cover:, move:… (the Commands tab)"),
         ],
     ),
     (
@@ -251,27 +219,32 @@ pub const GROUPS: &[(&str, &[Binding])] = &[
             ("Tab", "write the key or command in full"),
             ("Enter", "open (a track: play it)"),
             ("Shift+Enter", "play (a track: open its album)"),
-            ("go:  do:", "pages  /  other commands"),
+            ("go:  do:", "pages  /  other commands (the Commands tab)"),
             ("Esc", "empty the line, then close"),
         ],
     ),
 ];
 
-/// Draws the overlay while `open`; Esc, `?`, F1 or a click outside closes it.
+/// Draws the overlay while `open`; Esc, `?`, F1 or a click outside closes it. Two tabs: the
+/// keys, and the commandlines' commands (Tab, or a click, goes to the other).
 pub fn overlay(ctx: &egui::Context, open: &mut bool) {
     if !*open {
         return;
     }
-    let close = ctx.input_mut(|i| {
-        i.consume_key(Modifiers::NONE, Key::Escape)
+    let tab_id = egui::Id::new("keys-tab-commands");
+    let mut commands = ctx.data(|d| d.get_temp::<bool>(tab_id)).unwrap_or(false);
+    let (close, switch) = ctx.input_mut(|i| {
+        let close = i.consume_key(Modifiers::NONE, Key::Escape)
             || i.consume_key(Modifiers::NONE, Key::F1)
             // "?" as typed (it's on different keys on different layouts).
-            || i.events.iter().any(|e| matches!(e, egui::Event::Text(t) if t == "?"))
+            || i.events.iter().any(|e| matches!(e, egui::Event::Text(t) if t == "?"));
+        (close, i.consume_key(Modifiers::NONE, Key::Tab))
     });
     if close {
         *open = false;
         return;
     }
+    commands ^= switch;
     let screen = ctx.content_rect();
     let veil = egui::Area::new(egui::Id::new("keys-veil")).order(egui::Order::Foreground).fixed_pos(screen.min).show(ctx, |ui| {
         let (rect, response) = ui.allocate_exact_size(screen.size(), Sense::click());
@@ -282,11 +255,27 @@ pub fn overlay(ctx: &egui::Context, open: &mut bool) {
         *open = false;
         return;
     }
+    // What's shown: (title, a line under it, rows), as groups.
+    let lines = super::commands::all();
+    let groups: Vec<(String, String, Vec<(String, String)>)> = if commands {
+        lines
+            .iter()
+            .map(|c| {
+                let entries = c.schema.entries();
+                let prefix = super::commands::all_prefix(&entries);
+                let place = if prefix { format!("{} · a key by any start of its names", c.place) } else { c.place.to_string() };
+                (c.title.to_string(), place, entries.iter().map(|e| (super::commands::keys(e), super::commands::what(e, !prefix))).collect())
+            })
+            .collect()
+    } else {
+        GROUPS.iter().map(|(title, bindings)| (title.to_string(), String::new(), bindings.iter().map(|(k, w)| (k.to_string(), w.to_string())).collect())).collect()
+    };
     // Three columns on a wide window, else two; groups spread so the columns come out
     // about even; and it scrolls if it still doesn't fit.
     let width = (screen.width() - 80.0).clamp(560.0, 1500.0);
     let count = if width >= 1200.0 { 3 } else { 2 };
-    let columns = spread(count);
+    let sizes: Vec<usize> = groups.iter().map(|g| g.2.len() + if g.1.is_empty() { 2 } else { 3 }).collect();
+    let columns = spread(&sizes, count);
     let max_height = (screen.height() - 80.0).max(200.0);
     egui::Area::new(egui::Id::new("keys"))
         .order(egui::Order::Tooltip)
@@ -303,24 +292,33 @@ pub fn overlay(ctx: &egui::Context, open: &mut bool) {
                     ui.set_width(width);
                     ui.set_max_height(max_height);
                     ui.horizontal(|ui| {
-                        ui.label(RichText::new("Keys").font(font(24.0, bold())));
+                        for (title, is_commands) in [("Keys", false), ("Commands", true)] {
+                            let color = if commands == is_commands { P.text } else { P.faint };
+                            if ui.add(egui::Label::new(RichText::new(title).font(font(24.0, bold())).color(color)).sense(Sense::click())).clicked() {
+                                commands = is_commands;
+                            }
+                            ui.add_space(12.0);
+                        }
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.label(RichText::new("Esc to close").color(P.faint));
+                            ui.label(RichText::new("Tab: the other tab · Esc to close").color(P.faint));
                         });
                     });
                     ui.add_space(12.0);
-                    egui::ScrollArea::vertical().id_salt("keys-scroll").auto_shrink([false, true]).show(ui, |ui| {
+                    egui::ScrollArea::vertical().id_salt(("keys-scroll", commands)).auto_shrink([false, true]).show(ui, |ui| {
                         ui.columns(count, |uis| {
-                            for (column, groups) in columns.iter().enumerate() {
+                            for (column, members) in columns.iter().enumerate() {
                                 let ui = &mut uis[column];
-                                for &n in groups {
-                                    let (title, bindings) = GROUPS[n];
+                                for &n in members {
+                                    let (title, place, rows) = &groups[n];
                                     ui.label(RichText::new(title).font(font(15.0, semibold())).color(P.accent));
+                                    if !place.is_empty() {
+                                        ui.add(egui::Label::new(RichText::new(place).font(font(12.5, medium())).color(P.faint)).wrap());
+                                    }
                                     ui.add_space(4.0);
-                                    egui::Grid::new(("keys", n)).num_columns(2).spacing([18.0, 5.0]).show(ui, |ui| {
-                                        for (keys, what) in bindings {
-                                            ui.label(RichText::new(*keys).font(font(13.0, semibold())).color(P.text));
-                                            ui.add(egui::Label::new(RichText::new(*what).font(font(13.0, medium())).color(P.muted)).wrap());
+                                    egui::Grid::new(("keys", commands, n)).num_columns(2).spacing([18.0, 5.0]).show(ui, |ui| {
+                                        for (keys, what) in rows {
+                                            ui.label(RichText::new(keys).font(font(13.0, semibold())).color(P.text));
+                                            ui.add(egui::Label::new(RichText::new(what).font(font(13.0, medium())).color(P.muted)).wrap());
                                             ui.end_row();
                                         }
                                     });
@@ -331,24 +329,23 @@ pub fn overlay(ctx: &egui::Context, open: &mut bool) {
                     });
                 });
         });
+    ctx.data_mut(|d| d.insert_temp(tab_id, commands));
 }
 
-/// The groups (their places in `GROUPS`) for each of `count` columns, in order, each
-/// column taking the next groups until it has about its share of the rows.
-fn spread(count: usize) -> Vec<Vec<usize>> {
-    // A group's height in rows: its bindings, plus its title and the space after it.
-    let rows = |n: usize| GROUPS[n].1.len() + 2;
-    let total: usize = (0..GROUPS.len()).map(rows).sum();
+/// The groups (their places in `sizes`, each a group's height in rows) for each of `count`
+/// columns, in order, each column taking the next groups until it has about its share.
+fn spread(sizes: &[usize], count: usize) -> Vec<Vec<usize>> {
+    let total: usize = sizes.iter().sum();
     let share = total.div_ceil(count);
     let mut columns = vec![Vec::new(); count];
     let (mut column, mut filled) = (0, 0);
-    for n in 0..GROUPS.len() {
+    for (n, size) in sizes.iter().enumerate() {
         if filled >= share && column + 1 < count {
             column += 1;
             filled = 0;
         }
         columns[column].push(n);
-        filled += rows(n);
+        filled += size;
     }
     columns
 }
@@ -359,8 +356,9 @@ mod tests {
 
     #[test]
     fn every_group_once_in_order_about_even() {
+        let sizes: Vec<usize> = GROUPS.iter().map(|g| g.1.len() + 2).collect();
         for count in [2, 3] {
-            let columns = spread(count);
+            let columns = spread(&sizes, count);
             let flat: Vec<usize> = columns.iter().flatten().copied().collect();
             assert_eq!(flat, (0..GROUPS.len()).collect::<Vec<_>>());
             assert!(columns.iter().all(|c| !c.is_empty()), "{columns:?}");

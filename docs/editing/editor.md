@@ -36,6 +36,8 @@ status:demo | date:2020
 - `Backspace` on an empty commandline takes the last change back to edit it. `/` returns to the
   line.
 
+Every key, what it takes and what can follow it, generated from the app: [Commands](../commands.md).
+
 ## The fields
 
 With one track selected, `↓` from the empty commandline goes into its fields. `Enter` edits one

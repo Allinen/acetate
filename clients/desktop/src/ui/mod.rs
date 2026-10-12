@@ -14,6 +14,7 @@ pub mod covers;
 pub mod files;
 pub mod watch;
 pub mod edit;
+pub mod commands;
 pub mod keymap;
 pub mod messages;
 pub mod modal;

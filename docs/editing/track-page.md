@@ -31,6 +31,8 @@ rating:4.5
 - *Copy link*, *Make a share link…*, *Watch the video* and *Cover in full* (as words) do
   what they say.
 
+Every key, what it takes and what can follow it, generated from the app: [Commands](../commands.md).
+
 ## Moving around
 
 - `lyrics`, `credits`, `file`, `notes`, `extras`, `versions`, `tags` and `history` (as

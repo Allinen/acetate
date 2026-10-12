@@ -32,7 +32,7 @@ static KEYS: [Spec; 3] = [
     Spec::new("expires", Kind::Text, "never, 1d, 7d, 30d…").aliases(&["expire", "expiry", "exp"]).next(Next::Args(&KEYS)),
 ];
 
-static SHARE: Schema = Schema { commands: &KEYS, also: &[] };
+pub(crate) static SHARE: Schema = Schema { commands: &KEYS, also: &[] };
 
 /// Every key typed, in the order typed.
 fn parts(line: &Line) -> Vec<&Node> {

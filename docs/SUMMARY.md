@@ -6,6 +6,7 @@
 - [Listening](listening.md)
   - [Searching and filtering](searching.md)
   - [Keys](keys.md)
+  - [Commands](commands.md)
   - [Offline](offline.md)
 - [The Android app](android.md)
 - [Editing](editing/README.md)
