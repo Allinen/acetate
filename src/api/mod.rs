@@ -169,6 +169,7 @@ pub fn router(state: AppState) -> Router {
             require(&[ManageUsers, ManageAccess], get(groups::list))
                 .merge(require(&[ManageUsers], post(groups::create))),
         )
+        .route("/api/permissions", require(&[ManageUsers, ManageAccess], get(groups::permissions)))
         .route(
             "/api/groups/{id}",
             require(&[ManageUsers], put(groups::update).delete(groups::delete)),

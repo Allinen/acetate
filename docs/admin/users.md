@@ -11,7 +11,7 @@ acetate user set-password alice             # logs them out everywhere
 
 Users belong to **groups**; groups have **permissions**. Built-in groups: `admin` (everything),
 `user` (a regular listener) and `guest` (stream only). Admins can manage users and groups
-through the API too.
+through the API too, and in the desktop app: Settings → Users shows everyone and the groups they are in (click a group to put someone in it or take them out, then save) and the groups with the permissions each one allows (hover a permission for what it does). You can only hand out permissions you have yourself.
 
 ## Permissions
 

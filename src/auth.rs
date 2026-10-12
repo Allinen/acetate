@@ -77,6 +77,29 @@ impl Permission {
     }
 }
 
+impl Permission {
+    /// What it allows, in a sentence (for the screen that hands permissions out).
+    pub fn description(self) -> &'static str {
+        match self {
+            Permission::Admin => "everything, including server settings, purging and storage",
+            Permission::Browse => "see the library: list, search and view",
+            Permission::Upload => "upload and import new files",
+            Permission::EditMetadata => "edit tracks, albums, artists and covers",
+            Permission::ViewHistory => "see revision history",
+            Permission::RestoreRevision => "restore an older revision",
+            Permission::EditRelations => "related tracks and credits",
+            Permission::ManageAccess => "restrict tracks, and change which groups can see them",
+            Permission::ManageUsers => "create users, manage groups and their permissions",
+            Permission::DownloadOriginal => "stream and download the original file (without it, a lower-quality copy)",
+            Permission::ReplaceFile => "replace a track's file with a better one",
+            Permission::EditSources => "external sources of tracks, albums and artists",
+            Permission::Stream => "stream audio",
+            Permission::Share => "create share links",
+            Permission::EditFiles => "correct what's recorded about a file (original file, name)",
+        }
+    }
+}
+
 // Lets you write `"upload".parse::<Permission>()`.
 impl FromStr for Permission {
     type Err = String;

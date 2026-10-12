@@ -1,6 +1,7 @@
 //! Settings, in tabs (`h`/`l` or the arrows move between them): Sound; This computer (the
 //! downloads, the library kept here, memory); Account; and for admins the Server (what it
-//! stores) and the Mirror of its files; General. Each tab is its own file.
+//! stores), the Mirror of its files and the Vocabulary; for those who manage users, Users;
+//! General. Each tab is its own file.
 
 use eframe::egui::{self, RichText};
 
@@ -10,6 +11,7 @@ use super::settings_general::GeneralTab;
 use super::settings_mirror::MirrorSection;
 use super::settings_server::ServerTab;
 use super::settings_sound::SoundTab;
+use super::settings_users::UsersTab;
 use super::settings_vocabulary::VocabularyTab;
 use crate::playback::PlayerView;
 use crate::ui::theme::{bold, font, medium, PALETTE as P};
@@ -27,11 +29,13 @@ enum Tab {
     Mirror,
     /// Admins.
     Vocabulary,
+    /// Those who manage users.
+    Users,
     General,
 }
 
 impl Tab {
-    const ALL: [Tab; 7] = [Tab::Sound, Tab::Computer, Tab::Account, Tab::Server, Tab::Mirror, Tab::Vocabulary, Tab::General];
+    const ALL: [Tab; 8] = [Tab::Sound, Tab::Computer, Tab::Account, Tab::Server, Tab::Mirror, Tab::Vocabulary, Tab::Users, Tab::General];
 
     fn name(self) -> &'static str {
         match self {
@@ -41,6 +45,7 @@ impl Tab {
             Tab::Server => "Server",
             Tab::Mirror => "Mirror",
             Tab::Vocabulary => "Vocabulary",
+            Tab::Users => "Users",
             Tab::General => "General",
         }
     }
@@ -61,6 +66,7 @@ pub struct SettingsPage {
     /// The mirror, and moving the folder everything's kept in (shown in This computer).
     mirror: MirrorSection,
     vocabulary: VocabularyTab,
+    users: UsersTab,
     general: GeneralTab,
 }
 
@@ -75,6 +81,9 @@ impl SettingsPage {
         self.computer.opened(shell);
         self.general.opened(shell);
         self.account.opened(shell);
+        if shell.account.can("manage_users") {
+            self.users.opened(shell);
+        }
         if shell.account.can("admin") {
             self.vocabulary.opened(shell);
             self.server.opened(shell);
@@ -83,7 +92,8 @@ impl SettingsPage {
 
     pub fn show(&mut self, ui: &mut egui::Ui, shell: &mut Shell, player: &PlayerView) {
         let admin = shell.account.can("admin");
-        let tabs: Vec<Tab> = Tab::ALL.into_iter().filter(|t| admin || !t.admin_only()).collect();
+        let manager = shell.account.can("manage_users");
+        let tabs: Vec<Tab> = Tab::ALL.into_iter().filter(|t| if *t == Tab::Users { manager } else { admin || !t.admin_only() }).collect();
         if !tabs.contains(&self.tab) {
             self.tab = Tab::Sound;
         }
@@ -119,6 +129,8 @@ impl SettingsPage {
             Tab::Mirror => self.mirror.show(ui, shell),
             Tab::Vocabulary if shell.connection.is_offline() => super::offline(ui, "The vocabulary"),
             Tab::Vocabulary => self.vocabulary.show(ui, shell),
+            Tab::Users if shell.connection.is_offline() => super::offline(ui, "The users"),
+            Tab::Users => self.users.show(ui, shell),
             Tab::General => self.general.show(ui, shell),
         });
     }

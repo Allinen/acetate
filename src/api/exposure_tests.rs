@@ -249,3 +249,17 @@ async fn a_trashed_cover_is_no_longer_served(_: PgPoolOptions, connect: PgConnec
     assert_eq!(s.go("GET", &format!("/api/images/{sha}"), Some(&admin), None).await.0, StatusCode::NOT_FOUND);
     Ok(())
 }
+
+#[sqlx::test]
+async fn permissions_are_listed_for_those_who_hand_them_out(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
+    let s = setup(connect).await?;
+    let admin = user(&s.owner, "alice", "admin").await?;
+    let listener = user(&s.owner, "bob", "user").await?;
+    let (status, body) = s.go("GET", "/api/permissions", Some(&admin), None).await;
+    assert_eq!(status, StatusCode::OK);
+    let list: Vec<Value> = serde_json::from_slice(&body)?;
+    assert_eq!(list.len(), crate::auth::Permission::ALL.len());
+    assert!(list.iter().all(|p| p["description"].as_str().is_some_and(|d| !d.is_empty())));
+    assert_eq!(s.go("GET", "/api/permissions", Some(&listener), None).await.0, StatusCode::FORBIDDEN);
+    Ok(())
+}

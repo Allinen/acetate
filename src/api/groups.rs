@@ -25,6 +25,11 @@ pub async fn list(
     Ok(Json(db::groups::list(&mut tx).await?))
 }
 
+/// `GET /api/permissions`: every permission and what it allows, in the order to show them.
+pub async fn permissions() -> Json<Vec<serde_json::Value>> {
+    Json(Permission::ALL.iter().map(|p| serde_json::json!({ "name": p.name(), "description": p.description() })).collect())
+}
+
 #[derive(Debug, Deserialize)]
 pub struct GroupData {
     name: String,
