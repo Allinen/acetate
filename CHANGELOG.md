@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.3.0 - 2026-10-12
+
+### Changes
+
+- More popups and pages poll a Task instead of an Arc<Mutex<Option>>
+- The settings tabs and the edit forms poll a Task (or a Fetched value) instead of an Arc<Mutex<Option>>
+- The import pages, the app's share link and the editor's lookups poll a Task
+- The catalog's credits, memberships and track/album lookups are flat columns kept in the snapshot instead of rebuilt and held on the heap
+
+### Features
+
+- The server logs in as the app role itself; as_system switches to a limited system role instead of the owner
+- Settings → Users in the desktop app: people and their groups, groups and their permissions (GET /api/permissions lists them)
+- Health checks on the blob store, run from Settings → Health (or acetate verify --blobs); report-only, new checks are added in one place
+- The album page in edit mode lists title, kind, date and artists as rows with the track editor's keys, and changes go through the commandline; the click-to-pick form is gone
+- Credited as… has a commandline and Alt+C, and an alias that is still credited opens it with its credits chosen
+- A bar starts a fresh command in every commandline (no leftover choices), digits and Backspace first in an empty commandline are the app's keys, Ctrl+7 is Liked songs, Credited as… sets the artist while the line is typed, -alias:Name recredit:yes, and Credited as… moves to Ctrl+B
+- Credited as… lists its keys when nothing is typed or a value is done (Tab leaves a space, not the next key), a bar brings the commands back in every commandline, and Liked songs shows its 7 in the sidebar
+- A video made into a track plays its sound, copied out of the video as it is, and the video stays an extra linked to the track; Health finds tracks made earlier that play a video file and can take the sound out of them
+- Large commandline rework. Commandlines can be declared once as a schema that drives parsing, the choice list and the checks; Credited as… is the first, and takes several artists at once
+- The artist and album page commandlines are declared as schemas, with places as n: instead of #N
+- The track editor's and track page's commandline is declared as a schema, with places as n: and values instead of #N
+- Searches, the palette and the share popup are declared as schemas too, and the old Keys parser is gone
+- The commands of every commandline are documented from their declarations, with graphs, and the keys overlay has a Commands tab
+- The sidebar's links sit on two rows at 14 pt, Changes, Settings and Trash above Keys and Log out
+
+### Fixes
+
+- Comparing two tracks from the middle shows the seeker there, not at the start
+- Credited as… keeps listing a name's choices after a space inside it; TODO: unique artist labels and one completion model
+- An album can credit one artist in several roles, and its staged changes show right under the commandline
+- The user guide opens at /docs as well as /docs/, and the image builds the book with its command graphs
+- The sidebar's Settings, Trash, Keys and Log out are a little smaller, clear of the pane's edge; the command graphs are dropped from the docs
+
 ## 0.2.1 - 2026-10-12
 
 0.2.0 was tagged but its desktop packages failed to build (a moved font licence), so nothing was
