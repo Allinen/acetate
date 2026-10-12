@@ -32,3 +32,19 @@ pub async fn run(State(state): State<AppState>, user: CurrentUser, Json(body): J
         Err(message) => Err(AppError::BadRequest(message)),
     }
 }
+
+#[derive(Debug, Deserialize)]
+pub struct ExtractRequest {
+    /// Only say what would be done.
+    #[serde(default)]
+    preview: bool,
+}
+
+/// `POST /api/health/extract-audio`, JSON `{"preview": true}`: repairs the tracks the
+/// `video-tracks` check finds (they play a video file): the video's sound is taken out
+/// and becomes the track's file, and the video stays as an extra linked to it. Answers
+/// what happened to each track.
+pub async fn extract_audio(State(state): State<AppState>, user: CurrentUser, Json(body): Json<ExtractRequest>) -> Result<Json<Vec<health::video_tracks::Extracted>>, AppError> {
+    let user_id = user.id().ok_or(AppError::Forbidden("this needs a person logged in".into()))?;
+    Ok(Json(health::video_tracks::extract(&state.pool, &state.store, user_id, body.preview).await?))
+}

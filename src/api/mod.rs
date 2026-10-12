@@ -308,6 +308,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/storage", require(&[Admin], get(storage::totals)))
         .route("/api/health", require(&[Admin], get(health::status)))
         .route("/api/health/run", require(&[Admin], post(health::run)))
+        .route("/api/health/extract-audio", require(&[Admin], post(health::extract_audio)))
         .route("/api/mirror", require(&[Admin], get(mirror::list)).layer(CompressionLayer::new()))
         .route("/api/mirror/blobs/{sha256}", require(&[Admin], get(mirror::blob)))
         .route("/api/files/replaced", require(&[Admin], get(trash::replaced_files)))

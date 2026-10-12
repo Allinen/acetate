@@ -1063,10 +1063,31 @@ pub async fn back_to_track(conn: &mut PgConnection, extra: Uuid, reason: &str) -
     }
 }
 
-/// An extra whose file became a track (`api::extras::to_track`): taken off (kept, and
-/// brought back like any), with the track in its history.
+/// Whether the extra has a video that the track doesn't play: the track plays the sound
+/// taken out of it.
+async fn video_stays(conn: &mut PgConnection, extra: Uuid, track: Uuid) -> sqlx::Result<bool> {
+    sqlx::query_scalar!(
+        r#"SELECT EXISTS (SELECT 1 FROM extra_files x
+                          WHERE x.extra_id = $1 AND x.width IS NOT NULL AND x.hidden_at IS NULL
+                            AND NOT EXISTS (SELECT 1 FROM tracks t JOIN files f ON f.id = t.file_id
+                                            WHERE t.id = $2 AND f.sha256 = x.sha256)) AS "stays!""#,
+        extra,
+        track
+    )
+    .fetch_one(conn)
+    .await
+}
+
+/// An extra whose file became a track (`api::extras::to_track`), with the track in its
+/// history. A track plays the extra's file, so the extra is taken off (kept, and brought
+/// back like any); a video's track plays the sound taken out of it, and the video stays,
+/// linked to the track.
 pub async fn made_track(conn: &mut PgConnection, extra: Uuid, track: Uuid, reason: &str) -> anyhow::Result<()> {
-    sqlx::query!("UPDATE extras SET hidden_at = COALESCE(hidden_at, now()) WHERE id = $1", extra).execute(&mut *conn).await?;
+    if video_stays(conn, extra, track).await? {
+        link_one(conn, extra, Link::Track(track), reason).await?;
+    } else {
+        sqlx::query!("UPDATE extras SET hidden_at = COALESCE(hidden_at, now()) WHERE id = $1", extra).execute(&mut *conn).await?;
+    }
     log(conn, extra, "made a track", json!({ "track": track }), reason).await?;
     Ok(())
 }
@@ -1088,12 +1109,20 @@ pub async fn made_from(conn: &mut PgConnection, track: Uuid) -> sqlx::Result<Opt
 /// reverses). Returns the track.
 pub async fn undo_made_track(conn: &mut PgConnection, extra: Uuid, reason: &str) -> anyhow::Result<Uuid> {
     let track = get(conn, extra).await?.ok_or(EditRejected::NotFound("extra"))?.made_track.ok_or(EditRejected::NotFound("track made from this extra"))?;
+    // Before the track is hidden: it can't be read after.
+    let stays = video_stays(conn, extra, track).await?;
+    if stays {
+        // A video stays, and no longer belongs to the track.
+        unlink_one(conn, extra, Link::Track(track), reason).await?;
+    }
     match sqlx::query!("SELECT track_became_extra($1, $2)", track, extra).execute(&mut *conn).await {
         Ok(_) => {}
         Err(sqlx::Error::Database(err)) if err.code().as_deref() == Some("P0002") => return Err(EditRejected::NotFound("track").into()),
         Err(err) => return Err(err.into()),
     }
-    sqlx::query!("UPDATE extras SET hidden_at = NULL WHERE id = $1", extra).execute(&mut *conn).await?;
+    if !stays {
+        sqlx::query!("UPDATE extras SET hidden_at = NULL WHERE id = $1", extra).execute(&mut *conn).await?;
+    }
     log(conn, extra, "track undone", json!({ "track": track }), reason).await?;
     Ok(track)
 }

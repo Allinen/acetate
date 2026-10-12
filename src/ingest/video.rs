@@ -170,6 +170,82 @@ pub async fn thumbnail(path: &Path, duration_ms: Option<i64>) -> Option<Vec<u8>>
     (output.status.success() && !output.stdout.is_empty()).then_some(output.stdout)
 }
 
+/// Why a video's sound couldn't be taken out.
+#[derive(Debug)]
+pub enum ExtractError {
+    NoFfmpeg,
+    NoSound,
+    /// Its sound is of this codec, which has no file format to be copied into as it is.
+    Codec(String),
+    Failed(String),
+}
+
+impl std::fmt::Display for ExtractError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ExtractError::NoFfmpeg => write!(f, "taking the sound out of a video needs ffmpeg, which isn't installed"),
+            ExtractError::NoSound => write!(f, "the video has no sound"),
+            ExtractError::Codec(codec) => write!(f, "its sound is {codec}, which can't be copied out as it is"),
+            ExtractError::Failed(why) => write!(f, "{why}"),
+        }
+    }
+}
+
+/// The file extension and ffmpeg format that hold a sound of `codec` as it is.
+fn audio_container(codec: &str) -> Option<(&'static str, &'static str)> {
+    Some(match codec {
+        "aac" => ("m4a", "ipod"),
+        "mp3" => ("mp3", "mp3"),
+        "opus" => ("opus", "ogg"),
+        "vorbis" => ("ogg", "ogg"),
+        "flac" => ("flac", "flac"),
+        _ => return None,
+    })
+}
+
+/// Whether a sound of `codec` can be copied out of a video as it is.
+pub fn can_copy_out(codec: &str) -> bool {
+    audio_container(codec).is_some()
+}
+
+/// The sound of a video, copied out as it is (no re-encoding, so nothing is lost) into a
+/// file of its own, with the extension to name it by. The picture, tags and chapters are
+/// left behind.
+pub async fn extract_audio(store: &crate::storage::BlobStore, video: &Path) -> Result<(crate::storage::PendingBlob, &'static str), ExtractError> {
+    let facts = probe(video).await.ok_or(ExtractError::NoFfmpeg)?;
+    let codec = facts.audio_codec.ok_or(ExtractError::NoSound)?;
+    let (extension, format) = audio_container(&codec).ok_or_else(|| ExtractError::Codec(codec.clone()))?;
+    let failed = |err: &dyn std::fmt::Display| ExtractError::Failed(err.to_string());
+    let temp = store.temp_file(&format!(".{extension}")).map_err(|e| failed(&e))?;
+    let output = Command::new("ffmpeg")
+        .args(["-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-i"])
+        .arg(video)
+        .args(["-map", "0:a:0", "-vn", "-c:a", "copy", "-map_metadata", "-1", "-map_chapters", "-1", "-bitexact", "-f", format])
+        .arg(temp.path())
+        .stdin(Stdio::null())
+        .kill_on_drop(true)
+        .output()
+        .await
+        .map_err(|err| if err.kind() == std::io::ErrorKind::NotFound { ExtractError::NoFfmpeg } else { failed(&err) })?;
+    if !output.status.success() {
+        let said = String::from_utf8_lossy(&output.stderr);
+        return Err(ExtractError::Failed(format!("ffmpeg failed: {}", said.trim().chars().take(400).collect::<String>())));
+    }
+    let pending = store.pending_from(temp).await.map_err(|e| failed(&e))?;
+    Ok((pending, extension))
+}
+
+/// The sound of a stored video (`sha256`, called `name`), taken out (`extract_audio`) and
+/// stored in the blob store, with the name to give it: the video's, with the sound's
+/// extension.
+pub async fn stage_audio(store: &crate::storage::BlobStore, sha256: &str, name: &str) -> Result<(super::StagedFile, String), ExtractError> {
+    let video = store.path_for(sha256).await;
+    let (pending, extension) = extract_audio(store, &video).await?;
+    let staged = super::StagedFile::new(store, pending, false, store.default_volume()).await.map_err(|e| ExtractError::Failed(e.to_string()))?;
+    let stem = Path::new(name).file_stem().and_then(|s| s.to_str()).filter(|s| !s.is_empty()).unwrap_or("audio");
+    Ok((staged, format!("{stem}.{extension}")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

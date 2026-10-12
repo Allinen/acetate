@@ -1,7 +1,8 @@
 //! The library's health check: things that should be true of the library and its files,
 //! looked for on request (Settings → Health in the desktop app, `acetate verify --blobs`).
 //! A check only reads: it reports what it finds and never changes the library or deletes a
-//! file; what to do about a finding is left to a person.
+//! file; what to do about a finding is left to a person. (A repair a person asks for, like
+//! `video_tracks::extract`, is its own request and never part of a run.)
 //!
 //! To add a check: describe it in `CHECKS` and give `run_check` a branch for its id. A
 //! check returns findings; checks of one run share what is costly to get (the list of
@@ -11,6 +12,7 @@
 //! finished run's report is kept in memory until the server restarts.
 
 pub mod blobs;
+pub mod video_tracks;
 #[cfg(test)]
 mod tests;
 
@@ -52,6 +54,12 @@ pub const CHECKS: &[CheckInfo] = &[
         id: "staged-covers",
         title: "Staged cover images nobody used",
         description: "Images put in the editor that no edit ever applied, a day or more ago.",
+        heavy: false,
+    },
+    CheckInfo {
+        id: "video-tracks",
+        title: "Tracks that play a video file",
+        description: "Tracks made from a video before its sound was taken out: they play the video, which only works where the player can decode its container. “Take the sound out” repairs them: the sound becomes the track's file and the video stays as an extra.",
         heavy: false,
     },
     CheckInfo {
@@ -143,6 +151,7 @@ pub async fn run_check(id: &str, ctx: &Context) -> anyhow::Result<Vec<Finding>> 
         "blobs-unused" => blobs::unused(ctx).await,
         "staged-covers" => blobs::staged_covers(ctx).await,
         "blobs-intact" => blobs::intact(ctx).await,
+        "video-tracks" => video_tracks::check(ctx).await,
         _ => anyhow::bail!("no check called {id}"),
     }
 }

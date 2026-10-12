@@ -31,7 +31,7 @@ the editor in either mode, for a quick fix.)
   as the editor's "import metadata" does, once) for the title, artist (or the channel), date
   and thumbnail, and the track editor opens on that draft: change what you like (the line
   starts with `parse:prefix feat prod`, to move "Artist -", feat. and prod. out of YouTube's
-  title: Enter, look at the check), then apply. The video is the track's source. The track plays the extra's file, and the extra is taken off (kept; *Taken off*
+  title: Enter, look at the check), then apply. The video is the track's source. For a video, the track plays its sound, copied out of the video as it is (needs ffmpeg on the server; a sound that is not AAC, MP3, Opus, Vorbis or FLAC is refused), so playing never depends on the video's container; the video stays an extra, linked to the track, and undoing the track unlinks it. For an extra that is plain audio the track plays the extra's file, and the extra is taken off (kept; *Taken off*
   brings it back). [Review](../review.md)'s "Unlinked extras" does it for many at once.
   Extras that are really one thing (the same file twice, or the pieces of one set) are
   merged on the page you keep: in edit mode, *Merge other extras into this one…*, pick them

@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT EXISTS (SELECT 1 FROM extra_files x\n                          WHERE x.extra_id = $1 AND x.width IS NOT NULL AND x.hidden_at IS NULL\n                            AND NOT EXISTS (SELECT 1 FROM tracks t JOIN files f ON f.id = t.file_id\n                                            WHERE t.id = $2 AND f.sha256 = x.sha256)) AS \"stays!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "stays!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "21566eba46ac3234e33118d5c7d32896ae1121f702c8764988cac482237cbe7d"
+}

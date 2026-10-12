@@ -64,8 +64,20 @@ struct Status {
     last: Option<Report>,
 }
 
+/// What taking the sound out did (or would do) to one track.
+#[derive(Debug, Clone, Deserialize)]
+struct Extracted {
+    title: String,
+    status: String,
+    message: String,
+}
+
 #[derive(Default)]
 pub struct HealthTab {
+    extract: Task<Result<Vec<Extracted>, String>>,
+    /// What the last "take the sound out" answered, and whether it was a preview.
+    extracted: Option<(bool, Result<Vec<Extracted>, String>)>,
+    extract_preview: bool,
     status_task: Task<Result<Status, String>>,
     status: Option<Result<Status, String>>,
     asked_at: Option<Instant>,
@@ -98,6 +110,9 @@ impl HealthTab {
                 Err(err) => self.said = Some(err),
             }
         }
+        if let Some(done) = self.extract.poll() {
+            self.extracted = Some((self.extract_preview, done));
+        }
         let running = matches!(&self.status, Some(Ok(s)) if s.running.is_some());
         if running {
             // Keep asking while a run goes on.
@@ -119,7 +134,7 @@ impl HealthTab {
         };
         let selected = self.selected.get_or_insert_with(|| status.checks.iter().filter(|c| !c.heavy).map(|c| c.id.clone()).collect());
 
-        hint(ui, "These only look: nothing is changed or deleted. What a finding means is for you to decide.");
+        hint(ui, "The checks only look: nothing is changed or deleted. What a finding means is for you to decide.");
         section(ui, "Run");
         for check in &status.checks {
             let mut on = selected.contains(&check.id);
@@ -167,9 +182,47 @@ impl HealthTab {
             for result in &report.results {
                 show_result(ui, result);
             }
+            if report.results.iter().any(|r| r.id == "video-tracks" && r.total > 0) {
+                self.extract_ui(ui, shell);
+            }
         } else {
             ui.add_space(8.0);
             ui.label(RichText::new("Nothing has been run since the server started.").color(P.faint));
+        }
+    }
+}
+
+impl HealthTab {
+    /// Tracks that play a video file: take its sound out (the one thing here that changes
+    /// the library, so it looks first).
+    fn extract_ui(&mut self, ui: &mut egui::Ui, shell: &Shell) {
+        section(ui, "Take the sound out of videos");
+        hint(ui, "The sound is copied out as it is (nothing is re-encoded) and becomes the track's file; the video file stays as a previous file, and the video as an extra linked to the track.");
+        ui.horizontal(|ui| {
+            for (label, preview) in [("See what it would do", true), ("Take the sound out", false)] {
+                if ui.add_enabled(!self.extract.is_running(), egui::Button::new(label)).clicked() {
+                    self.extract_preview = preview;
+                    self.extracted = None;
+                    let body = serde_json::json!({ "preview": preview });
+                    self.extract.send_with(shell, |api| async move { api.send_json::<Vec<Extracted>>(reqwest::Method::POST, "/api/health/extract-audio", Some(body)).await.map_err(|e| e.message) });
+                }
+            }
+        });
+        if self.extract.is_running() {
+            ui.label(RichText::new("Working…").color(P.faint));
+        }
+        match &self.extracted {
+            Some((_, Err(err))) => {
+                ui.label(RichText::new(err.as_str()).color(P.danger));
+            }
+            Some((preview, Ok(done))) => {
+                ui.label(RichText::new(if *preview { "It would:" } else { "Done (run the checks again to see what is left):" }).color(P.muted));
+                for one in done {
+                    let color = if one.status == "failed" { P.danger } else { P.text };
+                    ui.add(egui::Label::new(RichText::new(format!("{}: {}", one.title, one.message)).color(color).size(12.5)).wrap());
+                }
+            }
+            None => {}
         }
     }
 }

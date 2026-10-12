@@ -399,10 +399,27 @@ async fn make_track(state: &AppState, user: &CurrentUser, extra: &Extra, file: &
         volume: None,
         tags_from: None,
     };
-    let staged = crate::ingest::StagedFile::stored(&state.store, &file.sha256, file.size_bytes as u64).await;
-    let mut imported = super::problems::import_with(state, user, &staged, &options, with, &file.name, Some(extra.id)).await?;
+    // A video's track plays its sound, taken out of it as it is; the video stays an extra.
+    let (staged, name) = if file.width.is_some() {
+        audio_of_video(state, file).await?
+    } else {
+        (crate::ingest::StagedFile::stored(&state.store, &file.sha256, file.size_bytes as u64).await, file.name.clone())
+    };
+    let options = crate::ingest::IngestOptions { uploaded_filename: name.clone(), ..options };
+    let mut imported = super::problems::import_with(state, user, &staged, &options, with, &name, Some(extra.id)).await?;
     imported.no_cover = no_cover;
     Ok(imported)
+}
+
+/// The sound of an extra's video file, copied out into a file of its own (stored in the
+/// blob store), and the name to give it: the video's, with the sound's extension.
+pub(crate) async fn audio_of_video(state: &AppState, file: &db::extras::ExtraFile) -> Result<(crate::ingest::StagedFile, String), AppError> {
+    use crate::ingest::video::ExtractError;
+    crate::ingest::video::stage_audio(&state.store, &file.sha256, &file.name).await.map_err(|err| match err {
+        ExtractError::NoFfmpeg => AppError::Unavailable(err.to_string()),
+        ExtractError::Failed(_) => AppError::Internal(anyhow::anyhow!("{err}")),
+        _ => AppError::BadRequest(err.to_string()),
+    })
 }
 
 /// Whether `host` is one of `hosts` or under it.
@@ -515,6 +532,7 @@ mod tests {
     use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 
     use crate::api::uploads::tests::{app, send, state, user};
+    use crate::api::problems::ImportWith;
 
     /// A form with one file (and an `imported_from`).
     fn form(name: &str, bytes: &str) -> Body {
@@ -644,6 +662,125 @@ mod tests {
         assert_eq!((extra.hidden, extra.from_track, extra.made_track), (false, Some(track), None));
         let (status, _) = send(&app, "POST", &format!("/api/extras/{id}/undo-track"), &alice, Body::from("{}"), Some("application/json")).await;
         assert_ne!(status, StatusCode::OK, "once");
+        Ok(())
+    }
+
+    /// A small mp4 (a picture and sound), if ffmpeg is installed.
+    async fn small_video(dir: &std::path::Path, seconds: u32) -> Option<Vec<u8>> {
+        let path = dir.join(format!("clip{seconds}.mp4"));
+        let made = tokio::process::Command::new("ffmpeg")
+            .args(["-v", "error", "-f", "lavfi", "-i", &format!("testsrc=size=320x240:rate=25:duration={seconds}"), "-f", "lavfi", "-i", &format!("sine=duration={seconds}")])
+            .args(["-shortest", "-c:v", "mpeg4", "-c:a", "aac"])
+            .arg(&path)
+            .status()
+            .await;
+        made.is_ok_and(|s| s.success()).then(|| std::fs::read(&path).unwrap())
+    }
+
+    /// A video becomes a track that plays its sound, taken out as it is; the video stays
+    /// an extra, linked to the track, and undoing the track leaves it so. A track made
+    /// before (it plays the video) is found by the health check, and repaired once.
+    #[sqlx::test]
+    async fn a_videos_track_plays_its_sound(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
+        use crate::auth::{CurrentUser, Login, Permission};
+        use crate::db;
+        use crate::ingest::describe::{ArtistHint, Described, DescribedCredit, Hints};
+        use crate::model::sources::{self, Kind, NewSource};
+
+        let (owner, state, dir) = state(connect.clone()).await?;
+        let Some(video) = small_video(dir.path(), 2).await else {
+            return Ok(()); // no ffmpeg here
+        };
+        let app = crate::api::router(state.clone());
+        let alice = user(&owner, "alice").await?;
+        let alice_id: uuid::Uuid = sqlx::query_scalar("SELECT id FROM users WHERE username = 'alice'").fetch_one(&owner).await?;
+        let user = CurrentUser { login: Some(Login { id: alice_id, username: "alice".into(), session_id: uuid::Uuid::nil() }), permissions: vec![Permission::Admin] };
+
+        let upload = |name: &str, bytes: &[u8]| {
+            let mut form = format!("--b\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{name}\"\r\n\r\n").into_bytes();
+            form.extend(bytes);
+            form.extend(b"\r\n--b--\r\n");
+            Body::from(form)
+        };
+        let (_, made) = send(&app, "POST", "/api/extras", &alice, Body::from(serde_json::json!({ "name": "Clip [dQw4w9WgXcQ]", "kind": "video" }).to_string()), Some("application/json")).await;
+        let id: uuid::Uuid = made["id"].as_str().unwrap().parse()?;
+        let (status, got) = send(&app, "POST", &format!("/api/extras/{id}/files"), &alice, upload("Clip [dQw4w9WgXcQ].mp4", &video), Some("multipart/form-data; boundary=b")).await;
+        assert_eq!(status, StatusCode::OK, "{got}");
+        let extra = {
+            let mut tx = state.db(&user).await?;
+            db::extras::get(&mut tx, id).await?.unwrap()
+        };
+        assert!(extra.files[0].width.is_some(), "a video");
+        let metadata = |song: &str| -> acetate_extensions::Metadata {
+            serde_json::from_value(serde_json::json!({
+                "from": "YouTube", "title": "Mira Vale - Clip", "artists": ["Mira Vale"],
+                "source": { "platform": "youtube", "id": song, "data": { "song_id": song } }, "artwork": []
+            }))
+            .unwrap()
+        };
+        let with = ImportWith::default;
+
+        // Made a track now: it plays the sound; the video is still an extra, of the track.
+        let made = super::make_track(&state, &user, &extra, &extra.files[0], metadata("dQw4w9WgXcQ"), with()).await.map_err(|e| anyhow::anyhow!("{e:?}"))?;
+        let track = serde_json::to_value(&made)?["track_id"].as_str().unwrap().parse::<uuid::Uuid>()?;
+        let (name, sha): (String, String) = sqlx::query_as("SELECT f.uploaded_filename, f.sha256 FROM tracks t JOIN files f ON f.id = t.file_id WHERE t.id = $1").bind(track).fetch_one(&owner).await?;
+        assert_eq!(name, "Clip [dQw4w9WgXcQ].m4a");
+        assert_ne!(sha, extra.files[0].sha256, "the sound, not the video");
+        let (hidden, linked): (bool, i64) = sqlx::query_as("SELECT e.hidden_at IS NOT NULL, (SELECT count(*) FROM extra_links WHERE extra_id = e.id AND track_id = $2) FROM extras e WHERE e.id = $1").bind(id).bind(track).fetch_one(&owner).await?;
+        assert_eq!((hidden, linked), (false, 1));
+
+        let (status, got) = send(&app, "POST", &format!("/api/extras/{id}/undo-track"), &alice, Body::from("{}"), Some("application/json")).await;
+        assert_eq!(status, StatusCode::OK, "{got}");
+        let (hidden, linked): (bool, i64) = sqlx::query_as("SELECT e.hidden_at IS NOT NULL, (SELECT count(*) FROM extra_links WHERE extra_id = e.id) FROM extras e WHERE e.id = $1").bind(id).fetch_one(&owner).await?;
+        assert_eq!((hidden, linked), (false, 0), "the video stays, unlinked");
+
+        // A track made the old way: it plays the video itself (another video, as the same
+        // sound can't be stored twice).
+        let other = small_video(dir.path(), 3).await.unwrap();
+        let (_, made) = send(&app, "POST", "/api/extras", &alice, Body::from(serde_json::json!({ "name": "Other clip", "kind": "video" }).to_string()), Some("application/json")).await;
+        let other_id: uuid::Uuid = made["id"].as_str().unwrap().parse()?;
+        let (status, got) = send(&app, "POST", &format!("/api/extras/{other_id}/files"), &alice, upload("Other clip.mp4", &other), Some("multipart/form-data; boundary=b")).await;
+        assert_eq!(status, StatusCode::OK, "{got}");
+        let other_extra = {
+            let mut tx = state.db(&user).await?;
+            db::extras::get(&mut tx, other_id).await?.unwrap()
+        };
+        let song = "aaaaaaaaaaa";
+        let source = sources::validate(Kind::Track, NewSource { platform: "youtube".into(), source_id: None, captured_at: None, data: serde_json::json!({ "song_id": song }) }).unwrap();
+        let options = crate::ingest::IngestOptions {
+            user: Some(alice_id),
+            uploaded_filename: "Other clip.mp4".into(),
+            origin: source.clone(),
+            status: crate::model::DEFAULT_STATUS.into(),
+            sources: vec![source],
+            restrict_to: None,
+            hints: Hints {
+                artists: vec![ArtistHint { name: "Mira Vale".into(), id: None, sources: vec![], platform_name: None }],
+                described: Some(Described { title: "Old way".into(), credits: vec![DescribedCredit { name: "Mira Vale".into(), role: "primary".into(), artist: Some(0) }], ..Default::default() }),
+                ..Default::default()
+            },
+            local_path: None,
+            edited_after: false,
+            volume: None,
+            tags_from: None,
+        };
+        let staged = crate::ingest::StagedFile::stored(&state.store, &other_extra.files[0].sha256, other_extra.files[0].size_bytes as u64).await;
+        let report = {
+            let mut tx = state.db(&user).await?;
+            let report = crate::ingest::ingest_in(&mut tx, &state.store, &staged, &options, false).await?;
+            tx.commit().await?;
+            report
+        };
+        let old = report.track_id.expect("a track");
+        let found = crate::health::video_tracks::extract(&state.pool, &state.store, alice_id, true).await?;
+        assert_eq!((found.len(), found[0].track_id, found[0].status), (1, old, "would"), "{found:?}");
+        let found = crate::health::video_tracks::extract(&state.pool, &state.store, alice_id, false).await?;
+        assert_eq!(found[0].status, "done", "{found:?}");
+        let (name, previous): (String, i64) = sqlx::query_as("SELECT f.uploaded_filename, (SELECT count(*) FROM track_file_history WHERE track_id = t.id) FROM tracks t JOIN files f ON f.id = t.file_id WHERE t.id = $1").bind(old).fetch_one(&owner).await?;
+        assert_eq!((name.as_str(), previous), ("Other clip.m4a", 1));
+        let linked: i64 = sqlx::query_scalar("SELECT count(*) FROM extra_links WHERE extra_id = $1 AND track_id = $2").bind(other_id).bind(old).fetch_one(&owner).await?;
+        assert_eq!(linked, 1);
+        assert!(crate::health::video_tracks::extract(&state.pool, &state.store, alice_id, false).await?.is_empty(), "once");
         Ok(())
     }
 }

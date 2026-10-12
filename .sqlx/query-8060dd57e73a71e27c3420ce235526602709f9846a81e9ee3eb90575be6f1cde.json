@@ -1,0 +1,93 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT t.id AS track, t.title, e.id AS extra, e.hidden_at IS NOT NULL AS \"extra_hidden!\",\n                  xf.name AS file_name, xf.sha256, f.id AS file\n           FROM tracks t\n           JOIN files f ON f.id = t.file_id\n           JOIN extra_files xf ON xf.sha256 = f.sha256 AND xf.width IS NOT NULL\n           JOIN extras e ON e.id = xf.extra_id\n           WHERE t.merged_into IS NULL AND t.became_extra_id IS NULL\n           ORDER BY t.title, t.id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "track",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tracks",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "title",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tracks",
+            "name": "title"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "extra",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "extras",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "extra_hidden!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 4,
+        "name": "file_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "extra_files",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "sha256",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "extra_files",
+            "name": "sha256"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "file",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "files",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      null,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "8060dd57e73a71e27c3420ce235526602709f9846a81e9ee3eb90575be6f1cde"
+}

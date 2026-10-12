@@ -241,6 +241,18 @@ impl BlobStore {
         Ok(sha256)
     }
 
+    /// A finished temporary file (from `temp_file`) as a blob waiting to be committed:
+    /// hashed, and on disk.
+    pub async fn pending_from(&self, file: tempfile::NamedTempFile) -> anyhow::Result<PendingBlob> {
+        tokio::task::spawn_blocking(move || -> anyhow::Result<PendingBlob> {
+            let temp_path = file.into_temp_path();
+            let (sha256, size) = hash_file(&temp_path)?;
+            std::fs::File::open(&temp_path)?.sync_all()?;
+            Ok(PendingBlob { sha256, size, temp_path })
+        })
+        .await?
+    }
+
     /// A temporary file next to the blobs (on the default volume's filesystem, not in a
     /// possibly small `/tmp`), deleted when dropped. `suffix`: e.g. ".flac".
     pub fn temp_file(&self, suffix: &str) -> std::io::Result<tempfile::NamedTempFile> {
