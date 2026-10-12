@@ -54,9 +54,13 @@ In edit mode, other bulk tools act on the marked tracks: *Credited as…* (credi
 their names, or fix a name that was really someone else's, on tracks and albums together),
 *Mark as original files…*, and [merging](merging.md). Each previews exactly what will change,
 and nothing happens until you press the button. `Ctrl+B` opens *Credited as…* (for the marked tracks, or
-the selected one); its commandline takes `artist:`, `only:` (`all`, `own` or one of its other
-names), `to:` (another artist), `as:` (`own` or an other name) and `why:`, `Enter` sets what's
-typed and `Ctrl+Enter` credits the tracks so.
+the selected one). Its commandline is what the popup does: `artist:` and, in any order, `only:`
+(`all`, `own` or one of its other names), `to:` (another artist, or `same`), `as:` (`own` or one of
+the names of the artist in `to:`, else its own) and `why:`; it needs `to:` or `as:`. Several artists
+at once go apart by `|`: `artist:Ann only:Annie as:own | artist:Bo to:Cy`. The chips write into the
+command being typed, each command shows what it would change (or what's missing), and `Ctrl+Enter`
+credits the tracks so, command by command. In the list, `Tab` or `Enter` takes a choice and leaves
+a space, after which the list shows what can follow.
 
 ## Saving
 

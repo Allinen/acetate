@@ -82,7 +82,7 @@ pub const GROUPS: &[(&str, &[Binding])] = &[
             ("s  /  + −  /  p, Shift+P  /  q, Shift+Q", "star (all starred: unstar)  /  rate  /  add to, take out of a playlist  /  queue the marked tracks"),
             ("Ctrl+E", "change the marked tracks (the editor, below; none marked: the selected one)"),
             ("Ctrl+M", "edit mode, two marked: merge them (a popup, the merge keys below)"),
-            ("Ctrl+B", "edit mode: credited as… for the marked tracks (none marked: the selected one); its popup has a commandline: artist: only: to: as: why:, Ctrl+Enter credits them so"),
+            ("Ctrl+B", "edit mode: credited as… for the marked tracks (none marked: the selected one); its popup has a commandline: artist: only: to: as: why:, | for another, Ctrl+Enter credits them so"),
         ],
     ),
     (

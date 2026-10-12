@@ -15,6 +15,12 @@
 //!   the colon too (`cover:#3`).
 //! * Some keys have fields: after them, any `name:` that isn't one of their arguments is a
 //!   field (a source's: `source:distrokid album_uuid:… index:1`).
+//!
+//! `schema` declares a commandline once (its commands, their arguments, what each value is)
+//! and parses, lists choices and checks from that; the pages move to it one by one, and the
+//! `Keys` tables go once none is left.
+
+pub mod schema;
 
 /// A place's keys.
 pub trait Keys: Copy + PartialEq + std::fmt::Debug + Sized {

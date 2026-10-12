@@ -6,10 +6,12 @@
 //!
 //! Keys in the field: ↑/↓ choose in the list, Tab takes the choice and writes the next part
 //! to type, Enter takes it and stages the command(s), Backspace on an empty field takes the
-//! last chip back, Esc empties it.
+//! last chip back, Esc empties it. A commandline declared by a schema has its list drawn
+//! and taken by `CommandLine::drive` (Tab never writes a key by itself there).
 
 use eframe::egui::{self, Key, Modifiers, RichText};
 
+use crate::commandline::schema;
 use crate::ui::theme::{font, medium, PALETTE as P};
 
 /// Where a key an empty commandline passes on to the app waits (`ctx.data`).
@@ -153,6 +155,41 @@ impl CommandLine {
         self.highlighted = 0;
         self.cursor_to_end(ctx);
     }
+
+    /// For a commandline declared by a schema (`commandline::schema`): the list under the
+    /// field, and what Tab, Enter and a click do with it, the same everywhere. Tab or a click
+    /// takes the highlighted row, with a space after a value (the list goes on to what can
+    /// follow); Enter takes a value row the same way, and otherwise (a key row, or no
+    /// rows) runs the line. `pressed` is what `keys` gave, with `rows.len()` choices.
+    pub fn drive(&mut self, ui: &mut egui::Ui, pressed: Pressed, rows: &[schema::Row], schema: &schema::Schema, pins: &mut schema::Pins, help: &str) -> Driven {
+        let mut clicked = None;
+        if !rows.is_empty() {
+            let list_rows: Vec<(String, String)> = rows.iter().map(|r| (r.label.clone(), r.sub.clone())).collect();
+            list(ui, list_rows, self.highlighted, &mut clicked, help);
+        }
+        let highlighted = rows.get(self.highlighted);
+        let take = match (clicked, highlighted) {
+            (Some(n), _) => rows.get(n),
+            (None, Some(row)) if pressed.tab || (pressed.enter && !row.is_key()) => Some(row),
+            _ => None,
+        };
+        if let Some(row) = take {
+            self.text = schema::take(schema, &self.text, row, true, pins);
+            self.highlighted = 0;
+            self.cursor_to_end(ui.ctx());
+            return Driven { took: true, run: false };
+        }
+        Driven { took: false, run: pressed.enter }
+    }
+}
+
+/// What `CommandLine::drive` did.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct Driven {
+    /// A row was taken (the text changed).
+    pub took: bool,
+    /// Enter, with nothing to take: the line is to be run.
+    pub run: bool,
 }
 
 /// The list under a commandline: (label, what tells it apart), the chosen one lit. A click
