@@ -126,7 +126,7 @@ matched by the character you type, so it works on non-US layouts.
 | `sources  notes  history` | opened and scrolled to (a folded one that's open: closed) |
 | `alias:New  /  -alias:Name` | edit mode: another name  /  one taken off (if nothing's credited as it) |
 | `name:  disambiguation:  why:` | edit mode: rename, what tells it apart, why (-disambiguation clears) |
-| `source:<link>  /  -source:#2` | edit mode: a source added  /  the second to the trash |
+| `source:<link>  /  -source:2` | edit mode: a source added  /  the second to the trash |
 | `extra:Name kind:… file:…` | edit mode: an extra made, changed or linked here (also description:, source:, visibility:; file:paste, file:choose, Tab completes paths) |
 | `-extra:Name` | edit mode: not on this artist anymore |
 | `note:Title  /  -note:Title` | edit mode: the note editor  /  one taken off (note:paste: copied text files as notes) |
@@ -155,18 +155,18 @@ matched by the character you type, so it works on non-US layouts.
 | Keys | Does |
 |---|---|
 | `/` | its commandline (it has the cursor when the page opens; \| between commands; a word finds the rest, edit too) |
-| `play:  play:#3` | play it  /  from its third track (or a title) |
+| `play:  play:3` | play it  /  from its third track (or a title) |
 | `queue:  queue:next` | queue it at the end  /  next |
 | `star:  rating:3.5` | star it (-star: unstar)  /  your rating (-rating clears it) |
 | `tracks:…  /  og:yes` | filter its tracks (tracks: alone: all)  /  only original files |
 | `credits  covers  history` | opened and scrolled to, or closed if open (also sources, notes, extras; merges in edit mode) |
-| `edit:#3  /  edit:all` | a track in the track editor (Ctrl+E)  /  all of them, marked (edit mode) |
+| `edit:3  /  edit:all` | a track in the track editor (Ctrl+E)  /  all of them, marked (edit mode) |
 | `title:  kind:  date:  why:` | edit mode: its title, kind, release date (-date clears it), why |
-| `artist:Name role:… as:…` | edit mode: credit an artist, or change one's role, name, #place (feat:Name; -artist:Name takes one off) |
-| `cover:paste  /  -cover:#2` | edit mode: a cover added (also choose, a path, an album or track)  /  the second to the trash |
-| `cover:#3` | edit mode: the third cover made the main one (cover:#3 #2 moves it) |
+| `artist:Name role:… as:… n:…` | edit mode: credit an artist, or change one's role, name, place (feat:Name; -artist:Name takes one off) |
+| `cover:paste  /  -cover:2` | edit mode: a cover added (also choose, a path, an album or track)  /  the second to the trash |
+| `cover:3` | edit mode: the third cover made the main one (cover:3 n:2 moves it) |
 | `group:Name  /  -group:Name` | edit mode: into a grouping (a new one: kind:era)  /  out of it |
-| `move:#5 #2` | edit mode: the fifth track to the second place (the tracklist's draft) |
+| `move:5 n:2` | edit mode: the fifth track to the second place (the tracklist's draft) |
 | `source:  extra:  note:` | edit mode: as on an artist's page |
 | `Ctrl+Enter` | save the changes staged (the album's own as one revision) |
 

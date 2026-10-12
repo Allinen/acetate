@@ -12,6 +12,7 @@ use eframe::egui::{self, RichText};
 use uuid::Uuid;
 
 use crate::account::SourceShape;
+use crate::commandline::schema::{self, Kind, Minus, Next, Node, Spec};
 use crate::commandline::{self, Keys, Line, Part};
 use crate::details::Source;
 use crate::ui::edit::commandline::{self as cl, CommandLine};
@@ -106,17 +107,36 @@ pub enum Pinned {
 /// A new artist chosen in the list ("New artist “…”"): pinned as this.
 pub const NEW: Uuid = Uuid::nil();
 
-/// What the commandline knows besides the page: names chosen in its list (lowercase), and
-/// the groups (to say who sees an extra; None: not asked for yet).
+/// What the commandline knows besides the page: names chosen in its list (by `Pinned`'s
+/// tag, shared with schema commandlines' pins), and the groups (to say who sees an extra;
+/// None: not asked for yet).
 #[derive(Default)]
 pub struct Known {
-    pub pins: std::collections::HashMap<(Pinned, String), Uuid>,
+    pub pins: schema::Pins,
     pub groups: Option<Vec<GroupChoice>>,
 }
 
 impl Known {
     pub fn pinned(&self, kind: Pinned, name: &str) -> Option<Uuid> {
-        self.pins.get(&(kind, name.trim().to_lowercase())).copied()
+        self.pins.get_tag(kind.tag(), name)
+    }
+
+    pub fn pin(&mut self, kind: Pinned, name: &str, id: Uuid) {
+        self.pins.set_tag(kind.tag(), name, id);
+    }
+}
+
+impl Pinned {
+    /// Its tag among the pins (an artist's is the same as `schema::Kind::Artist`'s).
+    pub fn tag(self) -> &'static str {
+        match self {
+            Pinned::Extra => "extra",
+            Pinned::Note => "note",
+            Pinned::Artist => schema::Kind::Artist.pin_tag(),
+            Pinned::Grouping => schema::Kind::Grouping.pin_tag(),
+            Pinned::Album => schema::Kind::Album.pin_tag(),
+            Pinned::Track => schema::Kind::Track.pin_tag(),
+        }
     }
 }
 
@@ -176,6 +196,7 @@ pub struct Row<A, E> {
     pub choice: Choice<A, E>,
 }
 
+#[derive(Debug, Clone)]
 pub enum Choice<A, E> {
     /// The value being typed becomes this.
     Value(String),
@@ -207,7 +228,7 @@ pub fn take<K: Keys, A: Clone, E: Clone>(cl: &mut CommandLine, ctx: &egui::Conte
     let last = line.parts.last();
     match choice {
         Choice::Pin(kind, name, id, next) => {
-            known.pins.insert((*kind, name.to_lowercase()), *id);
+            known.pin(*kind, name, *id);
             if let Some(part) = last {
                 let text = (*name != part.value).then(|| commandline::quoted::<K>(name));
                 cl.take(ctx, part.value_start, part.end, text.as_deref(), next.as_deref().filter(|_| tab));
@@ -250,15 +271,28 @@ pub fn take<K: Keys, A: Clone, E: Clone>(cl: &mut CommandLine, ctx: &egui::Conte
     }
 }
 
-/// Each command's text, as typed (to put back in the line).
-pub fn commands_text<K: Keys>(text: &str) -> Vec<String> {
-    let line = commandline::parse::<K>(text);
-    line.commands()
-        .map(|c| {
-            let start = text[..c[0].value_start].rfind(|ch: char| ch.is_whitespace() || ch == '|').map_or(0, |w| w + 1);
-            text[start..c[c.len() - 1].end].trim().to_string()
-        })
-        .collect()
+/// A page's own row taken on a schema commandline: an action (the line emptied), a
+/// change staged (only its command comes out of the line), or the line replaced.
+pub fn take_page<A: Clone, E: Clone>(cl: &mut CommandLine, ctx: &egui::Context, line: &schema::Line, choice: &Choice<A, E>) -> Taken<A, E> {
+    match choice {
+        Choice::Act(a) => {
+            cl.text.clear();
+            Taken::Act(a.clone())
+        }
+        Choice::Stage(text, label, edit) => {
+            let start = line.current().map_or(cl.text.len(), |c| c.start);
+            let kept = cl.text[..start].trim_end().trim_end_matches('|').trim_end().len();
+            cl.text.truncate(kept);
+            cl.cursor_to_end(ctx);
+            Taken::Stage(Staged { text: text.clone(), label: label.clone(), edit: edit.clone(), failed: None })
+        }
+        Choice::Insert(text) => {
+            cl.text = text.clone();
+            cl.cursor_to_end(ctx);
+            Taken::Inserted
+        }
+        Choice::Value(_) | Choice::Raw(..) | Choice::Pin(..) => Taken::Filled,
+    }
 }
 
 /// The page just shown, or `/`: the cursor to the commandline (gently on arrival: not
@@ -470,13 +504,23 @@ pub struct Dialog<'a> {
 /// they're chosen: Enter again). Err: why not now (no files copied; the dialog is open).
 pub fn expand_files<K: Keys>(text: &mut String, shell: &Shell, is_file: impl Fn(&Part<K>) -> bool, paste: bool, dialog: Dialog, chosen: &Chosen) -> Result<(), String> {
     let line = commandline::parse::<K>(text);
+    let spans: Vec<(usize, usize, String)> = line
+        .parts
+        .iter()
+        .filter(|p| is_file(p))
+        .map(|p| (text[..p.value_start].rfind(char::is_whitespace).map_or(0, |w| w + 1), p.end, p.value.trim().to_string()))
+        .collect();
+    expand_file_spans(text, shell, spans, paste, dialog, chosen)
+}
+
+/// `expand_files` for the parts at these spans (where `key:` starts, where it ends, its
+/// value), in the order typed.
+pub fn expand_file_spans(text: &mut String, shell: &Shell, spans: Vec<(usize, usize, String)>, paste: bool, dialog: Dialog, chosen: &Chosen) -> Result<(), String> {
     let mut choosing = false;
-    for part in line.parts.iter().rev().filter(|p| is_file(p)) {
-        let value = part.value.trim();
+    for (start, end, value) in spans.into_iter().rev() {
         if !(value == "paste" && paste) && value != "choose" {
             continue;
         }
-        let start = text[..part.value_start].rfind(char::is_whitespace).map_or(0, |w| w + 1);
         let with = if value == "paste" {
             let files = crate::ui::files::clipboard_files();
             if files.is_empty() {
@@ -487,7 +531,7 @@ pub fn expand_files<K: Keys>(text: &mut String, shell: &Shell, is_file: impl Fn(
             choosing = true;
             String::new()
         };
-        text.replace_range(start..part.end, &with);
+        text.replace_range(start..end, &with);
     }
     if choosing {
         crate::ui::files::choose(shell, dialog.title, dialog.kinds, dialog.many, &chosen.paths);
@@ -553,20 +597,20 @@ pub fn source_label(s: &Source) -> String {
     }
 }
 
-/// `source:…` (`fields`: those typed after it) or `-source:#N`.
-pub fn source(minus: bool, value: &str, hashes: &[String], fields: &[(&str, &str)], t: &Things) -> Result<(String, Change), String> {
+/// `source:…` (`fields`: those typed after it) or `-source:N` (`value`: its place).
+pub fn source(minus: bool, value: &str, fields: &[(&str, &str)], t: &Things) -> Result<(String, Change), String> {
     t.editing.clone()?;
     if !t.may_source {
         return Err("sources need the edit_sources permission".into());
     }
     let value = value.trim();
     if minus {
-        let n = match (hashes, value.is_empty()) {
-            ([h], true) => h.parse::<usize>().ok().filter(|n| *n >= 1).ok_or_else(|| format!("#{h}: a source's place is a number from 1"))?,
-            _ => return Err("-source:#N puts its Nth source in the trash (the list says which is which)".into()),
-        };
+        if value.is_empty() {
+            return Err("-source:N puts its Nth source in the trash (the list says which is which)".into());
+        }
+        let n = value.parse::<usize>().ok().filter(|n| *n >= 1).ok_or_else(|| format!("{value}: a source's place is a number from 1"))?;
         let s = t.sources.get(n - 1).ok_or_else(|| format!("it has {} sources", t.sources.len()))?;
-        return Ok((format!("source #{n} ({}) → the trash", source_label(s)), Change::TrashSource(s.id)));
+        return Ok((format!("source {n} ({}) → the trash", source_label(s)), Change::TrashSource(s.id)));
     }
     if value.is_empty() {
         return Err("source: a link, a platform and its fields, or custom and where it's from (custom vk, its page)".into());
@@ -576,34 +620,14 @@ pub fn source(minus: bool, value: &str, hashes: &[String], fields: &[(&str, &str
 }
 
 /// The rows under `-source:` (its sources, by place) or `source:` (the platforms).
-pub fn source_rows<A, E>(minus: bool, value: &str, hash: bool, t: &Things) -> Vec<Row<A, E>> {
+pub fn source_rows<A, E>(minus: bool, value: &str, t: &Things) -> Vec<Row<A, E>> {
     if t.editing.is_err() || !t.may_source {
         return Vec::new();
     }
     if minus {
-        return t
-            .sources
-            .iter()
-            .enumerate()
-            .map(|(n, s)| Row { label: format!("#{} {}", n + 1, source_label(s)), sub: "to the trash".into(), choice: Choice::Raw(format!("#{}", n + 1), None) })
-            .collect();
-    }
-    if hash {
-        return Vec::new();
+        return t.sources.iter().enumerate().map(|(n, s)| Row { label: format!("{} {}", n + 1, source_label(s)), sub: "to the trash".into(), choice: Choice::Raw(format!("{}", n + 1), None) }).collect();
     }
     crate::ui::edit::sources::platform_choices(value.trim(), "", t.whose.word(), t.shapes).into_iter().map(|c| Row { label: c.label, sub: c.sub, choice: Choice::Raw(c.text, c.next) }).collect()
-}
-
-/// The rows for a source's field being typed (`owner`: the `source:` value; `given`: the
-/// fields typed already).
-pub fn field_rows<A, E>(owner: &str, name: &str, value: &str, given: &[&str], t: &Things) -> Vec<Row<A, E>> {
-    if t.editing.is_err() || !t.may_source {
-        return Vec::new();
-    }
-    crate::ui::edit::sources::field_choices(owner, name, value.trim(), given, t.whose.word(), t.shapes)
-        .into_iter()
-        .map(|c| Row { label: c.label, sub: c.sub, choice: Choice::Raw(c.text, c.next) })
-        .collect()
 }
 
 // ---- Extras ----
@@ -820,7 +844,13 @@ pub fn extra_arg_rows<A, E>(arg: Arg, value: &str, t: &Things, known: &Known) ->
 
 /// The groups, asked for once `visibility:` is typed (it names them).
 pub fn ask_groups_if<K: Keys>(text: &str, is_visibility: impl Fn(K) -> bool, t: &Things, shell: &Shell, known: &mut Known, groups: &crate::ui::edit::extras::Groups) {
-    if !t.may_access || known.groups.is_some() || !commandline::parse::<K>(text).parts.iter().any(|p| is_visibility(p.key)) {
+    let typed = commandline::parse::<K>(text).parts.iter().any(|p| is_visibility(p.key));
+    ask_groups_when(typed, t, shell, known, groups);
+}
+
+/// The groups, asked for once `typed` (`visibility:` is in the line).
+pub fn ask_groups_when(typed: bool, t: &Things, shell: &Shell, known: &mut Known, groups: &crate::ui::edit::extras::Groups) {
+    if !t.may_access || known.groups.is_some() || !typed {
         return;
     }
     crate::ui::edit::extras::ask_groups(shell, groups);
@@ -888,4 +918,119 @@ pub fn note_rows<A, E>(minus: bool, value: &str, t: &Things) -> Vec<Row<A, E>> {
         }
     }
     rows
+}
+
+// ---- On a schema commandline ----
+
+/// `extra:`'s arguments.
+const EXTRA_ARGS: &[Spec] = &[
+    Spec::new("kind", Kind::Text, "vocals, stems, sample… (any word)").aliases(&["type"]),
+    Spec::new("file", Kind::Path, "a path (Tab completes it), paste, or choose").aliases(&["files"]),
+    Spec::new("description", Kind::Text, "what it is").aliases(&["desc"]),
+    Spec::new("source", Kind::Text, "where it came from"),
+    Spec::new("visibility", Kind::Text, "who sees it: everyone, or groups (Group A, Group B)").aliases(&["vis", "seen"]),
+];
+
+/// `source:`, as a page's command: any `name:` after a platform is one of its fields.
+pub const SOURCE: Spec = Spec::new("source", Kind::Text, "a link, a platform and its fields, or custom (-source:N: to the trash)").minus(Minus::Off).next(Next::Fields(&[]));
+/// `extra:Name` and its arguments; `-extra:Name`.
+pub const EXTRA: Spec = Spec::new("extra", Kind::Text, "a new one, one of its own to change, or one in the library").minus(Minus::Off).next(Next::Args(EXTRA_ARGS));
+/// `note:Title`, `note:paste`; `-note:Title`.
+pub const NOTE: Spec = Spec::new("note", Kind::Text, "a new one, one of its notes to edit, or paste").minus(Minus::Off);
+
+/// Whether a command is one of these (`source:`, `extra:`, `note:`).
+pub fn is_thing(spec: &Spec) -> bool {
+    matches!(spec.key, "source" | "extra" | "note")
+}
+
+/// A row of these lists, as a schema commandline's (a page's own: actions, stages).
+pub fn to_schema<A, E>(row: Row<A, E>) -> schema::Row<Choice<A, E>> {
+    let take = match row.choice {
+        Choice::Value(v) => schema::Take::Value(v),
+        Choice::Raw(v, _) => schema::Take::Raw(v),
+        Choice::Pin(kind, name, id, _) => schema::Take::Pin { tag: kind.tag(), name, id },
+        other => schema::Take::Page(other),
+    };
+    schema::Row { label: row.label, sub: row.sub, take }
+}
+
+/// What a source, an extra or a note command does.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ThingDoes {
+    Change(Change),
+    Note(NoteDoes),
+}
+
+/// A command that is one of these: what it does (None: it isn't one).
+pub fn resolve_thing(c: &Node, t: &Things, known: &Known) -> Option<Result<(String, ThingDoes), String>> {
+    let change = |r: Result<(String, Change), String>| r.map(|(label, c)| (label, ThingDoes::Change(c)));
+    Some(match c.spec.key {
+        "source" => {
+            let fields: Vec<(&str, &str)> = c.fields().map(|(n, v)| (n, v.trim())).collect();
+            change(source(c.minus, &c.value, &fields, t))
+        }
+        "extra" => {
+            let args: Vec<(Arg, &str)> = c.args.iter().filter_map(|a| Some((extra_arg(a.spec.key)?, a.value.as_str()))).collect();
+            change(extra(&c.value, c.minus, &args, t, known))
+        }
+        "note" => note(&c.value, c.minus, t, known).map(|(label, d)| (label, ThingDoes::Note(d))),
+        _ => return None,
+    })
+}
+
+fn extra_arg(key: &str) -> Option<Arg> {
+    Some(match key {
+        "kind" => Arg::Kind,
+        "file" => Arg::File,
+        "description" => Arg::Description,
+        "source" => Arg::Source,
+        "visibility" => Arg::Visibility,
+        _ => return None,
+    })
+}
+
+/// The choices for a value of one of these being typed (None: `node` isn't one of theirs).
+pub fn thing_choices<A, E>(node: &Node, command: &Node, t: &Things, known: &Known) -> Option<Vec<schema::Row<Choice<A, E>>>> {
+    if !is_thing(command.spec) {
+        return None;
+    }
+    let rows: Vec<Row<A, E>> = if std::ptr::eq(node, command) {
+        match command.spec.key {
+            "source" => source_rows(command.minus, &command.value, t),
+            "extra" => extra_rows(command.minus, &command.value, t),
+            _ => note_rows(command.minus, &command.value, t),
+        }
+    } else if node.field.is_some() {
+        // A source's field: what it takes is said by its key row; any text.
+        Vec::new()
+    } else {
+        extra_arg(node.spec.key).map(|arg| extra_arg_rows(arg, &node.value, t, known)).unwrap_or_default()
+    };
+    Some(rows.into_iter().map(to_schema).collect())
+}
+
+/// The fields a `source:` can be given after its platform, besides `given`.
+pub fn thing_fields(node: &Node, given: &[&str], t: &Things) -> Vec<(String, String)> {
+    if node.spec.key != "source" || t.editing.is_err() || !t.may_source {
+        return Vec::new();
+    }
+    let Some(shape) = crate::ui::edit::sources::shape_of(&node.value, t.whose.word(), t.shapes) else { return Vec::new() };
+    shape
+        .fields
+        .iter()
+        .filter(|f| !given.iter().any(|g| f.name.eq_ignore_ascii_case(g)))
+        .map(|f| {
+            let what = match f.kind.as_str() {
+                "int" => "a number",
+                "strs" => "text; the field again for another",
+                _ => "text",
+            };
+            (f.name.clone(), format!("{what}{}", if f.required { " (needed)" } else { "" }))
+        })
+        .collect()
+}
+
+/// The `file:` parts under `extra:` in a line, as `expand_file_spans` takes them.
+pub fn file_spans(line: &schema::Line, under: &str, key: &str) -> Vec<(usize, usize, String)> {
+    line.commands.iter().filter(|c| c.spec.key == under).flat_map(|c| c.args.iter().filter(|a| a.spec.key == key && a.field.is_none())).map(|a| (a.start, a.end, a.value.trim().to_string())).collect()
 }

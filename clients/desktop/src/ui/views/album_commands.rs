@@ -1,8 +1,8 @@
-//! The album page's commandline (a `ui::edit::commandline`; the language is
-//! `crate::commandline`'s, and what it shares with the artist page's is in `page_commands`).
-//! It's there in listen mode too, for listening and moving around.
+//! The album page's commandline (a `ui::edit::commandline`), declared once (`SCHEMA`, the
+//! language is `crate::commandline::schema`'s; what it shares with the artist page's is in
+//! `page_commands`). It's there in listen mode too, for listening and moving around.
 //!
-//! * `play` plays the album, `play:#3` (or a title) from its third track; `queue` puts it at
+//! * `play` plays the album, `play:3` (or a title) from its third track; `queue` puts it at
 //!   the end of the queue, `queue:next` before what's queued. `star` (`star:no`, `-star`)
 //!   and `rating:3.5` (`-rating` clears it) are yours, saved at once.
 //! * `tracks:words` filters its tracks (as the library's filter does: `tracks:year:2019`),
@@ -10,8 +10,8 @@
 //!   while they're typed, kept with Enter; Esc puts back what they were.
 //! * `credits`, `covers`, `sources`, `notes`, `extras`, `history` (and `merges` in edit
 //!   mode) open that part of the page and scroll to it; a folded one that's open is closed.
-//! * `edit:#3` opens the track editor for its third track (a quick fix, listen mode too, as
-//!   Ctrl+E); `edit:all` or `edit:#2 #5` for several, marked (edit mode).
+//! * `edit:3` opens the track editor for its third track (a quick fix, listen mode too, as
+//!   Ctrl+E); `edit:all` or `edit:2 5` for several, marked (edit mode).
 //! * Plain words find these too, its artists and groupings (to go to), and copying its link
 //!   or a share link; merging it in edit mode.
 //!
@@ -20,19 +20,19 @@
 //!
 //! * `title:`, `kind:`, `date:` (`-date` clears it), `why:` (kept with those and the
 //!   artists: alone it has nothing to go with, and saving says so), and its artists:
-//!   `artist:Name role:… as:… #2` credits one (or, credited already, changes its role, the
+//!   `artist:Name role:… as:… n:2` credits one (or, credited already, changes its role, the
 //!   name it's credited under, its place), `feat:Name` as featured, `-artist:Name` takes one
 //!   off, `-artist` all of them. Saved through the album's form: one revision, the form
 //!   says how it went.
 //! * `cover:paste` (an image or an image file copied), `cover:choose` (the file dialog: its
 //!   path goes in the line), `cover:/path`, `cover:<album or track>` (a copy of its cover)
-//!   add one; `cover:#3` makes the third the main one, `cover:#3 #2` moves it; `-cover:#2`
+//!   add one; `cover:3` makes the third the main one, `cover:3 n:2` moves it; `-cover:2`
 //!   puts one in the trash. "Main cover on all its tracks" (found by words) puts it on
 //!   those that haven't got it.
 //! * `group:Name` puts it in a grouping (a new one: `group:Name kind:era`), `-group:Name`
 //!   takes it out.
-//! * `source:`, `-source:#N`, `extra:`, `-extra:`, `note:`, `-note:`: as on the artist page.
-//! * `move:#5 #2` moves its fifth track to the second place, at once, onto the tracklist's
+//! * `source:`, `-source:N`, `extra:`, `-extra:`, `note:`, `-note:`: as on the artist page.
+//! * `move:5 n:2` moves its fifth track to the second place, at once, onto the tracklist's
 //!   draft (as Alt+↑/↓ does: the bar above the tracks saves it, Ctrl+Enter too).
 //!
 //! The album's own changes go through its form (one revision); the rest are sent one after
@@ -46,51 +46,19 @@ use eframe::egui::{self, RichText};
 use uuid::Uuid;
 
 use super::album_rows;
-use super::page_commands::{self as pc, Arg, Change, Chosen, Known, NoteDoes, Pinned, Sending, Taken, Things, Whose};
+use super::page_commands::{self as pc, Change, Chosen, Known, NoteDoes, Pinned, Sending, Taken, ThingDoes, Things, Whose};
 use crate::account::Vocab;
 use crate::catalog::search::{Part as SearchPart, Search};
 use crate::catalog::Catalog;
-use crate::commandline::{self, Keys};
+use crate::commandline::schema::{self, Kind, Lists, Minus, Need, Next, Node, Schema, Spec, Word};
 use crate::details::AliasInfo;
 use crate::ui::edit::album_form::AlbumForm;
-use crate::ui::edit::commandline::{self as cl, CommandLine};
+use crate::ui::edit::commandline::{self as cl, CommandLine, Pressed};
 use crate::ui::edit::credits;
 use crate::ui::edit::extras::Groups;
 use crate::ui::edit::part_of;
 use crate::ui::theme::PALETTE as P;
 use crate::ui::{Page, Shell};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum K {
-    Og,
-    Tracks,
-    Play,
-    Queue,
-    Star,
-    Rating,
-    Reveal(Reveal),
-    Title,
-    Kind,
-    Date,
-    Why,
-    Artist,
-    Featured,
-    Role,
-    As,
-    Cover,
-    Source,
-    /// One of a source's fields (after `source:<platform>`): its name is the part's.
-    Field,
-    Extra,
-    File,
-    Description,
-    Visibility,
-    Note,
-    Group,
-    Move,
-    /// Its tracks in the track editor.
-    Edit,
-}
 
 /// The parts of the page the commandline opens and scrolls to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -118,72 +86,55 @@ impl Reveal {
     }
 }
 
-/// Every key's names: its own first. Exact names only (no starts of them).
-const KEYS: &[(K, &[&str])] = &[
-    (K::Og, &["og", "original"]),
-    (K::Tracks, &["tracks", "track", "filter"]),
-    (K::Play, &["play"]),
-    (K::Queue, &["queue", "enqueue"]),
-    (K::Star, &["star", "starred"]),
-    (K::Rating, &["rating", "rate", "stars"]),
-    (K::Reveal(Reveal::Credits), &["credits"]),
-    (K::Reveal(Reveal::Covers), &["covers"]),
-    (K::Reveal(Reveal::Sources), &["sources"]),
-    (K::Reveal(Reveal::Notes), &["notes"]),
-    (K::Reveal(Reveal::Extras), &["extras"]),
-    (K::Reveal(Reveal::Merges), &["merges", "merged"]),
-    (K::Reveal(Reveal::History), &["history", "revisions"]),
-    (K::Title, &["title", "name", "rename"]),
-    (K::Kind, &["kind", "type"]),
-    (K::Date, &["date", "released", "year"]),
-    (K::Why, &["why", "reason"]),
-    (K::Artist, &["artist", "artists"]),
-    (K::Featured, &["feat", "featured", "featuring"]),
-    (K::Role, &["role"]),
-    (K::As, &["as"]),
-    (K::Cover, &["cover"]),
-    (K::Source, &["source"]),
-    (K::Extra, &["extra"]),
-    (K::File, &["file", "files"]),
-    (K::Description, &["description", "desc"]),
-    (K::Visibility, &["visibility", "vis", "seen"]),
-    (K::Note, &["note"]),
-    (K::Group, &["group", "grouping"]),
-    (K::Move, &["move"]),
-    (K::Edit, &["edit"]),
+/// The parts revealed, by key.
+const REVEALS: &[(&str, Reveal)] = &[("credits", Reveal::Credits), ("covers", Reveal::Covers), ("sources", Reveal::Sources), ("notes", Reveal::Notes), ("extras", Reveal::Extras), ("merges", Reveal::Merges), ("history", Reveal::History)];
+
+const OG: &[Word] = &[Word { word: "yes", help: "only original files" }, Word { word: "no", help: "all files" }];
+const QUEUE: &[Word] = &[Word { word: "end", help: "at the end of the queue" }, Word { word: "next", help: "before what's queued" }];
+const STAR: &[Word] = &[Word { word: "yes", help: "starred" }, Word { word: "no", help: "not starred" }];
+const OWN: &[Word] = &[Word { word: "own", help: "its own name" }];
+
+/// A credited artist's arguments.
+const CREDIT_ARGS: &[Spec] = &[
+    Spec::new("role", Kind::Text, "its role: primary, featured, producer…"),
+    Spec::new("as", Kind::Or(OWN, &Kind::AliasOf(&[])), "the name it's credited under"),
+    Spec::new("n", Kind::Place, "its place among the artists"),
 ];
 
-impl Keys for K {
-    fn key(name: &str) -> Option<K> {
-        let name = name.to_lowercase();
-        KEYS.iter().find(|(_, names)| names.contains(&name.as_str())).map(|(k, _)| *k)
-    }
+/// The keys that change the album (edit mode only).
+const EDITS: &[&str] = &["title", "kind", "date", "why", "artist", "feat", "cover", "group", "move", "source", "extra", "note"];
 
-    fn name(self) -> &'static str {
-        KEYS.iter().find(|(k, _)| *k == self).map(|(_, names)| names[0]).unwrap_or("")
-    }
-
-    fn is_list(self) -> bool {
-        matches!(self, K::Date | K::Artist | K::Star | K::Rating)
-    }
-
-    fn takes_hash(self) -> bool {
-        matches!(self, K::Cover | K::Source | K::Play | K::Move | K::Artist | K::Featured | K::Role | K::As | K::Edit)
-    }
-
-    fn takes(main: K, arg: K) -> bool {
-        match main {
-            K::Extra => matches!(arg, K::Kind | K::File | K::Description | K::Source | K::Visibility),
-            K::Artist | K::Featured => matches!(arg, K::Role | K::As),
-            K::Group => arg == K::Kind,
-            _ => false,
-        }
-    }
-
-    fn field(main: K) -> Option<K> {
-        (main == K::Source).then_some(K::Field)
-    }
-}
+/// Every command, in the order the list offers them.
+pub static SCHEMA: Schema = Schema {
+    commands: &[
+        Spec::new("play", Kind::Maybe(&Kind::Track), "the album, or from a track (its number or title)"),
+        Spec::new("queue", Kind::Maybe(&Kind::Words(QUEUE)), "at the end, or next").aliases(&["enqueue"]),
+        Spec::new("star", Kind::Maybe(&Kind::Words(STAR)), "yours (alone: the other way; -star: not starred)").aliases(&["starred"]).minus(Minus::OffOrClear),
+        Spec::new("rating", Kind::Text, "yours: 0 to 5 stars, 3.5 too (-rating clears it)").aliases(&["rate", "stars"]).minus(Minus::OffOrClear),
+        Spec::new("tracks", Kind::Maybe(&Kind::Text), "filters its tracks, as the library's filter (alone: all of them)").aliases(&["track", "filter"]),
+        Spec::new("og", Kind::Maybe(&Kind::Words(OG)), "only original files").aliases(&["original"]),
+        Spec::new("credits", Kind::Nothing, "opened and scrolled to"),
+        Spec::new("covers", Kind::Nothing, "opened and scrolled to"),
+        Spec::new("sources", Kind::Nothing, "opened and scrolled to"),
+        Spec::new("notes", Kind::Nothing, "opened and scrolled to"),
+        Spec::new("extras", Kind::Nothing, "opened and scrolled to"),
+        Spec::new("merges", Kind::Nothing, "opened and scrolled to").aliases(&["merged"]),
+        Spec::new("history", Kind::Nothing, "opened and scrolled to").aliases(&["revisions"]),
+        Spec::new("edit", Kind::Text, "its tracks in the track editor: 3, several (2 5), all, or a title"),
+        Spec::new("title", Kind::Text, "its title").aliases(&["name", "rename"]),
+        Spec::new("kind", Kind::Text, "album, EP, single…").aliases(&["type"]),
+        Spec::new("date", Kind::Text, "released, as the source wrote it: 2019, 2019-05-12… (-date clears it)").aliases(&["released", "year"]).minus(Minus::OffOrClear),
+        Spec::new("why", Kind::Text, "kept with the album's changes").aliases(&["reason"]),
+        Spec::new("artist", Kind::Artist, "credit one, or change one's role:, as:, n: (-artist: one off; -artist: all)").aliases(&["artists"]).minus(Minus::OffOrClear).next(Next::Args(CREDIT_ARGS)),
+        Spec::new("feat", Kind::Artist, "credit one as featured").aliases(&["featured", "featuring"]).minus(Minus::Off).next(Next::Args(CREDIT_ARGS)),
+        Spec::new("cover", Kind::Text, "paste, choose, a path, an album or track; a number: that one made the main one").minus(Minus::Off).next(Next::Args(&[Spec::new("n", Kind::Place, "where it goes (1: the main one)")])),
+        Spec::new("group", Kind::Grouping, "put it in a grouping, or a new one (kind:)").aliases(&["grouping"]).minus(Minus::Off).next(Next::Args(&[Spec::new("kind", Kind::Text, "a new grouping's kind: collective, era, project…")])),
+        Spec::new("move", Kind::Track, "a track (its number or title) to another place (n:)").next(Next::Args(&[Spec::new("n", Kind::Place, "its new place").need(Need::Required)])),
+        pc::SOURCE,
+        pc::EXTRA,
+        pc::NOTE,
+    ],
+};
 
 /// What the page shows: its tracks filtered by these words (the library's filter), and
 /// only original files or not.
@@ -352,8 +303,10 @@ impl Edit {
 }
 
 type Staged = pc::Staged<Edit>;
-type Row = pc::Row<Act, Edit>;
+/// The rows as the shared helpers make them, and as the list shows them.
+type PcRow = pc::Row<Act, Edit>;
 type Choice = pc::Choice<Act, Edit>;
+type Row = schema::Row<Choice>;
 
 /// Whether the album can be changed here (else why not).
 fn editing(here: &Here) -> Result<(), String> {
@@ -366,23 +319,6 @@ fn editing(here: &Here) -> Result<(), String> {
     }
 }
 
-/// An `extra:` argument's key, as the shared ones know it.
-fn arg_of(key: K) -> Option<Arg> {
-    Some(match key {
-        K::Kind => Arg::Kind,
-        K::File => Arg::File,
-        K::Description => Arg::Description,
-        K::Source => Arg::Source,
-        K::Visibility => Arg::Visibility,
-        _ => return None,
-    })
-}
-
-/// A source, an extra or a note, as the album's command.
-fn thing(done: Result<(String, Change), String>) -> Result<(String, Does), String> {
-    done.map(|(label, change)| (label, Does::Edit(Edit::Thing(change))))
-}
-
 /// What showing a part of the page does: a folded one opens or closes, the rest are
 /// scrolled to.
 fn reveal_label(here: &Here, r: Reveal) -> String {
@@ -393,45 +329,48 @@ fn reveal_label(here: &Here, r: Reveal) -> String {
     }
 }
 
-/// `edit:#3` (one: listen mode too), `edit:#2 #5`, `edit:all`, or a title.
-fn edit_tracks(part: &commandline::Part<K>, here: &Here) -> Result<(String, Does), String> {
+/// `edit:3` (one: listen mode too), `edit:2 5`, `edit:all`, or a title.
+fn edit_tracks(c: &Node, here: &Here) -> Result<(String, Does), String> {
     if !here.may_metadata {
         return Err("changing tracks needs the edit_metadata permission".into());
     }
-    let value = part.value.trim();
-    let places: Vec<usize> = if value.eq_ignore_ascii_case("all") && part.hashes.is_empty() {
+    let value = c.value.trim();
+    let numbers: Vec<&str> = value.split([' ', ',']).filter(|w| !w.is_empty()).collect();
+    let places: Vec<usize> = if value.eq_ignore_ascii_case("all") {
         (0..here.tracks.len()).collect()
-    } else if !part.hashes.is_empty() && value.is_empty() {
-        part.hashes.iter().map(|h| place(h, here.tracks.len(), "tracks")).collect::<Result<_, _>>()?
     } else if value.is_empty() {
-        return Err("edit: #N (a track), several (#2 #5), all, or a title".into());
+        return Err("edit: a track's number, several (2 5), all, or a title".into());
+    } else if numbers.iter().all(|w| w.chars().all(|c| c.is_ascii_digit())) {
+        numbers.iter().map(|n| place(n, here.tracks.len(), "tracks")).collect::<Result<_, _>>()?
     } else {
-        vec![track_at(here, part)?]
+        vec![track_at(here, value)?]
     };
     let title = |n: usize| here.catalog.track_at(here.tracks[n]).title();
     match places.as_slice() {
         [] => Err("it has no tracks you can see".into()),
-        [n] => Ok((format!("the track editor: #{} “{}”", n + 1, title(*n)), Does::Act(Act::EditTracks(places)))),
-        _ if !here.edit_mode => Err("several tracks at once is in edit mode: e (one alone works here: edit:#3)".into()),
+        [n] => Ok((format!("the track editor: track {} “{}”", n + 1, title(*n)), Does::Act(Act::EditTracks(places)))),
+        _ if !here.edit_mode => Err("several tracks at once is in edit mode: e (one alone works here: edit:3)".into()),
         _ => Ok((format!("the track editor: {} tracks, marked", places.len()), Does::Act(Act::EditTracks(places)))),
     }
 }
 
-/// `#N` as a place from 0 (`what`: what it's the place of, for saying it's wrong).
-pub(super) fn place(hash: &str, count: usize, what: &str) -> Result<usize, String> {
-    match hash.parse::<usize>() {
+/// A place typed (from 1) as one from 0 (`what`: what it's the place of, for saying it's
+/// wrong).
+pub(super) fn place(typed: &str, count: usize, what: &str) -> Result<usize, String> {
+    match typed.trim().parse::<usize>() {
         Ok(n) if n >= 1 && n <= count => Ok(n - 1),
-        Ok(n) if n >= 1 => Err(format!("#{n}: it has {count} {what}")),
-        _ => Err(format!("#{hash}: a place is a number from 1")),
+        Ok(n) if n >= 1 => Err(format!("{n}: it has {count} {what}")),
+        _ => Err(format!("{}: a place is a number from 1", typed.trim())),
     }
 }
 
-/// The track a `play:` or `move:` value means: `#N`, else the one whose title has the words.
-fn track_at(here: &Here, part: &commandline::Part<K>) -> Result<usize, String> {
-    if let Some(h) = part.hashes.first() {
-        return place(h, here.tracks.len(), "tracks");
+/// The track a `play:` or `move:` value means: its number, else the one whose title has
+/// the words.
+fn track_at(here: &Here, typed: &str) -> Result<usize, String> {
+    let typed = typed.trim();
+    if !typed.is_empty() && typed.chars().all(|c| c.is_ascii_digit()) {
+        return place(typed, here.tracks.len(), "tracks");
     }
-    let typed = part.value.trim();
     let title = |n: usize| here.catalog.track_at(here.tracks[n]).title();
     let found: Vec<usize> = (0..here.tracks.len()).filter(|&n| crate::catalog::query::loosely_in(typed, title(n))).collect();
     match found.as_slice() {
@@ -465,32 +404,28 @@ fn artist_named(catalog: &Catalog, credits: &[crate::details::Credit], known: &K
     }
 }
 
-/// `artist:Name role:… as:… #N`, `feat:Name`, `-artist:Name` or `-artist`.
-fn credit(command: &[commandline::Part<K>], here: &Here, known: &Known) -> Result<(String, Edit), String> {
+/// `artist:Name role:… as:… n:N`, `feat:Name`, `-artist:Name` or `-artist`.
+fn credit(c: &Node, here: &Here, known: &Known) -> Result<(String, Edit), String> {
     editing(here)?;
-    let main = &command[0];
-    let modifier = |k: K| command[1..].iter().find(|p| p.key == k);
-    if main.minus && !main.colon {
-        if main.key == K::Featured {
-            return Err("-feat alone isn't anything: -artist takes every artist off".into());
-        }
+    let featured = c.spec.key == "feat";
+    if c.minus && !c.colon {
         return Ok(("artists → none".into(), Edit::NoCredits));
     }
-    let value = main.value.trim();
+    let value = c.value.trim();
     if value.is_empty() {
-        return Err(format!("{}: an artist's name (the list has them)", main.key.name()));
+        return Err(format!("{}: an artist's name (the list has them)", c.spec.key));
     }
     let (id, name) = artist_named(here.catalog, here.credits, known, value)?;
-    if main.minus {
+    if c.minus {
         let Some(id) = id.filter(|id| here.credits.iter().any(|c| c.artist_id == *id)) else { return Err(format!("it doesn't credit “{value}”")) };
         return Ok((format!("artists: − {name}"), Edit::Uncredit(id)));
     }
-    let role = match (modifier(K::Role), main.key) {
+    let role = match (c.arg("role"), featured) {
         (Some(p), _) => Some(crate::ui::edit::editor::find_in(&here.vocab.credit_roles, &p.value).ok_or_else(|| format!("no role like “{}”", p.value.trim()))?),
-        (None, K::Featured) => Some("featured".to_string()),
+        (None, true) => Some("featured".to_string()),
         _ => None,
     };
-    let alias = match modifier(K::As) {
+    let alias = match c.arg("as") {
         None => None,
         Some(p) if p.value.trim().is_empty() || p.value.trim().eq_ignore_ascii_case(&name) || p.value.trim().eq_ignore_ascii_case("own") => Some(None),
         Some(p) => {
@@ -501,9 +436,8 @@ fn credit(command: &[commandline::Part<K>], here: &Here, known: &Known) -> Resul
             list.iter().find(|a| a.name == found).map(|a| Some((a.id, a.name.clone())))
         }
     };
-    let hash = command.iter().rev().find_map(|p| p.hash.clone());
-    let at = match hash {
-        Some(h) => Some(place(&h, here.credits.len() + 1, "places for artists")?),
+    let at = match c.arg("n") {
+        Some(n) => Some(place(&n.value, here.credits.len() + 1, "places for artists")?),
         None => None,
     };
     let credited = id.is_some_and(|id| here.credits.iter().any(|c| c.artist_id == id));
@@ -521,10 +455,10 @@ fn credit(command: &[commandline::Part<K>], here: &Here, known: &Known) -> Resul
         label.push_str(&format!(", credited as {shown}"));
     }
     if let Some(at) = at {
-        label.push_str(&format!(", #{}", at + 1));
+        label.push_str(&format!(", place {}", at + 1));
     }
     if credited && role.is_none() && alias.is_none() && at.is_none() {
-        return Err(format!("it credits {name} already: say what changes (role:, as:, #place)"));
+        return Err(format!("it credits {name} already: say what changes (role:, as:, n:)"));
     }
     Ok((label, Edit::Credit(Credit { artist: id, name, role, alias, at })))
 }
@@ -537,41 +471,43 @@ fn cover_label(c: &crate::details::Cover) -> String {
     }
 }
 
-/// `cover:…` (an image added, or one moved) or `-cover:#N`.
-fn cover(main: &commandline::Part<K>, here: &Here, known: &Known) -> Result<(String, Does), String> {
+/// `cover:…` (an image added, or one moved: `cover:3`, `cover:3 n:2`) or `-cover:N`.
+fn cover(c: &Node, here: &Here, known: &Known) -> Result<(String, Does), String> {
     editing(here)?;
-    let value = main.value.trim();
+    let value = c.value.trim();
     let edit = |label: String, change: CoverChange| Ok((label, Does::Edit(Edit::Cover(change))));
     let which = |h: &str| place(h, here.covers.len(), "covers").map(|n| (n, &here.covers[n]));
-    if main.minus {
-        return match (main.hashes.as_slice(), value.is_empty()) {
-            ([h], true) => {
-                let (n, c) = which(h)?;
-                edit(format!("cover #{} ({}) → the trash", n + 1, cover_label(c)), CoverChange::Trash(c.id))
+    let number = !value.is_empty() && value.chars().all(|c| c.is_ascii_digit());
+    let to = c.arg("n");
+    if c.minus {
+        return match number {
+            true => {
+                let (n, cv) = which(value)?;
+                edit(format!("cover {} ({}) → the trash", n + 1, cover_label(cv)), CoverChange::Trash(cv.id))
             }
-            _ => Err("-cover:#N puts its Nth cover in the trash (the list says which is which)".into()),
+            false => Err("-cover:N puts its Nth cover in the trash (the list says which is which)".into()),
         };
     }
-    match (main.hashes.as_slice(), value) {
-        ([h], "") => {
-            let (n, c) = which(h)?;
-            if n == 0 {
-                return Err(format!("#{h} is the main cover already"));
-            }
-            edit(format!("cover #{} → the main one", n + 1), CoverChange::Move(c.id, 0))
-        }
-        ([h, to], "") => {
-            let (n, c) = which(h)?;
-            let to = place(to, here.covers.len(), "covers")?;
+    if to.is_some() && !number {
+        return Err("n: moves one of its covers: cover:3 n:1".into());
+    }
+    match value {
+        _ if number => {
+            let (n, cv) = which(value)?;
+            let to = match to {
+                Some(t) => place(&t.value, here.covers.len(), "covers")?,
+                None => 0,
+            };
             if n == to {
-                return Err(format!("#{h} is there already"));
+                return Err(if to == 0 { format!("{} is the main cover already", n + 1) } else { format!("{} is there already", n + 1) });
             }
-            edit(format!("cover #{} → #{}", n + 1, to + 1), CoverChange::Move(c.id, to))
+            let label = if to == 0 { format!("cover {} → the main one", n + 1) } else { format!("cover {} → place {}", n + 1, to + 1) };
+            edit(label, CoverChange::Move(cv.id, to))
         }
-        ([], "") => Err("cover: paste, choose, a path, or an album or track (a copy of its cover); cover:#N makes one the main one".into()),
-        ([], "paste") => Ok(("the image copied, as a new cover (read on Enter)".into(), Does::PasteCover)),
-        ([], "choose") => Ok(("an image chosen in the dialog (on Enter: its path goes in the commandline)".into(), Does::OnEnter)),
-        ([], v) if v.starts_with('/') || v.starts_with('~') => {
+        "" => Err("cover: paste, choose, a path, or an album or track (a copy of its cover); cover:N makes one the main one".into()),
+        "paste" => Ok(("the image copied, as a new cover (read on Enter)".into(), Does::PasteCover)),
+        "choose" => Ok(("an image chosen in the dialog (on Enter: its path goes in the commandline)".into(), Does::OnEnter)),
+        v if v.starts_with('/') || v.starts_with('~') => {
             let path = pc::path_of(v);
             if path.is_dir() {
                 return Err(format!("{v}: a folder (Tab lists its files)"));
@@ -584,11 +520,10 @@ fn cover(main: &commandline::Part<K>, here: &Here, known: &Known) -> Result<(Str
             }
             edit(format!("+ cover from {}", path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()), CoverChange::File(path))
         }
-        ([], v) => {
+        v => {
             let (cover_id, what) = cover_of(here, known, v)?;
             edit(format!("+ a copy of {what}'s cover"), CoverChange::Copy(cover_id))
         }
-        _ => Err("cover:#N (made the main one), cover:#N #M (moved), or something to add".into()),
     }
 }
 
@@ -617,9 +552,8 @@ fn cover_of(here: &Here, known: &Known, typed: &str) -> Result<(Uuid, String), S
 }
 
 /// `group:Name` (and `kind:` for a new one), or `-group:Name`.
-fn group(command: &[commandline::Part<K>], here: &Here, known: &Known) -> Result<(String, Edit), String> {
+fn group(main: &Node, here: &Here, known: &Known) -> Result<(String, Edit), String> {
     editing(here)?;
-    let main = &command[0];
     let name = main.value.trim();
     if name.is_empty() {
         return Err(if main.minus { "-group:Name takes it out of that grouping".into() } else { "group: a grouping's name (the list has them), or a new one's".into() });
@@ -629,7 +563,7 @@ fn group(command: &[commandline::Part<K>], here: &Here, known: &Known) -> Result
         let g = here.groupings.iter().filter_map(|id| here.catalog.grouping(*id)).find(named).ok_or_else(|| format!("it isn't in “{name}”"))?;
         return Ok((format!("out of {} “{}”", g.kind, g.name), Edit::Group(part_of::Change::Remove(g.id))));
     }
-    let kind = command[1..].iter().find(|p| p.key == K::Kind).map(|p| p.value.trim().to_string());
+    let kind = main.arg("kind").map(|p| p.value.trim().to_string());
     let found: Vec<&crate::catalog::model::Grouping> = here.catalog.groupings.iter().filter(named).collect();
     match (found.as_slice(), kind) {
         (_, Some(kind)) if kind.is_empty() => Err(format!("kind: {} (or any word)", crate::ui::views::grouping::KINDS.join(", "))),
@@ -662,120 +596,116 @@ pub(super) fn stars(rating: i16) -> String {
     }
 }
 
-/// Each command typed: its text, and what it does (or why it can't).
-fn resolve(text: &str, here: &Here, known: &Known) -> Vec<Result<(String, Does), String>> {
-    let line = commandline::parse::<K>(text);
-    let mut out = Vec::new();
-    for command in line.commands() {
-        let main = &command[0];
-        let value = main.value.trim();
-        let minus_ok = matches!(main.key, K::Date | K::Artist | K::Featured | K::Cover | K::Source | K::Extra | K::Note | K::Group | K::Star | K::Rating);
-        if main.minus && !minus_ok {
-            out.push(Err(format!("-{}: nothing to take off here", main.key.name())));
-            continue;
-        }
-        let edit = |label: String, edit: Edit| editing(here).map(|_| (label, Does::Edit(edit)));
-        let nothing_after = |what: &str, does: Does| if value.is_empty() { Ok((what.to_string(), does)) } else { Err(format!("{}: nothing after it", main.key.name())) };
-        out.push(match main.key {
-            K::Og if here.og_count == 0 => Err("it has no original files".into()),
-            K::Og => match value.to_lowercase().as_str() {
-                "" | "yes" | "y" | "on" => Ok(("only original files".into(), Does::Og(true))),
-                "no" | "n" | "off" => Ok(("all files, not only original ones".into(), Does::Og(false))),
-                _ => Err("og: yes or no".into()),
-            },
-            K::Tracks if value.is_empty() => Ok(("all its tracks (no filter)".into(), Does::Words(String::new()))),
-            K::Tracks => Ok((format!("its tracks, filtered: {value}"), Does::Words(value.to_string()))),
-            K::Play if here.tracks.is_empty() => Err("it has no tracks you can see".into()),
-            K::Play if value.is_empty() && main.hashes.is_empty() => Ok(("play it".into(), Does::Act(Act::Play(0)))),
-            K::Play => track_at(here, main).map(|n| (format!("play it from #{} “{}”", n + 1, here.catalog.track_at(here.tracks[n]).title()), Does::Act(Act::Play(n)))),
-            K::Queue if here.tracks.is_empty() => Err("it has no tracks you can see".into()),
-            K::Queue => match value.to_lowercase().as_str() {
-                "" | "end" | "last" => Ok(("queued, at the end".into(), Does::Act(Act::Queue(false)))),
-                "next" | "first" => Ok(("queued, next".into(), Does::Act(Act::Queue(true)))),
-                _ => Err("queue: next, or nothing (at the end)".into()),
-            },
-            K::Star if main.minus => Ok(("not starred".into(), Does::Act(Act::Star(false)))),
-            K::Star => match value.to_lowercase().as_str() {
-                "" => Ok((if here.starred { "not starred" } else { "starred" }.into(), Does::Act(Act::Star(!here.starred)))),
-                "yes" | "y" | "on" => Ok(("starred".into(), Does::Act(Act::Star(true)))),
-                "no" | "n" | "off" => Ok(("not starred".into(), Does::Act(Act::Star(false)))),
-                _ => Err("star: yes or no (or nothing: the other way)".into()),
-            },
-            K::Rating if main.minus => Ok(("no rating".into(), Does::Act(Act::Rate(0)))),
-            K::Rating if value.is_empty() => Err("rating: 0 to 5 stars (3.5 too)".into()),
-            K::Rating => rating(value).map(|r| (format!("your rating → {}", stars(r)), Does::Act(Act::Rate(r)))),
-            K::Reveal(r) if !here.sections.contains(&r) => Err(format!("no {} here", r.title().to_lowercase())),
-            K::Reveal(r) => nothing_after(&reveal_label(here, r), Does::Act(Act::Reveal(r))),
-            K::Title if value.is_empty() => Err("title: its new title".into()),
-            K::Title => edit(format!("title → {value}"), Edit::Title(value.to_string())),
-            K::Kind if value.is_empty() => Err(format!("kind: {}", here.vocab.album_kinds.join(", "))),
-            K::Kind => match crate::ui::edit::editor::find_in(&here.vocab.album_kinds, value) {
-                Some(kind) => edit(format!("kind → {kind}"), Edit::Kind(kind)),
-                None => Err(format!("no kind like “{value}” ({})", here.vocab.album_kinds.join(", "))),
-            },
-            K::Date if main.minus || value.is_empty() => edit("released → none".into(), Edit::Date(String::new())),
-            K::Date => edit(format!("released → {value}"), Edit::Date(value.to_string())),
-            K::Why => edit(format!("why: {value} (kept with a change to its title, kind, date or artists)"), Edit::Why(value.to_string())),
-            K::Edit if here.tracks.is_empty() => Err("it has no tracks you can see".into()),
-            K::Edit => edit_tracks(main, here),
-            K::Artist | K::Featured => credit(command, here, known).map(|(label, edit)| (label, Does::Edit(edit))),
-            K::Role | K::As => Err(format!("{}: goes after artist:Name", main.key.name())),
-            K::Cover => cover(main, here, known),
-            K::Source => {
-                let fields: Vec<(&str, &str)> = command[1..].iter().map(|p| (p.name(), p.value.trim())).collect();
-                thing(pc::source(main.minus, value, &main.hashes, &fields, &here.things()))
-            }
-            K::Field => Err(format!("{}: goes after source: and its platform (source:bandcamp url:…)", main.name())),
-            K::Extra => {
-                let args: Vec<(Arg, &str)> = command[1..].iter().filter_map(|a| Some((arg_of(a.key)?, a.value.as_str()))).collect();
-                thing(pc::extra(value, main.minus, &args, &here.things(), known))
-            }
-            K::File | K::Description | K::Visibility => Err(format!("{}: goes after extra:Name", main.key.name())),
-            K::Note => pc::note(value, main.minus, &here.things(), known).map(|(label, does)| {
-                let does = match does {
-                    NoteDoes::Open(note, title) => Does::Act(Act::Note(note, title)),
-                    NoteDoes::Paste => Does::Act(Act::PasteNotes),
-                    NoteDoes::Hide(note) => Does::Edit(Edit::Thing(Change::HideNote(note))),
-                };
-                (label, does)
-            }),
-            K::Group => group(command, here, known).map(|(label, edit)| (label, Does::Edit(edit))),
-            K::Move => match editing(here) {
-                Err(err) => Err(err),
-                Ok(()) => match main.hashes.as_slice() {
-                    [from, to] => match (place(from, here.tracks.len(), "tracks"), place(to, here.tracks.len(), "tracks")) {
-                        (Ok(a), Ok(b)) if a == b => Err(format!("#{from} is there already")),
-                        (Ok(a), Ok(b)) => Ok((format!("track #{} “{}” → #{} (the tracklist's draft)", a + 1, here.catalog.track_at(here.tracks[a]).title(), b + 1), Does::Act(Act::Move(a, b)))),
-                        (Err(err), _) | (_, Err(err)) => Err(err),
-                    },
-                    _ => Err("move:#5 #2 moves the fifth track to the second place".into()),
-                },
-            },
+/// What a command does, or why it can't (problems in how it's typed after the page's own).
+fn resolve_one(c: &Node, here: &Here, known: &Known) -> Result<(String, Does), String> {
+    if let Some(done) = pc::resolve_thing(c, &here.things(), known) {
+        return done.map(|(label, does)| {
+            let does = match does {
+                ThingDoes::Change(change) => Does::Edit(Edit::Thing(change)),
+                ThingDoes::Note(NoteDoes::Open(note, title)) => Does::Act(Act::Note(note, title)),
+                ThingDoes::Note(NoteDoes::Paste) => Does::Act(Act::PasteNotes),
+                ThingDoes::Note(NoteDoes::Hide(note)) => Does::Edit(Edit::Thing(Change::HideNote(note))),
+            };
+            (label, does)
         });
     }
-    // Words after a `|` (a section's name, say): only as an action's name, exactly.
-    if !line.parts.is_empty() && !line.words.is_empty() {
+    let value = c.value.trim();
+    let edit = |label: String, edit: Edit| editing(here).map(|_| (label, Does::Edit(edit)));
+    let done = match c.spec.key {
+        "og" if here.og_count == 0 => Err("it has no original files".into()),
+        "og" => match Kind::Words(OG).word(value) {
+            None if value.is_empty() => Ok(("only original files".into(), Does::Og(true))),
+            Some("yes") => Ok(("only original files".into(), Does::Og(true))),
+            Some(_) => Ok(("all files, not only original ones".into(), Does::Og(false))),
+            None => Err("og: yes or no".into()),
+        },
+        "tracks" if value.is_empty() => Ok(("all its tracks (no filter)".into(), Does::Words(String::new()))),
+        "tracks" => Ok((format!("its tracks, filtered: {value}"), Does::Words(value.to_string()))),
+        "play" if here.tracks.is_empty() => Err("it has no tracks you can see".into()),
+        "play" if value.is_empty() => Ok(("play it".into(), Does::Act(Act::Play(0)))),
+        "play" => track_at(here, value).map(|n| (format!("play it from track {} “{}”", n + 1, here.catalog.track_at(here.tracks[n]).title()), Does::Act(Act::Play(n)))),
+        "queue" if here.tracks.is_empty() => Err("it has no tracks you can see".into()),
+        "queue" => match value.to_lowercase().as_str() {
+            "" | "end" | "last" => Ok(("queued, at the end".into(), Does::Act(Act::Queue(false)))),
+            "next" | "first" => Ok(("queued, next".into(), Does::Act(Act::Queue(true)))),
+            _ => Err("queue: next, or nothing (at the end)".into()),
+        },
+        "star" if c.minus => Ok(("not starred".into(), Does::Act(Act::Star(false)))),
+        "star" => match value.to_lowercase().as_str() {
+            "" => Ok((if here.starred { "not starred" } else { "starred" }.into(), Does::Act(Act::Star(!here.starred)))),
+            "yes" | "y" | "on" => Ok(("starred".into(), Does::Act(Act::Star(true)))),
+            "no" | "n" | "off" => Ok(("not starred".into(), Does::Act(Act::Star(false)))),
+            _ => Err("star: yes or no (or nothing: the other way)".into()),
+        },
+        "rating" if c.minus => Ok(("no rating".into(), Does::Act(Act::Rate(0)))),
+        "rating" if value.is_empty() => Err("rating: 0 to 5 stars (3.5 too)".into()),
+        "rating" => rating(value).map(|r| (format!("your rating → {}", stars(r)), Does::Act(Act::Rate(r)))),
+        "title" if value.is_empty() => Err("title: its new title".into()),
+        "title" => edit(format!("title → {value}"), Edit::Title(value.to_string())),
+        "kind" if value.is_empty() => Err(format!("kind: {}", here.vocab.album_kinds.join(", "))),
+        "kind" => match crate::ui::edit::editor::find_in(&here.vocab.album_kinds, value) {
+            Some(kind) => edit(format!("kind → {kind}"), Edit::Kind(kind)),
+            None => Err(format!("no kind like “{value}” ({})", here.vocab.album_kinds.join(", "))),
+        },
+        "date" if c.minus || value.is_empty() => edit("released → none".into(), Edit::Date(String::new())),
+        "date" => edit(format!("released → {value}"), Edit::Date(value.to_string())),
+        "why" => edit(format!("why: {value} (kept with a change to its title, kind, date or artists)"), Edit::Why(value.to_string())),
+        "edit" if here.tracks.is_empty() => Err("it has no tracks you can see".into()),
+        "edit" => edit_tracks(c, here),
+        "artist" | "feat" => credit(c, here, known).map(|(label, edit)| (label, Does::Edit(edit))),
+        "cover" => cover(c, here, known),
+        "group" => group(c, here, known).map(|(label, edit)| (label, Does::Edit(edit))),
+        "move" => match editing(here) {
+            Err(err) => Err(err),
+            Ok(()) => match c.arg("n") {
+                None => Err("move: a track, then n: its new place (move:5 n:2)".into()),
+                Some(n) => match (track_at(here, value), place(&n.value, here.tracks.len(), "tracks")) {
+                    (Ok(a), Ok(b)) if a == b => Err(format!("track {} is there already", a + 1)),
+                    (Ok(a), Ok(b)) => Ok((format!("track {} “{}” → place {} (the tracklist's draft)", a + 1, here.catalog.track_at(here.tracks[a]).title(), b + 1), Does::Act(Act::Move(a, b)))),
+                    (Err(err), _) | (_, Err(err)) => Err(err),
+                },
+            },
+        },
+        key => match REVEALS.iter().find(|(k, _)| *k == key).map(|(_, r)| *r) {
+            Some(r) if !here.sections.contains(&r) => Err(format!("no {} here", r.title().to_lowercase())),
+            Some(r) => Ok((reveal_label(here, r), Does::Act(Act::Reveal(r)))),
+            None => Err(format!("{key}: not a command here")),
+        },
+    };
+    let wrong = schema::problems(c);
+    match (done, wrong.is_empty()) {
+        (Err(e), _) => Err(e),
+        (Ok(_), false) => Err(wrong.join(" · ")),
+        (ok, true) => ok,
+    }
+}
+
+/// Each command typed: what it does (or why it can't).
+fn resolve(text: &str, here: &Here, known: &Known) -> Vec<Result<(String, Does), String>> {
+    let line = schema::parse(&SCHEMA, text);
+    let mut out: Vec<Result<(String, Does), String>> = line.commands.iter().map(|c| resolve_one(c, here, known)).collect();
+    // Words after a `|` (a section's name, say): only as an action's name, exactly. (Words
+    // alone: the list's, Enter takes its row.)
+    if !line.commands.is_empty() && !line.words.is_empty() {
         let typed = line.words.join(" ");
         out.push(match actions(&typed, here).into_iter().find(|r| r.label.split("  ").next().is_some_and(|l| l.eq_ignore_ascii_case(&typed))) {
-            Some(Row { label, choice: Choice::Act(act), .. }) => Ok((label, Does::Act(act))),
-            _ => Err(format!("“{typed}”: not a command")),
+            Some(schema::Row { label, take: schema::Take::Page(Choice::Act(act)), .. }) => Ok((label, Does::Act(act))),
+            _ => Err(SCHEMA.not_a_command(&line.words[0])),
         });
+    } else if line.commands.is_empty() && line.words.first().is_some_and(|w| w.contains(':')) {
+        out.push(Err(SCHEMA.not_a_command(&line.words[0])));
     }
     out
 }
 
-/// The actions plain words find (and the keys to type, for the rest).
+/// The actions plain words find (the keys are listed after them).
 fn actions(typed: &str, here: &Here) -> Vec<Row> {
     let mut rows = Vec::new();
     let found = |label: &str, also: &[&str]| crate::catalog::query::loosely_in(typed, label) || also.iter().any(|a| a.starts_with(&typed.to_lowercase()));
-    let act = |label: &str, sub: &str, act: Act| Row { label: label.into(), sub: sub.into(), choice: Choice::Act(act) };
-    let insert = |label: &str, sub: &str, key: &str| Row { label: label.into(), sub: sub.into(), choice: Choice::Insert(key.into()) };
+    let act = |label: &str, sub: &str, act: Act| Row { label: label.into(), sub: sub.into(), take: schema::Take::Page(Choice::Act(act)) };
     if !here.tracks.is_empty() {
         if found("Play", &[]) {
             rows.push(act("Play", "the album", Act::Play(0)));
-        }
-        if found("Play from a track", &["play"]) {
-            rows.push(insert("Play from a track (play:)", "#N or its title", "play:"));
         }
         if found("Queue it", &["queue", "enqueue"]) {
             rows.push(act("Queue it", "at the end of the queue", Act::Queue(false)));
@@ -787,10 +717,6 @@ fn actions(typed: &str, here: &Here) -> Vec<Row> {
     let star = if here.starred { "Unstar" } else { "Star" };
     if found(star, &["star", "favourite", "favorite", "like"]) {
         rows.push(act(star, "yours", Act::Star(!here.starred)));
-    }
-    if found("Rate", &["rating", "stars"]) {
-        let now = if here.rating > 0 { format!("now {}", stars(here.rating)) } else { "0 to 5 stars".into() };
-        rows.push(insert("Rate (rating:)", &now, "rating:"));
     }
     if found("Copy link", &["link", "share"]) {
         rows.push(act("Copy link", "for someone with an account (Ctrl+L)", Act::CopyLink));
@@ -804,15 +730,6 @@ fn actions(typed: &str, here: &Here) -> Vec<Row> {
             let sub = label.rsplit(": ").next().unwrap_or("");
             rows.push(act(section.title(), sub, Act::Reveal(section)));
         }
-    }
-    if here.may_metadata && !here.tracks.is_empty() && found("Edit its tracks", &["edit"]) {
-        rows.push(insert("Edit its tracks (edit:)", "#3: one (Ctrl+E) · all, or #2 #5: marked, in edit mode", "edit:"));
-    }
-    if !here.tracks.is_empty() && found("Tracks", &["filter"]) {
-        rows.push(insert("Filter its tracks (tracks:)", "words, or year:… status:… (as the library's filter)", "tracks:"));
-    }
-    if here.og_count > 0 && found("Original files", &["og"]) {
-        rows.push(insert("og:", "only original files", "og:"));
     }
     // Its artists and groupings: their pages.
     if !typed.trim().is_empty() {
@@ -836,33 +753,12 @@ fn actions(typed: &str, here: &Here) -> Vec<Row> {
     if found(edit_label, &["edit"]) {
         rows.push(act(edit_label, "Alt+E, anywhere", Act::ToggleEdit));
     }
-    if editing(here).is_ok() {
-        for (key, label, sub) in [
-            ("title:", "Title (title:)", "its title"),
-            ("kind:", "Kind (kind:)", "album, EP, single…"),
-            ("date:", "Released (date:)", "as the source wrote it: 2019, 2019-05-12…"),
-            ("artist:", "Artist (artist:)", "credit one, or change one's role:, as:, #place"),
-            ("-artist:", "Take an artist off (-artist:)", "its credit on the album"),
-            ("why:", "Why (why:)", "kept with the album's changes"),
-            ("cover:", "Cover (cover:)", "paste, choose, a path, an album or track; #N: the main one"),
-            ("-cover:", "Cover to the trash (-cover:)", "#N"),
-            ("group:", "Grouping (group:)", "put it in one, or a new one (kind:)"),
-            ("-group:", "Out of a grouping (-group:)", "one it's in"),
-            ("move:", "Move a track (move:)", "#5 #2: the fifth to the second place"),
-            ("note:", "Note (note:)", "a new one, or one of its notes to edit"),
-            ("extra:", "Extra (extra:)", "a new one, one of its own to change, or one in the library"),
-            ("source:", "Source (source:)", "a link, a platform and its fields, or custom"),
-        ] {
-            if found(label, &[key.trim_end_matches(':').trim_start_matches('-')]) {
-                rows.push(insert(label, sub, key));
-            }
-        }
-        if let Some(main) = here.covers.first()
-            && found("Main cover on all its tracks", &["cover"])
-        {
-            let label = "the main cover on each of its tracks that hasn't got it";
-            rows.push(Row { label: "Main cover on all its tracks".into(), sub: "staged".into(), choice: Choice::Stage("main cover on its tracks".into(), label.into(), Edit::Cover(CoverChange::OnTracks(main.id))) });
-        }
+    if editing(here).is_ok()
+        && let Some(main) = here.covers.first()
+        && found("Main cover on all its tracks", &["cover"])
+    {
+        let label = "the main cover on each of its tracks that hasn't got it";
+        rows.push(Row { label: "Main cover on all its tracks".into(), sub: "staged".into(), take: schema::Take::Page(Choice::Stage("main cover on its tracks".into(), label.into(), Edit::Cover(CoverChange::OnTracks(main.id)))) });
     }
     if here.edit_mode && found("Merge into another album", &[]) {
         rows.push(act("Merge into another album…", "Ctrl+M", Act::Merge));
@@ -870,135 +766,154 @@ fn actions(typed: &str, here: &Here) -> Vec<Row> {
     rows
 }
 
-/// Its tracks as rows: "#3 Title", the value `#3` (on Tab, `next` after it).
-fn track_rows(here: &Here, typed: &str, sub: &str, next: Option<&str>) -> Vec<Row> {
+/// Its tracks as rows: "3 Title", the value `3`.
+fn track_rows(here: &Here, typed: &str, sub: &str) -> Vec<PcRow> {
     here.tracks
         .iter()
         .enumerate()
         .filter(|&(_, &t)| typed.is_empty() || crate::catalog::query::loosely_in(typed, here.catalog.track_at(t).title()))
-        .map(|(n, &t)| Row { label: format!("#{} {}", n + 1, here.catalog.track_at(t).title()), sub: sub.into(), choice: Choice::Raw(format!("#{}", n + 1), next.map(str::to_string)) })
+        .map(|(n, &t)| PcRow { label: format!("{} {}", n + 1, here.catalog.track_at(t).title()), sub: sub.into(), choice: Choice::Raw(format!("{}", n + 1), None) })
         .collect()
 }
 
-/// Rows for a list of words: each as it is (on Tab, `next` after it).
-fn word_rows(words: &[String], typed: &str, sub: &str, next: Option<&str>) -> Vec<Row> {
-    words
-        .iter()
-        .filter(|w| w.to_lowercase().starts_with(&typed.to_lowercase()))
-        .map(|w| Row { label: w.clone(), sub: sub.into(), choice: Choice::Raw(w.clone(), next.map(str::to_string)) })
-        .collect()
+/// Rows for a list of words: each as it is.
+fn word_rows(words: &[String], typed: &str, sub: &str) -> Vec<PcRow> {
+    words.iter().filter(|w| w.to_lowercase().starts_with(&typed.to_lowercase())).map(|w| PcRow { label: w.clone(), sub: sub.into(), choice: Choice::Raw(w.clone(), None) }).collect()
 }
 
-/// The choices for the value being typed (`group`: what it goes with, if it's an argument
-/// or a field).
-fn choices(part: &commandline::Part<K>, group: &[commandline::Part<K>], here: &Here, known: &Known) -> Vec<Row> {
-    let value = part.value.trim();
-    let typed = value.to_lowercase();
-    let things = here.things();
-    let owner = group.first().map(|g| g.key);
-    let can = editing(here).is_ok();
-    if let Some(arg) = arg_of(part.key).filter(|_| owner == Some(K::Extra)) {
-        return pc::extra_arg_rows(arg, value, &things, known);
-    }
-    let covers = |sub: &str| -> Vec<Row> { here.covers.iter().enumerate().map(|(n, c)| Row { label: format!("#{} {}{}", n + 1, cover_label(c), if n == 0 { " · main" } else { "" }), sub: sub.into(), choice: Choice::Raw(format!("#{}", n + 1), None) }).collect() };
-    match part.key {
-        K::Source => pc::source_rows(part.minus, value, part.hash.is_some(), &things),
-        K::Note => pc::note_rows(part.minus, value, &things),
-        K::Extra => pc::extra_rows(part.minus, value, &things),
-        K::Field => {
-            let Some(owner) = group.first().filter(|o| o.key == K::Source) else { return Vec::new() };
-            let given: Vec<&str> = group.iter().skip(1).chain([part]).map(|p| p.name()).collect();
-            pc::field_rows(&owner.value, part.name(), value, &given, &things)
+/// What the page knows, for the list.
+struct Lister<'a> {
+    here: &'a Here<'a>,
+    known: &'a Known,
+}
+
+impl Lists<Choice> for Lister<'_> {
+    fn choices(&self, _kind: Kind, _typed: &str, node: &Node, command: &Node) -> Vec<Row> {
+        let (here, known) = (self.here, self.known);
+        if let Some(rows) = pc::thing_choices(node, command, &here.things(), known) {
+            return rows;
         }
-        K::Og if typed.is_empty() => [("yes", "only original files"), ("no", "all files")].into_iter().map(|(v, sub)| Row { label: v.into(), sub: sub.into(), choice: Choice::Value(v.into()) }).collect(),
-        K::Play if part.hashes.is_empty() => track_rows(here, value, "play from here", None),
-        K::Edit if here.may_metadata && part.hashes.is_empty() => {
+        album_choices(node, command, here, known).into_iter().map(pc::to_schema).collect()
+    }
+
+    fn words(&self, typed: &str) -> Vec<Row> {
+        actions(typed, self.here)
+    }
+
+    fn fields(&self, node: &Node, given: &[&str]) -> Vec<(String, String)> {
+        pc::thing_fields(node, given, &self.here.things())
+    }
+
+    fn offers(&self, spec: &Spec) -> bool {
+        // (Arguments come after their command, which was offered.)
+        if !SCHEMA.commands.iter().any(|c| std::ptr::eq(c, spec)) {
+            return true;
+        }
+        match spec.key {
+            "edit" => self.here.may_metadata && !self.here.tracks.is_empty(),
+            "source" => editing(self.here).is_ok() && self.here.may_source,
+            key if EDITS.contains(&key) => editing(self.here).is_ok(),
+            _ => true,
+        }
+    }
+}
+
+/// The choices for the value being typed (`c`: its command).
+fn album_choices(node: &Node, c: &Node, here: &Here, known: &Known) -> Vec<PcRow> {
+    let value = node.value.trim();
+    let typed = value.to_lowercase();
+    let can = editing(here).is_ok();
+    let is_command = std::ptr::eq(node, c);
+    let covers = |sub: &str| -> Vec<PcRow> { here.covers.iter().enumerate().map(|(n, cv)| PcRow { label: format!("{} {}{}", n + 1, cover_label(cv), if n == 0 { " · main" } else { "" }), sub: sub.into(), choice: Choice::Raw(format!("{}", n + 1), None) }).collect() };
+    match (c.spec.key, node.spec.key) {
+        ("play", "play") => track_rows(here, value, "play from here"),
+        ("rating", "rating") if typed.is_empty() && here.rating > 0 && !c.minus => {
+            let now = format!("{}", here.rating as f32 / 2.0);
+            vec![PcRow { label: now.clone(), sub: format!("yours now: {}", stars(here.rating)), choice: Choice::Raw(now, None) }]
+        }
+        ("edit", "edit") if here.may_metadata => {
             let mut rows = Vec::new();
             if here.edit_mode && "all".starts_with(&typed) {
-                rows.push(Row { label: "all".into(), sub: "every track, marked".into(), choice: Choice::Raw("all".into(), None) });
+                rows.push(PcRow { label: "all".into(), sub: "every track, marked".into(), choice: Choice::Raw("all".into(), None) });
             }
-            rows.extend(track_rows(here, value, "in the track editor", None));
+            rows.extend(track_rows(here, value, "in the track editor"));
             rows
         }
-        K::Move if can && part.hashes.is_empty() => track_rows(here, value, "to move (Tab: then its new place, #N)", Some("#")),
-        K::Queue => [("end", "at the end of the queue"), ("next", "before what's queued")].into_iter().filter(|(w, _)| w.starts_with(&typed)).map(|(w, sub)| Row { label: w.into(), sub: sub.into(), choice: Choice::Raw(w.into(), None) }).collect(),
-        K::Star if typed.is_empty() && !part.minus => [("yes", "starred"), ("no", "not starred")].into_iter().map(|(v, sub)| Row { label: v.into(), sub: sub.into(), choice: Choice::Raw(v.into(), None) }).collect(),
-        K::Kind if owner == Some(K::Group) => {
+        ("move", "move") if can => track_rows(here, value, "to move (then n: its new place)"),
+        ("group", "kind") => {
             let kinds: Vec<String> = crate::ui::views::grouping::KINDS.iter().map(|k| k.to_string()).collect();
-            word_rows(&kinds, value, "a new grouping's kind (any word works)", None)
+            word_rows(&kinds, value, "a new grouping's kind (any word works)")
         }
-        K::Kind if can => word_rows(&here.vocab.album_kinds, value, if here.kind.is_empty() { "" } else { "a kind" }, None),
-        K::Title if can && typed.is_empty() => vec![Row { label: here.title.to_string(), sub: "its title now".into(), choice: Choice::Value(here.title.to_string()) }],
-        K::Date if can && typed.is_empty() && !here.release_date.is_empty() && !part.minus => {
-            vec![Row { label: here.release_date.to_string(), sub: "released, now".into(), choice: Choice::Value(here.release_date.to_string()) }]
+        ("kind", "kind") if can => word_rows(&here.vocab.album_kinds, value, if here.kind.is_empty() { "" } else { "a kind" }),
+        ("title", "title") if can && typed.is_empty() => vec![PcRow { label: here.title.to_string(), sub: "its title now".into(), choice: Choice::Value(here.title.to_string()) }],
+        ("date", "date") if can && typed.is_empty() && !here.release_date.is_empty() && !c.minus => {
+            vec![PcRow { label: here.release_date.to_string(), sub: "released, now".into(), choice: Choice::Value(here.release_date.to_string()) }]
         }
-        K::Artist | K::Featured if can && part.minus => here
+        ("artist" | "feat", _) if can && is_command && c.minus => here
             .credits
             .iter()
-            .filter(|c| c.artist_name.to_lowercase().contains(&typed))
-            .map(|c| Row { label: format!("− {}", c.artist_name), sub: format!("{}: taken off", c.role), choice: Choice::Pin(Pinned::Artist, c.artist_name.clone(), c.artist_id, None) })
+            .filter(|cr| cr.artist_name.to_lowercase().contains(&typed))
+            .map(|cr| PcRow { label: format!("− {}", cr.artist_name), sub: format!("{}: taken off", cr.role), choice: Choice::Pin(Pinned::Artist, cr.artist_name.clone(), cr.artist_id, None) })
             .collect(),
-        K::Artist | K::Featured if can => {
-            let mut rows: Vec<Row> = Vec::new();
+        ("artist" | "feat", _) if can && is_command => {
+            let mut rows: Vec<PcRow> = Vec::new();
             if typed.is_empty() {
-                rows.extend(here.credits.iter().map(|c| Row { label: c.artist_name.clone(), sub: format!("{}: credited, change it", c.role), choice: Choice::Pin(Pinned::Artist, c.artist_name.clone(), c.artist_id, Some("role:".into())) }));
+                rows.extend(here.credits.iter().map(|cr| PcRow { label: cr.artist_name.clone(), sub: format!("{}: credited, change it", cr.role), choice: Choice::Pin(Pinned::Artist, cr.artist_name.clone(), cr.artist_id, None) }));
                 return rows;
             }
             for (i, _) in Search::default().run_part(here.catalog, value, SearchPart::Artists, 8) {
-                let (name, sub) = crate::ui::edit::inline_search::describe(here.catalog, SearchPart::Artists, i);
+                let (name, sub) = crate::catalog::search::describe(here.catalog, SearchPart::Artists, i);
                 let a = &here.catalog.artists[i as usize];
-                let sub = if here.credits.iter().any(|c| c.artist_id == a.id) { format!("{sub} · credited") } else { sub };
-                rows.push(Row { label: name.clone(), sub, choice: Choice::Pin(Pinned::Artist, name, a.id, Some("role:".into())) });
+                let sub = if here.credits.iter().any(|cr| cr.artist_id == a.id) { format!("{sub} · credited") } else { sub };
+                rows.push(PcRow { label: name.clone(), sub, choice: Choice::Pin(Pinned::Artist, name, a.id, None) });
             }
-            rows.push(Row { label: format!("New artist “{value}”"), sub: "made when it's saved · Tab: its role".into(), choice: Choice::Pin(Pinned::Artist, value.to_string(), pc::NEW, Some("role:".into())) });
+            rows.push(PcRow { label: format!("New artist “{value}”"), sub: "made when it's saved".into(), choice: Choice::Pin(Pinned::Artist, value.to_string(), pc::NEW, None) });
             rows
         }
-        K::Role if can => word_rows(&here.vocab.credit_roles, value, "a role", Some("as:")),
-        K::As if can => {
-            let Some(owner) = group.first() else { return Vec::new() };
-            let Ok((Some(id), name)) = artist_named(here.catalog, here.credits, known, &owner.value) else { return Vec::new() };
-            let mut names = vec![name.clone()];
-            names.extend(here.aliases.iter().find(|(a, _)| *a == id).map(|(_, l)| l.iter().map(|a| a.name.clone()).collect::<Vec<_>>()).unwrap_or_default());
-            word_rows(&names, value, "a name it goes by", None)
+        ("artist" | "feat", "role") if can => word_rows(&here.vocab.credit_roles, value, "a role"),
+        ("artist" | "feat", "as") if can => {
+            let Ok((Some(id), _)) = artist_named(here.catalog, here.credits, known, &c.value) else { return Vec::new() };
+            let names: Vec<String> = here.aliases.iter().find(|(a, _)| *a == id).map(|(_, l)| l.iter().map(|a| a.name.clone()).collect::<Vec<_>>()).unwrap_or_default();
+            word_rows(&names, value, "a name it goes by")
         }
-        K::Cover if can && part.minus => covers("to the trash"),
-        K::Cover if can && !part.hashes.is_empty() => covers("its place"),
-        K::Cover if can => {
+        ("cover", "n") if can => covers("its place"),
+        ("cover", "cover") if can && c.minus => covers("to the trash"),
+        ("cover", "cover") if can => {
             let mut rows = if typed.is_empty() { covers("made the main one") } else { Vec::new() };
             rows.extend(pc::file_words(&typed, "the image (or image file) copied", "the file dialog"));
             rows.extend(pc::path_rows(value));
-            if !typed.is_empty() && !value.starts_with('/') && !value.starts_with('~') {
+            if !typed.is_empty() && !value.starts_with('/') && !value.starts_with('~') && !typed.chars().all(|ch| ch.is_ascii_digit()) {
                 for (part, kind) in [(SearchPart::Albums, Pinned::Album), (SearchPart::Tracks, Pinned::Track)] {
                     for (i, _) in Search::default().run_part(here.catalog, value, part, 5) {
-                        let (title, sub) = crate::ui::edit::inline_search::describe(here.catalog, part, i);
+                        let (title, sub) = crate::catalog::search::describe(here.catalog, part, i);
                         let id = match kind {
                             Pinned::Album => here.catalog.album_at(i).id(),
                             _ => here.catalog.track_at(i).id(),
                         };
-                        rows.push(Row { label: title.clone(), sub: format!("{sub} · a copy of its cover"), choice: Choice::Pin(kind, title, id, None) });
+                        rows.push(PcRow { label: title.clone(), sub: format!("{sub} · a copy of its cover"), choice: Choice::Pin(kind, title, id, None) });
                     }
                 }
             }
             rows
         }
-        K::Group if can && part.minus => here
+        ("group", "group") if can && c.minus => here
             .groupings
             .iter()
             .filter_map(|id| here.catalog.grouping(*id))
             .filter(|g| g.name.to_lowercase().contains(&typed))
-            .map(|g| Row { label: format!("− {}", g.name), sub: format!("{}: taken out of it", g.kind), choice: Choice::Pin(Pinned::Grouping, g.name.clone(), g.id, None) })
+            .map(|g| PcRow { label: format!("− {}", g.name), sub: format!("{}: taken out of it", g.kind), choice: Choice::Pin(Pinned::Grouping, g.name.clone(), g.id, None) })
             .collect(),
-        K::Group if can => {
-            let mut rows: Vec<Row> = here
+        ("group", "group") if can => {
+            let mut rows: Vec<PcRow> = here
                 .catalog
                 .groupings
                 .iter()
                 .filter(|g| !here.groupings.contains(&g.id) && g.name.to_lowercase().contains(&typed))
                 .take(12)
-                .map(|g| Row { label: g.name.clone(), sub: format!("{}: put it in", g.kind), choice: Choice::Pin(Pinned::Grouping, g.name.clone(), g.id, None) })
+                .map(|g| PcRow { label: g.name.clone(), sub: format!("{}: put it in", g.kind), choice: Choice::Pin(Pinned::Grouping, g.name.clone(), g.id, None) })
                 .collect();
             if !value.is_empty() && !here.catalog.groupings.iter().any(|g| g.name.eq_ignore_ascii_case(value)) {
-                rows.push(Row { label: format!("New grouping “{value}”"), sub: "made when it's saved · Tab: its kind".into(), choice: Choice::Raw(value.to_string(), Some("kind:".into())) });
+                rows.push(PcRow { label: format!("New grouping “{value}”"), sub: "made when it's saved (then kind:)".into(), choice: Choice::Raw(value.to_string(), None) });
             }
             rows
         }
@@ -1066,10 +981,11 @@ impl AlbumCommands {
     /// The artists whose other names the line needs (an `as:` after them): their details
     /// are looked up, for `Here::aliases`.
     pub fn artists_named(&self, catalog: &Catalog, credits: &[crate::details::Credit]) -> Vec<Uuid> {
-        let line = commandline::parse::<K>(&self.cl.text);
-        line.commands()
-            .filter(|c| matches!(c[0].key, K::Artist | K::Featured) && c[1..].iter().any(|p| p.key == K::As))
-            .filter_map(|c| artist_named(catalog, credits, &self.known, &c[0].value).ok()?.0)
+        let line = schema::parse(&SCHEMA, &self.cl.text);
+        line.commands
+            .iter()
+            .filter(|c| matches!(c.spec.key, "artist" | "feat") && c.arg("as").is_some())
+            .filter_map(|c| artist_named(catalog, credits, &self.known, &c.value).ok()?.0)
             .collect()
     }
 
@@ -1088,20 +1004,15 @@ impl AlbumCommands {
         }
         let ctx = ui.ctx().clone();
         self.answers(shell);
-        pc::ask_groups_if::<K>(&self.cl.text, |k| k == K::Visibility, &here.things(), shell, &mut self.known, &self.groups);
+        let visibility = schema::parse(&SCHEMA, &self.cl.text).commands.iter().any(|c| c.arg("visibility").is_some());
+        pc::ask_groups_when(visibility, &here.things(), shell, &mut self.known, &self.groups);
         self.chosen.put_in_line(&mut self.cl);
         self.chosen_cover.put_in_line(&mut self.cl);
         pc::arrive(&mut self.cl, &ctx, shell, &mut self.last_pass);
         let focused = self.cl.hold_focus(&ctx);
-        let line = commandline::parse::<K>(&self.cl.text);
-        let words = line.current().is_none() && !line.words.is_empty();
-        let rows: Vec<Row> = match line.current() {
-            _ if words => actions(&line.words.join(" "), here),
-            Some(last) => choices(last, line.last_goes_with(), here, &self.known),
-            // After a `|`: the commands to go on with.
-            None if line.fresh && !line.parts.is_empty() => actions("", here),
-            None => Vec::new(),
-        };
+        let line = schema::parse(&SCHEMA, &self.cl.text);
+        // (Nothing typed: no list.)
+        let rows: Vec<Row> = if self.cl.text.trim().is_empty() { Vec::new() } else { schema::rows(&SCHEMA, &line, &self.cl.text, &Lister { here, known: &self.known }) };
         self.cl.highlighted = self.cl.highlighted.min(rows.len().saturating_sub(1));
         let can_edit = editing(here).is_ok();
         // The album's fields as rows: as they'll be with the staged changes (on what a
@@ -1120,20 +1031,14 @@ impl AlbumCommands {
             shell.page_takes_keys = true;
             shell.page_takes_back = true;
         }
-        // (The row, and whether it was Tab: the next part written after it.)
-        let mut take: Option<(usize, bool)> = None;
-        let mut enter = false;
+        let mut pressed = Pressed::default();
         if focused {
-            let pressed = self.cl.keys(&ctx, rows.len(), !fields.is_empty(), can_edit && !self.staged.is_empty());
+            pressed = self.cl.keys(&ctx, rows.len(), !fields.is_empty(), can_edit && !self.staged.is_empty());
             if pressed.down && rows.is_empty() && !fields.is_empty() {
                 // Into the rows.
                 self.row = Some(0);
                 ctx.memory_mut(|m| m.surrender_focus(self.cl.id()));
             }
-            if (pressed.tab || pressed.enter) && !rows.is_empty() {
-                take = Some((self.cl.highlighted, pressed.tab));
-            }
-            enter = pressed.enter;
             if pressed.escape {
                 self.notice = None;
             }
@@ -1197,7 +1102,6 @@ impl AlbumCommands {
         let elsewhere = !focused && ctx.egui_wants_keyboard_input();
         if can_edit && !elsewhere && (self.has_changes() || (focused && !self.cl.text.trim().is_empty())) && !shell.palette_open && !shell.modal_was_open {
             save = ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Enter));
-            enter |= save && !self.cl.text.trim().is_empty();
         }
 
         let hint = if can_edit {
@@ -1208,31 +1112,16 @@ impl AlbumCommands {
         if self.cl.field(ui, true, hint).changed() {
             self.notice = None;
         }
-        let mut clicked = None;
-        if !rows.is_empty() {
-            let list: Vec<(String, String)> = rows.iter().map(|r| (r.label.clone(), r.sub.clone())).collect();
-            cl::list(ui, list, self.cl.highlighted, &mut clicked, "↑/↓ choose · Tab: take it · Enter: take it and do it");
-        }
-        if let Some(n) = clicked {
-            take = Some((n, true));
-        }
-
+        let driven = self.cl.drive(ui, pressed, &rows, &SCHEMA, &mut self.known.pins, true, "↑/↓ choose · Tab: take it · Enter: take it and do it");
+        let mut enter = driven.run || (save && !self.cl.text.trim().is_empty());
         let mut act = None;
-        if let Some((n, tab)) = take
-            && let Some(row) = rows.get(n)
-        {
-            match pc::take(&mut self.cl, &ctx, &mut self.known, &line, &row.choice, tab) {
-                Taken::Filled => {}
-                Taken::Inserted => enter = false,
-                Taken::Act(a) => {
-                    act = Some(a);
-                    enter = false;
-                }
-                Taken::Stage(staged) => {
-                    self.staged.push(staged);
-                    enter = false;
-                }
+        if let Some(choice) = &driven.page {
+            match pc::take_page(&mut self.cl, &ctx, &line, choice) {
+                Taken::Act(a) => act = Some(a),
+                Taken::Stage(staged) => self.staged.push(staged),
+                Taken::Filled | Taken::Inserted => {}
             }
+            enter = false;
         }
         // `file:paste`, `file:choose`, `cover:choose`: the paths in the line first (what's
         // staged is what the line says).
@@ -1243,7 +1132,7 @@ impl AlbumCommands {
         }
         if enter && !self.cl.text.trim().is_empty() {
             let done = resolve(&self.cl.text, here, &self.known);
-            let texts = pc::commands_text::<K>(&self.cl.text);
+            let texts = command_texts(&self.cl.text);
             // `cover:paste`: the image read now (none there: nothing's done).
             let pasted = done.iter().flatten().any(|d| d.1 == Does::PasteCover).then(crate::ui::edit::cover_list::clipboard_image);
             let problem = match &pasted {
@@ -1315,7 +1204,7 @@ impl AlbumCommands {
     /// (the same commands the line takes). False: nothing (said in the notice).
     fn row_key(&mut self, row: &album_rows::Row, key: RowKey, credits: usize, here: &Here) -> bool {
         use album_rows::Field as R;
-        let q = |name: &str| commandline::quoted::<K>(name);
+        let q = |name: &str| SCHEMA.quoted(name);
         let credit = |this: &mut Self| -> Option<String> {
             if row.artist.is_none() {
                 this.notice = Some(format!("{} isn't made yet: Backspace on an empty commandline takes the change that added it back.", row.name));
@@ -1332,8 +1221,8 @@ impl AlbumCommands {
             (R::Credit(_), RowKey::Edit | RowKey::Role) => (credit(self).map(|n| format!("artist:{n} role:")), None),
             (R::Credit(_), RowKey::Alias) => (credit(self).map(|n| format!("artist:{n} as:")), None),
             (R::Credit(_), RowKey::Remove) => (None, credit(self).map(|n| format!("-artist:{n}"))),
-            (R::Credit(at), RowKey::Earlier) if at > 0 => (None, credit(self).map(|n| format!("artist:{n} #{at}"))),
-            (R::Credit(at), RowKey::Later) if at + 1 < credits => (None, credit(self).map(|n| format!("artist:{n} #{}", at + 2))),
+            (R::Credit(at), RowKey::Earlier) if at > 0 => (None, credit(self).map(|n| format!("artist:{n} n:{at}"))),
+            (R::Credit(at), RowKey::Later) if at + 1 < credits => (None, credit(self).map(|n| format!("artist:{n} n:{}", at + 2))),
             _ => (None, None),
         };
         if let Some(text) = fill {
@@ -1358,7 +1247,7 @@ impl AlbumCommands {
             self.notice = Some(format!("Not done: {err}"));
             return false;
         }
-        let texts = pc::commands_text::<K>(text);
+        let texts = command_texts(text);
         for (n, (label, does)) in done.into_iter().flatten().enumerate() {
             if let Does::Edit(edit) = does {
                 self.staged.push(Staged { text: texts.get(n).cloned().unwrap_or_default(), label, edit, failed: None });
@@ -1377,9 +1266,12 @@ impl AlbumCommands {
     /// dialog and come out of the line (the paths are put in when chosen: Enter again).
     fn expand_files(&mut self, shell: &Shell) -> Result<(), String> {
         let dialog = pc::Dialog { title: "Files for the extra", kinds: ("Any file", &[]), many: true };
-        pc::expand_files::<K>(&mut self.cl.text, shell, |p| p.key == K::File && p.arg, true, dialog, &self.chosen)?;
+        let spans = pc::file_spans(&schema::parse(&SCHEMA, &self.cl.text), "extra", "file");
+        pc::expand_file_spans(&mut self.cl.text, shell, spans, true, dialog, &self.chosen)?;
         let dialog = pc::Dialog { title: "A cover", kinds: ("Images", crate::ui::files::IMAGES), many: false };
-        pc::expand_files::<K>(&mut self.cl.text, shell, |p| p.key == K::Cover && !p.minus, false, dialog, &self.chosen_cover)
+        let line = schema::parse(&SCHEMA, &self.cl.text);
+        let spans = line.commands.iter().filter(|c| c.spec.key == "cover" && !c.minus).map(|c| (c.start, c.end, c.value.trim().to_string())).collect();
+        pc::expand_file_spans(&mut self.cl.text, shell, spans, false, dialog, &self.chosen_cover)
     }
 
     /// What the server said about the changes sent (one failing: staged again, saying why).
@@ -1433,6 +1325,11 @@ impl AlbumCommands {
         }
         self.notice = (!notices.is_empty()).then(|| notices.join(" "));
     }
+}
+
+/// Each command's text, as typed (on its chip).
+fn command_texts(text: &str) -> Vec<String> {
+    schema::parse(&SCHEMA, text).commands.iter().map(|c| schema::command_text(text, c).to_string()).collect()
 }
 
 /// What a key on a row of the album's fields asks.
@@ -1587,6 +1484,22 @@ mod tests {
         }
     }
 
+    fn rows_for(text: &str, here: &Here, known: &Known) -> Vec<Row> {
+        schema::rows(&SCHEMA, &schema::parse(&SCHEMA, text), text, &Lister { here, known })
+    }
+
+    #[test]
+    fn every_state_leads_somewhere_valid() {
+        let w = world();
+        let edit = here(&w, true);
+        let known = Known::default();
+        let edit = Here { may_source: true, ..edit };
+        schema::walk(&SCHEMA, &Lister { here: &edit, known: &known }, &|_| vec!["x".into()], 3).unwrap();
+        let no_sources = Here { may_source: false, ..edit };
+        let labels: Vec<String> = rows_for("extra:x ", &no_sources, &known).into_iter().map(|r| r.label).collect();
+        assert!(labels.contains(&"source:".to_string()), "an extra's own source: isn't a source to add");
+    }
+
     fn does(text: &str, here: &Here, known: &Known) -> Vec<Result<Does, String>> {
         resolve(text, here, known).into_iter().map(|r| r.map(|(_, d)| d)).collect()
     }
@@ -1599,10 +1512,10 @@ mod tests {
         let does = |text: &str| does(text, &here, &known);
         assert_eq!(does("play:"), [Ok(Does::Act(Act::Play(0)))]);
         assert!(does("play").is_empty(), "a word: the list's (Enter takes its row)");
-        assert_eq!(does("play:#2"), [Ok(Does::Act(Act::Play(1)))]);
+        assert_eq!(does("play:2"), [Ok(Does::Act(Act::Play(1)))]);
         assert_eq!(does("play:reprise"), [Ok(Does::Act(Act::Play(2)))]);
         assert!(does("play:glass")[0].as_ref().unwrap_err().contains("choose one"), "two titles have it");
-        assert!(does("play:#4")[0].is_err());
+        assert!(does("play:4")[0].is_err());
         assert_eq!(does("queue:next | star"), [Ok(Does::Act(Act::Queue(true))), Ok(Does::Act(Act::Star(true)))]);
         assert_eq!(does("rating:3.5 | -star"), [Ok(Does::Act(Act::Rate(7))), Ok(Does::Act(Act::Star(false)))]);
         assert!(does("rating:3.3")[0].is_err());
@@ -1613,7 +1526,7 @@ mod tests {
         assert_eq!(resolve("credits:", &here, &known)[0].as_ref().unwrap().0, "Credits: close (currently opened)");
         assert_eq!(resolve("notes:", &here, &known)[0].as_ref().unwrap().0, "Notes: scrolled to");
         // The track editor: one in listen mode, several in edit mode.
-        assert_eq!(does("edit:#2"), [Ok(Does::Act(Act::EditTracks(vec![1])))]);
+        assert_eq!(does("edit:2"), [Ok(Does::Act(Act::EditTracks(vec![1])))]);
         assert!(does("edit:all")[0].as_ref().unwrap_err().contains("edit mode"));
         // Filters: live, as the commandline would leave them.
         let mut commands = AlbumCommands::default();
@@ -1643,7 +1556,7 @@ mod tests {
         assert!(does("kind:mixtape", &edit, &known)[0].is_err());
         assert!(does("-title:x", &edit, &known)[0].is_err());
         // `release:` isn't `released:` (exact names only).
-        assert!(does("release:2020", &edit, &known).is_empty());
+        assert_eq!(does("release:2020", &edit, &known), [Err("“release:2020”: not a command".into())]);
     }
 
     #[test]
@@ -1655,7 +1568,7 @@ mod tests {
             Ok(Does::Edit(Edit::Credit(c))) => c,
             other => panic!("{text}: {other:?}"),
         };
-        let c = credit("artist:Bo role:prod #1", &known);
+        let c = credit("artist:Bo role:prod n:1", &known);
         assert_eq!((c.artist, c.role.as_deref(), c.at), (Some(id(BO)), Some("producer"), Some(0)));
         assert_eq!(credit("feat:bo", &known).role.as_deref(), Some("featured"));
         // Credited already: what changes; under one of its names.
@@ -1664,8 +1577,8 @@ mod tests {
         // Two of that name: chosen in the list. None: a new one, chosen there too.
         assert!(does("artist:Cy", &edit, &known)[0].as_ref().unwrap_err().contains("choose one"));
         assert!(does("artist:Dee", &edit, &known)[0].as_ref().unwrap_err().contains("New artist"));
-        known.pins.insert((Pinned::Artist, "cy".into()), id(CY2));
-        known.pins.insert((Pinned::Artist, "dee".into()), pc::NEW);
+        known.pin(Pinned::Artist, "cy", id(CY2));
+        known.pin(Pinned::Artist, "dee", pc::NEW);
         assert_eq!(credit("artist:Cy", &known).artist, Some(id(CY2)));
         let c = credit("artist:Dee", &known);
         assert_eq!((c.artist, c.name.as_str()), (None, "Dee"));
@@ -1675,14 +1588,15 @@ mod tests {
         assert!(does("-artist:Bo", &edit, &known)[0].is_err());
         // Onto the form's rows.
         let mut rows = credits::rows_from(&w.credits);
-        album_rows::credit_into(&mut rows, credit("artist:Bo #1", &known));
+        album_rows::credit_into(&mut rows, credit("artist:Bo n:1", &known));
         album_rows::credit_into(&mut rows, credit("artist:Ann role:producer", &known));
         assert_eq!(rows.iter().map(|r| (r.name.as_str(), r.role.as_str())).collect::<Vec<_>>(), [("Bo", "featured"), ("Ann", "producer")]);
-        // The list: matches, then a new one; Tab goes on to its role.
-        let part = commandline::parse::<K>("artist:b").parts.remove(0);
-        let rows = choices(&part, &[], &edit, &known);
-        assert!(matches!(rows.first().map(|r| &r.choice), Some(Choice::Pin(Pinned::Artist, name, a, Some(next))) if name == "Bo" && *a == id(BO) && next == "role:"));
+        // The list: matches, then a new one; once one is there, what can follow it.
+        let rows = rows_for("artist:b", &edit, &known);
+        assert!(matches!(rows.first().map(|r| &r.take), Some(schema::Take::Pin { name, id: a, .. }) if name == "Bo" && *a == id(BO)));
         assert!(rows.last().is_some_and(|r| r.label == "New artist “b”"));
+        let labels: Vec<String> = rows_for("artist:Bo ", &edit, &known).into_iter().map(|r| r.label).collect();
+        assert_eq!(labels, ["role:", "as:", "n:"]);
     }
 
     #[test]
@@ -1692,9 +1606,9 @@ mod tests {
         let mut known = Known::default();
         let does = |text: &str, known: &Known| does(text, &edit, known);
         let cover = |c| Ok(Does::Edit(Edit::Cover(c)));
-        assert_eq!(does("cover:#2 | cover:#2 #1 | -cover:#1", &known), [cover(CoverChange::Move(Uuid::from_u128(2), 0)), cover(CoverChange::Move(Uuid::from_u128(2), 0)), cover(CoverChange::Trash(Uuid::from_u128(1)))]);
-        assert!(does("cover:#1", &known)[0].as_ref().unwrap_err().contains("main cover already"));
-        assert!(does("cover:#3", &known)[0].is_err());
+        assert_eq!(does("cover:2 | cover:2 n:1 | -cover:1", &known), [cover(CoverChange::Move(Uuid::from_u128(2), 0)), cover(CoverChange::Move(Uuid::from_u128(2), 0)), cover(CoverChange::Trash(Uuid::from_u128(1)))]);
+        assert!(does("cover:1", &known)[0].as_ref().unwrap_err().contains("main cover already"));
+        assert!(does("cover:3", &known)[0].is_err());
         assert_eq!(does("cover:paste", &known), [Ok(Does::PasteCover)]);
         assert!(does("cover:/no/such.png", &known)[0].as_ref().unwrap_err().contains("no file"));
         // Another's cover: the best match, or the one chosen.
@@ -1709,17 +1623,17 @@ mod tests {
         let inside = Here { groupings: &groupings, ..here(&w, true) };
         assert_eq!(resolve("-group:the crew", &inside, &known).remove(0).map(|r| r.1), Ok(Does::Edit(Edit::Group(part_of::Change::Remove(id(CREW))))));
         // `kind:` after group: is the grouping's; alone, the album's.
-        let line = commandline::parse::<K>("group:x kind:era | kind:ep");
-        assert_eq!(line.parts.iter().map(|p| (p.key, p.arg)).collect::<Vec<_>>(), [(K::Group, false), (K::Kind, true), (K::Kind, false)]);
+        let line = schema::parse(&SCHEMA, "group:x kind:era | kind:ep");
+        assert_eq!(line.commands.iter().map(|c| (c.spec.key, c.args.len())).collect::<Vec<_>>(), [("group", 1), ("kind", 0)]);
         // Moving a track: at once (the tracklist's draft).
-        assert_eq!(does("move:#3 #1", &known), [Ok(Does::Act(Act::Move(2, 0)))]);
-        assert_eq!(does("edit:all | edit:#1 #3", &known), [Ok(Does::Act(Act::EditTracks(vec![0, 1, 2]))), Ok(Does::Act(Act::EditTracks(vec![0, 2])))]);
-        assert!(does("move:#3", &known)[0].is_err());
-        assert!(does("move:#3 #1", &Known::default()).len() == 1);
-        assert!(resolve("move:#3 #1", &here(&w, false), &known)[0].as_ref().unwrap_err().contains("edit mode"));
+        assert_eq!(does("move:3 n:1", &known), [Ok(Does::Act(Act::Move(2, 0)))]);
+        assert_eq!(does("edit:all | edit:1 3", &known), [Ok(Does::Act(Act::EditTracks(vec![0, 1, 2]))), Ok(Does::Act(Act::EditTracks(vec![0, 2])))]);
+        assert!(does("move:3", &known)[0].is_err());
+        assert!(does("move:3 n:1", &Known::default()).len() == 1);
+        assert!(resolve("move:3 n:1", &here(&w, false), &known)[0].as_ref().unwrap_err().contains("edit mode"));
         // The main cover on its tracks: found by words, staged as it is.
         known.pins.clear();
-        assert!(actions("cover", &edit).iter().any(|r| matches!(&r.choice, Choice::Stage(_, _, Edit::Cover(CoverChange::OnTracks(c))) if *c == Uuid::from_u128(1))));
+        assert!(actions("cover", &edit).iter().any(|r| matches!(&r.take, schema::Take::Page(Choice::Stage(_, _, Edit::Cover(CoverChange::OnTracks(c)))) if *c == Uuid::from_u128(1))));
     }
 
     /// The server's album (and artist) revisions have no kind or version: they read as

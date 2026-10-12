@@ -6,8 +6,9 @@ commands. It has the cursor when the page opens, and `/` gets back to it. It wor
 mode too, for moving around and filtering; in edit mode it changes the artist as well.
 `Alt+E` (or the word `edit`) turns edit mode on or off without leaving it.
 
-While you type, the choices appear under the commandline. `↑`/`↓` choose, `Tab` takes the choice,
-and `Enter` takes it and does the command. Plain words find things by name: `rel` finds
+While you type, the choices appear under the commandline. `↑`/`↓` choose, `Tab` takes the choice
+and leaves a space, after which the list shows what can follow (a command's arguments, in any
+order), and `Enter` takes it and does the command. Plain words find things by name: `rel` finds
 Releases, `merge` finds *Merge into another artist…*. If you're not sure what's there, type
 a word.
 
@@ -51,7 +52,7 @@ if you type one anyway it tells you why it can't be done.
   [history](history.md) with a change to its names or what tells it apart; on its own
   there's nothing to save, and saving says so.
 - `source:<link>`, `source:custom vk, their page`, or `source:soundcloud
-  artist_permalinks:…` adds a source, the same way as in the track editor. `-source:#2`
+  artist_permalinks:…` adds a source, the same way as in the track editor. `-source:2`
   puts the second one in the trash (the edit panel numbers them).
 - `extra:Name` makes an extra, changes one of the artist's, or links one from the library.
   Its arguments:

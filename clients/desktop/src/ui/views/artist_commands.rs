@@ -1,5 +1,6 @@
-//! The artist page's commandline (a `ui::edit::commandline`; the language is
-//! `crate::commandline`'s). It's there in listen mode too, for moving around and filtering.
+//! The artist page's commandline (a `ui::edit::commandline`), declared once (`SCHEMA`, the
+//! language is `crate::commandline::schema`'s). It's there in listen mode too, for moving
+//! around and filtering.
 //!
 //! * `alias:Name` turns that name's chip on or off: live while it's typed, kept with Enter.
 //!   `alias:all` goes back to all names. `og:` / `og:yes` / `og:no` sets the Original files
@@ -17,13 +18,13 @@
 //! * `alias:New name` (a name it isn't credited as yet) adds it. Under `alias:` the list has
 //!   the names to filter by first, then "New name". `-alias:Name` takes one off: where it's
 //!   still credited is asked first, and if it is anywhere, it isn't staged (the credits are
-//!   listed, as links).
+//!   listed, as links); `-alias:Name recredit:yes` then opens Credited as… for those tracks.
 //! * `name:` renames it, `disambiguation:` (`-disambiguation` clears it) says what tells it
 //!   apart from others with its name, `why:` is kept with the change (alone it has nothing
 //!   to go with, and saving says so).
 //! * `source:<link>`, `source:custom label, description`, `source:<platform> field:…` adds a
 //!   source (as the track editor's `source:`, with an artist's platforms; `edit_sources`),
-//!   `-source:#2` puts its second one in the trash. Each is sent on its own: one failing
+//!   `-source:2` puts its second one in the trash. Each is sent on its own: one failing
 //!   leaves the rest (it stays staged, saying why).
 //! * `extra:Name` with its arguments: `kind:`, `file:` (a path, Tab completes it;
 //!   `file:paste` the files copied in a file manager, `file:choose` the file dialog: both
@@ -42,92 +43,50 @@ use eframe::egui::{self, RichText};
 use uuid::Uuid;
 
 use super::artist::Section;
-use super::page_commands::{self as pc, Arg, Change, Chosen, Known, NoteDoes, Sending, Taken, Things, Whose};
-use crate::commandline::{self, Keys};
+use super::page_commands::{self as pc, Change, Chosen, Known, NoteDoes, Sending, Taken, ThingDoes, Things, Whose};
+use crate::commandline::schema::{self, Kind, Lists, Minus, Next, Node, Schema, Spec, Word};
 use crate::account::SourceShape;
 use crate::details::{AliasInfo, Source};
 use crate::ui::edit::extras::Groups;
 use crate::ui::edit::artist_form::{self, ArtistForm, Uses, UsesAnswer};
-use crate::ui::edit::commandline::{self as cl, CommandLine};
+use crate::ui::edit::commandline::{self as cl, CommandLine, Pressed};
 use crate::ui::theme::PALETTE as P;
 use crate::ui::{thousands, Shell};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum K {
-    Alias,
-    Og,
-    Section(Section),
-    Sources,
-    Notes,
-    History,
-    Name,
-    Disambiguation,
-    Why,
-    Source,
-    /// One of a source's fields (after `source:<platform>`): its name is the part's.
-    Field,
-    Extra,
-    Kind,
-    File,
-    Description,
-    Visibility,
-    Note,
-    /// After `-alias:Name`: when it is still credited, go on to credit those tracks otherwise.
-    Recredit,
-}
+const ALL: &[Word] = &[Word { word: "all", help: "every name's chip off" }];
+const OG: &[Word] = &[Word { word: "yes", help: "only original files" }, Word { word: "no", help: "all files" }];
+const RECREDIT: &[Word] = &[Word { word: "yes", help: "if it is still credited: credit those tracks another way" }, Word { word: "no", help: "just say where it is credited" }];
 
-/// Every key's names: its own first. Exact names only (no starts of them: `release:`
-/// isn't anything else here).
-const KEYS: &[(K, &[&str])] = &[
-    (K::Alias, &["alias", "aliases"]),
-    (K::Og, &["og", "original"]),
-    (K::Section(Section::Releases), &["releases", "release"]),
-    (K::Section(Section::Tracks), &["tracks", "track"]),
-    (K::Section(Section::Featured), &["featured", "feat", "feature", "featuring"]),
-    (K::Section(Section::Produced), &["produced", "producer", "prod"]),
-    (K::Section(Section::Extras), &["extras"]),
-    (K::Sources, &["sources"]),
-    (K::Notes, &["notes"]),
-    (K::History, &["history", "revisions"]),
-    (K::Name, &["name", "rename"]),
-    (K::Disambiguation, &["disambiguation", "disamb", "dis", "tells"]),
-    (K::Why, &["why", "reason"]),
-    (K::Source, &["source"]),
-    (K::Extra, &["extra"]),
-    (K::Kind, &["kind", "type"]),
-    (K::File, &["file", "files"]),
-    (K::Description, &["description", "desc"]),
-    (K::Visibility, &["visibility", "vis", "seen"]),
-    (K::Note, &["note"]),
-    (K::Recredit, &["recredit"]),
-];
+/// The sections shown on their own, by key.
+const SECTIONS: &[(&str, Section)] = &[("releases", Section::Releases), ("tracks", Section::Tracks), ("featured", Section::Featured), ("produced", Section::Produced), ("extras", Section::Extras)];
 
-impl Keys for K {
-    fn key(name: &str) -> Option<K> {
-        let name = name.to_lowercase();
-        KEYS.iter().find(|(_, names)| names.contains(&name.as_str())).map(|(k, _)| *k)
-    }
+/// The keys that change the artist (edit mode only).
+const EDITS: &[&str] = &["name", "disambiguation", "why", "recredit", "source", "extra", "note"];
 
-    fn name(self) -> &'static str {
-        KEYS.iter().find(|(k, _)| *k == self).map(|(_, names)| names[0]).unwrap_or("")
-    }
-
-    fn is_list(self) -> bool {
-        self == K::Disambiguation
-    }
-
-    fn takes_hash(self) -> bool {
-        self == K::Source
-    }
-
-    fn takes(main: K, arg: K) -> bool {
-        (main == K::Extra && matches!(arg, K::Kind | K::File | K::Description | K::Source | K::Visibility)) || (main == K::Alias && arg == K::Recredit)
-    }
-
-    fn field(main: K) -> Option<K> {
-        (main == K::Source).then_some(K::Field)
-    }
-}
+/// Every command, in the order the list offers them.
+pub static SCHEMA: Schema = Schema {
+    commands: &[
+        Spec::new("alias", Kind::Or(ALL, &Kind::AliasOf(&[])), "only what's credited under a name (or several); a new name in edit mode")
+            .aliases(&["aliases"])
+            .minus(Minus::Off)
+            .next(Next::Args(&[Spec::new("recredit", Kind::Words(RECREDIT), "if it's still credited: yes credits those tracks another way").only_minus()])),
+        Spec::new("og", Kind::Maybe(&Kind::Words(OG)), "only original files").aliases(&["original"]),
+        Spec::new("releases", Kind::Nothing, "on its own").aliases(&["release"]),
+        Spec::new("tracks", Kind::Maybe(&Kind::Text), "on its own (words after it filter them)").aliases(&["track"]),
+        Spec::new("featured", Kind::Maybe(&Kind::Text), "on its own (words after it filter them)").aliases(&["feat", "feature", "featuring"]),
+        Spec::new("produced", Kind::Maybe(&Kind::Text), "on its own (words after it filter them)").aliases(&["producer", "prod"]),
+        Spec::new("extras", Kind::Nothing, "on its own"),
+        Spec::new("sources", Kind::Nothing, "opened and scrolled to"),
+        Spec::new("notes", Kind::Nothing, "opened and scrolled to"),
+        Spec::new("history", Kind::Nothing, "opened and scrolled to").aliases(&["revisions"]),
+        Spec::new("name", Kind::Text, "its new name").aliases(&["rename"]),
+        Spec::new("disambiguation", Kind::Text, "what tells it apart from others with its name (-disambiguation clears it)").aliases(&["disamb", "dis", "tells"]).minus(Minus::OffOrClear),
+        Spec::new("why", Kind::Text, "kept with a change to its names or what tells it apart").aliases(&["reason"]),
+        pc::SOURCE,
+        pc::EXTRA,
+        pc::NOTE,
+    ],
+};
 
 /// What the page shows: the names it's credited under that are chosen (none: all of
 /// them), and only original files or not.
@@ -286,8 +245,8 @@ impl Edit {
 }
 
 type Staged = pc::Staged<Edit>;
-type Row = pc::Row<Act, Edit>;
 type Choice = pc::Choice<Act, Edit>;
+type Row = schema::Row<Choice>;
 
 pub struct ArtistCommands {
     cl: CommandLine,
@@ -391,233 +350,185 @@ fn new_alias(here: &Here, typed: &str) -> Result<Edit, String> {
     Ok(Edit::NewAlias(typed.to_string()))
 }
 
-/// An `extra:` argument's key, as the shared ones know it.
-fn arg_of(key: K) -> Option<Arg> {
-    Some(match key {
-        K::Kind => Arg::Kind,
-        K::File => Arg::File,
-        K::Description => Arg::Description,
-        K::Source => Arg::Source,
-        K::Visibility => Arg::Visibility,
-        _ => return None,
-    })
+/// What the page knows, for the list.
+struct Page<'a> {
+    here: &'a Here<'a>,
+    known: &'a Known,
+    filters: &'a Filters,
 }
 
-/// A source, an extra or a note, as the artist's command.
-fn thing(done: Result<(String, Change), String>) -> Result<(String, Does), String> {
-    done.map(|(label, change)| (label, Does::Edit(Edit::Thing(change))))
-}
-
-/// Each command typed: its text, and what it does (or why it can't).
-fn resolve(text: &str, here: &Here, known: &Known) -> Vec<Result<(String, Does), String>> {
-    let line = commandline::parse::<K>(text);
-    let mut out = Vec::new();
-    for command in line.commands() {
-        let main = &command[0];
-        let value = main.value.trim();
-        if main.minus && !matches!(main.key, K::Alias | K::Disambiguation | K::Source | K::Extra | K::Note) {
-            out.push(Err(format!("-{}: nothing to take off here", main.key.name())));
-            continue;
-        }
-        let edit = |label: String, edit: Edit| editing(here).map(|_| (label, Does::Edit(edit)));
-        out.push(match main.key {
-            K::Alias if main.minus => match editing(here) {
-                Err(err) => Err(err),
-                Ok(()) if value.is_empty() => Err("-alias:Name takes that name off it".into()),
-                Ok(()) if command[1..].iter().any(|p| p.key == K::Recredit && !matches!(p.value.trim().to_lowercase().as_str(), "yes" | "no")) => Err("recredit: yes or no".into()),
-                Ok(()) => match alias_named(here, value) {
-                    Some(a) => Ok((format!("− other name “{}” (if nothing's credited as it)", a.name), Does::Edit(Edit::RemoveAlias(a.id, a.name.clone())))),
-                    None => Err(format!("it has no other name “{value}”")),
-                },
-            },
-            K::Recredit => Err("recredit: goes after -alias:Name (recredit:yes opens Credited as… when it is still credited)".into()),
-            K::Alias if value.is_empty() => Err("alias: a name it's credited under (the list), or all".into()),
-            K::Alias if value.eq_ignore_ascii_case("all") => Ok(("all names".into(), Does::AllNames)),
-            K::Alias => match name_of(here, value) {
-                Some(name) => Ok((format!("as {}: on or off", shown(here, &name)), Does::Name(name))),
-                None if !here.edit_mode => Err(format!("it isn't credited as “{value}” on any track (a new name: in edit mode, e)")),
-                None => new_alias(here, value).map(|e| (format!("+ other name “{value}”"), Does::Edit(e))),
-            },
-            K::Og if here.og_count == 0 => Err("it has no original files".into()),
-            K::Og => match value.to_lowercase().as_str() {
-                "" | "yes" | "y" | "on" => Ok(("only original files".into(), Does::Og(true))),
-                "no" | "n" | "off" => Ok(("all files, not only original ones".into(), Does::Og(false))),
-                _ => Err("og: yes or no".into()),
-            },
-            K::Section(s) => match here.sections.iter().find(|(x, _)| *x == s) {
-                None => Err(format!("no {} here", s.title().to_lowercase())),
-                Some(_) if !value.is_empty() && matches!(s, Section::Releases | Section::Extras) => Err(format!("{}: nothing after it", main.key.name())),
-                Some(_) if value.is_empty() => Ok((format!("{}, on its own", s.title()), Does::Act(Act::Expand(s, String::new())))),
-                Some(_) => Ok((format!("{}, on its own, filtered: {value}", s.title()), Does::Act(Act::Expand(s, value.to_string())))),
-            },
-            K::Sources if here.has_sources => Ok((reveal_label(here, Reveal::Sources), Does::Act(Act::Reveal(Reveal::Sources)))),
-            K::Sources => Err("it has no sources".into()),
-            K::Notes if here.has_notes => Ok((reveal_label(here, Reveal::Notes), Does::Act(Act::Reveal(Reveal::Notes)))),
-            K::Notes => Err("it has no notes".into()),
-            K::History if here.has_history => Ok((reveal_label(here, Reveal::History), Does::Act(Act::Reveal(Reveal::History)))),
-            K::History => Err("its history isn't shown to you (view_history)".into()),
-            K::Name if value.is_empty() => Err("name: its new name".into()),
-            K::Name => edit(format!("name → {value}"), Edit::Rename(value.to_string())),
-            K::Disambiguation if value.is_empty() => edit("tells apart: nothing".into(), Edit::Disambiguation(String::new())),
-            K::Disambiguation => edit(format!("tells apart: “{value}”"), Edit::Disambiguation(value.to_string())),
-            K::Why => edit(format!("why: {value} (kept with a change to its names or what tells it apart)"), Edit::Why(value.to_string())),
-            K::Source => {
-                let fields: Vec<(&str, &str)> = command[1..].iter().map(|p| (p.name(), p.value.trim())).collect();
-                thing(pc::source(main.minus, &main.value, &main.hashes, &fields, &here.things()))
-            }
-            K::Field => Err(format!("{}: goes after source: and its platform (source:soundcloud artist_permalinks:…)", main.name())),
-            K::Extra => {
-                let args: Vec<(Arg, &str)> = command[1..].iter().filter_map(|a| Some((arg_of(a.key)?, a.value.as_str()))).collect();
-                thing(pc::extra(&main.value, main.minus, &args, &here.things(), known))
-            }
-            K::Note => pc::note(&main.value, main.minus, &here.things(), known).map(|(label, does)| {
-                let does = match does {
-                    NoteDoes::Open(note, title) => Does::Act(Act::Note(note, title)),
-                    NoteDoes::Paste => Does::Act(Act::PasteNotes),
-                    NoteDoes::Hide(note) => Does::Edit(Edit::Thing(Change::HideNote(note))),
-                };
-                (label, does)
-            }),
-            K::Kind | K::File | K::Description | K::Visibility => Err(format!("{}: goes after extra:Name", main.key.name())),
+/// What a command does, or why it can't (problems in how it's typed first).
+fn resolve_one(c: &Node, here: &Here, known: &Known) -> Result<(String, Does), String> {
+    let value = c.value.trim();
+    if let Some(done) = pc::resolve_thing(c, &here.things(), known) {
+        return done.map(|(label, does)| {
+            let does = match does {
+                ThingDoes::Change(change) => Does::Edit(Edit::Thing(change)),
+                ThingDoes::Note(NoteDoes::Open(note, title)) => Does::Act(Act::Note(note, title)),
+                ThingDoes::Note(NoteDoes::Paste) => Does::Act(Act::PasteNotes),
+                ThingDoes::Note(NoteDoes::Hide(note)) => Does::Edit(Edit::Thing(Change::HideNote(note))),
+            };
+            (label, does)
         });
     }
-    // Words after a `|` (a section's name, say): only as an action's name, exactly.
-    if !line.parts.is_empty() && !line.words.is_empty() {
+    let wrong = schema::problems(c);
+    let edit = |label: String, edit: Edit| editing(here).map(|_| (label, Does::Edit(edit)));
+    let done = match c.spec.key {
+        "alias" if c.minus => match editing(here) {
+            Err(err) => Err(err),
+            Ok(()) if value.is_empty() => Err("-alias:Name takes that name off it".into()),
+            Ok(()) => match alias_named(here, value) {
+                Some(a) => Ok((format!("− other name “{}” (if nothing's credited as it)", a.name), Does::Edit(Edit::RemoveAlias(a.id, a.name.clone())))),
+                None => Err(format!("it has no other name “{value}”")),
+            },
+        },
+        "alias" if value.is_empty() => Err("alias: a name it's credited under (the list), or all".into()),
+        "alias" if value.eq_ignore_ascii_case("all") => Ok(("all names".into(), Does::AllNames)),
+        "alias" => match name_of(here, value) {
+            Some(name) => Ok((format!("as {}: on or off", shown(here, &name)), Does::Name(name))),
+            None if !here.edit_mode => Err(format!("it isn't credited as “{value}” on any track (a new name: in edit mode, e)")),
+            None => new_alias(here, value).map(|e| (format!("+ other name “{value}”"), Does::Edit(e))),
+        },
+        "og" if here.og_count == 0 => Err("it has no original files".into()),
+        "og" => match Kind::Words(OG).word(value) {
+            None if value.is_empty() => Ok(("only original files".into(), Does::Og(true))),
+            Some("yes") => Ok(("only original files".into(), Does::Og(true))),
+            Some(_) => Ok(("all files, not only original ones".into(), Does::Og(false))),
+            None => Err("og: yes or no".into()),
+        },
+        "sources" if here.has_sources => Ok((reveal_label(here, Reveal::Sources), Does::Act(Act::Reveal(Reveal::Sources)))),
+        "sources" => Err("it has no sources".into()),
+        "notes" if here.has_notes => Ok((reveal_label(here, Reveal::Notes), Does::Act(Act::Reveal(Reveal::Notes)))),
+        "notes" => Err("it has no notes".into()),
+        "history" if here.has_history => Ok((reveal_label(here, Reveal::History), Does::Act(Act::Reveal(Reveal::History)))),
+        "history" => Err("its history isn't shown to you (view_history)".into()),
+        "name" if value.is_empty() => Err("name: its new name".into()),
+        "name" => edit(format!("name → {value}"), Edit::Rename(value.to_string())),
+        "disambiguation" if value.is_empty() => edit("tells apart: nothing".into(), Edit::Disambiguation(String::new())),
+        "disambiguation" if c.minus => Err("-disambiguation clears it (no value)".into()),
+        "disambiguation" => edit(format!("tells apart: “{value}”"), Edit::Disambiguation(value.to_string())),
+        "why" => edit(format!("why: {value} (kept with a change to its names or what tells it apart)"), Edit::Why(value.to_string())),
+        key => match SECTIONS.iter().find(|(k, _)| *k == key).map(|(_, s)| *s) {
+            Some(s) if !here.sections.iter().any(|(x, _)| *x == s) => Err(format!("no {} here", s.title().to_lowercase())),
+            Some(s) if value.is_empty() => Ok((format!("{}, on its own", s.title()), Does::Act(Act::Expand(s, String::new())))),
+            Some(s) => Ok((format!("{}, on its own, filtered: {value}", s.title()), Does::Act(Act::Expand(s, value.to_string())))),
+            None => Err(format!("{key}: not a command here")),
+        },
+    };
+    match (done, wrong.is_empty()) {
+        (Err(e), _) => Err(e),
+        (Ok(_), false) => Err(wrong.join(" · ")),
+        (ok, true) => ok,
+    }
+}
+
+/// Each command typed: what it does (or why it can't).
+fn resolve(text: &str, here: &Here, known: &Known) -> Vec<Result<(String, Does), String>> {
+    let line = schema::parse(&SCHEMA, text);
+    let mut out: Vec<Result<(String, Does), String>> = line.commands.iter().map(|c| resolve_one(c, here, known)).collect();
+    // Words (a section's name, say): only as an action's name, exactly.
+    if !line.words.is_empty() {
         let typed = line.words.join(" ");
         out.push(match actions(&typed, here).into_iter().find(|r| r.label.split("  ").next().is_some_and(|l| l.eq_ignore_ascii_case(&typed))) {
-            Some(Row { label, choice: Choice::Act(act), .. }) => Ok((label, Does::Act(act))),
-            _ => Err(format!("“{typed}”: not a command")),
+            Some(schema::Row { label, take: schema::Take::Page(Choice::Act(act)), .. }) => Ok((label, Does::Act(act))),
+            _ => Err(SCHEMA.not_a_command(&line.words[0])),
         });
     }
     out
 }
 
-/// The actions plain words find (and the keys to type, for the filters).
+/// The actions plain words find (the keys are listed after them).
 fn actions(typed: &str, here: &Here) -> Vec<Row> {
     let mut rows = Vec::new();
+    let act = |label: String, sub: &str, a: Act| Row { label, sub: sub.into(), take: schema::Take::Page(Choice::Act(a)) };
     let found = |label: &str, also: &[&str]| crate::catalog::query::loosely_in(typed, label) || also.iter().any(|a| a.starts_with(&typed.to_lowercase()));
     for &(section, count) in here.sections {
-        let key = KEYS.iter().find(|(k, _)| *k == K::Section(section)).map(|(_, names)| *names).unwrap_or(&[]);
-        if found(section.title(), key) {
-            rows.push(Row { label: format!("{}  {}", section.title(), thousands(count)), sub: "on its own".into(), choice: Choice::Act(Act::Expand(section, String::new())) });
+        let key = SECTIONS.iter().find(|(_, s)| *s == section).and_then(|(k, _)| SCHEMA.command(k));
+        let names: Vec<&str> = key.map(|k| std::iter::once(k.key).chain(k.aliases.iter().copied()).collect()).unwrap_or_default();
+        if found(section.title(), &names) {
+            rows.push(act(format!("{}  {}", section.title(), thousands(count)), "on its own", Act::Expand(section, String::new())));
         }
     }
     for (reveal, there) in [(Reveal::Sources, here.has_sources), (Reveal::Notes, here.has_notes), (Reveal::History, here.has_history)] {
         if there && found(reveal.title(), &[]) {
             let label = reveal_label(here, reveal);
             let sub = label.rsplit(": ").next().unwrap_or("").to_string();
-            rows.push(Row { label: reveal.title().into(), sub, choice: Choice::Act(Act::Reveal(reveal)) });
+            rows.push(act(reveal.title().into(), &sub, Act::Reveal(reveal)));
         }
     }
-    if here.names.len() >= 2 && found("Names", &["alias", "as"]) {
-        rows.push(Row { label: "alias:".into(), sub: "only what's credited under a name (or several)".into(), choice: Choice::Insert("alias:".into()) });
-    }
-    if here.og_count > 0 && found("Original files", &["og"]) {
-        rows.push(Row { label: "og:".into(), sub: "only original files".into(), choice: Choice::Insert("og:".into()) });
-    }
-    if found(if here.edit_mode { "Edit mode off" } else { "Edit mode on" }, &["edit"]) {
-        rows.push(Row { label: if here.edit_mode { "Edit mode off".into() } else { "Edit mode on".into() }, sub: "Alt+E, anywhere".into(), choice: Choice::Act(Act::ToggleEdit) });
+    let toggle = if here.edit_mode { "Edit mode off" } else { "Edit mode on" };
+    if found(toggle, &["edit"]) {
+        rows.push(act(toggle.into(), "Alt+E, anywhere", Act::ToggleEdit));
     }
     if found("Play", &[]) {
-        rows.push(Row { label: "Play".into(), sub: "its tracks".into(), choice: Choice::Act(Act::Play) });
-    }
-    if editing(here).is_ok() {
-        for (key, label, sub) in [
-            ("alias:", "New name (alias:)", "another name tracks can be credited as"),
-            ("-alias:", "Take a name off (-alias:)", "if nothing's credited as it"),
-            ("name:", "Rename (name:)", "its name"),
-            ("disambiguation:", "Tells apart (disambiguation:)", "for two artists with the same name"),
-            ("why:", "Why (why:)", "kept with the artist's changes"),
-            ("note:", "Note (note:)", "a new one, or one of its notes to edit"),
-            ("extra:", "Extra (extra:)", "a new one, one of its own to change, or one in the library"),
-            ("source:", "Source (source:)", "a link, a platform and its fields, or custom"),
-        ] {
-            if found(label, &[key.trim_end_matches(':').trim_start_matches('-')]) {
-                rows.push(Row { label: label.into(), sub: sub.into(), choice: Choice::Insert(key.into()) });
-            }
-        }
+        rows.push(act("Play".into(), "its tracks", Act::Play));
     }
     if here.edit_mode {
         if found("Merge into another artist", &[]) {
-            rows.push(Row { label: "Merge into another artist…".into(), sub: "Ctrl+M".into(), choice: Choice::Act(Act::Merge) });
+            rows.push(act("Merge into another artist…".into(), "Ctrl+M", Act::Merge));
         }
         if here.may_collective && found("Turn into a collective", &[]) {
-            rows.push(Row { label: "Turn into a collective, or merge into one…".into(), sub: "shows what it would do first".into(), choice: Choice::Act(Act::Collective) });
+            rows.push(act("Turn into a collective, or merge into one…".into(), "shows what it would do first", Act::Collective));
         }
     }
     rows
 }
 
-/// The choices for the value being typed.
-/// The choices for the value being typed (`group`: what it goes with, if it's an argument
-/// or a field).
-fn choices(part: &commandline::Part<K>, group: &[commandline::Part<K>], here: &Here, known: &Known, filters: &Filters) -> Vec<Row> {
-    let typed = part.value.trim().to_lowercase();
-    let things = here.things();
-    match part.key {
-        K::Source if !part.arg => return pc::source_rows(part.minus, &part.value, part.hash.is_some(), &things),
-        K::Note => return pc::note_rows(part.minus, &part.value, &things),
-        K::Extra => return pc::extra_rows(part.minus, &part.value, &things),
-        _ => {}
-    }
-    if part.minus {
-        if part.key != K::Alias || editing(here).is_err() {
-            return Vec::new();
+impl Lists<Choice> for Page<'_> {
+    fn choices(&self, _kind: Kind, typed: &str, node: &Node, command: &Node) -> Vec<Row> {
+        let here = self.here;
+        if let Some(rows) = pc::thing_choices(node, command, &here.things(), self.known) {
+            return rows;
         }
-        return here
-            .aliases
-            .iter()
-            .filter(|a| a.name.to_lowercase().contains(&typed))
-            .map(|a| Row { label: format!("− {}", a.name), sub: "taken off, if nothing's credited as it".into(), choice: Choice::Raw(commandline::quoted::<K>(&a.name), Some("recredit:".into())) })
-            .collect();
-    }
-    if let Some(arg) = arg_of(part.key).filter(|_| group.first().is_some_and(|g| g.key == K::Extra)) {
-        return pc::extra_arg_rows(arg, &part.value, &things, known);
-    }
-    match part.key {
-        K::Recredit => ["yes", "no"]
-            .into_iter()
-            .filter(|w| w.starts_with(&typed))
-            .map(|w| Row { label: w.into(), sub: if w == "yes" { "if it is still credited: credit those tracks another way".into() } else { "just say where it is credited".into() }, choice: Choice::Raw(w.into(), None) })
-            .collect(),
-        K::Alias => {
-            let mut rows: Vec<Row> = here
-                .names
-                .iter()
-                .filter(|(n, _)| shown(here, n).to_lowercase().contains(&typed))
-                .map(|(n, count)| {
-                    let on = if filters.names.contains(n) { " · on" } else { "" };
-                    Row { label: format!("as {}", shown(here, n)), sub: format!("{} tracks{on}", thousands(*count)), choice: Choice::Value(shown(here, n).to_string()) }
-                })
-                .collect();
-            if "all".starts_with(&typed) && !filters.names.is_empty() {
-                rows.push(Row { label: "All names".into(), sub: "every chip off".into(), choice: Choice::Value("all".into()) });
+        let lower = typed.to_lowercase();
+        match node.spec.key {
+            "alias" if node.minus => {
+                if editing(here).is_err() {
+                    return Vec::new();
+                }
+                here.aliases.iter().filter(|a| a.name.to_lowercase().contains(&lower)).map(|a| Row { label: format!("− {}", a.name), sub: "taken off, if nothing's credited as it".into(), take: schema::Take::Value(a.name.clone()) }).collect()
             }
-            // A new one: what's typed, exactly (a name that's another one's but for case too).
-            let value = part.value.trim();
-            if !value.is_empty()
-                && !value.eq_ignore_ascii_case("all")
-                && let Ok(edit) = new_alias(here, value)
-            {
-                let text = format!("alias:{}", commandline::quoted::<K>(value));
-                rows.push(Row { label: format!("New name “{value}”"), sub: "saved with Ctrl+Enter".into(), choice: Choice::Stage(text, format!("+ other name “{value}”"), edit) });
+            "alias" => {
+                let mut rows: Vec<Row> = here
+                    .names
+                    .iter()
+                    .filter(|(n, _)| shown(here, n).to_lowercase().contains(&lower))
+                    .map(|(n, count)| {
+                        let on = if self.filters.names.contains(n) { " · on" } else { "" };
+                        Row { label: format!("as {}", shown(here, n)), sub: format!("{} tracks{on}", thousands(*count)), take: schema::Take::Value(shown(here, n).to_string()) }
+                    })
+                    .collect();
+                // A new one: what's typed, exactly (a name that's another one's but for case too).
+                if !typed.is_empty()
+                    && !typed.eq_ignore_ascii_case("all")
+                    && let Ok(edit) = new_alias(here, typed)
+                {
+                    let text = format!("alias:{}", SCHEMA.quoted(typed));
+                    rows.push(Row { label: format!("New name “{typed}”"), sub: "saved with Ctrl+Enter".into(), take: schema::Take::Page(Choice::Stage(text, format!("+ other name “{typed}”"), edit)) });
+                }
+                rows
             }
-            rows
+            // What it is now, to change.
+            "name" if typed.is_empty() && editing(here).is_ok() => vec![Row::value(here.own, "its name now")],
+            "disambiguation" if typed.is_empty() && !here.disambiguation.is_empty() && editing(here).is_ok() => vec![Row::value(here.disambiguation, "what tells it apart now")],
+            _ => Vec::new(),
         }
-        K::Field => {
-            let Some(owner) = group.first().filter(|o| o.key == K::Source) else { return Vec::new() };
-            let given: Vec<&str> = group.iter().skip(1).chain([part]).map(|p| p.name()).collect();
-            pc::field_rows(&owner.value, part.name(), &part.value, &given, &things)
+    }
+
+    fn words(&self, typed: &str) -> Vec<Row> {
+        actions(typed, self.here)
+    }
+
+    fn fields(&self, node: &Node, given: &[&str]) -> Vec<(String, String)> {
+        pc::thing_fields(node, given, &self.here.things())
+    }
+
+    fn offers(&self, spec: &Spec) -> bool {
+        // (Arguments come after their command, which was offered.)
+        if !EDITS.contains(&spec.key) || !SCHEMA.commands.iter().any(|c| std::ptr::eq(c, spec)) {
+            return true;
         }
-        // What it is now, to change.
-        K::Name if typed.is_empty() && editing(here).is_ok() => vec![Row { label: here.own.to_string(), sub: "its name now".into(), choice: Choice::Value(here.own.to_string()) }],
-        K::Disambiguation if typed.is_empty() && !here.disambiguation.is_empty() && editing(here).is_ok() => {
-            vec![Row { label: here.disambiguation.to_string(), sub: "what tells it apart now".into(), choice: Choice::Value(here.disambiguation.to_string()) }]
-        }
-        K::Og if typed.is_empty() => {
-            [("yes", "only original files"), ("no", "all files")].into_iter().map(|(v, sub)| Row { label: v.into(), sub: sub.into(), choice: Choice::Value(v.into()) }).collect()
-        }
-        _ => Vec::new(),
+        editing(self.here).is_ok() && (spec.key != "source" || self.here.may_source)
     }
 }
 
@@ -658,32 +569,22 @@ impl ArtistCommands {
         }
         let ctx = ui.ctx().clone();
         self.answers(shell);
+        let line = schema::parse(&SCHEMA, &self.cl.text);
         // Who can see an extra: the groups, asked for once it's typed.
-        pc::ask_groups_if::<K>(&self.cl.text, |k| k == K::Visibility, &here.things(), shell, &mut self.known, &self.groups);
+        let visibility = line.commands.iter().any(|c| c.arg("visibility").is_some());
+        pc::ask_groups_when(visibility, &here.things(), shell, &mut self.known, &self.groups);
         // Files chosen in the dialog (`file:choose`): their paths in the line.
         self.chosen.put_in_line(&mut self.cl);
         pc::arrive(&mut self.cl, &ctx, shell, &mut self.last_pass);
         let focused = self.cl.hold_focus(&ctx);
-        let line = commandline::parse::<K>(&self.cl.text);
-        let words = line.current().is_none() && !line.words.is_empty();
-        let rows: Vec<Row> = match line.current() {
-            _ if words => actions(&line.words.join(" "), here),
-            Some(last) => choices(last, line.last_goes_with(), here, &self.known, filters),
-            // After a `|`: the commands to go on with.
-            None if line.fresh && !line.parts.is_empty() => actions("", here),
-            None => Vec::new(),
-        };
+        let line = schema::parse(&SCHEMA, &self.cl.text);
+        // (Nothing typed: no list.)
+        let rows: Vec<Row> = if self.cl.text.trim().is_empty() { Vec::new() } else { schema::rows(&SCHEMA, &line, &self.cl.text, &Page { here, known: &self.known, filters }) };
         self.cl.highlighted = self.cl.highlighted.min(rows.len().saturating_sub(1));
         let can_edit = editing(here).is_ok();
-        // (The row, and whether it was Tab: the next part written after it.)
-        let mut take: Option<(usize, bool)> = None;
-        let mut enter = false;
+        let mut pressed = Pressed::default();
         if focused {
-            let pressed = self.cl.keys(&ctx, rows.len(), false, can_edit && !self.staged.is_empty());
-            if (pressed.tab || pressed.enter) && !rows.is_empty() {
-                take = Some((self.cl.highlighted, pressed.tab));
-            }
-            enter = pressed.enter;
+            pressed = self.cl.keys(&ctx, rows.len(), false, can_edit && !self.staged.is_empty());
             if pressed.escape {
                 self.notice = None;
             }
@@ -701,7 +602,6 @@ impl ArtistCommands {
         let elsewhere = !focused && ctx.egui_wants_keyboard_input();
         if can_edit && !elsewhere && (self.has_changes() || (focused && !self.cl.text.trim().is_empty())) && !shell.palette_open && !shell.modal_was_open {
             save = ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Enter));
-            enter |= save && !self.cl.text.trim().is_empty();
         }
 
         let hint = if can_edit {
@@ -713,31 +613,16 @@ impl ArtistCommands {
             self.notice = None;
             self.blocked = None;
         }
-        let mut clicked = None;
-        if !rows.is_empty() {
-            let list: Vec<(String, String)> = rows.iter().map(|r| (r.label.clone(), r.sub.clone())).collect();
-            cl::list(ui, list, self.cl.highlighted, &mut clicked, "↑/↓ choose · Tab: take it · Enter: take it and do it");
-        }
-        if let Some(n) = clicked {
-            take = Some((n, true));
-        }
-
+        let driven = self.cl.drive(ui, pressed, &rows, &SCHEMA, &mut self.known.pins, true, "↑/↓ choose · Tab: take it · Enter: take it and do it");
+        let mut enter = driven.run || (save && !self.cl.text.trim().is_empty());
         let mut act = None;
-        if let Some((n, tab)) = take
-            && let Some(row) = rows.get(n)
-        {
-            match pc::take(&mut self.cl, &ctx, &mut self.known, &line, &row.choice, tab) {
-                Taken::Filled => {}
-                Taken::Inserted => enter = false,
-                Taken::Act(a) => {
-                    act = Some(a);
-                    enter = false;
-                }
-                Taken::Stage(staged) => {
-                    self.staged.push(staged);
-                    enter = false;
-                }
+        if let Some(choice) = &driven.page {
+            match pc::take_page(&mut self.cl, &ctx, &line, choice) {
+                Taken::Act(a) => act = Some(a),
+                Taken::Stage(staged) => self.staged.push(staged),
+                Taken::Filled | Taken::Inserted => {}
             }
+            enter = false;
         }
         // `file:paste` and `file:choose`: the paths in the line first (what's staged is what
         // the line says).
@@ -748,7 +633,7 @@ impl ArtistCommands {
         }
         if enter && !self.cl.text.trim().is_empty() {
             let done = resolve(&self.cl.text, here, &self.known);
-            let texts = pc::commands_text::<K>(&self.cl.text);
+            let line = schema::parse(&SCHEMA, &self.cl.text);
             match done.iter().find_map(|d| d.as_ref().err()) {
                 Some(err) => {
                     self.notice = Some(format!("Not done: {err}"));
@@ -756,12 +641,13 @@ impl ArtistCommands {
                 }
                 None => {
                     for (n, (label, does)) in done.into_iter().flatten().enumerate() {
-                        let text = texts.get(n).cloned().unwrap_or_default();
+                        let command = line.commands.get(n);
+                        let text = command.map(|c| schema::command_text(&self.cl.text, c).to_string()).unwrap_or_default();
                         match does {
                             Does::Act(a) => act = Some(a),
                             Does::Edit(Edit::RemoveAlias(alias, name)) => {
                                 artist_form::ask_uses(shell, id, alias, &self.uses);
-                                let recredit = commandline::parse::<K>(&text).parts.iter().any(|p| p.key == K::Recredit && p.value.trim().eq_ignore_ascii_case("yes"));
+                                let recredit = command.and_then(|c| c.arg("recredit")).is_some_and(|r| r.value.trim().eq_ignore_ascii_case("yes"));
                                 self.asking.push((alias, text, name, recredit));
                             }
                             Does::Edit(edit) => self.staged.push(Staged { text, label, edit, failed: None }),
@@ -814,7 +700,8 @@ impl ArtistCommands {
     /// Err: why not now (no files copied; the dialog is open).
     fn expand_files(&mut self, shell: &Shell) -> Result<(), String> {
         let dialog = pc::Dialog { title: "Files for the extra", kinds: ("Any file", &[]), many: true };
-        pc::expand_files::<K>(&mut self.cl.text, shell, |p| p.key == K::File && p.arg, true, dialog, &self.chosen)
+        let spans = pc::file_spans(&schema::parse(&SCHEMA, &self.cl.text), "extra", "file");
+        pc::expand_file_spans(&mut self.cl.text, shell, spans, true, dialog, &self.chosen)
     }
 
     /// What the server said about the sources sent (one failing: staged again, saying why),
@@ -913,6 +800,23 @@ fn apply(filters: &mut Filters, does: Does) {
 mod tests {
     use super::*;
 
+    fn labels(text: &str, here: &Here) -> Vec<String> {
+        let known = Known::default();
+        let filters = Filters::default();
+        schema::rows(&SCHEMA, &schema::parse(&SCHEMA, text), text, &Page { here, known: &known, filters: &filters }).into_iter().map(|r| r.label).collect()
+    }
+
+    #[test]
+    fn every_state_leads_somewhere_valid() {
+        let names = [(None, 5), (Some("Zee".to_string()), 3)];
+        let sections = [(Section::Releases, 4), (Section::Tracks, 30)];
+        let aliases = [AliasInfo { id: Uuid::from_u128(1), name: "Zee".into() }];
+        let edit = Here { edit_mode: true, may_edit: true, may_source: true, aliases: &aliases, ..here(&names, &sections) };
+        let known = Known::default();
+        let filters = Filters::default();
+        schema::walk(&SCHEMA, &Page { here: &edit, known: &known, filters: &filters }, &|_| vec!["x".into()], 3).unwrap();
+    }
+
     fn here<'a>(names: &'a [(Option<String>, usize)], sections: &'a [(Section, usize)]) -> Here<'a> {
         Here { id: Uuid::nil(), own: "Zed", names, og_count: 2, sections, has_sources: true, has_notes: false, has_history: true, folds: &[(Reveal::Sources, true)], edit_mode: false, may_edit: false, may_collective: false, aliases: &[], disambiguation: "", sources: &[], may_source: false, shapes: &[], extra_kinds: &[], extras: &[], library_extras: &[], may_access: false, notes: &[] }
     }
@@ -992,10 +896,12 @@ mod tests {
         assert!(does("name:x", &listen)[0].is_err());
         assert!(does("name:x", &Here { may_edit: false, ..Here { edit_mode: true, ..here(&names, &[]) } })[0].as_ref().unwrap_err().contains("edit_metadata"));
         // In the list: the name to filter by first, then a new one exactly as typed.
-        let part = commandline::parse::<K>("alias:zee").parts.remove(0);
-        let labels: Vec<String> = choices(&part, &[], &edit, &Known::default(), &Filters::default()).into_iter().map(|r| r.label).collect();
-        assert_eq!(labels, ["as Zee", "New name “zee”"]);
-        assert_eq!(pc::commands_text::<K>("og:yes | alias:a b"), ["og:yes", "alias:a b"]);
+        assert_eq!(labels("alias:zee", &edit), ["as Zee", "New name “zee”"]);
+        assert_eq!(labels("alias:Zee ", &edit), Vec::<String>::new(), "exactly one: done (nothing can follow alias:)");
+        assert_eq!(labels("-alias:unused ", &edit), ["recredit:"], "taking one off: recredit: can follow");
+        let text = "og:yes | alias:a b";
+        let line = schema::parse(&SCHEMA, text);
+        assert_eq!(line.commands.iter().map(|c| schema::command_text(text, c)).collect::<Vec<_>>(), ["og:yes", "alias:a b"]);
     }
 
     #[test]
@@ -1012,18 +918,20 @@ mod tests {
         let edit = Here { edit_mode: true, may_edit: true, may_source: true, shapes: &shapes, sources: &sources, ..base };
         let does = |text: &str, here: &Here| resolve(text, here, &Known::default()).into_iter().map(|r| r.map(|(_, d)| d)).collect::<Vec<_>>();
         assert_eq!(
-            does("source:https://soundcloud.com/someone | -source:#1", &edit),
+            does("source:https://soundcloud.com/someone | -source:1", &edit),
             [Ok(Does::Edit(Edit::Thing(Change::AddSource("soundcloud".into(), serde_json::json!({ "artist_permalinks": ["someone"] }))))), Ok(Does::Edit(Edit::Thing(Change::TrashSource(Uuid::from_u128(7)))))]
         );
         assert_eq!(does("source:custom vk, their page", &edit), [Ok(Does::Edit(Edit::Thing(Change::AddSource("custom".into(), serde_json::json!({ "label": "vk", "description": "their page" })))))]);
         // A platform's fields, typed after it (any `name:` is one of them).
         assert_eq!(does("source:soundcloud artist_permalinks:someone", &edit), [Ok(Does::Edit(Edit::Thing(Change::AddSource("soundcloud".into(), serde_json::json!({ "artist_permalinks": ["someone"] })))))]);
-        assert!(does("-source:#2", &edit)[0].as_ref().unwrap_err().contains("has 1"));
+        assert!(does("-source:2", &edit)[0].as_ref().unwrap_err().contains("has 1"));
         assert!(does("source:https://x.y", &Here { may_source: false, ..Here { edit_mode: true, may_edit: true, shapes: &shapes, ..here(&[], &[]) } })[0].as_ref().unwrap_err().contains("edit_sources"));
-        // The list: the artist's platforms; Tab on one adds its first field.
-        let line = commandline::parse::<K>("source:so");
-        let rows = choices(&line.parts[0], &[], &edit, &Known::default(), &Filters::default());
-        assert!(matches!(rows.as_slice(), [Row { choice: Choice::Raw(text, Some(next)), .. }] if text == "soundcloud" && next == "artist_permalinks:"));
+        // The list: the artist's platforms; once one is there, its fields (Tab never writes one).
+        assert_eq!(labels("source:so", &edit), ["soundcloud"]);
+        assert_eq!(labels("source:soundcloud ", &edit), ["artist_permalinks:"]);
+        assert_eq!(labels("-source:", &edit), ["1 custom “vk”"]);
+        assert!(!labels("ren", &here(&[], &[])).contains(&"name:".to_string()), "a change: not offered outside edit mode");
+        assert!(labels("ren", &edit).contains(&"name:".to_string()), "an alias of it");
     }
 
     #[test]
@@ -1060,8 +968,8 @@ mod tests {
         assert_eq!(match does("extra:x visibility:everyone", &access).remove(0) { Ok(Does::Edit(Edit::Thing(Change::Extra(c)))) => c.seen, _ => None }, Some(pc::Seen::Everyone));
         assert!(does("extra:stems visibility:artist", &access)[0].is_err(), "like the artist: a new one's");
         // Its arguments go with it; `source:` there is its own (not the artist's).
-        let line = commandline::parse::<K>("extra:x source:a link | source:https://y.z");
-        assert_eq!(line.parts.iter().map(|p| (p.key, p.arg)).collect::<Vec<_>>(), [(K::Extra, false), (K::Source, true), (K::Source, false)]);
+        let line = schema::parse(&SCHEMA, "extra:x source:a link | source:https://y.z");
+        assert_eq!(line.commands.iter().map(|c| (c.spec.key, c.args.iter().map(|a| a.spec.key).collect::<Vec<_>>())).collect::<Vec<_>>(), [("extra", vec!["source"]), ("source", vec![])]);
         assert!(does("kind:vocals", &edit)[0].as_ref().unwrap_err().contains("goes after extra:"));
         assert!(does("extra:x", &here(&[], &[]))[0].as_ref().unwrap_err().contains("edit mode"));
     }

@@ -235,20 +235,20 @@ impl Lists for World<'_> {
         let lower = typed.to_lowercase();
         match kind {
             Kind::Artist if node.spec.key == "artist" => {
-                self.artists.iter().filter(|(_, n)| n.to_lowercase().contains(&lower)).map(|(id, n)| Row::pin(n.clone(), "credited on these tracks", *id)).collect()
+                self.artists.iter().filter(|(_, n)| n.to_lowercase().contains(&lower)).map(|(id, n)| Row::pin(n.clone(), "credited on these tracks", Kind::Artist, *id)).collect()
             }
             Kind::Artist if !typed.is_empty() => Search::default()
                 .run_part(self.catalog, typed, SearchPart::Artists, 8)
                 .into_iter()
                 .map(|(i, _)| {
                     let (name, sub) = crate::catalog::search::describe(self.catalog, SearchPart::Artists, i);
-                    Row::pin(name, sub, self.catalog.artists[i as usize].id)
+                    Row::pin(name, sub, Kind::Artist, self.catalog.artists[i as usize].id)
                 })
                 .collect(),
             Kind::AliasOf(_) => {
                 let Some(whose) = self.whose(kind, command) else { return Vec::new() };
                 let sub = if node.spec.key == "only" { "credited as it, now" } else { "a name it goes by" };
-                self.names.get(&whose).into_iter().flatten().filter(|(_, n)| n.to_lowercase().contains(&lower)).map(|(id, n)| Row::pin(n.clone(), sub, *id)).collect()
+                self.names.get(&whose).into_iter().flatten().filter(|(_, n)| n.to_lowercase().contains(&lower)).map(|(id, n)| Row::pin(n.clone(), sub, kind, *id)).collect()
             }
             _ => Vec::new(),
         }

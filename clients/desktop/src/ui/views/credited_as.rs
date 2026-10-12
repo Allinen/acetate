@@ -196,7 +196,7 @@ impl CreditedAs {
             if self.cl.field(ui, true, hint).changed() {
                 self.notice = None;
             }
-            let driven = self.cl.drive(ui, pressed, &list_rows, &SCHEMA, &mut self.pins, "↑/↓ choose · Tab or Enter: take it");
+            let driven = self.cl.drive(ui, pressed, &list_rows, &SCHEMA, &mut self.pins, false, "↑/↓ choose · Tab or Enter: take it");
             if driven.took {
                 self.notice = None;
             }

@@ -159,37 +159,44 @@ impl CommandLine {
     /// For a commandline declared by a schema (`commandline::schema`): the list under the
     /// field, and what Tab, Enter and a click do with it, the same everywhere. Tab or a click
     /// takes the highlighted row, with a space after a value (the list goes on to what can
-    /// follow); Enter takes a value row the same way, and otherwise (a key row, or no
-    /// rows) runs the line. `pressed` is what `keys` gave, with `rows.len()` choices.
-    pub fn drive(&mut self, ui: &mut egui::Ui, pressed: Pressed, rows: &[schema::Row], schema: &schema::Schema, pins: &mut schema::Pins, help: &str) -> Driven {
+    /// follow). Enter on a value row takes it too: with `enter_runs` (a page, where Enter
+    /// does the line) it then runs the line, else it leaves a space like Tab. Enter on a key
+    /// row, or with no rows, runs the line. A page's own row is handed back. `pressed` is
+    /// what `keys` gave, with `rows.len()` choices.
+    pub fn drive<P: Clone>(&mut self, ui: &mut egui::Ui, pressed: Pressed, rows: &[schema::Row<P>], schema: &schema::Schema, pins: &mut schema::Pins, enter_runs: bool, help: &str) -> Driven<P> {
         let mut clicked = None;
         if !rows.is_empty() {
             let list_rows: Vec<(String, String)> = rows.iter().map(|r| (r.label.clone(), r.sub.clone())).collect();
             list(ui, list_rows, self.highlighted, &mut clicked, help);
         }
         let highlighted = rows.get(self.highlighted);
-        let take = match (clicked, highlighted) {
-            (Some(n), _) => rows.get(n),
-            (None, Some(row)) if pressed.tab || (pressed.enter && !row.is_key()) => Some(row),
-            _ => None,
+        let (row, by_enter) = match (clicked, highlighted) {
+            (Some(n), _) => (rows.get(n), false),
+            (None, Some(row)) if pressed.tab => (Some(row), false),
+            (None, Some(row)) if pressed.enter && !row.is_key() => (Some(row), true),
+            _ => (None, false),
         };
-        if let Some(row) = take {
-            self.text = schema::take(schema, &self.text, row, true, pins);
-            self.highlighted = 0;
-            self.cursor_to_end(ui.ctx());
-            return Driven { took: true, run: false };
+        let Some(row) = row else { return Driven { took: false, run: pressed.enter, page: None } };
+        if let schema::Take::Page(p) = &row.take {
+            return Driven { took: true, run: false, page: Some(p.clone()) };
         }
-        Driven { took: false, run: pressed.enter }
+        let run = by_enter && enter_runs;
+        self.text = schema::take(schema, &self.text, row, !run, pins);
+        self.highlighted = 0;
+        self.cursor_to_end(ui.ctx());
+        Driven { took: true, run, page: None }
     }
 }
 
 /// What `CommandLine::drive` did.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct Driven {
-    /// A row was taken (the text changed).
+#[derive(Debug, Clone)]
+pub struct Driven<P> {
+    /// A row was taken (the text changed, or a page's row was chosen).
     pub took: bool,
-    /// Enter, with nothing to take: the line is to be run.
+    /// Enter: the line is to be run.
     pub run: bool,
+    /// A page's own row taken.
+    pub page: Option<P>,
 }
 
 /// The list under a commandline: (label, what tells it apart), the chosen one lit. A click
