@@ -1,0 +1,45 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT u.username, s.blob_sha256, extract(epoch FROM now() - s.staged_at)::bigint AS \"age!\"\n        FROM staged_covers s JOIN users u ON u.id = s.user_id\n        WHERE s.staged_at < now() - interval '1 day'\n        ORDER BY s.staged_at\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "username",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "username"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "blob_sha256",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "staged_covers",
+            "name": "blob_sha256"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "age!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "57b5dff3747d5f57fc0817ff1e4e4055938290c2a3166bb85e7daf11bc9d5858"
+}

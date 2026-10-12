@@ -27,5 +27,6 @@
   - [Users and permissions](admin/users.md)
   - [Configuration](admin/configuration.md)
   - [Vocabulary](admin/vocabulary.md)
+  - [Health checks](admin/health.md)
   - [Extensions](admin/extensions.md)
   - [Command line](admin/cli.md)

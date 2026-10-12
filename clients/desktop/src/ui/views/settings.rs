@@ -8,6 +8,7 @@ use eframe::egui::{self, RichText};
 use super::settings_account::AccountTab;
 use super::settings_computer::ComputerTab;
 use super::settings_general::GeneralTab;
+use super::settings_health::HealthTab;
 use super::settings_mirror::MirrorSection;
 use super::settings_server::ServerTab;
 use super::settings_sound::SoundTab;
@@ -29,13 +30,15 @@ enum Tab {
     Mirror,
     /// Admins.
     Vocabulary,
+    /// Admins.
+    Health,
     /// Those who manage users.
     Users,
     General,
 }
 
 impl Tab {
-    const ALL: [Tab; 8] = [Tab::Sound, Tab::Computer, Tab::Account, Tab::Server, Tab::Mirror, Tab::Vocabulary, Tab::Users, Tab::General];
+    const ALL: [Tab; 9] = [Tab::Sound, Tab::Computer, Tab::Account, Tab::Server, Tab::Mirror, Tab::Vocabulary, Tab::Health, Tab::Users, Tab::General];
 
     fn name(self) -> &'static str {
         match self {
@@ -45,13 +48,14 @@ impl Tab {
             Tab::Server => "Server",
             Tab::Mirror => "Mirror",
             Tab::Vocabulary => "Vocabulary",
+            Tab::Health => "Health",
             Tab::Users => "Users",
             Tab::General => "General",
         }
     }
 
     fn admin_only(self) -> bool {
-        matches!(self, Tab::Server | Tab::Mirror | Tab::Vocabulary)
+        matches!(self, Tab::Server | Tab::Mirror | Tab::Vocabulary | Tab::Health)
     }
 }
 
@@ -67,6 +71,7 @@ pub struct SettingsPage {
     mirror: MirrorSection,
     vocabulary: VocabularyTab,
     users: UsersTab,
+    health: HealthTab,
     general: GeneralTab,
 }
 
@@ -86,6 +91,7 @@ impl SettingsPage {
         }
         if shell.account.can("admin") {
             self.vocabulary.opened(shell);
+            self.health.opened(shell);
             self.server.opened(shell);
         }
     }
@@ -129,6 +135,8 @@ impl SettingsPage {
             Tab::Mirror => self.mirror.show(ui, shell),
             Tab::Vocabulary if shell.connection.is_offline() => super::offline(ui, "The vocabulary"),
             Tab::Vocabulary => self.vocabulary.show(ui, shell),
+            Tab::Health if shell.connection.is_offline() => super::offline(ui, "The health checks"),
+            Tab::Health => self.health.show(ui, shell),
             Tab::Users if shell.connection.is_offline() => super::offline(ui, "The users"),
             Tab::Users => self.users.show(ui, shell),
             Tab::General => self.general.show(ui, shell),

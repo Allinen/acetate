@@ -233,6 +233,7 @@ pub(crate) mod tests {
         let state = AppState {
             uploads: Default::default(),
             blob_changes: Default::default(),
+        health: Default::default(),
             pool,
             store: BlobStore::open(dir.path())?,
             web_dir: dir.path().to_path_buf(),

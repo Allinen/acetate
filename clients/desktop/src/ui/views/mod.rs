@@ -35,6 +35,7 @@ pub mod settings;
 pub mod settings_account;
 pub mod settings_computer;
 pub mod settings_general;
+pub mod settings_health;
 pub mod settings_mirror;
 pub mod settings_server;
 pub mod settings_sound;

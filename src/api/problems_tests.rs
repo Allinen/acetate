@@ -92,6 +92,7 @@ async fn setup_with(connect: PgConnectOptions, file: &str) -> anyhow::Result<Set
     let app = api::router(AppState {
         uploads: Default::default(),
         blob_changes: Default::default(),
+        health: Default::default(),
         pool: pool.clone(),
         store: BlobStore::open(dir.path())?,
         web_dir: dir.path().to_path_buf(),

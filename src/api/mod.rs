@@ -16,6 +16,7 @@ mod catalog;
 mod changes;
 mod groupings;
 mod groups;
+mod health;
 mod media;
 mod metadata;
 pub mod mirror;
@@ -141,6 +142,8 @@ pub struct AppState {
     pub uploads: Arc<uploads::Uploads>,
     /// Wakes mirrors waiting for blobs to change (see `mirror`).
     pub blob_changes: Arc<mirror::BlobChanges>,
+    /// The health check's runs (see `health`).
+    pub health: Arc<crate::health::Health>,
 }
 
 impl AppState {
@@ -303,6 +306,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/trash/restore", require(&[EditMetadata, EditSources], post(trash::restore)))
         .route("/api/trash/purge", require(&[Admin], post(trash::purge)))
         .route("/api/storage", require(&[Admin], get(storage::totals)))
+        .route("/api/health", require(&[Admin], get(health::status)))
+        .route("/api/health/run", require(&[Admin], post(health::run)))
         .route("/api/mirror", require(&[Admin], get(mirror::list)).layer(CompressionLayer::new()))
         .route("/api/mirror/blobs/{sha256}", require(&[Admin], get(mirror::blob)))
         .route("/api/files/replaced", require(&[Admin], get(trash::replaced_files)))

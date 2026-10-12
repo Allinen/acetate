@@ -3,6 +3,7 @@ mod auth;
 mod config;
 mod db;
 mod extensions;
+mod health;
 mod ingest;
 mod ingest_client;
 mod ingest_command;
@@ -437,6 +438,7 @@ async fn serve(config: Config, owner_pool: sqlx::PgPool, store: BlobStore) -> an
     let app = api::router(api::AppState {
         uploads: Default::default(),
         blob_changes,
+        health: Default::default(),
         pool,
         store,
         web_dir: config.web_dir.clone(),

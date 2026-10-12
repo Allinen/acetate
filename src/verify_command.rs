@@ -7,7 +7,7 @@
 //! * `acetate verify --blobs`: re-hashes every blob the database uses, and lists blobs
 //!   that are missing, damaged, or that nothing uses anymore.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
@@ -52,7 +52,7 @@ pub async fn verify_dir(pool: &PgPool, store: &BlobStore, dir: &Path, options: O
     files.sort();
     println!("{} files in {} (hashing, this reads every file once)", files.len(), root.display());
 
-    let hashed = hash_all(files).await;
+    let hashed = hash_all(files, &print_progress).await;
     let mut results: Vec<(PathBuf, Status)> = Vec::new();
     let mut unreadable = Vec::new();
     let mut ok_hashes = Vec::new();
@@ -171,92 +171,33 @@ fn report(root: &Path, results: &[(PathBuf, Status)], unreadable: &[(PathBuf, St
     }
 }
 
-/// `acetate verify --blobs`: every blob the database uses is there (on some volume) and
-/// has the right content, and is recorded on the volume it's really on; blobs nothing uses
-/// are listed. Nothing is deleted or moved.
+/// `acetate verify --blobs`: the health check's checks on the blob store: every blob in
+/// use is there (on some volume) with the right content and recorded on the volume it is
+/// really on, and which blobs nothing uses. Nothing is deleted or moved.
 pub async fn verify_blobs(pool: &PgPool, store: &BlobStore) -> anyhow::Result<()> {
-    let used: HashSet<String> = sqlx::query_scalar!(
-        r#"
-        SELECT sha256 AS "sha256!" FROM files WHERE purged_at IS NULL
-        UNION SELECT blob_sha256 FROM covers
-        UNION SELECT sha256 FROM ingest_problems WHERE resolved_at IS NULL
-        UNION SELECT sha256 FROM extra_files
-        UNION SELECT thumb_sha256 FROM extra_files WHERE thumb_sha256 IS NOT NULL
-        "#
-    )
-    .fetch_all(pool)
-    .await?
-    .into_iter()
-    .collect();
-    // Which volume each blob is recorded on.
-    let recorded: HashMap<String, String> = sqlx::query!("SELECT sha256, volume FROM blobs")
-        .fetch_all(pool)
-        .await?
-        .into_iter()
-        .map(|r| (r.sha256, r.volume))
-        .collect();
-
-    // What's on each volume's disk: (volume, path).
-    let mut on_disk: Vec<(String, PathBuf)> = Vec::new();
-    for volume in store.volumes() {
-        let mut files = Vec::new();
-        let mut unreadable = Vec::new();
-        list_files(volume.blobs_dir(), &mut files, &mut unreadable);
-        if !unreadable.is_empty() {
-            println!("volume {}: {} folders couldn't be read (their blobs weren't checked)", volume.name, unreadable.len());
+    let progress = std::sync::Arc::new(crate::health::Progress::default());
+    let ctx = crate::health::Context::new(pool.clone(), store.clone(), progress);
+    for id in ["blobs-present", "blobs-unused", "staged-covers", "blobs-intact"] {
+        let info = crate::health::info(id).expect("a check");
+        println!("{}", info.title);
+        let findings = crate::health::run_check(id, &ctx).await?;
+        println!("  {} found", findings.len());
+        for f in findings.iter().take(50) {
+            println!("  {}", f.message);
         }
-        println!("volume {}: {} blobs in {}", volume.name, files.len(), volume.blobs_dir().display());
-        on_disk.extend(files.into_iter().map(|p| (volume.name.clone(), p)));
-    }
-    println!("{} blobs in use (re-hashing them all)", used.len());
-
-    let name_of = |p: &PathBuf| p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-    let found: HashMap<String, String> = on_disk.iter().map(|(v, p)| (name_of(p), v.clone())).collect();
-    let stray: Vec<&PathBuf> = on_disk.iter().filter(|(_, p)| !used.contains(&name_of(p))).map(|(_, p)| p).collect();
-    let used_on_disk: Vec<PathBuf> = on_disk.iter().filter(|(_, p)| used.contains(&name_of(p))).map(|(_, p)| p.clone()).collect();
-    let mut missing: Vec<&String> = used.iter().filter(|sha| !found.contains_key(*sha)).collect();
-    missing.sort();
-    let mut misrecorded = Vec::new();
-    for sha in &used {
-        match (recorded.get(sha), found.get(sha)) {
-            (None, Some(on)) => misrecorded.push(format!("{sha}: not recorded (it's on {on})")),
-            (Some(rec), Some(on)) if rec != on => misrecorded.push(format!("{sha}: recorded on {rec}, but it's on {on}")),
-            _ => {}
-        }
-    }
-    misrecorded.sort();
-
-    let mut damaged = Vec::new();
-    for (path, result) in hash_all(used_on_disk).await {
-        let name = name_of(&path);
-        match result {
-            Ok((sha, _)) if sha == name => {}
-            Ok((sha, _)) => damaged.push(format!("{}: content hashes to {sha}", path.display())),
-            Err(err) => damaged.push(format!("{}: {err}", path.display())),
-        }
-    }
-
-    println!("\nmissing (used, on no volume): {}", missing.len());
-    for sha in missing.iter().take(50) {
-        println!("  {sha}");
-    }
-    println!("damaged (content doesn't match its name): {}", damaged.len());
-    for line in damaged.iter().take(50) {
-        println!("  {line}");
-    }
-    println!("recorded on the wrong volume, or not recorded: {}", misrecorded.len());
-    for line in misrecorded.iter().take(50) {
-        println!("  {line}");
-    }
-    println!("unused (nothing refers to them; not deleted): {}", stray.len());
-    for path in stray.iter().take(50) {
-        println!("  {}", path.display());
     }
     Ok(())
 }
 
+/// Says how far hashing has got, every 5000 files.
+fn print_progress(done: usize, total: usize) {
+    if done.is_multiple_of(5000) {
+        println!("  {done}/{total}");
+    }
+}
+
 /// Hashes files, a few at a time. The results come back in any order.
-async fn hash_all(paths: Vec<PathBuf>) -> Vec<(PathBuf, std::io::Result<(String, u64)>)> {
+pub(crate) async fn hash_all(paths: Vec<PathBuf>, on_progress: &(dyn Fn(usize, usize) + Sync)) -> Vec<(PathBuf, std::io::Result<(String, u64)>)> {
     let total = paths.len();
     let mut results = Vec::with_capacity(total);
     let mut queue = paths.into_iter();
@@ -274,9 +215,7 @@ async fn hash_all(paths: Vec<PathBuf>) -> Vec<(PathBuf, std::io::Result<(String,
             Ok(result) => results.push(result),
             Err(err) => tracing::error!("a hashing task failed: {err}"),
         }
-        if results.len() % 5000 == 0 {
-            println!("  {}/{total}", results.len());
-        }
+        on_progress(results.len(), total);
     }
     results
 }
@@ -284,7 +223,7 @@ async fn hash_all(paths: Vec<PathBuf>) -> Vec<(PathBuf, std::io::Result<(String,
 /// All files below `dir`, recursively. Symlinked folders aren't followed. A folder (or
 /// an entry) that can't be read is skipped with a warning and added to `unreadable`:
 /// one unreadable folder doesn't stop the rest.
-fn list_files(dir: &Path, out: &mut Vec<PathBuf>, unreadable: &mut Vec<(PathBuf, String)>) {
+pub(crate) fn list_files(dir: &Path, out: &mut Vec<PathBuf>, unreadable: &mut Vec<(PathBuf, String)>) {
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(err) => {
