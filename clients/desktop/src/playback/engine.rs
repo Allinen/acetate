@@ -144,7 +144,7 @@ pub fn start(
                         pair = None;
                         // Open the new one first, while the old one plays on.
                         let opened = open_track(file);
-                        replace(&mut player, &mut control, &mut switches_before, &mut fading_in, volume, opened, paused, at, fade, follow, &errors);
+                        replace(&mut player, &mut control, &mut switches_before, &mut fading_in, volume, opened, paused, at, false, fade, follow, &errors);
                     }
                     Command::Compare { a, b, side_b, at, follow } => {
                         // The same two files already play side by side: just hear the other.
@@ -177,7 +177,8 @@ pub fn start(
                                     (select, opened)
                                 }
                             };
-                            let fresh = replace(&mut player, &mut control, &mut switches_before, &mut fading_in, volume, opened, false, if was_warm { Duration::ZERO } else { at }, true, follow, &errors);
+                            // (A warm pair is placed already: it only needs to say where.)
+                            let fresh = replace(&mut player, &mut control, &mut switches_before, &mut fading_in, volume, opened, false, at, was_warm, true, follow, &errors);
                             if let Some(control) = fresh {
                                 pair = Some(Pair_ { a: a.0, b: b.0, select, control });
                             }
@@ -304,6 +305,7 @@ fn replace(
     opened: Result<Track, String>,
     paused: bool,
     at: Duration,
+    placed: bool,
     fade: bool,
     follow: bool,
     errors: &impl Fn(String),
@@ -322,7 +324,9 @@ fn replace(
         (Some(old), true) if !player.empty() => old.position(),
         _ => at,
     };
-    if from > Duration::ZERO {
+    if placed {
+        chain.placed_at(at);
+    } else if from > Duration::ZERO {
         let _ = chain.try_seek(from);
         if let (true, false, Some(old)) = (follow, player.is_paused(), &*control) {
             // Seeking took time, in which the old one played on: seek again (quick now),
@@ -493,6 +497,13 @@ impl Chain {
         control.per_second.store(per_second(&track), Relaxed);
         control.played.store(0, Relaxed);
         Chain { current: track, control, in_span: 0, padding: 0, skipping: false, played: 0 }
+    }
+
+    /// The track is at `position` already (seeked before it was handed over): the position
+    /// shown counts from there.
+    fn placed_at(&mut self, position: Duration) {
+        self.played = (position.as_secs_f64() * per_second(&self.current) as f64) as u64;
+        self.control.played.store(self.played, Relaxed);
     }
 
     /// Goes on with the next track; false if there is none.
