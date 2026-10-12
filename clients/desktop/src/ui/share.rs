@@ -1,6 +1,7 @@
 //! The share link popup (Ctrl+Shift+L, or Shift+click "Share"): what the link should be
 //! before it's made. Ctrl+L is the plain link and has no options; this is the one for
-//! anyone, with its own commandline (the language is `crate::commandline`'s) and the same
+//! anyone, with its own commandline (declared as `SHARE`, the language is
+//! `crate::commandline::schema`'s) and the same
 //! things by mouse:
 //!
 //! * `original:yes|no`: the link plays the original file (needs `download_original`), or,
@@ -9,45 +10,39 @@
 //!   it lists is the default). Not for a link that gives the original.
 //! * `expires:never|1d|7d|30d|Nd|Nw`: when the link stops working.
 //!
-//! Keys in the field: ↑/↓ choose, Tab takes the choice, Enter applies what's typed (an
-//! empty field: makes the link), Ctrl+Enter applies it and makes the link. Esc closes.
+//! Keys in the field: ↑/↓ choose, Tab takes the choice, Enter takes it and applies what's
+//! typed (an empty field: makes the link), Ctrl+Enter applies it and makes the link. Esc
+//! closes.
 
 use std::sync::{Arc, Mutex};
 
 use eframe::egui::{self, RichText};
 
 use crate::catalog::query::loosely_in;
-use crate::commandline::{self, Keys, Line};
+use crate::commandline::schema::{self, Kind, Line, Lists, Next, Node, Row, Schema, Spec, Take};
 use crate::links::Target;
 use crate::ui::edit::commandline::{self as widget, CommandLine, Pressed};
 use crate::ui::theme::{font, medium, PALETTE as P};
 use crate::ui::{modal, widgets};
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum K {
-    Original,
-    Expires,
-    Quality,
-}
+/// The popup's keys: each goes with the others (`original:yes expires:7d`).
+static KEYS: [Spec; 3] = [
+    Spec::new("original", Kind::Text, "the original file, or a lower-quality copy").aliases(&["orig", "og"]).next(Next::Args(&KEYS)),
+    Spec::new("quality", Kind::Text, "the copy's bitrate (kbps)").aliases(&["kbps", "bitrate"]).next(Next::Args(&KEYS)),
+    Spec::new("expires", Kind::Text, "never, 1d, 7d, 30d…").aliases(&["expire", "expiry", "exp"]).next(Next::Args(&KEYS)),
+];
 
-const KEYS: &[(K, &[&str])] = &[(K::Original, &["original", "orig", "og"]), (K::Expires, &["expires", "expire", "expiry", "exp"]), (K::Quality, &["quality", "kbps", "bitrate"])];
+static SHARE: Schema = Schema { commands: &KEYS, also: &[] };
 
-impl Keys for K {
-    const MINUS: bool = false;
-
-    fn key(name: &str) -> Option<K> {
-        let name = name.to_lowercase();
-        KEYS.iter().find(|(_, names)| names.contains(&name.as_str())).map(|(k, _)| *k)
+/// Every key typed, in the order typed.
+fn parts(line: &Line) -> Vec<&Node> {
+    fn add<'a>(n: &'a Node, out: &mut Vec<&'a Node>) {
+        out.push(n);
+        n.args.iter().for_each(|a| add(a, out));
     }
-
-    fn name(self) -> &'static str {
-        KEYS.iter().find(|(k, _)| *k == self).map(|(_, names)| names[0]).unwrap_or("")
-    }
-
-    /// Both go with each other: `original:yes expires:7d`.
-    fn takes(_main: K, _arg: K) -> bool {
-        true
-    }
+    let mut out = Vec::new();
+    line.commands.iter().for_each(|c| add(c, &mut out));
+    out
 }
 
 /// What a typed command sets.
@@ -102,18 +97,28 @@ fn parse_yes(text: &str) -> Option<bool> {
 
 pub use acetate_core::links::expires_at;
 
-enum What {
-    /// Replaces the value being typed.
-    Value(String),
-    /// Replaces the whole line (a key to type a value for).
-    Insert(String),
-    Create,
-}
+/// The popup's own row: make the link.
+#[derive(Debug, Clone, Copy)]
+struct Create;
 
-struct Row {
-    label: String,
-    sub: String,
-    what: What,
+/// The popup's list: each key's values, and making the link (found by words).
+struct Choices<'a>(&'a ShareDialog);
+
+impl Lists<Create> for Choices<'_> {
+    fn choices(&self, _kind: Kind, typed: &str, node: &Node, _command: &Node) -> Vec<Row<Create>> {
+        let own = |a: &str, b: &str| (a.to_string(), b.to_string());
+        let options: Vec<(String, String)> = match node.spec.key {
+            "original" => vec![own("yes", "the original file"), own("no", "a lower-quality copy")],
+            "expires" => vec![own("never", ""), own("1d", "1 day"), own("7d", "7 days"), own("30d", "30 days")],
+            _ => std::iter::once(own("default", "the server's usual")).chain(self.0.qualities.iter().flatten().map(|k| (k.to_string(), format!("{k} kbps")))).collect(),
+        };
+        options.into_iter().filter(|(v, _)| typed.is_empty() || loosely_in(typed, v)).map(|(v, sub)| Row::value(v, sub)).collect()
+    }
+
+    fn words(&self, typed: &str) -> Vec<Row<Create>> {
+        let found = typed.is_empty() || ["Make the link", "create", "copy", "share"].iter().any(|n| loosely_in(typed, n));
+        found.then(|| Row { label: "Make the link".into(), sub: "copies it (Ctrl+Enter)".into(), take: Take::Page(Create) }).into_iter().collect()
+    }
 }
 
 pub struct ShareDialog {
@@ -143,48 +148,16 @@ impl ShareDialog {
         ShareDialog { target, cl, original: false, days: None, kbps: None, can_original, qualities: None, answer }
     }
 
-    fn rows(&self, line: &Line<K>) -> Vec<Row> {
-        let row = |label: &str, sub: &str, what: What| Row { label: label.to_string(), sub: sub.to_string(), what };
-        if let Some(last) = line.parts.last() {
-            let typed = &last.value;
-            let own = |a: &str, b: &str| (a.to_string(), b.to_string());
-            let options: Vec<(String, String)> = match last.key {
-                K::Original => vec![own("yes", "the original file"), own("no", "a lower-quality copy")],
-                K::Expires => vec![own("never", ""), own("1d", "1 day"), own("7d", "7 days"), own("30d", "30 days")],
-                K::Quality => std::iter::once(own("default", "the server's usual"))
-                    .chain(self.qualities.iter().flatten().map(|k| (k.to_string(), format!("{k} kbps"))))
-                    .collect(),
-            };
-            return options
-                .into_iter()
-                .filter(|(v, _)| typed.is_empty() || loosely_in(typed, v))
-                .map(|(v, sub)| Row { label: v.clone(), sub, what: What::Value(v) })
-                .collect();
-        }
-        let words = line.words.join(" ");
-        let found = |name: &str, aka: &[&str]| words.is_empty() || loosely_in(&words, name) || aka.iter().any(|a| loosely_in(&words, a));
-        let mut rows = Vec::new();
-        if found("Make the link", &["create", "copy", "share"]) {
-            rows.push(row("Make the link", "copies it (Ctrl+Enter)", What::Create));
-        }
-        if found("original", &["file"]) {
-            rows.push(row("original:", "the original file, or a lower-quality copy", What::Insert("original:".into())));
-        }
-        if found("quality", &["kbps", "bitrate"]) {
-            rows.push(row("quality:", "the copy's bitrate (kbps)", What::Insert("quality:".into())));
-        }
-        if found("expires", &["expiry", "time"]) {
-            rows.push(row("expires:", "never, 1d, 7d, 30d…", What::Insert("expires:".into())));
-        }
-        rows
+    fn rows(&self, line: &Line, text: &str) -> Vec<Row<Create>> {
+        schema::rows(&SHARE, line, text, &Choices(self))
     }
 
     /// What the typed commands would set, or why one can't.
-    fn plan(&self, line: &Line<K>) -> Vec<Result<(Change, String), String>> {
-        line.parts
-            .iter()
-            .map(|part| match part.key {
-                K::Original => {
+    fn plan(&self, line: &Line) -> Vec<Result<(Change, String), String>> {
+        let mut out: Vec<Result<(Change, String), String>> = parts(line)
+            .into_iter()
+            .map(|part| match part.spec.key {
+                "original" => {
                     let yes = parse_yes(&part.value).ok_or_else(|| format!("original: is yes or no, not “{}”", part.value))?;
                     if yes && !self.can_original {
                         return Err("giving the original file needs the download_original permission".into());
@@ -192,7 +165,7 @@ impl ShareDialog {
                     let label = if yes { "the link plays the original file" } else { "the link plays a lower-quality copy" };
                     Ok((Change::Original(yes), label.into()))
                 }
-                K::Quality => {
+                "quality" => {
                     let kbps = parse_kbps(&part.value)?;
                     if let (Some(k), Some(list)) = (kbps, &self.qualities)
                         && !list.contains(&k)
@@ -209,7 +182,7 @@ impl ShareDialog {
                     };
                     Ok((Change::Quality(kbps), label))
                 }
-                K::Expires => {
+                _ => {
                     let days = parse_days(&part.value)?;
                     let label = match days {
                         None => "the link never expires".to_string(),
@@ -219,12 +192,16 @@ impl ShareDialog {
                     Ok((Change::Expires(days), label))
                 }
             })
-            .collect()
+            .collect();
+        if let Some(word) = line.words.first().filter(|w| w.contains(':')) {
+            out.push(Err(SHARE.not_a_command(word)));
+        }
+        out
     }
 
     /// Applies the typed commands if every one is fine. Returns whether they were.
     fn apply(&mut self) -> bool {
-        let line = commandline::parse::<K>(&self.cl.text);
+        let line = schema::parse(&SHARE, &self.cl.text);
         let plan = self.plan(&line);
         if plan.iter().any(|p| p.is_err()) {
             return false;
@@ -240,25 +217,6 @@ impl ShareDialog {
         true
     }
 
-    /// A choice taken (Tab, Enter or a click). Returns true if it asks to make the link.
-    fn take(&mut self, ctx: &egui::Context, line: &Line<K>, row: Option<Row>) -> bool {
-        let Some(row) = row else { return false };
-        match row.what {
-            What::Create => return true,
-            What::Insert(text) => {
-                self.cl.text = text;
-                self.cl.highlighted = 0;
-                self.cl.cursor_to_end(ctx);
-            }
-            What::Value(value) => {
-                if let Some(last) = line.parts.last() {
-                    self.cl.take(ctx, last.value_start, last.end, Some(&value), None);
-                }
-            }
-        }
-        false
-    }
-
     /// Draws the popup and handles its keys.
     pub fn show(&mut self, ctx: &egui::Context) -> Outcome {
         if let Some(list) = self.answer.lock().unwrap().take() {
@@ -266,46 +224,13 @@ impl ShareDialog {
         }
         let ctrl_enter = ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Enter));
         let focused = self.cl.hold_focus(ctx);
-        let line = commandline::parse::<K>(&self.cl.text);
-        let mut rows = self.rows(&line);
+        let line = schema::parse(&SHARE, &self.cl.text);
+        let rows = self.rows(&line, &self.cl.text);
         let pressed = if focused { self.cl.keys(ctx, rows.len(), false, false) } else { Pressed::default() };
         self.cl.highlighted = self.cl.highlighted.min(rows.len().saturating_sub(1));
-
+        let units: Vec<Result<(String, Option<String>), String>> = self.plan(&line).into_iter().map(|p| p.map(|(_, label)| (label, None))).collect();
         let mut create = false;
-        let mut clicked = None;
-        if pressed.tab && !rows.is_empty() {
-            let row = rows.swap_remove(self.cl.highlighted);
-            create |= self.take(ctx, &line, Some(row));
-        } else if pressed.enter {
-            if self.cl.text.trim().is_empty() {
-                create = true;
-            } else {
-                // What's typed doesn't make sense yet (half a value): the highlighted choice
-                // finishes it, then it's applied.
-                let broken = self.plan(&line).iter().any(|p| p.is_err());
-                if broken && !rows.is_empty() {
-                    let row = rows.swap_remove(self.cl.highlighted);
-                    create |= self.take(ctx, &line, Some(row));
-                }
-                if !create && !self.cl.text.ends_with(':') {
-                    self.apply();
-                }
-            }
-        }
-        if ctrl_enter {
-            self.apply();
-            create = true;
-        }
-
-        // What's shown is worked out again: the text may have changed above.
-        let line = commandline::parse::<K>(&self.cl.text);
-        let rows = self.rows(&line);
-        let plan = self.plan(&line);
-        let units: Vec<Result<(String, Option<String>), String>> =
-            plan.into_iter().map(|p| p.map(|(_, label)| (label, None))).collect();
-        let list: Vec<(String, String)> = rows.iter().map(|r| (r.label.clone(), r.sub.clone())).collect();
-        let highlighted = self.cl.highlighted;
-
+        let mut run = false;
         let (can_original, mut original, mut days, mut kbps) = (self.can_original, self.original, self.days, self.kbps);
         let qualities = self.qualities.clone().unwrap_or_default();
         let mut make = false;
@@ -351,7 +276,13 @@ impl ShareDialog {
             ui.add_space(12.0);
             self.cl.field(ui, true, "original:yes quality:64 expires:7d, or Enter to make the link");
             ui.add_space(4.0);
-            widget::list(ui, list, highlighted, &mut clicked, "↑↓ choose · Tab takes · Enter applies (empty: makes the link) · Ctrl+Enter both · Esc closes");
+            let driven = self.cl.drive(ui, pressed, &rows, &SHARE, &mut schema::Pins::default(), true, "↑↓ choose · Tab takes · Enter takes and applies (empty: makes the link) · Ctrl+Enter both · Esc closes");
+            // "Make the link", or Enter on an empty line: made; Enter otherwise: applied.
+            if driven.page.is_some() || (driven.run && self.cl.text.trim().is_empty()) {
+                create = true;
+            } else {
+                run = driven.run;
+            }
             ui.add_space(6.0);
             widget::would_do(ui, &units, "Enter on an empty line makes the link.");
             ui.add_space(12.0);
@@ -363,12 +294,11 @@ impl ShareDialog {
         self.days = days;
         self.kbps = kbps;
 
-        if let Some(n) = clicked
-            && n < rows.len()
-        {
-            let row = rows.into_iter().nth(n);
-            create |= self.take(ctx, &line, row);
+        // (After the toggles: what's typed is applied on top.)
+        if run || ctrl_enter {
+            self.apply();
         }
+        create |= ctrl_enter;
         if create || make {
             // What the popup shows is what's made (a toggle clicked this frame included).
             return Outcome::Create { target: self.target, original: self.original, days: self.days, kbps: if self.original { None } else { self.kbps } };
@@ -433,11 +363,12 @@ mod tests {
     #[test]
     fn choices_follow_what_is_typed() {
         let d = dialog(true);
-        let labels = |text: &str| d.rows(&commandline::parse::<K>(text)).into_iter().map(|r| r.label).collect::<Vec<_>>();
+        let labels = |text: &str| d.rows(&schema::parse(&SHARE, text), text).into_iter().map(|r| r.label).collect::<Vec<_>>();
         assert_eq!(labels("expires:"), ["never", "1d", "7d", "30d"]);
         assert_eq!(labels("expires:7"), ["7d"]);
         assert_eq!(labels("original:n"), ["no"]);
         assert_eq!(labels(""), ["Make the link", "original:", "quality:", "expires:"]);
+        assert!(labels("expires:7d ").starts_with(&["original:".to_string(), "quality:".to_string()]), "done: the keys to go on with");
         assert_eq!(labels("exp"), ["expires:"]);
         assert_eq!(labels("quality:"), ["default", "128", "64"]);
         assert_eq!(labels("quality:6"), ["64"]);

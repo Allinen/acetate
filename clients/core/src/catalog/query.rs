@@ -8,7 +8,8 @@
 //! `rate:44.1k` (the sample rate, compared the same way), `format:lossy` / `lossless`. A value
 //! runs until the next key, so `artist:lil quill year:2017` needs no quotes; `"…"` quotes
 //! one with a key in it (`title:"one no:two"`). The syntax is the commandline's
-//! (`crate::commandline`), where a search's keys all go together: no `|` needed. A key can be
+//! (`crate::commandline::schema`, declared as `SEARCH`), where a search's keys all go
+//! together: no `|` needed. A key can be
 //! shortened to any start of it (`art:`, `yr` isn't one: the aliases are listed below),
 //! and a word with a colon that isn't a key is a plain word.
 //!
@@ -17,6 +18,7 @@
 
 use super::Track;
 use super::Catalog;
+use crate::commandline::schema::{self, Kind, Next, Schema, Spec};
 
 /// A key, as understood.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,50 +51,70 @@ pub enum Key {
     SampleRate,
 }
 
-/// Every key's names: the first is its own, the rest are other names for it. A typed key
-/// is any start of one of these (at least two letters), the first match winning.
-const KEYS: &[(Key, &[&str])] = &[
-    (Key::Artist, &["artist", "artists", "by"]),
-    (Key::Featured, &["featuring", "feat", "ft"]),
-    (Key::Album, &["album", "on"]),
-    (Key::Title, &["title", "name"]),
-    (Key::Year, &["year", "released", "date"]),
-    (Key::Genre, &["genre", "genres"]),
-    (Key::Status, &["status"]),
-    (Key::Format, &["format", "codec"]),
-    (Key::Flag, &["flag", "missing", "issue"]),
-    (Key::Kind, &["kind", "type"]),
-    (Key::Disc, &["disc", "disk", "cd"]),
-    (Key::Number, &["track", "number", "numbers", "no", "renumber"]),
-    (Key::Group, &["group", "grouping", "collective"]),
-    (Key::Source, &["source", "sources", "platform", "from"]),
-    (Key::Og, &["og", "original"]),
-    (Key::Bitrate, &["bitrate", "kbps"]),
-    (Key::SampleRate, &["rate", "samplerate", "hz"]),
+/// Every key: its own name, its other names, and what it finds. A typed key is any start of
+/// one of its names (at least two letters), the first match winning; each goes with every
+/// other (`og:yes title:x`, no `|` needed), and nothing is taken off.
+pub static KEYS: [Spec; 17] = [
+    key("artist", &["artists", "by"], "by an artist"),
+    key("featuring", &["feat", "ft"], "with an artist featured"),
+    key("album", &["on"], "on an album"),
+    key("title", &["name"], "its title"),
+    key("year", &["released", "date"], "from a year"),
+    key("genre", &["genres"], "a genre"),
+    key("status", &[], "released, demo…"),
+    key("format", &["codec"], "flac, mp3, lossless…"),
+    key("flag", &["missing", "issue"], "a review flag on it"),
+    key("kind", &["type"], "album, ep, single…"),
+    key("disc", &["disk", "cd"], "its disc"),
+    key("track", &["number", "numbers", "no", "renumber"], "its track number"),
+    key("group", &["grouping", "collective"], "in a grouping"),
+    key("source", &["sources", "platform", "from"], "a platform it has a source on"),
+    Spec::new("og", Kind::Maybe(&Kind::Text), "original files (og:no the rest; words: in their names)").aliases(&["original"]).prefix().next(Next::Args(&KEYS)),
+    key("bitrate", &["kbps"], "its bitrate in kbps: <192, >=320, 128"),
+    key("rate", &["samplerate", "hz"], "its sample rate: 44.1k, >48k"),
 ];
+
+const fn key(name: &'static str, aliases: &'static [&'static str], help: &'static str) -> Spec {
+    Spec::new(name, Kind::Text, help).aliases(aliases).prefix().next(Next::Args(&KEYS))
+}
+
+/// A search's line: its keys.
+pub static SEARCH: Schema = Schema { commands: &KEYS, also: &[] };
 
 impl Key {
     /// The key a typed name means, if any. Exact names first ("no" is `number`, not the
     /// start of something), then starts of names (two letters at least).
     pub fn parse(name: &str) -> Option<Key> {
-        let name = name.to_lowercase();
-        if let Some((key, _)) = KEYS.iter().find(|(_, names)| names.contains(&name.as_str())) {
-            return Some(*key);
-        }
-        if name.chars().count() < 2 {
-            return None;
-        }
-        KEYS.iter().find(|(_, names)| names.iter().any(|n| n.starts_with(&name))).map(|(key, _)| *key)
+        SEARCH.command(name).and_then(|s| Key::of(s.key))
     }
 
-    /// Every key with its names (its own first).
-    pub fn all() -> impl Iterator<Item = (Key, &'static [&'static str])> {
-        KEYS.iter().copied()
+    /// The key a spec's own name is.
+    pub fn of(name: &str) -> Option<Key> {
+        Some(match name {
+            "artist" => Key::Artist,
+            "featuring" => Key::Featured,
+            "album" => Key::Album,
+            "title" => Key::Title,
+            "year" => Key::Year,
+            "genre" => Key::Genre,
+            "status" => Key::Status,
+            "format" => Key::Format,
+            "flag" => Key::Flag,
+            "kind" => Key::Kind,
+            "disc" => Key::Disc,
+            "track" => Key::Number,
+            "group" => Key::Group,
+            "source" => Key::Source,
+            "og" => Key::Og,
+            "bitrate" => Key::Bitrate,
+            "rate" => Key::SampleRate,
+            _ => return None,
+        })
     }
 
     /// Its own name.
     pub fn name(self) -> &'static str {
-        KEYS.iter().find(|(k, _)| *k == self).map(|(_, names)| names[0]).unwrap_or("")
+        KEYS.iter().map(|s| s.key).find(|k| Key::of(k) == Some(self)).unwrap_or("")
     }
 }
 
@@ -104,30 +126,20 @@ pub struct Query {
     pub fields: Vec<(Key, String)>,
 }
 
-/// A search's keys: every one goes with every other (`og:yes title:x`, no `|` needed), and
-/// nothing is taken off.
-impl crate::commandline::Keys for Key {
-    const MINUS: bool = false;
-
-    fn key(name: &str) -> Option<Key> {
-        Key::parse(name)
-    }
-
-    fn name(self) -> &'static str {
-        Key::name(self)
-    }
-
-    fn takes(_: Key, _: Key) -> bool {
-        true
-    }
-}
-
 impl Query {
-    /// The commandline's syntax (`crate::commandline`): a value runs until the next key,
-    /// `"…"` quotes one.
+    /// The commandline's syntax (`crate::commandline::schema`, `SEARCH`): a value runs until
+    /// the next key, `"…"` quotes one. Every key typed counts, in the order typed.
     pub fn parse(text: &str) -> Query {
-        let line = crate::commandline::parse::<Key>(text);
-        Query { words: line.words.iter().map(|w| w.to_lowercase()).collect(), fields: line.parts.into_iter().map(|p| (p.key, p.value)).collect() }
+        let line = schema::parse(&SEARCH, text);
+        let mut fields = Vec::new();
+        fn add(n: &schema::Node, fields: &mut Vec<(Key, String)>) {
+            if let Some(k) = Key::of(n.spec.key).filter(|_| n.field.is_none()) {
+                fields.push((k, n.value.clone()));
+            }
+            n.args.iter().for_each(|a| add(a, fields));
+        }
+        line.commands.iter().for_each(|c| add(c, &mut fields));
+        Query { words: line.words.iter().map(|w| w.to_lowercase()).collect(), fields }
     }
 
     #[cfg(test)]

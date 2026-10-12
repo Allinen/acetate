@@ -2,8 +2,9 @@
 //! `track_commands`): a page's
 //! sources, extras and notes (`source:`, `extra:`, `note:`, and taking them off), the paths
 //! and files typed for them, the rows of the list and what taking one does, the changes
-//! staged, and sending the ones saved on their own. Each page has its own keys (a
-//! `commandline::Keys` table) and hands its parts' values to these.
+//! staged, and sending the ones saved on their own. Each page declares its commands (a
+//! `commandline::schema::Schema`, with `SOURCE`, `EXTRA`, `NOTE` among them) and hands the
+//! nodes to these.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};

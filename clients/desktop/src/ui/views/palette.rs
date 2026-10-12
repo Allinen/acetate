@@ -3,7 +3,7 @@
 //! track: plays it, then the rest of its album), Shift+Enter plays (a track: opens its
 //! album). Esc empties the line, and closes it when it's empty.
 //!
-//! The line is a commandline (`crate::commandline`'s language): the search's keys
+//! The line is a commandline (`crate::commandline::schema`'s language): the search's keys
 //! (`artist:` `album:` `year:` `status:`…) filter, `go:albums` lists the pages and `do:pause`
 //! the other commands (a command's short word is shown under its name). Plain words find
 //! commands too, and the keys themselves are listed (Tab or Enter writes one and carries on
@@ -23,9 +23,8 @@ use eframe::egui::{self, Align2, Color32, Key, Modifiers, Pos2, Rect, RichText, 
 
 use uuid::Uuid;
 
-use crate::catalog::query::Key as Find;
 use crate::catalog::search::{Hits, Search};
-use crate::commandline::{self, Keys};
+use crate::commandline::schema::{self, Kind, Schema, Spec};
 use crate::catalog::Catalog;
 use crate::ui::task::Task;
 use crate::ui::theme::{font, medium, semibold, PALETTE as P};
@@ -93,38 +92,12 @@ pub enum Mode {
     Pick(PickKind, Option<Uuid>),
 }
 
-/// The palette's keys: `go:` and `do:` take a command's word; the search's keys go with
-/// each other, as they do in a track list.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum K {
-    Go,
-    Do,
-    Find(Find),
-}
-
-impl Keys for K {
-    const MINUS: bool = false;
-
-    fn key(name: &str) -> Option<K> {
-        match name.to_lowercase().as_str() {
-            "go" | "goto" => Some(K::Go),
-            "do" | "run" => Some(K::Do),
-            _ => Find::parse(name).map(K::Find),
-        }
-    }
-
-    fn name(self) -> &'static str {
-        match self {
-            K::Go => "go",
-            K::Do => "do",
-            K::Find(key) => key.name(),
-        }
-    }
-
-    fn takes(main: K, arg: K) -> bool {
-        matches!((main, arg), (K::Find(_), K::Find(_)))
-    }
-}
+/// The palette's line: the search's keys (they go with each other, as in a track list), and
+/// `go:` and `do:`, which take a command's word.
+static PALETTE: Schema = Schema {
+    commands: &crate::catalog::query::KEYS,
+    also: &[Spec::new("go", Kind::Text, "go to a page").aliases(&["goto"]), Spec::new("do", Kind::Text, "run a command").aliases(&["run"])],
+};
 
 /// Keys listed when nothing (or the start of one) is typed: what to type, and what it's for.
 const INSERTS: &[(&str, &str)] = &[
@@ -138,12 +111,12 @@ const INSERTS: &[(&str, &str)] = &[
 
 /// `go:…` / `do:…` at the start of the line: whether it's pages, and the words after it.
 fn command_line(query: &str) -> Option<(bool, String)> {
-    let line = commandline::parse::<K>(query);
-    let first = line.parts.first()?;
-    match first.key {
-        K::Go => Some((true, first.value.clone())),
-        K::Do => Some((false, first.value.clone())),
-        K::Find(_) => None,
+    let line = schema::parse(&PALETTE, query);
+    let first = line.commands.first()?;
+    match first.spec.key {
+        "go" => Some((true, first.value.clone())),
+        "do" => Some((false, first.value.clone())),
+        _ => None,
     }
 }
 
@@ -729,9 +702,10 @@ mod tests {
 
     #[test]
     fn search_keys_are_not_swallowed() {
-        assert_eq!(<K as Keys>::key("artist"), Some(K::Find(Find::Artist)));
-        assert_eq!(<K as Keys>::key("go"), Some(K::Go));
-        assert_eq!(<K as Keys>::key("DO"), Some(K::Do));
+        assert_eq!(PALETTE.command("artist").map(|s| s.key), Some("artist"));
+        assert_eq!(PALETTE.command("go").map(|s| s.key), Some("go"));
+        assert_eq!(PALETTE.command("DO").map(|s| s.key), Some("do"));
+        assert_eq!(PALETTE.command("ar").map(|s| s.key), Some("artist"), "the search's by their starts");
     }
 
     #[test]

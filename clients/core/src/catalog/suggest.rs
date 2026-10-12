@@ -1,17 +1,20 @@
 //! Completion for a search line (the query language of `query`), for a keyboard without
 //! Tab: what could come next, as a few chips. The line is completed at its end.
 //!
-//! * Nothing typed, or a finished word: the keys (`artist:`, `year:`…).
+//! It's the search's list (`commandline::schema::rows` over `query::SEARCH`), each row as
+//! the line it makes:
+//!
+//! * Nothing typed, or a finished value: the keys (`artist:`, `year:`…).
 //! * A word that starts a key (`ar`): the keys it could be.
 //! * After a key (`artist:li`): values from the library that fit (artists, albums, years,
-//!   genres…), the more used ones first. A value runs until the next key, so after one
-//!   word of it the keys are offered too.
+//!   genres…), the more used ones first. A value runs until the next key, so a word of it
+//!   that starts a key offers that key too.
 
 use std::collections::HashMap;
 
 use super::Catalog;
-use super::query::Key;
-use crate::commandline;
+use super::query::{Key, SEARCH};
+use crate::commandline::schema::{self, Lists, Node, Row, Spec};
 
 /// One chip: what it says, and the whole line as it is once chosen.
 #[derive(Debug, Clone, PartialEq)]
@@ -20,7 +23,7 @@ pub struct Suggestion {
     pub line: String,
 }
 
-/// The keys worth offering for a search, most useful first.
+/// The keys worth offering for a search.
 const OFFERED: &[Key] = &[
     Key::Artist,
     Key::Album,
@@ -40,44 +43,33 @@ const OFFERED: &[Key] = &[
 
 const LIMIT: usize = 12;
 
-pub fn suggest(catalog: &Catalog, text: &str) -> Vec<Suggestion> {
-    let line = commandline::parse::<Key>(text);
-    let ended = text.ends_with(char::is_whitespace);
-    let word_start = if ended { text.len() } else { text.rfind(char::is_whitespace).map(|i| i + 1).unwrap_or(0) };
-    let word = &text[word_start..];
-    let keys = |prefix: &str, before: &str| -> Vec<Suggestion> {
-        let prefix = prefix.to_lowercase();
-        Key::all()
-            .filter(|(key, names)| OFFERED.contains(key) && (prefix.is_empty() || names.iter().any(|n| n.starts_with(&prefix))))
-            .map(|(key, _)| key)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .map(|k| (OFFERED.iter().position(|o| *o == k), k))
-            .collect::<std::collections::BTreeMap<_, _>>()
-            .into_values()
-            .take(if prefix.is_empty() { 8 } else { LIMIT })
-            .map(|k| Suggestion { label: format!("{}:", k.name()), line: format!("{before}{}:", k.name()) })
-            .collect()
-    };
-    match line.parts.last() {
-        // Inside quotes: the user is writing it out.
-        Some(last) if last.quoted && !ended => Vec::new(),
-        Some(last) if last.colon && (!ended || last.value.is_empty()) => {
-            let from = if last.value.is_empty() { text.len() } else { last.value_start };
-            let mut out: Vec<Suggestion> = values(catalog, last.key, &last.value)
-                .into_iter()
-                .map(|v| Suggestion { label: v.clone(), line: format!("{}{} ", &text[..from], commandline::quoted::<Key>(&v)) })
-                .collect();
-            // A word after the first of the value may be the start of the next key.
-            if !last.value.is_empty() && !ended && word_start > last.value_start && word.chars().count() >= 2 {
-                out.extend(keys(word, &text[..word_start]));
-            }
-            out
-        }
-        _ if text.trim().is_empty() => keys("", text),
-        _ if ended => keys("", text),
-        _ => keys(word, &text[..word_start]),
+/// A search's list: the library's values for the key being typed.
+struct Values<'a>(&'a Catalog);
+
+impl Lists for Values<'_> {
+    fn choices(&self, _kind: schema::Kind, typed: &str, node: &Node, _command: &Node) -> Vec<Row> {
+        Key::of(node.spec.key).map(|k| values(self.0, k, typed)).unwrap_or_default().into_iter().map(|v| Row::value(v, "")).collect()
     }
+
+    fn offers(&self, spec: &Spec) -> bool {
+        Key::of(spec.key).is_some_and(|k| OFFERED.contains(&k))
+    }
+}
+
+pub fn suggest(catalog: &Catalog, text: &str) -> Vec<Suggestion> {
+    let line = schema::parse(&SEARCH, text);
+    let ended = text.ends_with(char::is_whitespace);
+    // Inside quotes: the user is writing it out.
+    if line.current().is_some_and(|c| c.typed().quoted) && !ended {
+        return Vec::new();
+    }
+    let keys_alone = matches!(schema::at(&line, text), schema::At::Command { word: None });
+    let mut pins = schema::Pins::default();
+    schema::rows(&SEARCH, &line, text, &Values(catalog))
+        .into_iter()
+        .take(if keys_alone { 8 } else { LIMIT })
+        .map(|row| Suggestion { line: schema::take(&SEARCH, text, &row, true, &mut pins), label: row.label })
+        .collect()
 }
 
 /// Values for `key` that fit what's typed of one: starts first, then words inside, then

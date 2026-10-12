@@ -1,13 +1,12 @@
 //! A commandline on a page: the field where commands are typed (the language is
-//! `crate::commandline`'s), the list of choices under it, its keys, what Enter would do,
-//! and the commands staged, as chips. The page says what its commands mean: the choices for
-//! what's being typed, and what staging and applying do. The track editor has one, and so
-//! does the artist page.
+//! `crate::commandline::schema`'s), the list of choices under it, its keys, what Enter would
+//! do, and the commands staged, as chips. The page says what its commands mean (its schema,
+//! and its `Lists`); `CommandLine::drive` draws the list and takes from it, the same
+//! everywhere.
 //!
-//! Keys in the field: ↑/↓ choose in the list, Tab takes the choice and writes the next part
-//! to type, Enter takes it and stages the command(s), Backspace on an empty field takes the
-//! last chip back, Esc empties it. A commandline declared by a schema has its list drawn
-//! and taken by `CommandLine::drive` (Tab never writes a key by itself there).
+//! Keys in the field: ↑/↓ choose in the list, Tab takes the choice and leaves a space (the
+//! list then shows what can follow; it never writes a key by itself), Enter takes it and
+//! does the line, Backspace on an empty field takes the last chip back, Esc empties it.
 
 use eframe::egui::{self, Key, Modifiers, RichText};
 
@@ -137,23 +136,6 @@ impl CommandLine {
             self.highlighted = 0;
         }
         response
-    }
-
-    /// A choice taken for the value being typed (`value_start..end` in the text): `text`
-    /// in its place (None: what's typed stays as typed), then `next`, the next part to type.
-    /// The cursor goes after it.
-    pub fn take(&mut self, ctx: &egui::Context, value_start: usize, end: usize, text: Option<&str>, next: Option<&str>) {
-        if let Some(text) = text {
-            let end = end.min(self.text.len());
-            let start = value_start.min(end);
-            self.text.replace_range(start..end, text);
-        }
-        if let Some(after) = next {
-            self.text.push(' ');
-            self.text.push_str(after);
-        }
-        self.highlighted = 0;
-        self.cursor_to_end(ctx);
     }
 
     /// For a commandline declared by a schema (`commandline::schema`): the list under the
