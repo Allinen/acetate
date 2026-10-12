@@ -122,34 +122,33 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell, page: Page, username: &str) {
             }
             ui.add_space(6.0);
         }
-        // (A little smaller than the rest: four fit in the pane with room to spare.)
-        let small = || font(12.5, medium());
+        // Two rows of links (bottom up: the account row first, the places above it).
+        let link = || font(14.0, medium());
         ui.horizontal(|ui| {
-            let settings = RichText::new("Settings").font(small()).color(if page == Page::Settings { P.text } else { P.muted });
+            if ui.add(egui::Button::new(RichText::new("Keys").font(link()).color(P.muted)).frame(false)).on_hover_text("?").clicked() {
+                shell.act(Action::ShowKeys);
+            }
+            if ui.add(egui::Button::new(RichText::new("Log out").font(link()).color(P.muted)).frame(false)).clicked() {
+                shell.act(Action::LogOut);
+            }
+        });
+        ui.horizontal(|ui| {
+            if shell.account.can("view_history") {
+                let changes = RichText::new("Changes").font(link()).color(if page == Page::Changes { P.text } else { P.muted });
+                if ui.add(egui::Button::new(changes).frame(false)).on_hover_text("What was changed lately in the metadata").clicked() {
+                    shell.act(Action::Go(Page::Changes));
+                }
+            }
+            let settings = RichText::new("Settings").font(link()).color(if page == Page::Settings { P.text } else { P.muted });
             if ui.add(egui::Button::new(settings).frame(false)).on_hover_text("Ctrl+,").clicked() {
                 shell.act(Action::Go(Page::Settings));
             }
             // Everyone's: playlists go there too.
-            {
-                let trash = RichText::new("Trash").font(small()).color(if page == Page::Trash { P.text } else { P.muted });
-                if ui.add(egui::Button::new(trash).frame(false)).clicked() {
-                    shell.act(Action::Go(Page::Trash));
-                }
-            }
-            if ui.add(egui::Button::new(RichText::new("Keys").font(small()).color(P.muted)).frame(false)).on_hover_text("?").clicked() {
-                shell.act(Action::ShowKeys);
-            }
-            if ui.add(egui::Button::new(RichText::new("Log out").font(small()).color(P.muted)).frame(false)).clicked() {
-                shell.act(Action::LogOut);
+            let trash = RichText::new("Trash").font(link()).color(if page == Page::Trash { P.text } else { P.muted });
+            if ui.add(egui::Button::new(trash).frame(false)).clicked() {
+                shell.act(Action::Go(Page::Trash));
             }
         });
-        // (Bottom up: above the links.)
-        if shell.account.can("view_history") {
-            let changes = RichText::new("Changes").color(if page == Page::Changes { P.text } else { P.muted });
-            if ui.add(egui::Button::new(changes).frame(false)).on_hover_text("What was changed lately in the metadata").clicked() {
-                shell.act(Action::Go(Page::Changes));
-            }
-        }
         ui.label(RichText::new(username).color(P.muted).font(font(13.0, medium())));
         let status = ui.label(RichText::new(shell.library_status()).color(P.faint).small());
         if status.on_hover_text("F5: check for changes now").clicked() {
