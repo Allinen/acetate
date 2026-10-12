@@ -14,6 +14,9 @@ use uuid::Uuid;
 
 use crate::catalog::search::Part;
 use crate::catalog::Catalog;
+use super::credited_as_line::{self as line, Setting};
+use super::page_commands::Known;
+use crate::ui::edit::commandline::{self as cl, CommandLine};
 use crate::ui::edit::inline_search::{Choice as Choice2, InlineSearch};
 use crate::ui::task::Task;
 use crate::ui::theme::{font, semibold, PALETTE as P};
@@ -46,7 +49,7 @@ struct Row {
 /// Which of the artist's credits: all, those under its own name, or those under an alias
 /// (by id).
 #[derive(Debug, Clone, Copy, PartialEq)]
-enum Only {
+pub enum Only {
     All,
     OwnName,
     Alias(Uuid),
@@ -81,6 +84,12 @@ pub struct CreditedAs {
     done: Task<Result<Answer, String>>,
     /// What the last one did (or why not).
     outcome: Option<Result<String, String>>,
+    /// The commandline (`credited_as_line`) and the names chosen in its list.
+    cl: CommandLine,
+    known: Known,
+    notice: Option<String>,
+    /// Chosen by the opening: the artist alone credited on the tracks, or one given.
+    started: bool,
 }
 
 impl CreditedAs {
@@ -100,7 +109,21 @@ impl CreditedAs {
             sending: false,
             done: Task::default(),
             outcome: None,
+            cl: {
+                let mut cl = CommandLine::new(egui::Id::new("credited-as-line"));
+                cl.focus = true;
+                cl
+            },
+            known: Known::default(),
+            notice: None,
+            started: false,
         }
+    }
+
+    /// For the credits under one of an artist's other names: `tracks` are where it's used.
+    /// The artist and the credits are chosen already; what they become is left to say.
+    pub fn for_alias(tracks: Vec<Uuid>, artist: Uuid, alias: Uuid) -> CreditedAs {
+        CreditedAs { artist: Some(artist), only: Only::Alias(alias), started: true, ..CreditedAs::open(tracks) }
     }
 
     fn choice(&self) -> Option<Choice> {
@@ -115,6 +138,11 @@ impl CreditedAs {
         if self.counted_for != shell.generation {
             self.counted_for = shell.generation;
             self.rows = rows(&catalog, &self.tracks);
+        }
+        // One artist credited on the tracks: it's the one.
+        if !std::mem::replace(&mut self.started, true) && self.artist.is_none() && self.rows.len() == 1 {
+            let artist = self.rows[0].artist;
+            self.set(shell, Setting::Artist(artist));
         }
         let choice = self.choice();
         let previewed = self.preview.poll();
@@ -141,6 +169,12 @@ impl CreditedAs {
         };
         let from_names = names(self.artist);
         let to_names = names(self.to.as_ref().map(|t| t.0).or(self.artist));
+        let artist_list: Vec<(Uuid, String)> = self.rows.iter().map(|r| (r.artist, r.name.clone())).collect();
+        let to_name: Option<String> = self.to.as_ref().map(|t| t.1.clone()).or_else(|| self.artist.and_then(|a| self.rows.iter().find(|r| r.artist == a).map(|r| r.name.clone())));
+        // Ctrl+Enter credits them so (when what it does is shown); with a line typed it sets that first.
+        let ctrl_enter = shell.ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Enter));
+        let mut settings: Vec<Setting> = Vec::new();
+        let mut can_go = false;
         shell.modal_open = true;
         let ctx = shell.ctx.clone();
         let title = format!("Credited as… on {} tracks", thousands(self.tracks.len()));
@@ -153,7 +187,58 @@ impl CreditedAs {
         let mut open = None;
         let closed = crate::ui::modal::show(&ctx, "credited-as", &title, Vec2::new(900.0, 780.0), |ui| {
             ui.label("An artist's credits on these tracks, and on the albums they're on: under another of its names, or credited to another artist (a name that was really someone else's). A revision each that changes; other artists' credits stay as they are.");
-            ui.add_space(8.0);
+            ui.add_space(6.0);
+            let world = line::World { catalog: &catalog, artists: &artist_list, from: self.artist, from_names: &from_names, to_name: to_name.as_deref(), to_names: &to_names };
+            let focused = self.cl.hold_focus(&ctx);
+            let parsed = crate::commandline::parse::<line::K>(&self.cl.text);
+            let list_rows = parsed.parts.last().map(|p| line::choices(p, &world)).unwrap_or_default();
+            self.cl.highlighted = self.cl.highlighted.min(list_rows.len().saturating_sub(1));
+            let mut take = None;
+            let mut enter = false;
+            if focused {
+                let pressed = self.cl.keys(&ctx, list_rows.len(), false, false);
+                if (pressed.tab || pressed.enter) && !list_rows.is_empty() {
+                    take = Some((self.cl.highlighted, pressed.tab));
+                }
+                enter = pressed.enter;
+            }
+            enter |= ctrl_enter && !self.cl.text.trim().is_empty();
+            let hint = "artist:  only:  to:  as:  why:     (Enter sets it · Ctrl+Enter credits them so)";
+            if self.cl.field(ui, true, hint).changed() {
+                self.notice = None;
+            }
+            let mut clicked = None;
+            if !list_rows.is_empty() {
+                let list: Vec<(String, String)> = list_rows.iter().map(|r| (r.label.clone(), r.sub.clone())).collect();
+                cl::list(ui, list, self.cl.highlighted, &mut clicked, "↑/↓ choose · Tab: take it · Enter: take it and set it");
+            }
+            if let Some(n) = clicked {
+                take = Some((n, true));
+            }
+            if let Some((n, tab)) = take
+                && let Some(r) = list_rows.get(n)
+            {
+                super::page_commands::take::<line::K, (), ()>(&mut self.cl, &ctx, &mut self.known, &parsed, &r.choice, tab);
+            }
+            if enter && !self.cl.text.trim().is_empty() {
+                let done = line::resolve(&self.cl.text, &world, &self.known);
+                match done.iter().find_map(|d| d.as_ref().err()) {
+                    Some(err) => self.notice = Some(format!("Not done: {err}")),
+                    None => {
+                        settings = done.into_iter().flatten().map(|(_, s)| s).collect();
+                        self.cl.text.clear();
+                        self.notice = None;
+                    }
+                }
+            }
+            if list_rows.is_empty() && !self.cl.text.trim().is_empty() {
+                let shown: Vec<Result<(String, Option<String>), String>> = line::resolve(&self.cl.text, &world, &self.known).into_iter().map(|r| r.map(|(label, _)| (label, None))).collect();
+                cl::would_do(ui, &shown, "");
+            }
+            if let Some(notice) = &self.notice {
+                ui.label(RichText::new(notice).color(P.muted).small());
+            }
+            ui.add_space(6.0);
             ui.label(RichText::new("Which artist").font(font(14.0, semibold())));
             egui::ScrollArea::vertical().id_salt("credited-as-artists").max_height(160.0).show(ui, |ui| {
                 for row in &self.rows {
@@ -269,7 +354,8 @@ impl CreditedAs {
             ui.horizontal(|ui| {
                 ui.add(egui::TextEdit::singleline(&mut self.reason).hint_text("Why (optional: kept with every change)").desired_width(360.0));
                 let count = answer.as_ref().map(|a| a.tracks.len() + a.albums.len()).unwrap_or(0);
-                go = ui.add_enabled(!self.sending && count > 0, egui::Button::new("Credit it so")).clicked();
+                can_go = !self.sending && count > 0;
+                go = ui.add_enabled(can_go, egui::Button::new("Credit it so  (Ctrl+Enter)")).clicked();
                 cancel = ui.button("Close").clicked();
                 if self.sending {
                     ui.label(RichText::new("Working…").color(P.muted));
@@ -308,36 +394,20 @@ impl CreditedAs {
             }
         });
         let before = self.choice();
-        if let Some(artist) = pick_artist
-            && self.artist != Some(artist)
-        {
-            self.artist = Some(artist);
-            self.only = Only::All;
-            self.to = None;
-            self.alias = None;
-            shell.artist_details.refresh(artist);
-        }
-        if let Some(only) = pick_only {
-            self.only = only;
-        }
-        if let Some(to) = pick_to
-            && to.as_ref().map(|t| t.0) != self.to.as_ref().map(|t| t.0)
-        {
-            if let Some((id, _)) = &to {
-                shell.artist_details.refresh(*id);
-            }
-            self.to = to;
-            // Another artist's names: chosen again (its own, to start with).
-            self.alias = Some(None);
-        }
-        if let Some(alias) = pick_alias {
-            self.alias = Some(alias);
+        let picks = pick_artist
+            .map(Setting::Artist)
+            .into_iter()
+            .chain(pick_only.map(Setting::Only))
+            .chain(pick_to.map(Setting::To))
+            .chain(pick_alias.map(Setting::As));
+        for setting in settings.into_iter().chain(picks) {
+            self.set(shell, setting);
         }
         if self.choice() != before {
             self.outcome = None;
             self.ask(shell);
         }
-        if go {
+        if go || (ctrl_enter && can_go && self.cl.text.trim().is_empty()) {
             self.send(shell, false);
         }
         if let Some(page) = open {
@@ -345,6 +415,33 @@ impl CreditedAs {
             return true;
         }
         (closed || cancel) && !self.sending
+    }
+
+    /// One thing chosen (by a chip, or typed in the line).
+    fn set(&mut self, shell: &mut Shell, setting: Setting) {
+        match setting {
+            Setting::Artist(artist) if self.artist != Some(artist) => {
+                self.artist = Some(artist);
+                self.only = Only::All;
+                self.to = None;
+                self.alias = None;
+                shell.artist_details.refresh(artist);
+            }
+            Setting::Artist(_) => {}
+            Setting::Only(only) => self.only = only,
+            Setting::To(to) => {
+                if to.as_ref().map(|t| t.0) != self.to.as_ref().map(|t| t.0) {
+                    if let Some((id, _)) = &to {
+                        shell.artist_details.refresh(*id);
+                    }
+                    self.to = to;
+                    // Another artist's names: chosen again (its own, to start with).
+                    self.alias = Some(None);
+                }
+            }
+            Setting::As(alias) => self.alias = Some(alias),
+            Setting::Why(why) => self.reason = why,
+        }
     }
 
     /// The preview for the choice.

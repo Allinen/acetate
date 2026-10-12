@@ -53,7 +53,10 @@ field, and previews every change before you apply it.
 In edit mode, other bulk tools act on the marked tracks: *Credited as…* (credit an artist under another of
 their names, or fix a name that was really someone else's, on tracks and albums together),
 *Mark as original files…*, and [merging](merging.md). Each previews exactly what will change,
-and nothing happens until you press the button.
+and nothing happens until you press the button. `Alt+C` opens *Credited as…* (for the marked tracks, or
+the selected one); its commandline takes `artist:`, `only:` (`all`, `own` or one of its other
+names), `to:` (another artist), `as:` (`own` or an other name) and `why:`, `Enter` sets what's
+typed and `Ctrl+Enter` credits the tracks so.
 
 ## Saving
 

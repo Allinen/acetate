@@ -299,7 +299,9 @@ pub struct ArtistCommands {
     asking: Vec<(Uuid, String, String)>,
     uses: UsesAnswer,
     /// A name that couldn't go, and where it's still credited.
-    blocked: Option<(String, Uses)>,
+    blocked: Option<(Uuid, String, Uses)>,
+    /// "Credit them another way" was asked: the name, and the tracks credited as it.
+    credit_request: Option<(Uuid, Vec<Uuid>)>,
     /// Sources, extras and notes being saved, each on its own.
     sending: Sending<Edit>,
     known: Known,
@@ -321,6 +323,7 @@ impl Default for ArtistCommands {
             asking: Vec::new(),
             uses: UsesAnswer::default(),
             blocked: None,
+            credit_request: None,
             sending: Sending::default(),
             known: Known::default(),
             groups: Groups::default(),
@@ -619,6 +622,12 @@ impl ArtistCommands {
         filters
     }
 
+    /// The tracks credited under a name that couldn't be taken off, if "credit them another
+    /// way" was asked (taken: once).
+    pub fn take_credit_request(&mut self) -> Option<(Uuid, Vec<Uuid>)> {
+        self.credit_request.take()
+    }
+
     /// Changes are staged (the page has changes not saved).
     pub fn has_changes(&self) -> bool {
         !self.staged.is_empty() || !self.asking.is_empty()
@@ -763,8 +772,15 @@ impl ArtistCommands {
         for (_, _, name) in &self.asking {
             ui.label(RichText::new(format!("Checking where “{name}” is credited…")).color(P.faint).small());
         }
-        if let Some((name, uses)) = &self.blocked {
+        if let Some((alias, name, uses)) = &self.blocked {
             artist_form::uses_links(ui, shell, name, uses);
+            if uses.tracks.is_empty() {
+                ui.label(RichText::new("It's credited on albums only: change those on their pages.").color(P.faint).small());
+            } else if ui.button("Credit those tracks another way…").on_hover_text("Under another of its names, or to another artist: shows what it would change first").clicked() {
+                let mut tracks: Vec<Uuid> = uses.tracks.iter().map(|t| t.track_id).collect();
+                tracks.dedup();
+                self.credit_request = Some((*alias, tracks));
+            }
         }
         if let Some(n) = pc::status(ui, self.notice.as_deref(), self.sending.count, &self.staged, can_edit) {
             self.staged.remove(n);
@@ -808,7 +824,7 @@ impl ArtistCommands {
                     let label = format!("− other name “{name}”");
                     self.staged.push(Staged { text, label, edit: Edit::RemoveAlias(alias, name), failed: None });
                 }
-                Ok(uses) => self.blocked = Some((name, uses)),
+                Ok(uses) => self.blocked = Some((alias, name, uses)),
                 Err(err) => self.notice = Some(format!("Couldn't check where “{name}” is credited: {err}")),
             }
         }

@@ -36,6 +36,8 @@ pub struct ArtistPage {
     expanded: Option<Section>,
     /// "Turn into a collective…" open (edit mode).
     to_collective: Option<super::to_collective::ToCollective>,
+    /// The credits under a name that is in use, moved (Credited as…).
+    credited_as: Option<super::credited_as::CreditedAs>,
     /// This artist and another side by side, to merge (edit mode), in place of the rest.
     merge: Option<super::artist_merge::ArtistMergeView>,
     /// "Merge into another artist…" asked the palette for the other one.
@@ -189,6 +191,14 @@ impl ArtistPage {
             && popup.show(shell)
         {
             self.to_collective = None;
+        }
+        if let Some(popup) = self.credited_as.as_mut()
+            && popup.show(shell)
+        {
+            self.credited_as = None;
+        }
+        if let Some((alias, tracks)) = self.commands.take_credit_request() {
+            self.credited_as = Some(super::credited_as::CreditedAs::for_alias(tracks, id, alias));
         }
         let Some(artist) = catalog.artist(id) else {
             ui.label(RichText::new("This artist isn't in the library (anymore).").color(P.muted));

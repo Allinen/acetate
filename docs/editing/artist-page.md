@@ -41,7 +41,10 @@ if you type one anyway it tells you why it can't be done.
   differs only in case is a different name.
 - `-alias:Name` takes a name off. The server is asked first where it's still credited. If
   it's credited anywhere, it isn't staged; the credits are listed as links, so you can
-  change them first.
+  change them first, and *Credit those tracks another way…* opens *Credited as…* with that
+  name's credits already chosen: say what they become (`as:own`, `as:Other name`, or
+  `to:Another artist`), look at what it would change, and `Ctrl+Enter` does it. Then
+  `-alias:Name` works.
 - `name:` renames it. `disambiguation:US rapper` says what tells it apart from other
   artists with the same name (`-disambiguation` clears it). `why:` is kept in the artist's
   [history](history.md) with a change to its names or what tells it apart; on its own
