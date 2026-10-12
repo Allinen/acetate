@@ -1110,7 +1110,7 @@ fn version_of(kind: &str, t: Track<'_>, credits: &[crate::ui::edit::editor::mode
             }
         }
     } else {
-        for c in t.credits() {
+        for c in t.credits().iter() {
             if let (Some(n), Some(r)) = (name(c.0), role(&c.1)) {
                 lines.push(format!("artist:{} role:{r}", quoted(&n)));
                 artists.push((n, c.0, true));

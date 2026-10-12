@@ -159,7 +159,7 @@ fn track_has(catalog: &Catalog, t: Track, key: Key, value: &str) -> bool {
     match key {
         Key::Artist | Key::Featured => {
             has(t.artist_display())
-                || t.credits().iter().any(|c| c.2.as_deref().is_some_and(has) || catalog.artist(c.0).is_some_and(|a| has(&a.name) || a.aliases.iter().any(|x| has(x))))
+                || t.credits().iter().any(|c| c.2.is_some_and(has) || catalog.artist(c.0).is_some_and(|a| has(&a.name) || a.aliases.iter().any(|x| has(x))))
         }
         Key::Album => t.albums().iter().any(|m| catalog.album(m.0).is_some_and(|a| has(a.title()))),
         Key::Title => has(t.title()),

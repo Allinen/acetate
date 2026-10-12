@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 
-use acetate_core::catalog::model::{Credit, Role};
+use acetate_core::catalog::model::Role;
 use uuid::Uuid;
 
 use crate::groupings::GroupingRow;
@@ -44,8 +44,8 @@ pub struct ArtistNarrowed {
     pub tracks: Vec<String>,
 }
 
-fn names_in(credits: &[Credit], artist: Uuid) -> impl Iterator<Item = Option<&str>> {
-    credits.iter().filter(move |c| c.0 == artist).map(|c| c.2.as_deref())
+fn names_in(credits: acetate_core::catalog::Credits<'_>, artist: Uuid) -> impl Iterator<Item = Option<&str>> {
+    credits.iter().filter(move |c| c.0 == artist).map(|c| c.2)
 }
 
 #[uniffi::export]
@@ -115,7 +115,7 @@ impl Core {
                 .copied()
                 .filter(|&t| names_in(catalog.track_at(t).credits(), id).any(&shows) && (!original_only || is_og(t)))
                 .collect();
-            let primary = album.credits().iter().any(|c| c.0 == id && c.1 == Role::Primary && shows(c.2.as_deref()));
+            let primary = album.credits().iter().any(|c| c.0 == id && c.1 == Role::Primary && shows(c.2));
             if primary && (!original_only || in_album.iter().any(|&t| is_og(t))) {
                 albums.push(album_row(album));
             }

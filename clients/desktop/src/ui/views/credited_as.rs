@@ -386,14 +386,14 @@ fn rows(catalog: &Catalog, tracks: &[Uuid]) -> Vec<Row> {
         let Some(i) = catalog.track_index(*id) else { continue };
         let track = catalog.track_at(i);
         let mut seen = Vec::new();
-        for credit in track.credits() {
+        for credit in track.credits().iter() {
             if seen.contains(&credit.0) {
                 continue;
             }
             seen.push(credit.0);
             let entry = by_artist.entry(credit.0).or_default();
             entry.0 += 1;
-            *entry.1.entry(credit.2.as_deref().map(str::to_string)).or_default() += 1;
+            *entry.1.entry(credit.2.map(str::to_string)).or_default() += 1;
         }
     }
     let mut rows: Vec<Row> = by_artist

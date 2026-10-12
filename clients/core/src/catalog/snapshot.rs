@@ -24,59 +24,14 @@ use uuid::Uuid;
 use super::flat::{Col, Flat, Mapping};
 use super::index::{Catalog, Lists};
 use super::lyrics::{LyricRow, Lyrics};
-use super::model::{self, Credit, Membership, Role};
-use super::rows::{AlbumRow, Pools, Span, TrackRow};
+use super::model;
+use super::rows::{AlbumRow, CreditRow, MembershipRow, Pools, Span, TrackRow};
 use super::text::{Str, Text, Texts, Utf8};
 
 const MAGIC: &[u8; 8] = b"ACETSNAP";
 
 /// Changes with what's stored and how.
-const FORMAT: u32 = 3;
-
-/// A credit as stored: its alias (if any) is in the aliases section.
-#[derive(Clone, Copy)]
-#[repr(C)]
-struct CreditRow {
-    id: Uuid,
-    alias_start: u32,
-    /// `u32::MAX`: no alias.
-    alias_len: u32,
-    role: u8,
-    _pad: [u8; 3],
-}
-
-// SAFETY: `repr(C)`, no padding left (spelled out), any bytes are valid.
-unsafe impl Flat for CreditRow {}
-
-/// A membership as stored (`Option<i16>`s have no fixed bytes): `i16::MIN` is none.
-#[derive(Clone, Copy)]
-#[repr(C)]
-struct MembershipRow {
-    album: Uuid,
-    disc: i16,
-    number: i16,
-}
-
-// SAFETY: `repr(C)`, 20 bytes, no padding, any bytes are valid.
-unsafe impl Flat for MembershipRow {}
-
-fn role_byte(role: Role) -> u8 {
-    match role {
-        Role::Primary => 0,
-        Role::Featured => 1,
-        Role::Producer => 2,
-        Role::Other => 3,
-    }
-}
-
-fn role_of(byte: u8) -> Role {
-    match byte {
-        0 => Role::Primary,
-        1 => Role::Featured,
-        2 => Role::Producer,
-        _ => Role::Other,
-    }
-}
+const FORMAT: u32 = 4;
 
 /// What isn't plain data.
 #[derive(Serialize, Deserialize)]
@@ -147,7 +102,7 @@ impl<W: Write> Writer<W> {
 }
 
 /// The sections, in order. Reading mirrors this.
-const SECTIONS: usize = 36;
+const SECTIONS: usize = 37;
 
 impl Catalog {
     /// Writes this catalog to `path` (a temporary name; the caller renames it into place).
@@ -163,24 +118,6 @@ impl Catalog {
             groupings: self.groupings.clone(),
             extras: self.extras.clone(),
         };
-        let mut aliases = Vec::new();
-        let credits: Vec<CreditRow> = self
-            .pools
-            .credits
-            .iter()
-            .map(|Credit(id, role, alias)| {
-                let (alias_start, alias_len) = match alias {
-                    Some(a) => {
-                        let start = aliases.len() as u32;
-                        aliases.extend_from_slice(a.as_bytes());
-                        (start, a.len() as u32)
-                    }
-                    None => (0, u32::MAX),
-                };
-                CreditRow { id: *id, alias_start, alias_len, role: role_byte(*role), _pad: [0; 3] }
-            })
-            .collect();
-
         // The header and table come first but need the offsets: written as zeros now and
         // again at the end.
         let table_len = SECTIONS * 16;
@@ -192,14 +129,12 @@ impl Catalog {
         w.col(&self.tracks)?;
         w.col(&self.albums)?;
         w.col(&self.pools.text.buffer.0)?;
-        let none = |n: Option<i16>| n.unwrap_or(i16::MIN);
-        let memberships: Vec<MembershipRow> =
-            self.pools.memberships.iter().map(|m| MembershipRow { album: m.0, disc: none(m.1), number: none(m.2) }).collect();
-        w.col(&Col::from(memberships))?;
+        w.col(&self.pools.memberships)?;
         w.col(&self.pools.ids)?;
         w.col(&self.pools.strs)?;
-        w.col(&Col::from(credits))?;
-        w.section(&aliases)?;
+        w.col(&self.pools.credits)?;
+        w.col(&self.track_by_id)?;
+        w.col(&self.album_by_id)?;
         for lists in [&self.album_tracks, &self.artist_tracks, &self.artist_albums, &self.grouping_tracks, &self.grouping_albums] {
             w.lists(lists)?;
         }
@@ -281,26 +216,11 @@ impl Catalog {
         let albums = col!(AlbumRow);
         let text = Text { buffer: Utf8::checked(col!(u8)).context("text that isn't text")? };
         let memberships = col!(MembershipRow);
-        let some = |n: i16| (n != i16::MIN).then_some(n);
-        let memberships = memberships.iter().map(|m| Membership(m.album, some(m.disc), some(m.number))).collect();
         let ids = col!(Uuid);
         let strs = col!(Str);
-        let credit_rows = col!(CreditRow);
-        let (alias_offset, alias_len) = section(1, 1)?;
-        let alias_bytes = &bytes[alias_offset..alias_offset + alias_len];
-        let credits = credit_rows
-            .iter()
-            .map(|c| {
-                let alias = match c.alias_len {
-                    u32::MAX => None,
-                    len => {
-                        let s = alias_bytes.get(c.alias_start as usize..c.alias_start as usize + len as usize).context("an alias out of its section")?;
-                        Some(std::str::from_utf8(s)?.into())
-                    }
-                };
-                Ok(Credit(c.id, role_of(c.role), alias))
-            })
-            .collect::<anyhow::Result<Vec<_>>>()?;
+        let credits = col!(CreditRow);
+        let (track_by_id, album_by_id) = (col!(u32), col!(u32));
+        anyhow::ensure!(credits.iter().all(|c| c.alias_fits(text.buffer.0.len())), "an alias out of the text");
         let mut lists = || -> anyhow::Result<Lists> {
             let starts = col!(u32);
             let items = col!(u32);
@@ -323,7 +243,11 @@ impl Catalog {
 
         // What the columns have to agree on, or indexing would run off their ends.
         let (n_tracks, n_albums, n_artists, n_groupings) = (tracks.len(), albums.len(), meta.artists.len(), meta.groupings.len());
-        let ok = album_tracks.starts.len() == n_albums + 1
+        let ok = track_by_id.len() == n_tracks
+            && album_by_id.len() == n_albums
+            && track_by_id.iter().all(|&i| (i as usize) < n_tracks)
+            && album_by_id.iter().all(|&i| (i as usize) < n_albums)
+            && album_tracks.starts.len() == n_albums + 1
             && artist_tracks.starts.len() == n_artists + 1
             && artist_albums.starts.len() == n_artists + 1
             && grouping_tracks.starts.len() == n_groupings + 1
@@ -351,8 +275,8 @@ impl Catalog {
             groupings: meta.groupings,
             extras: meta.extras,
             extra_text,
-            track_by_id: Default::default(),
-            album_by_id: Default::default(),
+            track_by_id,
+            album_by_id,
             artist_by_id: Default::default(),
             grouping_by_id: Default::default(),
             album_tracks,
@@ -371,9 +295,7 @@ impl Catalog {
             track_newest_rank,
             track_album_rank,
         };
-        let (tracks, albums, artists, groupings) = catalog.id_maps();
-        catalog.track_by_id = tracks;
-        catalog.album_by_id = albums;
+        let (artists, groupings) = catalog.small_id_maps();
         catalog.artist_by_id = artists;
         catalog.grouping_by_id = groupings;
         Ok(catalog)
@@ -452,8 +374,18 @@ mod tests {
         assert!(mapped.is_mapped() && !owned.is_mapped());
         assert_eq!(describe(&owned), describe(&mapped));
         assert_eq!(mapped.track_count(), 3);
+        // Lookups by id go through the places kept in the snapshot.
+        for t in owned.tracks() {
+            assert_eq!(mapped.track_index(t.id()), owned.track_index(t.id()));
+            assert!(mapped.track_index(t.id()).is_some());
+        }
+        for a in owned.albums() {
+            assert_eq!(mapped.album_index(a.id()), owned.album_index(a.id()));
+        }
+        assert_eq!(mapped.track_index(Uuid::from_u128(0xdead)), None);
+        assert_eq!(mapped.album_index(Uuid::from_u128(0xdead)), None);
         // The alias survived.
-        assert_eq!(mapped.album_at(1).credits()[0].2.as_deref(), Some("B.O."));
+        assert_eq!(mapped.album_at(1).credits().first().unwrap().2, Some("B.O."));
     }
 
     #[test]

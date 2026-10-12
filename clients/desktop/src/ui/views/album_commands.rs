@@ -814,10 +814,10 @@ fn actions(typed: &str, here: &Here) -> Vec<Row> {
     if !typed.trim().is_empty() {
         if let Some(album) = here.catalog.album(here.id) {
             let mut seen = Vec::new();
-            for c in album.credits() {
+            for c in album.credits().iter() {
                 let Some(a) = here.catalog.artist(c.0).filter(|_| !seen.contains(&c.0)) else { continue };
                 seen.push(c.0);
-                if found(&a.name, &[]) || c.2.as_deref().is_some_and(|alias| found(alias, &[])) {
+                if found(&a.name, &[]) || c.2.is_some_and(|alias| found(alias, &[])) {
                     rows.push(act(&a.name, "its page", Act::Go(Page::Artist(a.id))));
                 }
             }

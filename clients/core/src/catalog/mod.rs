@@ -22,7 +22,7 @@ mod snapshot;
 pub mod store;
 mod text;
 
-pub use index::{Album, Catalog, Track};
+pub use index::{Album, Catalog, CreditRef, Credits, Memberships, Track};
 
 use std::sync::Arc;
 use std::time::SystemTime;

@@ -584,7 +584,7 @@ pub fn actions(typed: &str, here: &Here) -> Vec<Row> {
             }
         };
         if let Some(t) = track {
-            for c in t.credits() {
+            for c in t.credits().iter() {
                 if let Some(a) = here.catalog.artist(c.0) {
                     go(&a.name, "its page", Page::Artist(a.id));
                     if let Some(alias) = &c.2 {
@@ -592,7 +592,7 @@ pub fn actions(typed: &str, here: &Here) -> Vec<Row> {
                     }
                 }
             }
-            for m in t.albums() {
+            for m in t.albums().iter() {
                 if let Some(a) = here.catalog.album(m.0) {
                     go(a.title(), &format!("{}: its page", a.kind()), Page::Album(a.id()));
                 }

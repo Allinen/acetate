@@ -163,7 +163,7 @@ pub fn artist_links(
     ui: &mut egui::Ui,
     shell: &mut Shell,
     catalog: &crate::catalog::Catalog,
-    credits: &[crate::catalog::model::Credit],
+    credits: crate::catalog::Credits<'_>,
     fallback: &str,
     font: egui::FontId,
     color: egui::Color32,
@@ -181,7 +181,7 @@ pub fn artist_links(
             let joiner = if credit.1 == Role::Featured && shown[i - 1].1 != Role::Featured { " feat. " } else { ", " };
             ui.label(RichText::new(joiner).font(font.clone()).color(P.faint));
         }
-        let name = credit.2.as_deref().map(str::to_string).or_else(|| catalog.artist(credit.0).map(|a| a.name.clone())).unwrap_or_default();
+        let name = credit.2.map(str::to_string).or_else(|| catalog.artist(credit.0).map(|a| a.name.clone())).unwrap_or_default();
         if super::widgets::link(ui, &name, font.clone(), color) {
             shell.act(super::Action::Go(Page::Artist(credit.0)));
         }

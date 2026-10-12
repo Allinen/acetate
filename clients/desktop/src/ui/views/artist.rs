@@ -149,8 +149,8 @@ pub(super) fn release_grid(ui: &mut egui::Ui, shell: &mut Shell, catalog: &Catal
 }
 
 /// The names `artist` is credited under in `credits` (None: its own name).
-fn names_in(credits: &[crate::catalog::model::Credit], artist: Uuid) -> impl Iterator<Item = Option<&str>> {
-    credits.iter().filter(move |c| c.0 == artist).map(|c| c.2.as_deref())
+fn names_in(credits: crate::catalog::Credits<'_>, artist: Uuid) -> impl Iterator<Item = Option<&str>> {
+    credits.iter().filter(move |c| c.0 == artist).map(|c| c.2)
 }
 
 /// Every name the artist is credited under on these tracks, with how many: its own name
@@ -252,7 +252,7 @@ impl ArtistPage {
         let tracks = &tracks[..];
         // What it's credited for, as what (and under the names chosen, if any are).
         use crate::catalog::model::Role;
-        let credited = |credits: &[crate::catalog::model::Credit], role: Role| credits.iter().any(|c| c.0 == id && c.1 == role && filters.shows(c.2.as_deref()));
+        let credited = |credits: crate::catalog::Credits<'_>, role: Role| credits.iter().any(|c| c.0 == id && c.1 == role && filters.shows(c.2));
         let has_og = |a: u32| catalog.album_tracks(catalog.album_at(a).id()).iter().any(|&t| is_og(t));
         let releases: Vec<u32> = all_albums.iter().copied().filter(|&a| credited(catalog.album_at(a).credits(), Role::Primary) && (!og_only || has_og(a))).collect();
         let by_role = |role: Role| -> Vec<u32> { all_tracks.iter().copied().filter(|&t| credited(catalog.track_at(t).credits(), role) && (!og_only || is_og(t))).collect() };

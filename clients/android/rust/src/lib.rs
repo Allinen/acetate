@@ -324,11 +324,10 @@ pub struct TrackPage {
     pub sample_rate: Option<i32>,
 }
 
-fn artist_links(catalog: &Catalog, credits: &[acetate_core::catalog::model::Credit]) -> Vec<ArtistLink> {
+fn artist_links<'a>(catalog: &Catalog, credits: impl Iterator<Item = acetate_core::catalog::CreditRef<'a>>) -> Vec<ArtistLink> {
     use acetate_core::catalog::model::Role;
     let mut seen = std::collections::HashSet::new();
     credits
-        .iter()
         .filter(|c| seen.insert((c.0, std::mem::discriminant(&c.1))))
         .filter_map(|c| {
             let artist = catalog.artist(c.0)?;
@@ -338,7 +337,7 @@ fn artist_links(catalog: &Catalog, credits: &[acetate_core::catalog::model::Cred
                 Role::Producer => "producer",
                 Role::Other => "other",
             };
-            Some(ArtistLink { id: c.0.to_string(), name: c.2.as_deref().map(str::to_string).unwrap_or_else(|| artist.name.clone()), role: role.into() })
+            Some(ArtistLink { id: c.0.to_string(), name: c.2.map(str::to_string).unwrap_or_else(|| artist.name.clone()), role: role.into() })
         })
         .collect()
 }
@@ -1324,13 +1323,12 @@ impl Core {
     /// The artists credited on a track or album (to go to their pages), as credited.
     pub fn artists_of(&self, on: MarkOn, id: String) -> Vec<ArtistLink> {
         let (Some(catalog), Some(id)) = (self.shared.catalog(), parse_id(&id)) else { return vec![] };
-        let credits: Vec<_> = match on {
-            MarkOn::Track => catalog.track(id).map(|t| t.credits().to_vec()),
-            MarkOn::Album => catalog.album(id).map(|a| a.credits().to_vec()),
+        match on {
+            MarkOn::Track => catalog.track(id).map(|t| artist_links(&catalog, t.credits().iter())),
+            MarkOn::Album => catalog.album(id).map(|a| artist_links(&catalog, a.credits().iter())),
             MarkOn::Artist => None,
         }
-        .unwrap_or_default();
-        artist_links(&catalog, &credits)
+        .unwrap_or_default()
     }
 
     /// Everything about one track that its page shows.
@@ -1339,7 +1337,7 @@ impl Core {
         let t = catalog.track(parse_id(&id)?)?;
         Some(TrackPage {
             row: track_row(&catalog, t),
-            artists: artist_links(&catalog, t.credits()),
+            artists: artist_links(&catalog, t.credits().iter()),
             albums: t.albums().iter().filter_map(|m| catalog.album(m.0)).map(album_row).collect(),
             genres: t.genres().map(str::to_string).collect(),
             release_date: t.release_date().map(str::to_string),

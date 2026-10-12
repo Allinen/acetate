@@ -21,7 +21,7 @@ use super::model::{self, Annotation, Artist, Grouping, Playlist};
 use super::rows::{self, AlbumRow, Pools, TrackRow};
 use super::text::Texts;
 
-pub use super::rows::{Album, Track};
+pub use super::rows::{Album, CreditRef, Credits, Memberships, Track};
 
 pub struct Catalog {
     /// Its version, for asking the server what changed since (None: an older server).
@@ -46,8 +46,9 @@ pub struct Catalog {
     /// Lowercase text to search them by: name, kind, what they belong to.
     pub(super) extra_text: Texts,
 
-    pub(super) track_by_id: HashMap<Uuid, u32>,
-    pub(super) album_by_id: HashMap<Uuid, u32>,
+    /// Places of tracks and of albums, in order of their ids (look one up with `by_id`).
+    pub(super) track_by_id: Col<u32>,
+    pub(super) album_by_id: Col<u32>,
     pub(super) artist_by_id: HashMap<Uuid, u32>,
     pub(super) grouping_by_id: HashMap<Uuid, u32>,
     /// Each album's tracks (by album position), by disc and track number.
@@ -123,6 +124,19 @@ impl Lists {
     }
 }
 
+/// The places `0..n`, in order of the id each one has.
+fn order_by_id(n: usize, id: impl Fn(u32) -> Uuid) -> Vec<u32> {
+    let mut order: Vec<u32> = (0..n as u32).collect();
+    order.sort_unstable_by_key(|&i| id(i));
+    order
+}
+
+/// Where `id` is, in places ordered by id (`order_by_id`).
+fn by_id(order: &[u32], id: Uuid, of: impl Fn(u32) -> Uuid) -> Option<u32> {
+    let at = order.partition_point(|&i| of(i) < id);
+    order.get(at).copied().filter(|&i| of(i) == id)
+}
+
 /// Each of `n` things' place in order of `key` (ties by position).
 fn ranks(n: usize, key: impl Fn(u32) -> String) -> Vec<u32> {
     let mut keys = Texts::with_capacity(n);
@@ -154,27 +168,27 @@ impl Catalog {
         merger.build(Some(self)).expect("rows parsed already")
     }
 
-    /// Where each track, album, artist and grouping is, by id.
-    pub(super) fn id_maps(&self) -> (HashMap<Uuid, u32>, HashMap<Uuid, u32>, HashMap<Uuid, u32>, HashMap<Uuid, u32>) {
+    /// Where each artist and grouping is, by id (small: tracks and albums are looked up in
+    /// the places ordered by id, which a snapshot keeps).
+    pub(super) fn small_id_maps(&self) -> (HashMap<Uuid, u32>, HashMap<Uuid, u32>) {
         let by_id = |ids: &mut dyn Iterator<Item = Uuid>| -> HashMap<Uuid, u32> { ids.enumerate().map(|(i, id)| (id, i as u32)).collect() };
-        (
-            by_id(&mut self.tracks.iter().map(|t| t.id)),
-            by_id(&mut self.albums.iter().map(|a| a.id)),
-            by_id(&mut self.artists.iter().map(|a| a.id)),
-            by_id(&mut self.groupings.iter().map(|g| g.id)),
-        )
+        (by_id(&mut self.artists.iter().map(|a| a.id)), by_id(&mut self.groupings.iter().map(|g| g.id)))
     }
 
     fn index(&mut self) {
         let track = |i: u32| Track::new(&self.pools, &self.tracks[i as usize]);
         let album = |i: u32| Album::new(&self.pools, &self.albums[i as usize]);
         let (n_tracks, n_albums, n_artists) = (self.tracks.len(), self.albums.len(), self.artists.len());
-        let (track_by_id, album_by_id, artist_by_id, grouping_by_id) = self.id_maps();
+        let (artist_by_id, grouping_by_id) = self.small_id_maps();
+        let track_by_id = order_by_id(n_tracks, |i| self.tracks[i as usize].id);
+        let album_by_id = order_by_id(n_albums, |i| self.albums[i as usize].id);
+        let track_place = |id: Uuid| by_id(&track_by_id, id, |i| self.tracks[i as usize].id);
+        let album_place = |id: Uuid| by_id(&album_by_id, id, |i| self.albums[i as usize].id);
 
         let (mut on_album, mut by_artist, mut in_grouping) = (Vec::new(), Vec::new(), Vec::new());
         for i in 0..n_tracks as u32 {
             let t = track(i);
-            on_album.extend(t.albums().iter().filter_map(|m| album_by_id.get(&m.0)).map(|&a| (a, i)));
+            on_album.extend(t.albums().iter().filter_map(|m| album_place(m.0)).map(|a| (a, i)));
             by_artist.extend(t.credits().iter().filter_map(|c| artist_by_id.get(&c.0)).map(|&a| (a, i)));
             in_grouping.extend(t.groupings().iter().filter_map(|g| grouping_by_id.get(g)).map(|&g| (g, i)));
         }
@@ -213,7 +227,7 @@ impl Catalog {
         let mut grouping_albums = Lists::build(self.groupings.len(), in_grouping);
         grouping_albums.sort_each(newest_album);
 
-        let album_title = |id: &Uuid| album_by_id.get(id).map(|&i| album(i).title()).unwrap_or("");
+        let album_title = |id: &Uuid| album_place(*id).map(|i| album(i).title()).unwrap_or("");
         let mut track_text = Texts::with_capacity(n_tracks);
         for i in 0..n_tracks as u32 {
             let t = track(i);
@@ -232,7 +246,7 @@ impl Catalog {
 
         let album_title_rank = ranks(n_albums, |i| sort_key(album(i).title()));
         let track_album_rank: Vec<u32> = (0..n_tracks as u32)
-            .map(|i| track(i).albums().first().and_then(|m| album_by_id.get(&m.0)).map(|&a| album_title_rank[a as usize]).unwrap_or(u32::MAX))
+            .map(|i| track(i).albums().first().and_then(|m| album_place(m.0)).map(|a| album_title_rank[a as usize]).unwrap_or(u32::MAX))
             .collect();
 
         // Extras (not those taken off), found by their name, kind and what they belong to.
@@ -240,8 +254,8 @@ impl Catalog {
         for e in &self.extras {
             let mut parts = vec![e.name.as_str(), e.kind.as_str()];
             parts.extend(e.links.iter().filter_map(|(kind, id)| match kind.as_str() {
-                "track" => track_by_id.get(id).map(|&i| track(i).title()),
-                "album" => album_by_id.get(id).map(|&i| album(i).title()),
+                "track" => track_place(*id).map(|i| track(i).title()),
+                "album" => album_place(*id).map(|i| album(i).title()),
                 "grouping" => grouping_by_id.get(id).map(|&i| self.groupings[i as usize].name.as_str()),
                 _ => artist_by_id.get(id).map(|&i| self.artists[i as usize].name.as_str()),
             }));
@@ -253,8 +267,8 @@ impl Catalog {
         let album_artist_rank = ranks(n_albums, |i| sort_key(album(i).artist_display()));
         let artist_name_rank = ranks(n_artists, |i| sort_key(&self.artists[i as usize].name));
 
-        self.track_by_id = track_by_id;
-        self.album_by_id = album_by_id;
+        self.track_by_id = track_by_id.into();
+        self.album_by_id = album_by_id.into();
         self.artist_by_id = artist_by_id;
         self.grouping_by_id = grouping_by_id;
         self.album_tracks = album_tracks;
@@ -280,13 +294,14 @@ impl Catalog {
     pub fn bytes(&self) -> Vec<(&'static str, usize)> {
         use std::mem::size_of;
         let map = |m: &HashMap<Uuid, u32>| m.capacity() * (size_of::<(Uuid, u32)>() + 1);
+        let places = (self.track_by_id.len() + self.album_by_id.len()) * 4;
         let ranks = [&self.track_title_rank, &self.track_artist_rank, &self.album_title_rank, &self.album_artist_rank, &self.artist_name_rank, &self.track_album_rank, &self.track_newest_rank];
         let mut parts = vec![
             ("track rows", self.tracks.len() * size_of::<TrackRow>()),
             ("album rows", self.albums.len() * size_of::<AlbumRow>()),
 
             ("search text", self.track_text.bytes() + self.album_text.bytes() + self.artist_text.bytes() + self.extra_text.bytes()),
-            ("by id", map(&self.track_by_id) + map(&self.album_by_id) + map(&self.artist_by_id)),
+            ("by id", places + map(&self.artist_by_id) + map(&self.grouping_by_id)),
             ("lists", self.album_tracks.bytes() + self.artist_tracks.bytes() + self.artist_albums.bytes() + self.grouping_tracks.bytes() + self.grouping_albums.bytes()),
             ("sort ranks", ranks.iter().map(|r| r.len() * 4).sum()),
             ("lyrics", self.lyrics.bytes()),
@@ -331,11 +346,11 @@ impl Catalog {
 
     /// A track's position in the catalog.
     pub fn track_index(&self, id: Uuid) -> Option<u32> {
-        self.track_by_id.get(&id).copied()
+        by_id(&self.track_by_id, id, |i| self.tracks[i as usize].id)
     }
 
     pub fn album_index(&self, id: Uuid) -> Option<u32> {
-        self.album_by_id.get(&id).copied()
+        by_id(&self.album_by_id, id, |i| self.albums[i as usize].id)
     }
 
     pub fn track(&self, id: Uuid) -> Option<Track<'_>> {
@@ -357,7 +372,7 @@ impl Catalog {
 
     /// The album's tracks in order (positions in the catalog).
     pub fn album_tracks(&self, album: Uuid) -> &[u32] {
-        self.album_by_id.get(&album).map(|&a| self.album_tracks.get(a)).unwrap_or(&[])
+        self.album_index(album).map(|a| self.album_tracks.get(a)).unwrap_or(&[])
     }
 
     pub fn artist_tracks(&self, artist: Uuid) -> &[u32] {
@@ -823,8 +838,8 @@ impl<'a> Merger<'a> {
             groupings: self.groupings,
             extras: self.extras.finish().into_iter().filter(|e| !e.hidden).collect(),
             extra_text: Texts::default(),
-            track_by_id: HashMap::new(),
-            album_by_id: HashMap::new(),
+            track_by_id: Col::default(),
+            album_by_id: Col::default(),
             artist_by_id: HashMap::new(),
             grouping_by_id: HashMap::new(),
             album_tracks: Lists::default(),

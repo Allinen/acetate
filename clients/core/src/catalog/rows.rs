@@ -9,7 +9,7 @@
 use uuid::Uuid;
 
 use super::flat::{Col, Flat};
-use super::model::{self, Cover, CoverKey, Credit, Membership};
+use super::model::{self, Cover, CoverKey, Membership, Role};
 use super::text::{Str, Text, TextBuilder};
 
 /// A run of items in one of the pools.
@@ -89,12 +89,150 @@ unsafe impl Flat for Span {}
 unsafe impl Flat for TrackRow {}
 unsafe impl Flat for AlbumRow {}
 
+/// A credit as stored: its alias (if any) is in the text.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub(super) struct CreditRow {
+    id: Uuid,
+    /// `Str::NONE`: no alias.
+    alias: Str,
+    role: u8,
+    _pad: [u8; 3],
+}
+
+/// A membership as stored (`Option<i16>`s have no fixed bytes): `i16::MIN` is none.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub(super) struct MembershipRow {
+    pub(super) album: Uuid,
+    pub(super) disc: i16,
+    pub(super) number: i16,
+}
+
+// SAFETY: `repr(C)`, no padding left (spelled out), any bytes are valid.
+unsafe impl Flat for CreditRow {}
+// SAFETY: `repr(C)`, 20 bytes, no padding, any bytes are valid.
+unsafe impl Flat for MembershipRow {}
+
+fn role_byte(role: Role) -> u8 {
+    match role {
+        Role::Primary => 0,
+        Role::Featured => 1,
+        Role::Producer => 2,
+        Role::Other => 3,
+    }
+}
+
+fn role_of(byte: u8) -> Role {
+    match byte {
+        0 => Role::Primary,
+        1 => Role::Featured,
+        2 => Role::Producer,
+        _ => Role::Other,
+    }
+}
+
+impl CreditRow {
+    pub(super) fn alias_fits(&self, text_len: usize) -> bool {
+        self.alias == Str::NONE || self.alias.fits(text_len)
+    }
+}
+
+impl MembershipRow {
+    fn new(m: Membership) -> MembershipRow {
+        MembershipRow { album: m.0, disc: m.1.unwrap_or(i16::MIN), number: m.2.unwrap_or(i16::MIN) }
+    }
+
+    fn get(&self) -> Membership {
+        let some = |n: i16| (n != i16::MIN).then_some(n);
+        Membership(self.album, some(self.disc), some(self.number))
+    }
+}
+
+/// A credit as it is read: the artist, their role, and the alias they're credited under.
+#[derive(Debug, Clone, Copy)]
+pub struct CreditRef<'a>(pub Uuid, pub Role, pub Option<&'a str>);
+
+/// The credits of a track or album.
+#[derive(Clone, Copy)]
+pub struct Credits<'a> {
+    rows: &'a [CreditRow],
+    text: &'a Text,
+}
+
+impl<'a> Credits<'a> {
+    fn get(self, row: &CreditRow) -> CreditRef<'a> {
+        CreditRef(row.id, role_of(row.role), self.text.opt(row.alias))
+    }
+
+    pub fn len(self) -> usize {
+        self.rows.len()
+    }
+
+    pub fn is_empty(self) -> bool {
+        self.rows.is_empty()
+    }
+
+    pub fn first(self) -> Option<CreditRef<'a>> {
+        self.rows.first().map(|r| self.get(r))
+    }
+
+    pub fn iter(self) -> impl ExactSizeIterator<Item = CreditRef<'a>> + Clone {
+        self.rows.iter().map(move |r| self.get(r))
+    }
+
+    /// As the server sent them.
+    pub fn to_vec(self) -> Vec<model::Credit> {
+        self.iter().map(|c| model::Credit(c.0, c.1, c.2.map(Into::into))).collect()
+    }
+}
+
+impl std::fmt::Debug for Credits<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list().entries(self.iter()).finish()
+    }
+}
+
+/// The albums a track is on.
+#[derive(Clone, Copy)]
+pub struct Memberships<'a> {
+    rows: &'a [MembershipRow],
+}
+
+impl std::fmt::Debug for Memberships<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list().entries(self.iter()).finish()
+    }
+}
+
+impl<'a> Memberships<'a> {
+    pub fn len(self) -> usize {
+        self.rows.len()
+    }
+
+    pub fn is_empty(self) -> bool {
+        self.rows.is_empty()
+    }
+
+    pub fn first(self) -> Option<Membership> {
+        self.rows.first().map(MembershipRow::get)
+    }
+
+    pub fn iter(self) -> impl ExactSizeIterator<Item = Membership> + Clone + 'a {
+        self.rows.iter().map(MembershipRow::get)
+    }
+
+    pub fn to_vec(self) -> Vec<Membership> {
+        self.iter().collect()
+    }
+}
+
 /// The pools rows' lists are kept in.
 #[derive(Default)]
 pub(super) struct Pools {
     pub(super) text: Text,
-    pub(super) credits: Vec<Credit>,
-    pub(super) memberships: Vec<Membership>,
+    pub(super) credits: Col<CreditRow>,
+    pub(super) memberships: Col<MembershipRow>,
     /// Groupings.
     pub(super) ids: Col<Uuid>,
     /// Genres and platforms.
@@ -107,8 +245,8 @@ impl Pools {
         use std::mem::size_of;
         vec![
             ("text", self.text.bytes()),
-            ("credits", self.credits.capacity() * size_of::<Credit>() + self.credits.iter().filter_map(|c| c.2.as_ref()).map(|a| (a.len() + 8).div_ceil(16) * 16).sum::<usize>()),
-            ("albums tracks are on", self.memberships.capacity() * size_of::<Membership>()),
+            ("credits", self.credits.len() * size_of::<CreditRow>()),
+            ("albums tracks are on", self.memberships.len() * size_of::<MembershipRow>()),
             ("groupings, genres, platforms", self.ids.len() * 16 + self.strs.len() * size_of::<Str>()),
         ]
     }
@@ -118,8 +256,8 @@ impl Pools {
 #[derive(Default)]
 pub(super) struct Builder {
     text: TextBuilder,
-    credits: Vec<Credit>,
-    memberships: Vec<Membership>,
+    credits: Vec<CreditRow>,
+    memberships: Vec<MembershipRow>,
     ids: Vec<Uuid>,
     strs: Vec<Str>,
 }
@@ -131,10 +269,18 @@ fn span<T>(pool: &mut Vec<T>, items: impl IntoIterator<Item = T>) -> Span {
 }
 
 impl Builder {
+    fn credit_rows(&mut self, credits: Vec<model::Credit>) -> Vec<CreditRow> {
+        credits
+            .into_iter()
+            .map(|model::Credit(id, role, alias)| CreditRow { id, alias: self.text.shared_opt(alias.as_deref()), role: role_byte(role), _pad: [0; 3] })
+            .collect()
+    }
+
     pub(super) fn track(&mut self, t: model::Track) -> TrackRow {
         let text = &mut self.text;
         let genres = t.genres.iter().map(|g| text.shared(g)).collect::<Vec<_>>();
         let platforms = t.platforms.iter().map(|p| text.shared(p)).collect::<Vec<_>>();
+        let credits = self.credit_rows(t.credits);
         TrackRow {
             id: t.id,
             file_id: t.file_id,
@@ -147,8 +293,8 @@ impl Builder {
             status: self.text.shared(&t.status),
             codec: self.text.shared_opt(t.codec.as_deref()),
             original_filename: self.text.push_opt(t.original_filename.as_deref()),
-            credits: span(&mut self.credits, t.credits),
-            albums: span(&mut self.memberships, t.albums),
+            credits: span(&mut self.credits, credits),
+            albums: span(&mut self.memberships, t.albums.into_iter().map(MembershipRow::new)),
             genres: span(&mut self.strs, genres),
             groupings: span(&mut self.ids, t.groupings),
             platforms: span(&mut self.strs, platforms),
@@ -162,6 +308,7 @@ impl Builder {
     }
 
     pub(super) fn album(&mut self, a: model::Album) -> AlbumRow {
+        let credits = self.credit_rows(a.credits);
         AlbumRow {
             id: a.id,
             cover_id: a.cover_id.unwrap_or(Uuid::nil()),
@@ -170,7 +317,7 @@ impl Builder {
             kind: self.text.shared(&a.kind),
             artist_display: self.text.shared(&a.artist_display),
             release_date: self.text.shared_opt(a.release_date.as_deref()),
-            credits: span(&mut self.credits, a.credits),
+            credits: span(&mut self.credits, credits),
             groupings: span(&mut self.ids, a.groupings),
             duration_ms: a.duration_ms,
             track_count: a.track_count.clamp(0, u32::MAX as i64) as u32,
@@ -185,7 +332,7 @@ impl Builder {
         self.memberships.shrink_to_fit();
         self.ids.shrink_to_fit();
         self.strs.shrink_to_fit();
-        Pools { text: self.text.finish(), credits: self.credits, memberships: self.memberships, ids: self.ids.into(), strs: self.strs.into() }
+        Pools { text: self.text.finish(), credits: self.credits.into(), memberships: self.memberships.into(), ids: self.ids.into(), strs: self.strs.into() }
     }
 }
 
@@ -229,13 +376,13 @@ impl<'a> Track<'a> {
         self.pools.text.get(self.row.artist_display)
     }
 
-    pub fn credits(self) -> &'a [Credit] {
-        self.row.credits.of(&self.pools.credits)
+    pub fn credits(self) -> Credits<'a> {
+        Credits { rows: self.row.credits.of(&self.pools.credits), text: &self.pools.text }
     }
 
     /// Its main album first.
-    pub fn albums(self) -> &'a [Membership] {
-        self.row.albums.of(&self.pools.memberships)
+    pub fn albums(self) -> Memberships<'a> {
+        Memberships { rows: self.row.albums.of(&self.pools.memberships) }
     }
 
     pub fn duration_ms(self) -> Option<i64> {
@@ -378,8 +525,8 @@ impl<'a> Album<'a> {
         self.pools.text.get(self.row.artist_display)
     }
 
-    pub fn credits(self) -> &'a [Credit] {
-        self.row.credits.of(&self.pools.credits)
+    pub fn credits(self) -> Credits<'a> {
+        Credits { rows: self.row.credits.of(&self.pools.credits), text: &self.pools.text }
     }
 
     pub fn release_date(self) -> Option<&'a str> {
