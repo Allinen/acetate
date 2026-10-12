@@ -23,17 +23,6 @@ pub struct CreditRow {
     pub alias: Option<String>,
 }
 
-/// Credits an artist (None: a new one): as primary if there's no primary yet, else as
-/// featured (`featured`: always featured). Not twice.
-pub fn add_artist(rows: &mut Vec<CreditRow>, id: Option<Uuid>, name: String, featured: bool) {
-    if id.is_some() && rows.iter().any(|c| c.artist_id == id) {
-        return;
-    }
-    let has_primary = rows.iter().any(|c| c.role == "primary");
-    let role = if featured || has_primary { "featured" } else { "primary" };
-    rows.push(CreditRow { artist_id: id, name, role: role.into(), alias_id: None, alias: None });
-}
-
 /// Rows from a details page's credits (a track's variant, an album): names as known.
 pub fn rows_from(credits: &[crate::details::Credit]) -> Vec<CreditRow> {
     credits

@@ -4,4 +4,4 @@
 //! made when the album is saved.
 
 pub use acetate_core::editor::forms::CreditRow;
-pub use acetate_core::editor::forms::{add_artist, make_new_artists, rows_from, take_ids};
+pub use acetate_core::editor::forms::{make_new_artists, rows_from, take_ids};

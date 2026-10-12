@@ -162,7 +162,7 @@ matched by the character you type, so it works on non-US layouts.
 | `credits  covers  history` | opened and scrolled to, or closed if open (also sources, notes, extras; merges in edit mode) |
 | `edit:3  /  edit:all` | a track in the track editor (Ctrl+E)  /  all of them, marked (edit mode) |
 | `title:  kind:  date:  why:` | edit mode: its title, kind, release date (-date clears it), why |
-| `artist:Name role:… as:… n:…` | edit mode: credit an artist, or change one's role, name, place (feat:Name; -artist:Name takes one off) |
+| `artist:Name role:… as:… n:…` | edit mode: credit an artist (another role: a credit of its own), or change one's name, place (feat:Name; -artist:Name role:… takes one off) |
 | `cover:paste  /  -cover:2` | edit mode: a cover added (also choose, a path, an album or track)  /  the second to the trash |
 | `cover:3` | edit mode: the third cover made the main one (cover:3 n:2 moves it) |
 | `group:Name  /  -group:Name` | edit mode: into a grouping (a new one: kind:era)  /  out of it |

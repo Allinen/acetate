@@ -96,7 +96,7 @@ const OWN: &[Word] = &[Word { word: "own", help: "its own name" }];
 
 /// A credited artist's arguments.
 const CREDIT_ARGS: &[Spec] = &[
-    Spec::new("role", Kind::Text, "its role: primary, featured, producer…"),
+    Spec::new("role", Kind::Text, "its role: primary, featured, producer… (another role: a credit of its own)").with_minus(),
     Spec::new("as", Kind::Or(OWN, &Kind::AliasOf(&[])), "the name it's credited under"),
     Spec::new("n", Kind::Place, "its place among the artists"),
 ];
@@ -259,8 +259,8 @@ pub enum Edit {
     Date(String),
     Why(String),
     Credit(Credit),
-    /// An artist's credits taken off.
-    Uncredit(Uuid),
+    /// An artist's credit taken off: in one role, or (None) all of them.
+    Uncredit(Uuid, Option<String>),
     NoCredits,
     /// A source, an extra or a note.
     Thing(Change),
@@ -269,7 +269,8 @@ pub enum Edit {
 }
 
 /// An artist credited: one in the library (or None: a new one by `name`, made when it's
-/// saved), with what's said of it.
+/// saved), with what's said of it. With a role, it's the artist's credit in that role (an
+/// artist can have several); without, its credit in any role (see `album_rows::credit_into`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Credit {
     pub artist: Option<Uuid>,
@@ -298,7 +299,7 @@ pub enum CoverChange {
 impl Edit {
     /// Saved through the album's form (one revision), not on its own.
     fn in_form(&self) -> bool {
-        matches!(self, Edit::Title(_) | Edit::Kind(_) | Edit::Date(_) | Edit::Why(_) | Edit::Credit(_) | Edit::Uncredit(_) | Edit::NoCredits)
+        matches!(self, Edit::Title(_) | Edit::Kind(_) | Edit::Date(_) | Edit::Why(_) | Edit::Credit(_) | Edit::Uncredit(..) | Edit::NoCredits)
     }
 }
 
@@ -416,15 +417,22 @@ fn credit(c: &Node, here: &Here, known: &Known) -> Result<(String, Edit), String
         return Err(format!("{}: an artist's name (the list has them)", c.spec.key));
     }
     let (id, name) = artist_named(here.catalog, here.credits, known, value)?;
-    if c.minus {
-        let Some(id) = id.filter(|id| here.credits.iter().any(|c| c.artist_id == *id)) else { return Err(format!("it doesn't credit “{value}”")) };
-        return Ok((format!("artists: − {name}"), Edit::Uncredit(id)));
-    }
-    let role = match (c.arg("role"), featured) {
-        (Some(p), _) => Some(crate::ui::edit::editor::find_in(&here.vocab.credit_roles, &p.value).ok_or_else(|| format!("no role like “{}”", p.value.trim()))?),
-        (None, true) => Some("featured".to_string()),
-        _ => None,
+    let typed_role = match c.arg("role") {
+        Some(p) => Some(crate::ui::edit::editor::find_in(&here.vocab.credit_roles, &p.value).ok_or_else(|| format!("no role like “{}”", p.value.trim()))?),
+        None => None,
     };
+    let theirs: Vec<&crate::details::Credit> = here.credits.iter().filter(|cr| Some(cr.artist_id) == id).collect();
+    if c.minus {
+        if theirs.is_empty() {
+            return Err(format!("it doesn't credit “{value}”"));
+        }
+        return match typed_role {
+            Some(role) if !theirs.iter().any(|cr| cr.role == role) => Err(format!("it doesn't credit {name} as {role}")),
+            Some(role) => Ok((format!("artists: − {name} as {role}"), Edit::Uncredit(id.unwrap_or_default(), Some(role)))),
+            None => Ok((format!("artists: − {name}"), Edit::Uncredit(id.unwrap_or_default(), None))),
+        };
+    }
+    let role = typed_role.or_else(|| featured.then(|| "featured".to_string()));
     let alias = match c.arg("as") {
         None => None,
         Some(p) if p.value.trim().is_empty() || p.value.trim().eq_ignore_ascii_case(&name) || p.value.trim().eq_ignore_ascii_case("own") => Some(None),
@@ -440,7 +448,15 @@ fn credit(c: &Node, here: &Here, known: &Known) -> Result<(String, Edit), String
         Some(n) => Some(place(&n.value, here.credits.len() + 1, "places for artists")?),
         None => None,
     };
-    let credited = id.is_some_and(|id| here.credits.iter().any(|c| c.artist_id == id));
+    // The credit it is: the artist in that role, or (no role) in the one role it has.
+    let credited = match &role {
+        Some(role) => theirs.iter().any(|cr| cr.role == *role),
+        None => !theirs.is_empty(),
+    };
+    if role.is_none() && theirs.len() > 1 && (alias.is_some() || at.is_some()) {
+        let roles: Vec<&str> = theirs.iter().map(|cr| cr.role.as_str()).collect();
+        return Err(format!("{name} is credited as {}: say which with role:", roles.join(" and ")));
+    }
     let mut label = if credited { format!("artists: {name}") } else { format!("artists: + {name}") };
     if id.is_none() {
         label.push_str(" (new)");
@@ -457,8 +473,8 @@ fn credit(c: &Node, here: &Here, known: &Known) -> Result<(String, Edit), String
     if let Some(at) = at {
         label.push_str(&format!(", place {}", at + 1));
     }
-    if credited && role.is_none() && alias.is_none() && at.is_none() {
-        return Err(format!("it credits {name} already: say what changes (role:, as:, n:)"));
+    if credited && alias.is_none() && at.is_none() {
+        return Err(format!("it credits {name}{} already: say what changes (as:, n:), or another role:", role.as_ref().map(|r| format!(" as {r}")).unwrap_or_default()));
     }
     Ok((label, Edit::Credit(Credit { artist: id, name, role, alias, at })))
 }
@@ -1175,6 +1191,10 @@ impl AlbumCommands {
             let shown: Vec<Result<(String, Option<String>), String>> = resolve(&self.cl.text, here, &self.known).into_iter().map(|r| r.map(|(label, _)| (label, None))).collect();
             cl::would_do(ui, &shown, "Nothing to do by that name");
         }
+        // The changes staged right under the commandline (as on every page), then the rows.
+        if let Some(n) = pc::status(ui, self.notice.as_deref(), self.sending.count, &self.staged, can_edit) {
+            self.staged.remove(n);
+        }
         if !fields.is_empty() {
             ui.add_space(6.0);
             if let Some(n) = album_rows::show(ui, &fields, self.row) {
@@ -1184,9 +1204,6 @@ impl AlbumCommands {
             if self.row.is_some() {
                 ui.label(RichText::new("Enter edits it · on an artist: r role, a credited as, Alt+↑/↓ (or Alt+k/j) its place · Delete takes it off · Esc back to the commandline").color(P.faint).small());
             }
-        }
-        if let Some(n) = pc::status(ui, self.notice.as_deref(), self.sending.count, &self.staged, can_edit) {
-            self.staged.remove(n);
         }
         if self.has_changes() {
             shell.form_dirty = true;
@@ -1218,11 +1235,12 @@ impl AlbumCommands {
             (R::Date, RowKey::Edit) => (Some(format!("date:{}", row.value)), None),
             (R::Date, RowKey::Remove) => (None, Some("-date".into())),
             (R::AddArtist, RowKey::Edit) => (Some("artist:".into()), None),
-            (R::Credit(_), RowKey::Edit | RowKey::Role) => (credit(self).map(|n| format!("artist:{n} role:")), None),
-            (R::Credit(_), RowKey::Alias) => (credit(self).map(|n| format!("artist:{n} as:")), None),
-            (R::Credit(_), RowKey::Remove) => (None, credit(self).map(|n| format!("-artist:{n}"))),
-            (R::Credit(at), RowKey::Earlier) if at > 0 => (None, credit(self).map(|n| format!("artist:{n} n:{at}"))),
-            (R::Credit(at), RowKey::Later) if at + 1 < credits => (None, credit(self).map(|n| format!("artist:{n} n:{}", at + 2))),
+            // Another role: this one taken off, and the artist credited in the role typed, here.
+            (R::Credit(at), RowKey::Edit | RowKey::Role) => (credit(self).map(|n| format!("-artist:{n} role:{} | artist:{n} n:{} role:", q(&row.role), at + 1)), None),
+            (R::Credit(_), RowKey::Alias) => (credit(self).map(|n| format!("artist:{n} role:{} as:", q(&row.role))), None),
+            (R::Credit(_), RowKey::Remove) => (None, credit(self).map(|n| format!("-artist:{n} role:{}", q(&row.role)))),
+            (R::Credit(at), RowKey::Earlier) if at > 0 => (None, credit(self).map(|n| format!("artist:{n} role:{} n:{at}", q(&row.role)))),
+            (R::Credit(at), RowKey::Later) if at + 1 < credits => (None, credit(self).map(|n| format!("artist:{n} role:{} n:{}", q(&row.role), at + 2))),
             _ => (None, None),
         };
         if let Some(text) = fill {
@@ -1571,6 +1589,11 @@ mod tests {
         let c = credit("artist:Bo role:prod n:1", &known);
         assert_eq!((c.artist, c.role.as_deref(), c.at), (Some(id(BO)), Some("producer"), Some(0)));
         assert_eq!(credit("feat:bo", &known).role.as_deref(), Some("featured"));
+        // Credited already in another role: a credit of its own (primary and producer).
+        let c = credit("artist:Ann role:producer", &known);
+        assert_eq!((c.artist, c.role.as_deref()), (Some(id(ANN)), Some("producer")));
+        assert!(resolve("artist:Ann role:producer", &edit, &known)[0].as_ref().unwrap().0.contains("+ Ann"));
+        assert!(does("artist:Ann role:primary", &edit, &known)[0].as_ref().unwrap_err().contains("already"));
         // Credited already: what changes; under one of its names.
         assert_eq!(credit("artist:Ann as:annie", &known).alias, Some(Some((Uuid::from_u128(9), "Annie".into()))));
         assert!(does("artist:Ann", &edit, &known)[0].as_ref().unwrap_err().contains("say what changes"));
@@ -1584,13 +1607,15 @@ mod tests {
         assert_eq!((c.artist, c.name.as_str()), (None, "Dee"));
         assert!(does("artist:Dee as:D", &edit, &known)[0].as_ref().unwrap_err().contains("new artist"));
         // Off: one it credits, or all.
-        assert_eq!(does("-artist:Ann | -artist", &edit, &known), [Ok(Does::Edit(Edit::Uncredit(id(ANN)))), Ok(Does::Edit(Edit::NoCredits))]);
+        assert_eq!(does("-artist:Ann | -artist", &edit, &known), [Ok(Does::Edit(Edit::Uncredit(id(ANN), None))), Ok(Does::Edit(Edit::NoCredits))]);
+        assert_eq!(does("-artist:Ann role:primary", &edit, &known), [Ok(Does::Edit(Edit::Uncredit(id(ANN), Some("primary".into()))))]);
+        assert!(does("-artist:Ann role:producer", &edit, &known)[0].as_ref().unwrap_err().contains("as producer"));
         assert!(does("-artist:Bo", &edit, &known)[0].is_err());
         // Onto the form's rows.
         let mut rows = credits::rows_from(&w.credits);
         album_rows::credit_into(&mut rows, credit("artist:Bo n:1", &known));
         album_rows::credit_into(&mut rows, credit("artist:Ann role:producer", &known));
-        assert_eq!(rows.iter().map(|r| (r.name.as_str(), r.role.as_str())).collect::<Vec<_>>(), [("Bo", "featured"), ("Ann", "producer")]);
+        assert_eq!(rows.iter().map(|r| (r.name.as_str(), r.role.as_str())).collect::<Vec<_>>(), [("Bo", "featured"), ("Ann", "primary"), ("Ann", "producer")], "another role: a credit of its own");
         // The list: matches, then a new one; once one is there, what can follow it.
         let rows = rows_for("artist:b", &edit, &known);
         assert!(matches!(rows.first().map(|r| &r.take), Some(schema::Take::Pin { name, id: a, .. }) if name == "Bo" && *a == id(BO)));
@@ -1669,12 +1694,15 @@ mod tests {
         assert_eq!(commands.cl.text, "title:Long Player");
         // `a` on the artist: the name it's credited under, to type.
         commands.row_key(row(album_rows::Field::Credit(0)), RowKey::Alias, 1, &here);
-        assert_eq!(commands.cl.text, "artist:Ann as:");
+        assert_eq!(commands.cl.text, "artist:Ann role:primary as:", "that credit (the artist can have several)");
         // Delete on it, and on the date: staged at once.
         assert!(commands.row_key(row(album_rows::Field::Credit(0)), RowKey::Remove, 1, &here));
         assert!(commands.row_key(row(album_rows::Field::Date), RowKey::Remove, 1, &here));
         let staged: Vec<&Edit> = commands.staged.iter().map(|s| &s.edit).collect();
-        assert_eq!(staged, [&Edit::Uncredit(id(ANN)), &Edit::Date(String::new())]);
+        assert_eq!(staged, [&Edit::Uncredit(id(ANN), Some("primary".into())), &Edit::Date(String::new())]);
+        // `r` on it: another role, in its place.
+        commands.row_key(row(album_rows::Field::Credit(0)), RowKey::Role, 1, &here);
+        assert_eq!(commands.cl.text, "-artist:Ann role:primary | artist:Ann n:1 role:");
         // One artist can't move earlier or later.
         let before = commands.staged.len();
         assert!(!commands.row_key(row(album_rows::Field::Credit(0)), RowKey::Earlier, 1, &here));

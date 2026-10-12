@@ -57,10 +57,15 @@ suggested, and if you type one anyway it tells you why it can't be done.
   its title, kind, date or artists. On its own there's nothing to save, and saving says so.
 - `artist:Name` credits an artist: as primary if the album has none, otherwise as featured.
   Its arguments are `role:producer`, `as:` (one of the artist's other names) and `n:2` (its
-  place among the album's artists), in any order. `feat:Name` credits one as featured. For an artist the
-  album credits already, the same command changes its role, name or place. Under `artist:`
+  place among the album's artists), in any order. `feat:Name` credits one as featured. An
+  artist can be credited in several roles (primary and producer, say): `artist:Ann
+  role:producer` adds that credit when Ann has another role. For a credit that's there, the same
+  command with its role changes its name or place (`artist:Ann role:primary n:1`); without a role
+  it means the artist's only credit. To change a role, take that one off and add the other: `r`
+  on its row fills in `-artist:Ann role:featured | artist:Ann n:2 role:`. Under `artist:`
   the list shows the artists that match, then *New artist*, which is made when you save.
-  `-artist:Name` takes one off, and `-artist` alone takes them all off.
+  `-artist:Name` takes an artist off (`-artist:Name role:producer`: that role only), and
+  `-artist` alone takes them all off.
 - `cover:paste` adds the image you copied (an image, or an image file copied in a file
   manager). `cover:choose` opens the file dialog and puts the path in the commandline;
   `cover:/path/to/image.jpg` adds that file (`Tab` completes paths). `cover:` followed by an

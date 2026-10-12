@@ -285,7 +285,7 @@ mod tests {
     fn the_body_is_what_the_server_takes() {
         let mut form = AlbumForm::from_detail(&detail(10, "T", "album")).unwrap();
         form.data.release_date = "  ".into();
-        credits::add_artist(&mut form.data.credits, Some(Uuid::from_u128(7)), "A".into(), false);
+        crate::ui::views::album_rows::credit_into(&mut form.data.credits, crate::ui::views::album_commands::Credit { artist: Some(Uuid::from_u128(7)), name: "A".into(), role: None, alias: None, at: None });
         let body = AlbumForm::body(&form.data, form.base, " why ");
         assert!(body["release_date"].is_null());
         assert_eq!(body["credits"][0]["role"], "primary");
@@ -322,7 +322,7 @@ mod against_a_server {
             let mut form = AlbumForm::from_detail(&detail().await).unwrap();
             form.data.title = format!("{} (album form test)", old.data.title);
             let name = format!("Album form test artist {}", std::process::id());
-            credits::add_artist(&mut form.data.credits, None, name.clone(), true);
+            crate::ui::views::album_rows::credit_into(&mut form.data.credits, crate::ui::views::album_commands::Credit { artist: None, name: name.clone(), role: Some("featured".into()), alias: None, at: None });
             credits::make_new_artists(api, &mut form.data.credits).await.unwrap();
             put(AlbumForm::body(&form.data, form.base, "album form test")).await.unwrap();
             let d = detail().await;
