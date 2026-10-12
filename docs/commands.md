@@ -8,7 +8,7 @@ arguments after it in any order, `-key:value` to take one off and `-key` to clea
 command has them), `"…"` or `\|` for a value with a `|` in it. Places: the value is what, `n:` is
 where (`cover:3 n:1`).
 
-The graphs show what can follow what; the tables say what each key takes.
+An argument (↳) goes after its command, in any order with the others.
 
 ## Searching and filtering
 
@@ -46,27 +46,6 @@ Ctrl+K: the search's keys (above), and these.
 ## The track editor
 
 A track's page in edit mode, Review, Ctrl+E on a list.
-
-```mermaid
-graph LR
-    artist["artist:"] --> artist_role["role: (after -artist: too)"]
-    artist["artist:"] --> artist_as["as:"]
-    artist["artist:"] --> artist_n["n:"]
-    feat["feat:"] --> feat_role["role: (after -feat: too)"]
-    feat["feat:"] --> feat_as["as:"]
-    feat["feat:"] --> feat_n["n:"]
-    album["album:"] --> album_n["n:"]
-    album["album:"] --> album_kind["kind:"]
-    group["group:"] --> group_kind["kind:"]
-    related["related:"] --> related_kind["kind:"]
-    cover["cover:"] --> cover_n["n:"]
-    cover["cover:"] --> cover_which["which:"]
-    source["source:"] -.-> source_fields(["its platform's fields"])
-    parse["parse:"] --> parse_split["split:"]
-    parse["parse:"] --> parse_whole["whole:"]
-    parse["parse:"] --> parse_keep["keep:"]
-    parse["parse:"] --> parse_word["word:"]
-```
 
 | Key | Other names | Takes | What it does |
 |---|---|---|---|
@@ -112,16 +91,6 @@ graph LR
 
 The track editor's line on a track's page: these too (listen mode: these alone).
 
-```mermaid
-graph LR
-    extra["extra:"] --> extra_kind["kind:"]
-    extra["extra:"] --> extra_file["file:"]
-    extra["extra:"] --> extra_description["description:"]
-    extra["extra:"] --> extra_source["source:"]
-    extra["extra:"] --> extra_visibility["visibility:"]
-    version["version:"] --> version_as["as:"]
-```
-
 | Key | Other names | Takes | What it does |
 |---|---|---|---|
 | `play:` |  | nothing | it, then the rest of its album |
@@ -155,17 +124,6 @@ graph LR
 
 Its commandline (/).
 
-```mermaid
-graph LR
-    alias["alias:"] --> alias_recredit["recredit: (only after -alias:)"]
-    source["source:"] -.-> source_fields(["its platform's fields"])
-    extra["extra:"] --> extra_kind["kind:"]
-    extra["extra:"] --> extra_file["file:"]
-    extra["extra:"] --> extra_description["description:"]
-    extra["extra:"] --> extra_source["source:"]
-    extra["extra:"] --> extra_visibility["visibility:"]
-```
-
 | Key | Other names | Takes | What it does |
 |---|---|---|---|
 | `alias:` `-alias:` | `aliases:` | all, or one of the artist's names | only what's credited under a name (or several); a new name in edit mode |
@@ -194,25 +152,6 @@ graph LR
 ## An album's page
 
 Its commandline (/).
-
-```mermaid
-graph LR
-    artist["artist:"] --> artist_role["role: (after -artist: too)"]
-    artist["artist:"] --> artist_as["as:"]
-    artist["artist:"] --> artist_n["n:"]
-    feat["feat:"] --> feat_role["role: (after -feat: too)"]
-    feat["feat:"] --> feat_as["as:"]
-    feat["feat:"] --> feat_n["n:"]
-    cover["cover:"] --> cover_n["n:"]
-    group["group:"] --> group_kind["kind:"]
-    move["move:"] --> move_n["n: (needed)"]
-    source["source:"] -.-> source_fields(["its platform's fields"])
-    extra["extra:"] --> extra_kind["kind:"]
-    extra["extra:"] --> extra_file["file:"]
-    extra["extra:"] --> extra_description["description:"]
-    extra["extra:"] --> extra_source["source:"]
-    extra["extra:"] --> extra_visibility["visibility:"]
-```
 
 | Key | Other names | Takes | What it does |
 |---|---|---|---|
@@ -260,14 +199,6 @@ graph LR
 ## Credited as…
 
 The popup (Ctrl+B): a command per artist, several apart by |.
-
-```mermaid
-graph LR
-    artist["artist:"] --> artist_only["only:"]
-    artist["artist:"] --> artist_to["to: (one of to: and as: is needed)"]
-    artist["artist:"] --> artist_as["as: (one of to: and as: is needed)"]
-    artist["artist:"] --> artist_why["why:"]
-```
 
 | Key | Other names | Takes | What it does |
 |---|---|---|---|

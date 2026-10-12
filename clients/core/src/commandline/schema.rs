@@ -937,38 +937,6 @@ impl Schema {
         }
         out
     }
-
-    /// The commands and what can follow them, as a mermaid graph (None: nothing follows
-    /// anything, or everything follows everything: a flat line).
-    pub fn graph(&self) -> Option<String> {
-        if self.flat() || self.all().all(|c| matches!(c.next, Next::None)) {
-            return None;
-        }
-        let mut out = vec!["graph LR".to_string()];
-        let id = |path: &str| path.replace([':', '-'], "_");
-        fn edges(spec: &Spec, path: &str, out: &mut Vec<String>, id: &dyn Fn(&str) -> String) {
-            let args: &[Spec] = match spec.next {
-                Next::Args(a) | Next::Fields(a) => a,
-                _ => &[],
-            };
-            for a in args {
-                let child = format!("{path}_{}", a.key);
-                let notes = need_note(a, Some(spec), args);
-                let label = if notes.is_empty() { format!("{}:", a.key) } else { format!("{}: ({})", a.key, notes.join("; ")) };
-                out.push(format!("    {}[\"{}:\"] --> {}[\"{label}\"]", id(path), spec.key, id(&child)));
-                edges(a, &child, out, id);
-            }
-            match spec.next {
-                Next::Fields(_) => out.push(format!("    {}[\"{}:\"] -.-> {}_fields([\"its platform's fields\"])", id(path), spec.key, id(path))),
-                Next::Branch(_) => out.push(format!("    {}[\"{}:\"] -.-> {}_by([\"by its value\"])", id(path), spec.key, id(path))),
-                _ => {}
-            }
-        }
-        for c in self.all().filter(|c| !matches!(c.next, Next::None)) {
-            edges(c, c.key, &mut out, &id);
-        }
-        Some(out.join("\n"))
-    }
 }
 
 /// A note on how an argument is needed or goes with its command (`parent`; `siblings`: the

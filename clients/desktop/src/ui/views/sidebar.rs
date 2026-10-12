@@ -122,22 +122,24 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell, page: Page, username: &str) {
             }
             ui.add_space(6.0);
         }
+        // (A little smaller than the rest: four fit in the pane with room to spare.)
+        let small = || font(12.5, medium());
         ui.horizontal(|ui| {
-            let settings = RichText::new("Settings").color(if page == Page::Settings { P.text } else { P.muted });
+            let settings = RichText::new("Settings").font(small()).color(if page == Page::Settings { P.text } else { P.muted });
             if ui.add(egui::Button::new(settings).frame(false)).on_hover_text("Ctrl+,").clicked() {
                 shell.act(Action::Go(Page::Settings));
             }
             // Everyone's: playlists go there too.
             {
-                let trash = RichText::new("Trash").color(if page == Page::Trash { P.text } else { P.muted });
+                let trash = RichText::new("Trash").font(small()).color(if page == Page::Trash { P.text } else { P.muted });
                 if ui.add(egui::Button::new(trash).frame(false)).clicked() {
                     shell.act(Action::Go(Page::Trash));
                 }
             }
-            if ui.add(egui::Button::new(RichText::new("Keys").color(P.muted)).frame(false)).on_hover_text("?").clicked() {
+            if ui.add(egui::Button::new(RichText::new("Keys").font(small()).color(P.muted)).frame(false)).on_hover_text("?").clicked() {
                 shell.act(Action::ShowKeys);
             }
-            if ui.add(egui::Button::new(RichText::new("Log out").color(P.muted)).frame(false)).clicked() {
+            if ui.add(egui::Button::new(RichText::new("Log out").font(small()).color(P.muted)).frame(false)).clicked() {
                 shell.act(Action::LogOut);
             }
         });

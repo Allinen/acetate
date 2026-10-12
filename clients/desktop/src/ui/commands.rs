@@ -70,7 +70,7 @@ pub fn markdown() -> String {
         "command has them), `\"…\"` or `\\|` for a value with a `|` in it. Places: the value is what, `n:` is".to_string(),
         "where (`cover:3 n:1`).".to_string(),
         String::new(),
-        "The graphs show what can follow what; the tables say what each key takes.".to_string(),
+        "An argument (↳) goes after its command, in any order with the others.".to_string(),
         String::new(),
     ];
     for c in all() {
@@ -80,12 +80,6 @@ pub fn markdown() -> String {
         let prefix = all_prefix(&entries);
         out.push(format!("{}.{}", capitalized(c.place), if prefix { " A key can be typed by any start of its names (two letters at least)." } else { "" }));
         out.push(String::new());
-        if let Some(graph) = c.schema.graph() {
-            out.push("```mermaid".into());
-            out.push(graph);
-            out.push("```".into());
-            out.push(String::new());
-        }
         out.push("| Key | Other names | Takes | What it does |".into());
         out.push("|---|---|---|---|".into());
         for e in entries {
