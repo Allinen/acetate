@@ -91,7 +91,7 @@ pub const GROUPS: &[(&str, &[Binding])] = &[
             ("Tab", "take the choice listed, and type the next part (role:, as:, #…)"),
             ("Backspace (empty commandline)", "take the last change back to edit"),
             ("a word", "find what to change, or a tool (merge two, credited as…; a track's page: its actions)"),
-            ("↓ (empty commandline, one track)", "into the fields: Enter edits one, Delete takes it off"),
+            ("↓ (empty commandline, one track, or an album in edit mode)", "into the fields: Enter edits one, Delete takes it off"),
             ("r / a / m / o  on a field", "an artist's role / credited as · a cover made main · the file came from a source"),
             ("Alt+↑ / Alt+↓  on a field", "move an artist or a cover"),
             ("Ctrl+V", "an image (or an image file): a new cover"),

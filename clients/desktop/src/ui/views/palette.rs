@@ -614,16 +614,16 @@ fn run(shell: &mut Shell, catalog: Option<&Catalog>, mode: &Mode, query: &str, e
         (Mode::Name(Some(id)), Entry::Create) => shell.playlists.update(*id, Some(query.to_string()), None, None),
         (Mode::Search, _) => search_result(shell, catalog, entry, shift),
         // Made when the form is saved.
-        (Mode::Pick(kind, _), Entry::Create) => shell.picker.pick(*kind, None, query.to_string()),
+        (Mode::Pick(kind, _), Entry::Create) => shell.picker.pick(*kind, None),
         (Mode::Pick(kind, _), entry) => {
             let Some(c) = catalog else { return };
-            let (id, name) = match entry {
-                Entry::Artist(i) => (c.artists[i as usize].id, c.artists[i as usize].name.clone()),
-                Entry::Album(i) => (c.album_at(i).id(), c.album_at(i).title().to_string()),
-                Entry::Track(i) => (c.track_at(i).id(), c.track_at(i).title().to_string()),
+            let id = match entry {
+                Entry::Artist(i) => c.artists[i as usize].id,
+                Entry::Album(i) => c.album_at(i).id(),
+                Entry::Track(i) => c.track_at(i).id(),
                 _ => return,
             };
-            shell.picker.pick(*kind, Some(id), name);
+            shell.picker.pick(*kind, Some(id));
         }
         _ => {}
     }

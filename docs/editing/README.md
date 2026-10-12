@@ -1,8 +1,8 @@
 # Editing
 
 Press `e` to turn **edit mode** on or off. While it's off, nothing on screen can change
-your library by accident. While it's on, pages grow their editing tools: forms for albums
-and artists, the track editor, lyrics, notes, extras and so on. (`Ctrl+E` on a track opens
+your library by accident. While it's on, pages grow their editing tools: rows for albums,
+forms for artists, the track editor, lyrics, notes, extras and so on. (`Ctrl+E` on a track opens
 the editor in either mode, for a quick fix.)
 
 ## What you can edit
@@ -11,7 +11,7 @@ the editor in either mode, for a quick fix.)
   (`released`, `demo`, `unreleased`, `deleted`…), covers, sources, notes, lyrics, related
   tracks. See [the track editor](editor.md); the [track page](track-page.md)'s commandline
   adds notes, extras, original files, earlier files, versions, undoing merges and restoring.
-- **Albums:** the same kind of form, plus kind (single, EP, mixtape, or your own words) and
+- **Albums:** the same fields as a track as rows you change with the commandline, plus kind (single, EP, mixtape, or your own words) and
   track order (`Alt+↑`/`Alt+↓`, then `Ctrl+Enter`). All of it, plus covers, groupings,
   sources, extras and notes, can be typed on [the album page's commandline](album-page.md).
 - **Artists:** name, disambiguation, **aliases** (one artist, several names, tracks still

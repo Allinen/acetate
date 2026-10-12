@@ -75,7 +75,18 @@ suggested, and if you type one anyway it tells you why it can't be done.
 - `source:`, `-source:#N`, `extra:`, `-extra:`, `note:` and `-note:` work as on the
   [artist page](artist-page.md).
 
-The album's own changes (title, kind, date, artists) are saved as one revision, through its
-form. Covers, groupings, sources, extras and notes are saved one after another, in the order
+Under the commandline, in edit mode, the album's title, kind, date and artists are listed as
+rows, as the [track editor](editor.md) lists a track's: each as it will be once your staged
+changes are saved, with what it was crossed out beside it. `↓` on an empty commandline goes
+into the rows (`↑`/`↓`, or `j`/`k`, move; `Esc` goes back to the commandline). `Enter` edits
+a row: it puts the command for it in the commandline, ready to change. On an artist, `r` is
+for its role, `a` for the name it's credited under, `Alt+↑`/`Alt+↓` move it, and `Delete`
+takes it off; on the date, `Delete` clears it. These are the same commands you can type,
+staged as chips like the rest, and saved with `Ctrl+Enter`.
+
+The album's own changes (title, kind, date, artists) are saved as one revision. If it
+fails (someone else changed the album in between, say), what's left unsaved stays in the
+rows and a bar says why, with *Load theirs, keep mine on top* when that is the reason; `Ctrl+Enter`
+tries again and `Esc` twice discards it. Covers, groupings, sources, extras and notes are saved one after another, in the order
 you staged them. If one of them fails, it stays staged and says why, and the rest are still
 saved.

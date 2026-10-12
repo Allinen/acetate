@@ -142,6 +142,7 @@ impl AlbumPage {
             edit_mode: shell.edit_mode,
             may_edit,
             may_metadata: shell.account.can("edit_metadata"),
+            loaded: details.is_some(),
             title: album.title(),
             kind: album.kind(),
             release_date: album.release_date().unwrap_or(""),
@@ -286,8 +287,7 @@ impl AlbumPage {
                         label.scroll_to_me(Some(egui::Align::Min));
                     }
                 };
-                edit_panel(ui, shell, catalog, id, reveal == Some(Reveal::Credits));
-                ui.add_space(12.0);
+                edit_panel(ui, shell, id);
                 if let Some(d) = shell.album_details.get(id).value.clone() {
                     panel(ui, "album-covers", |ui| {
                         heading(ui, "Covers", Reveal::Covers);
@@ -357,7 +357,7 @@ impl AlbumPage {
                 ui.add_space(10.0);
             }
             self.order.bar(ui, shell, id, self.list.has_marks());
-            let options = Options { key: "album", columns: ALBUM_COLUMNS, added: None, filter_hint: None, album: Some((id, album.artist_display())), places: self.order.places(shell, id), keys: true, scroll: false };
+            let options = Options { key: "album", columns: ALBUM_COLUMNS, added: None, filter_hint: None, album: Some((id, album.artist_display())), places: self.order.places(shell, id), keys: !self.commands.on_rows(), scroll: false };
             let shown = self.list.show(ui, shell, catalog, &rows, version(shell.generation, tracks), player, &options);
 
             // Alt+↑/↓ or Alt+K/J: the selected track a place earlier or later (edit mode).
@@ -513,29 +513,24 @@ fn view_sections(ui: &mut egui::Ui, shell: &mut Shell, d: &crate::details::Album
     folds.into_inner()
 }
 
-/// The album's form (edit mode). Kept in the shell per album, so changes not saved yet
-/// are still there after looking elsewhere.
-fn edit_panel(ui: &mut egui::Ui, shell: &mut Shell, catalog: &Arc<Catalog>, id: Uuid, reveal: bool) {
+/// How the album's last save went (edit mode): shown when there's something to say. The
+/// form is kept in the shell per album, so changes not saved yet are still there after
+/// looking elsewhere.
+fn edit_panel(ui: &mut egui::Ui, shell: &mut Shell, id: Uuid) {
     use crate::ui::edit::album_form::AlbumForm;
-    let cached = shell.album_details.get(id);
-    let Some(d) = cached.value.clone() else {
-        ui.label(RichText::new(if cached.refreshing { "Loading the album to edit…" } else { "Couldn't load the album to edit" }).color(P.muted));
+    let Some(d) = shell.album_details.get(id).value.clone() else { return };
+    // Taken out of the shell while it's shown (showing it needs the shell too).
+    let Some(mut form) = shell.album_forms.remove(&id).or_else(|| AlbumForm::from_detail(&d)) else {
+        ui.label(RichText::new("This album has no revision to build on, so it can't be edited here.").color(P.muted));
         return;
     };
-    panel(ui, "album-edit", |ui| {
-        if reveal {
-            ui.scroll_to_cursor(Some(egui::Align::Min));
-        }
-        // Taken out of the shell while it's shown (showing it needs the shell too).
-        let Some(mut form) = shell.album_forms.remove(&id).or_else(|| AlbumForm::from_detail(&d)) else {
-            ui.label(RichText::new("This album has no revision to build on, so it can't be edited here.").color(P.muted));
-            return;
-        };
-        form.show(ui, shell, Some(catalog), &d);
-        shell.album_forms.insert(id, form);
-    });
+    form.update(ui, shell, &d);
+    if form.visible() {
+        panel(ui, "album-edit", |ui| form.bar(ui, shell, &d));
+        ui.add_space(12.0);
+    }
+    shell.album_forms.insert(id, form);
 }
-
 
 /// A star button and a rating for a track, album or artist (the header's).
 pub fn marks(ui: &mut egui::Ui, shell: &mut Shell, kind: Kind, id: Uuid) {

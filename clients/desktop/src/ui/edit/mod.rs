@@ -28,10 +28,8 @@ pub mod versions;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use eframe::egui::{self, RichText};
 use uuid::Uuid;
 
-use crate::ui::theme::{font, medium};
 
 
 /// What a picker picks.
@@ -42,13 +40,11 @@ pub enum PickKind {
     Track,
 }
 
-/// A choice from a picker: which (None: a new one, made when the form is saved), and its
-/// name.
+/// A choice from a picker: which (None: a new one).
 #[derive(Debug, Clone)]
 pub struct Picked {
     pub kind: PickKind,
     pub id: Option<Uuid>,
-    pub name: String,
 }
 
 /// Where picks from the palette arrive, for the form that asked.
@@ -58,8 +54,8 @@ pub struct Picker {
 }
 
 impl Picker {
-    pub fn pick(&self, kind: PickKind, id: Option<Uuid>, name: String) {
-        *self.picked.lock().unwrap() = Some(Picked { kind, id, name });
+    pub fn pick(&self, kind: PickKind, id: Option<Uuid>) {
+        *self.picked.lock().unwrap() = Some(Picked { kind, id });
     }
 
     /// The pick, if one arrived (taken: each is handed out once).
@@ -80,16 +76,3 @@ pub enum SaveState {
     Failed(String),
 }
 
-/// A drop-down of `options` (shown by `name`) for `value`. A value not among them (an
-/// older list) is kept, and shown as it is.
-pub fn combo(ui: &mut egui::Ui, id: impl std::hash::Hash + std::fmt::Debug, value: &mut String, options: &[String], name: impl Fn(&str) -> String) {
-    egui::ComboBox::from_id_salt(id).selected_text(RichText::new(name(value)).font(font(13.0, medium()))).show_ui(ui, |ui| {
-        for option in options {
-            if ui.selectable_label(value == option, name(option)).clicked() {
-                *value = option.clone();
-            }
-        }
-    });
-}
-
-pub use acetate_core::editor::capitalized;

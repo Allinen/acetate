@@ -1,19 +1,20 @@
-//! Editing an album (its page, in edit mode): title, kind, release date and credits,
-//! saved as one album revision (`PUT /api/albums/{id}`) with the revision the form was
-//! filled from: a change someone made in between is refused
-//! (`stale`) instead of undone, and "Load theirs, keep mine" takes theirs with only the
-//! fields you changed put back. Ctrl+Enter saves; Esc (outside a field) asks, and a
-//! second Esc discards. New artists typed in the credits are made when it's saved.
+//! An album's title, kind, release date and credits, saved as one album revision
+//! (`PUT /api/albums/{id}`) with the revision the form was filled from: a change someone
+//! made in between is refused (`stale`) instead of undone, and "Load theirs, keep mine"
+//! takes theirs with only the fields you changed put back. The changes are typed in the
+//! album's commandline (`views::album_commands`, shown as rows by `views::album_rows`),
+//! which puts them on the form and saves it; what's here is how the save went, and the
+//! changes left when it didn't (Ctrl+Enter tries again; Esc asks, and a second Esc
+//! discards). New artists typed in the credits are made when it's saved.
 
 use std::time::Instant;
 
 use eframe::egui::{self, Key, Modifiers, RichText};
 use uuid::Uuid;
 
-use super::credits::{self, CreditRow, CreditsEditor};
-use super::{capitalized, combo, PickKind, SaveState};
+use super::credits;
+use super::SaveState;
 use crate::api::ApiError;
-use crate::catalog::Catalog;
 use crate::details::AlbumDetail;
 use crate::ui::task::Task;
 use crate::ui::theme::PALETTE as P;
@@ -40,9 +41,6 @@ pub struct AlbumForm {
     reason: String,
     state: SaveState,
     answer: Task<Outcome>,
-    credits_editor: CreditsEditor,
-    /// The credit row an artist is being picked for (the palette).
-    awaiting: Option<usize>,
     confirm_discard: bool,
     rebase_asked: bool,
     notice: Option<String>,
@@ -72,8 +70,6 @@ impl AlbumForm {
             reason: String::new(),
             state: SaveState::Idle,
             answer: Task::default(),
-            credits_editor: CreditsEditor::default(),
-            awaiting: None,
             confirm_discard: false,
             rebase_asked: false,
             notice: None,
@@ -102,8 +98,7 @@ impl AlbumForm {
             credits: pick(&m.credits, &w.credits, &t.credits),
         };
         let reason = std::mem::take(&mut self.reason);
-        let credits_editor = std::mem::take(&mut self.credits_editor);
-        *self = AlbumForm { data, reason, credits_editor, ..theirs };
+        *self = AlbumForm { data, reason, ..theirs };
         self.notice = Some("Their changes are loaded, with yours on top. Check them, then save.".into());
     }
 
@@ -117,8 +112,7 @@ impl AlbumForm {
         self.seen = fresh.seen;
         if !self.dirty() {
             let (reason, state) = (std::mem::take(&mut self.reason), std::mem::take(&mut self.state));
-            let credits_editor = std::mem::take(&mut self.credits_editor);
-            *self = AlbumForm { reason, state, credits_editor, ..fresh };
+            *self = AlbumForm { reason, state, ..fresh };
         } else if fresh.base != self.base && self.rebase_asked {
             self.rebase(fresh);
         }
@@ -186,17 +180,17 @@ impl AlbumForm {
         shell.act(Action::RefreshLibrary);
     }
 
-    pub fn show(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: Option<&Catalog>, d: &AlbumDetail) {
+    /// Whether there is anything to say: a save going or just done or failed, or changes
+    /// not saved.
+    pub fn visible(&self) -> bool {
+        self.dirty() || !matches!(&self.state, SaveState::Idle | SaveState::Saved(_)) || matches!(&self.state, SaveState::Saved(at) if at.elapsed().as_secs() < 5)
+    }
+
+    /// Follows the details, takes a save's answer, and the keys: Ctrl+Enter saves what's
+    /// left unsaved, Esc asks about discarding it. Every frame the page is shown.
+    pub fn update(&mut self, ui: &egui::Ui, shell: &mut Shell, d: &AlbumDetail) {
         self.poll(shell);
         self.follow(d);
-        if let Some(i) = self.awaiting
-            && let Some(picked) = shell.picker.take()
-        {
-            self.awaiting = None;
-            if let (PickKind::Artist, Some(row)) = (picked.kind, self.data.credits.get_mut(i)) {
-                *row = CreditRow { artist_id: picked.id, name: picked.name, alias_id: None, alias: None, ..row.clone() };
-            }
-        }
         let ctx = ui.ctx().clone();
         // (A popup over the page, a track list's, takes Ctrl+Enter and Esc itself. Without
         // changes it's left for what's below: a note being written.)
@@ -211,38 +205,10 @@ impl AlbumForm {
             }
         }
 
-        let vocab = shell.account.vocab.clone().unwrap_or_default();
-        let before = self.data.clone();
-        let label = |ui: &mut egui::Ui, text: &str| {
-            ui.label(RichText::new(text).color(P.faint));
-        };
-        egui::Grid::new("album-form").num_columns(2).spacing([18.0, 8.0]).show(ui, |ui| {
-            label(ui, "Title");
-            ui.add(egui::TextEdit::singleline(&mut self.data.title).desired_width(420.0));
-            ui.end_row();
-            label(ui, "Kind");
-            combo(ui, "album-kind", &mut self.data.kind, &vocab.album_kinds, capitalized);
-            ui.end_row();
-            label(ui, "Released");
-            ui.add(egui::TextEdit::singleline(&mut self.data.release_date).hint_text("as the source wrote it: 2019, 2019-05-12…").desired_width(420.0));
-            ui.end_row();
-        });
-        ui.add_space(8.0);
-        ui.label(RichText::new("Album artists").strong());
-        let field = egui::Id::new("album-form-artist");
-        if let Some(i) = self.credits_editor.show(ui, shell, catalog, "album-form", field, &mut self.data.credits, &vocab.credit_roles) {
-            self.awaiting = Some(i);
-            shell.act(Action::Pick { kind: PickKind::Artist, except: None });
-        }
-        if self.data != before {
-            self.confirm_discard = false;
-            if !self.saving() {
-                self.state = SaveState::Idle;
-            }
-        }
+    }
 
-        ui.add_space(10.0);
-        ui.add(egui::TextEdit::singleline(&mut self.reason).hint_text("Why (optional: kept with the change)").desired_width(560.0));
+    /// How the save went, and what to do about it.
+    pub fn bar(&mut self, ui: &mut egui::Ui, shell: &mut Shell, d: &AlbumDetail) {
         let dirty = self.dirty();
         ui.horizontal(|ui| {
             let saving = self.saving();

@@ -42,9 +42,10 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use eframe::egui;
+use eframe::egui::{self, RichText};
 use uuid::Uuid;
 
+use super::album_rows;
 use super::page_commands::{self as pc, Arg, Change, Chosen, Known, NoteDoes, Pinned, Sending, Taken, Things, Whose};
 use crate::account::Vocab;
 use crate::catalog::search::{Part as SearchPart, Search};
@@ -53,9 +54,10 @@ use crate::commandline::{self, Keys};
 use crate::details::AliasInfo;
 use crate::ui::edit::album_form::AlbumForm;
 use crate::ui::edit::commandline::{self as cl, CommandLine};
-use crate::ui::edit::credits::{self, CreditRow};
+use crate::ui::edit::credits;
 use crate::ui::edit::extras::Groups;
 use crate::ui::edit::part_of;
+use crate::ui::theme::PALETTE as P;
 use crate::ui::{Page, Shell};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -218,6 +220,8 @@ pub struct Here<'a> {
     pub may_edit: bool,
     /// `edit_metadata` (in either mode: a track's quick fix).
     pub may_metadata: bool,
+    /// Its details are loaded (the rows of its fields wait for them).
+    pub loaded: bool,
     pub title: &'a str,
     pub kind: &'a str,
     pub release_date: &'a str,
@@ -1009,6 +1013,8 @@ pub struct AlbumCommands {
     /// it's back).
     album: Option<Uuid>,
     staged: Vec<Staged>,
+    /// The row of the album's fields the keys are on (↓ from an empty line).
+    row: Option<usize>,
     /// Other albums' changes staged, not saved yet.
     kept: HashMap<Uuid, Vec<Staged>>,
     /// Changes being saved on their own (sources, extras, notes, covers, groupings).
@@ -1029,6 +1035,7 @@ impl Default for AlbumCommands {
             notice: None,
             album: None,
             staged: Vec::new(),
+            row: None,
             kept: HashMap::new(),
             sending: Sending::default(),
             known: Known::default(),
@@ -1095,11 +1102,32 @@ impl AlbumCommands {
         };
         self.cl.highlighted = self.cl.highlighted.min(rows.len().saturating_sub(1));
         let can_edit = editing(here).is_ok();
+        // The album's fields as rows: as they'll be with the staged changes (on what a
+        // failed save left in the form, if it did).
+        let pending = shell.album_forms.get(&id).filter(|f| f.dirty()).map(|f| f.data.clone());
+        let base = pending.unwrap_or_else(|| acetate_core::editor::forms::AlbumData {
+            title: here.title.to_string(),
+            kind: here.kind.to_string(),
+            release_date: here.release_date.to_string(),
+            credits: credits::rows_from(here.credits),
+        });
+        let fields: Vec<album_rows::Row> = if can_edit && here.loaded { album_rows::rows(&base, self.staged.iter().map(|s| &s.edit)) } else { Vec::new() };
+        self.row = self.row.and_then(|n| (!fields.is_empty()).then(|| n.min(fields.len() - 1)));
+        if self.row.is_some() {
+            // On the rows the keys are theirs (Esc too: back to the line, not off the page).
+            shell.page_takes_keys = true;
+            shell.page_takes_back = true;
+        }
         // (The row, and whether it was Tab: the next part written after it.)
         let mut take: Option<(usize, bool)> = None;
         let mut enter = false;
         if focused {
-            let pressed = self.cl.keys(&ctx, rows.len(), false, can_edit && !self.staged.is_empty());
+            let pressed = self.cl.keys(&ctx, rows.len(), !fields.is_empty(), can_edit && !self.staged.is_empty());
+            if pressed.down && rows.is_empty() && !fields.is_empty() {
+                // Into the rows.
+                self.row = Some(0);
+                ctx.memory_mut(|m| m.surrender_focus(self.cl.id()));
+            }
             if (pressed.tab || pressed.enter) && !rows.is_empty() {
                 take = Some((self.cl.highlighted, pressed.tab));
             }
@@ -1113,6 +1141,52 @@ impl AlbumCommands {
             {
                 self.cl.text = last.text;
                 self.cl.cursor_to_end(&ctx);
+            }
+        }
+        // ---- Keys on a row ----
+        if let Some(n) = self.row.filter(|_| !ctx.egui_wants_keyboard_input() && !shell.palette_open && !shell.modal_was_open)
+            && let Some(row) = fields.get(n)
+        {
+            use egui::{Key, Modifiers};
+            let pressed = |k: Key, m: Modifiers| ctx.input_mut(|i| i.consume_key(m, k));
+            // Alt first: a key asked for without Alt matches with it too.
+            let earlier = pressed(Key::ArrowUp, Modifiers::ALT) || pressed(Key::K, Modifiers::ALT);
+            let later = !earlier && (pressed(Key::ArrowDown, Modifiers::ALT) || pressed(Key::J, Modifiers::ALT));
+            let credits_len = fields.iter().filter(|r| matches!(r.kind, album_rows::Field::Credit(_))).count();
+            if earlier || later {
+                ctx.input_mut(|i| i.events.retain(|e| !matches!(e, egui::Event::Text(_))));
+                let key = if earlier { RowKey::Earlier } else { RowKey::Later };
+                if self.row_key(row, key, credits_len, here) {
+                    // The cursor goes with the artist moved (the credits are rows next to each other).
+                    if let album_rows::Field::Credit(at) = row.kind {
+                        if earlier && at > 0 {
+                            self.row = Some(n - 1);
+                        } else if later && at + 1 < credits_len {
+                            self.row = Some(n + 1);
+                        }
+                    }
+                }
+            } else if pressed(Key::ArrowDown, Modifiers::NONE) || pressed(Key::J, Modifiers::NONE) {
+                self.row = Some((n + 1).min(fields.len() - 1));
+            } else if pressed(Key::ArrowUp, Modifiers::NONE) || pressed(Key::K, Modifiers::NONE) {
+                if n == 0 {
+                    self.row = None;
+                    self.cl.focus = true;
+                } else {
+                    self.row = Some(n - 1);
+                }
+            } else if pressed(Key::Escape, Modifiers::NONE) {
+                self.row = None;
+                self.cl.focus = true;
+            } else {
+                let key = [(Key::Enter, RowKey::Edit), (Key::R, RowKey::Role), (Key::A, RowKey::Alias), (Key::Delete, RowKey::Remove)]
+                    .into_iter()
+                    .find_map(|(k, row_key)| pressed(k, Modifiers::NONE).then_some(row_key));
+                if let Some(key) = key {
+                    // The letter typed is still in this frame's input: not into the line.
+                    ctx.input_mut(|i| i.events.retain(|e| !matches!(e, egui::Event::Text(_))));
+                    self.row_key(row, key, credits_len, here);
+                }
             }
         }
         // Ctrl+Enter: what's typed first, then the changes saved. (Without changes here,
@@ -1210,6 +1284,16 @@ impl AlbumCommands {
             let shown: Vec<Result<(String, Option<String>), String>> = resolve(&self.cl.text, here, &self.known).into_iter().map(|r| r.map(|(label, _)| (label, None))).collect();
             cl::would_do(ui, &shown, "Nothing to do by that name");
         }
+        if !fields.is_empty() {
+            ui.add_space(6.0);
+            if let Some(n) = album_rows::show(ui, &fields, self.row) {
+                self.row = Some(n);
+                ctx.memory_mut(|m| m.surrender_focus(self.cl.id()));
+            }
+            if self.row.is_some() {
+                ui.label(RichText::new("Enter edits it · on an artist: r role, a credited as, Alt+↑/↓ (or Alt+k/j) its place · Delete takes it off · Esc back to the commandline").color(P.faint).small());
+            }
+        }
         if let Some(n) = pc::status(ui, self.notice.as_deref(), self.sending.count, &self.staged, can_edit) {
             self.staged.remove(n);
         }
@@ -1223,6 +1307,68 @@ impl AlbumCommands {
             pc::let_go(&mut self.cl, &ctx);
         }
         act
+    }
+
+    /// What a key does on a row: the line filled in to edit it, or the change staged at once
+    /// (the same commands the line takes). False: nothing (said in the notice).
+    fn row_key(&mut self, row: &album_rows::Row, key: RowKey, credits: usize, here: &Here) -> bool {
+        use album_rows::Field as R;
+        let q = |name: &str| commandline::quoted::<K>(name);
+        let credit = |this: &mut Self| -> Option<String> {
+            if row.artist.is_none() {
+                this.notice = Some(format!("{} isn't made yet: Backspace on an empty commandline takes the change that added it back.", row.name));
+                return None;
+            }
+            Some(q(&row.name))
+        };
+        let (fill, stage): (Option<String>, Option<String>) = match (row.kind, key) {
+            (R::Title, RowKey::Edit) => (Some(format!("title:{}", q(&row.value))), None),
+            (R::Kind, RowKey::Edit) => (Some("kind:".into()), None),
+            (R::Date, RowKey::Edit) => (Some(format!("date:{}", row.value)), None),
+            (R::Date, RowKey::Remove) => (None, Some("-date".into())),
+            (R::AddArtist, RowKey::Edit) => (Some("artist:".into()), None),
+            (R::Credit(_), RowKey::Edit | RowKey::Role) => (credit(self).map(|n| format!("artist:{n} role:")), None),
+            (R::Credit(_), RowKey::Alias) => (credit(self).map(|n| format!("artist:{n} as:")), None),
+            (R::Credit(_), RowKey::Remove) => (None, credit(self).map(|n| format!("-artist:{n}"))),
+            (R::Credit(at), RowKey::Earlier) if at > 0 => (None, credit(self).map(|n| format!("artist:{n} #{at}"))),
+            (R::Credit(at), RowKey::Later) if at + 1 < credits => (None, credit(self).map(|n| format!("artist:{n} #{}", at + 2))),
+            _ => (None, None),
+        };
+        if let Some(text) = fill {
+            self.cl.text = text;
+            self.cl.highlighted = 0;
+            self.row = None;
+            self.cl.focus = true;
+            self.cl.gently = false;
+            self.cl.place_cursor = true;
+            return true;
+        }
+        if let Some(text) = stage {
+            return self.stage_text(&text, here);
+        }
+        false
+    }
+
+    /// Commands staged as if typed and entered (the changes only; false: one can't be).
+    fn stage_text(&mut self, text: &str, here: &Here) -> bool {
+        let done = resolve(text, here, &self.known);
+        if let Some(err) = done.iter().find_map(|d| d.as_ref().err()) {
+            self.notice = Some(format!("Not done: {err}"));
+            return false;
+        }
+        let texts = pc::commands_text::<K>(text);
+        for (n, (label, does)) in done.into_iter().flatten().enumerate() {
+            if let Does::Edit(edit) = does {
+                self.staged.push(Staged { text: texts.get(n).cloned().unwrap_or_default(), label, edit, failed: None });
+            }
+        }
+        self.notice = None;
+        true
+    }
+
+    /// The keys are on a row of the album's fields (the page's other keys leave them be).
+    pub fn on_rows(&self) -> bool {
+        self.row.is_some()
     }
 
     /// `file:paste` becomes the copied files' paths; `file:choose` and `cover:choose` open the
@@ -1266,19 +1412,13 @@ impl AlbumCommands {
                 Some(mut form) => {
                     for s in form_edits {
                         match s.edit {
-                            Edit::Title(title) => form.data.title = title,
-                            Edit::Kind(kind) => form.data.kind = kind,
-                            Edit::Date(date) => form.data.release_date = date,
                             Edit::Why(why) => form.set_reason(&why),
-                            Edit::Credit(c) => credit_into(&mut form.data.credits, c),
-                            Edit::Uncredit(artist) => form.data.credits.retain(|r| r.artist_id != Some(artist)),
-                            Edit::NoCredits => form.data.credits.clear(),
-                            Edit::Thing(_) | Edit::Cover(_) | Edit::Group(_) => {}
+                            edit => album_rows::apply(&mut form.data, &edit),
                         }
                     }
                     if form.dirty() {
                         form.save(shell);
-                        notices.push("Saving… (the album's form below says how it went)");
+                        notices.push("Saving…");
                     } else {
                         notices.push("The album's title, kind, date and artists are as they were: nothing to save there (why: is kept with a change to those).");
                     }
@@ -1293,28 +1433,15 @@ impl AlbumCommands {
     }
 }
 
-/// A credit onto the form's rows: one there already changes (its role, name, place), else
-/// it's added (as primary if there's none yet, else featured, unless its role is said).
-fn credit_into(rows: &mut Vec<CreditRow>, c: Credit) {
-    let at = match c.artist.and_then(|id| rows.iter().position(|r| r.artist_id == Some(id))) {
-        Some(at) => at,
-        None => {
-            credits::add_artist(rows, c.artist, c.name, c.role.as_deref() == Some("featured"));
-            rows.len() - 1
-        }
-    };
-    let row = &mut rows[at];
-    if let Some(role) = c.role {
-        row.role = role;
-    }
-    if let Some(alias) = c.alias {
-        row.alias_id = alias.as_ref().map(|a| a.0);
-        row.alias = alias.map(|a| a.1);
-    }
-    if let Some(to) = c.at {
-        let row = rows.remove(at);
-        rows.insert(to.min(rows.len()), row);
-    }
+/// What a key on a row of the album's fields asks.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum RowKey {
+    Edit,
+    Role,
+    Alias,
+    Remove,
+    Earlier,
+    Later,
 }
 
 /// A change sent on its own. Ok: what's worth saying, if anything.
@@ -1430,6 +1557,7 @@ mod tests {
 
     fn here(w: &World, edit: bool) -> Here<'_> {
         Here {
+            loaded: true,
             id: id(LP),
             catalog: &w.catalog,
             vocab: &w.vocab,
@@ -1545,8 +1673,8 @@ mod tests {
         assert!(does("-artist:Bo", &edit, &known)[0].is_err());
         // Onto the form's rows.
         let mut rows = credits::rows_from(&w.credits);
-        credit_into(&mut rows, credit("artist:Bo #1", &known));
-        credit_into(&mut rows, credit("artist:Ann role:producer", &known));
+        album_rows::credit_into(&mut rows, credit("artist:Bo #1", &known));
+        album_rows::credit_into(&mut rows, credit("artist:Ann role:producer", &known));
         assert_eq!(rows.iter().map(|r| (r.name.as_str(), r.role.as_str())).collect::<Vec<_>>(), [("Bo", "featured"), ("Ann", "producer")]);
         // The list: matches, then a new one; Tab goes on to its role.
         let part = commandline::parse::<K>("artist:b").parts.remove(0);
@@ -1604,5 +1732,37 @@ mod tests {
         .unwrap();
         let r = &d.revisions.unwrap()[0];
         assert_eq!((r.kind.as_str(), r.variant_id, r.reason.as_str()), ("", None, "the label's spelling"));
+    }
+
+    #[test]
+    fn keys_on_the_fields_rows_fill_the_line_or_stage_the_change() {
+        let w = world();
+        let here = here(&w, true);
+        let base = acetate_core::editor::forms::AlbumData {
+            title: here.title.into(),
+            kind: here.kind.into(),
+            release_date: here.release_date.into(),
+            credits: credits::rows_from(here.credits),
+        };
+        let rows = album_rows::rows(&base, [].iter());
+        let mut commands = AlbumCommands::default();
+        let row = |kind| rows.iter().find(|r| r.kind == kind).unwrap();
+
+        // Enter on the title: the line, ready to change it.
+        assert!(commands.row_key(row(album_rows::Field::Title), RowKey::Edit, 1, &here));
+        assert_eq!(commands.cl.text, "title:Long Player");
+        // `a` on the artist: the name it's credited under, to type.
+        commands.row_key(row(album_rows::Field::Credit(0)), RowKey::Alias, 1, &here);
+        assert_eq!(commands.cl.text, "artist:Ann as:");
+        // Delete on it, and on the date: staged at once.
+        assert!(commands.row_key(row(album_rows::Field::Credit(0)), RowKey::Remove, 1, &here));
+        assert!(commands.row_key(row(album_rows::Field::Date), RowKey::Remove, 1, &here));
+        let staged: Vec<&Edit> = commands.staged.iter().map(|s| &s.edit).collect();
+        assert_eq!(staged, [&Edit::Uncredit(id(ANN)), &Edit::Date(String::new())]);
+        // One artist can't move earlier or later.
+        let before = commands.staged.len();
+        assert!(!commands.row_key(row(album_rows::Field::Credit(0)), RowKey::Earlier, 1, &here));
+        assert!(!commands.row_key(row(album_rows::Field::Credit(0)), RowKey::Later, 1, &here));
+        assert_eq!(commands.staged.len(), before);
     }
 }

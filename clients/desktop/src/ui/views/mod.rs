@@ -5,6 +5,7 @@
 pub mod album;
 pub mod album_commands;
 pub mod album_merge;
+pub mod album_rows;
 pub mod albums;
 pub mod artist;
 pub mod artist_commands;
