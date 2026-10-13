@@ -17,9 +17,12 @@ asks once to allow installs from your browser or file manager), or build it your
 your login and downloads as long as they're signed with the same key.
 
 The app and the server are released together, with the same version number. When the server
-you log in to is another version than the app, the app says so (once, and under Settings)
-and offers to download the one that goes with the server. It asks the server, not GitHub:
-nothing is fetched until you tap Download, which opens the file in your browser.
+you log in to is a newer release than the app, the app offers to **Update**: it downloads that
+release from GitHub, checks it against the release's `.sha256` file, and hands it to Android's
+installer, which asks you to confirm (and, the first time, to allow installs from Acetate). It
+only goes forwards: if the server is older than the app, the app says so and the server needs
+updating (an older server can't read what a newer app keeps); it links the matching app for
+installing by hand.
 
 Log in with the server's address, your user and password. Plain `http://` works (a server on
 your home network usually is), and so does `https://` with a certificate from a public

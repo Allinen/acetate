@@ -5,6 +5,7 @@ use std::collections::HashMap;
 
 use acetate_core::details::{AlbumDetail, ArtistDetail, Revision, TrackDetail};
 use acetate_core::editor::diff::changes_named;
+use acetate_core::account::Release;
 use uuid::Uuid;
 
 use crate::{Core, CoreError, MarkOn, parse_id};
@@ -92,9 +93,54 @@ impl Core {
         self.shared.account.lock().unwrap().server.as_ref().is_some_and(|s| s.blocked())
     }
 
-    /// Where the app of the server's version is (the APK), when this app isn't that version.
+    /// The server's release, when it is newer than this app's: the app can be brought up to it
+    /// (`download_update`). Never an older one: what the app keeps may not be readable by it.
+    pub fn version_update(&self) -> Option<String> {
+        self.shared.account.lock().unwrap().server.as_ref().filter(|s| s.release() == Release::ServerNewer).map(|s| s.version.clone())
+    }
+
+    /// Where the app of the server's version is (the APK), to install by hand, when the server
+    /// is not newer than this app.
     pub fn version_update_url(&self) -> Option<String> {
-        self.shared.account.lock().unwrap().server.as_ref().filter(|s| !s.matches_app()).map(|s| s.apk_url())
+        self.shared.account.lock().unwrap().server.as_ref().filter(|s| !s.matches_app() && s.release() != Release::ServerNewer).map(|s| s.apk_url())
+    }
+
+    /// How far `download_update` has got: bytes so far, and in all (0: not known).
+    pub fn update_progress(&self) -> UpdateProgress {
+        let (done, total) = *self.update_progress.lock().unwrap();
+        UpdateProgress { done, total }
+    }
+}
+
+/// The download of an app update, for a progress bar.
+#[derive(uniffi::Record)]
+pub struct UpdateProgress {
+    pub done: u64,
+    pub total: u64,
+}
+
+#[uniffi::export(async_runtime = "tokio")]
+impl Core {
+    /// Downloads the APK of the server's release, checks it against the release's checksum and
+    /// keeps it in the app's folder; the path comes back, for the system's installer.
+    pub async fn download_update(&self) -> Result<String, CoreError> {
+        let server = self.shared.account.lock().unwrap().server.clone().filter(|s| s.release() == Release::ServerNewer);
+        let Some(server) = server else { return Err(failed("update", "The server isn't on a newer release than this app.")) };
+        let (url, path, progress) = (server.apk_url(), self.data_dir.join("update.apk"), self.update_progress.clone());
+        *progress.lock().unwrap() = (0, 0);
+        let result = self
+            .runtime
+            .spawn(async move {
+                let apk = acetate_core::release::fetch_verified(&url, &|done, total| *progress.lock().unwrap() = (done, total.unwrap_or(0))).await?;
+                tokio::fs::write(&path, apk).await.map_err(|e| format!("Couldn't keep the download: {e}"))?;
+                Ok::<_, String>(path.to_string_lossy().into_owned())
+            })
+            .await;
+        match result {
+            Ok(Ok(path)) => Ok(path),
+            Ok(Err(why)) => Err(failed("update", &why)),
+            Err(e) => Err(failed("internal", &e.to_string())),
+        }
     }
 }
 

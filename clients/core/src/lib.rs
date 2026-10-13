@@ -40,6 +40,7 @@ pub mod memory;
 pub mod messages;
 pub mod playback;
 pub mod playlists;
+pub mod release;
 pub mod resume;
 pub mod review;
 pub mod title_credits;

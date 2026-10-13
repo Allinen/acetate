@@ -37,7 +37,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.launch
+import uniffi.acetate_ffi.CoreException
 import uniffi.acetate_ffi.AlbumOrder
+import uniffi.acetate_ffi.formatBytes
 import uniffi.acetate_ffi.AlbumView
 import uniffi.acetate_ffi.ArtistOrder
 import uniffi.acetate_ffi.ArtistView
@@ -86,31 +89,65 @@ fun LibraryScreen(model: Model) {
 }
 
 /**
- * The server is of another release than this app: say so once (per server version), with the
- * app that goes with the server to download. Nothing is fetched until they say so.
+ * The server is of another release than this app: say so once (per server version). When the
+ * server's is newer, the app can update itself to it (the core downloads and checks it, the
+ * system installs it); an older server is only warned about, with the matching app to
+ * install by hand. Nothing is fetched until they say so.
  */
 @Composable
 private fun VersionPrompt(model: Model) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val warning = remember(model.accountVersion, model.session) { model.core.versionWarning() }
     val url = remember(model.accountVersion, model.session) { model.core.versionUpdateUrl() }
+    val newer = remember(model.accountVersion, model.session) { model.core.versionUpdate() }
     // Not the same API version: the server turns the app away, so this can't be put off.
     val blocked = remember(model.accountVersion, model.session) { model.core.versionBlocked() }
     var dismissed by rememberSaveable { mutableStateOf<String?>(null) }
-    if (warning == null || (!blocked && dismissed == warning)) return
+    var updating by remember { mutableStateOf(false) }
+    var failure by remember { mutableStateOf<String?>(null) }
+    var progress by remember { mutableStateOf(uniffi.acetate_ffi.UpdateProgress(0uL, 0uL)) }
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    LaunchedEffect(updating) {
+        while (updating) {
+            progress = model.core.updateProgress()
+            kotlinx.coroutines.delay(200)
+        }
+    }
+    if (warning == null || (!blocked && !updating && dismissed == warning)) return
+    val text = when {
+        updating -> if (progress.total > 0uL) "Downloading Acetate $newer… ${formatBytes(progress.done)} of ${formatBytes(progress.total)}" else "Downloading Acetate $newer…"
+        newer != null -> "The server is on Acetate $newer, newer than this app (${BuildConfig.VERSION_NAME}). Update the app to match it." + (failure?.let { "\n\nThe update failed: $it" } ?: "")
+        else -> warning
+    }
     AlertDialog(
-        onDismissRequest = { if (!blocked) dismissed = warning },
-        title = { Text(if (blocked) "Update needed" else "A different version") },
-        text = { Text(warning) },
+        onDismissRequest = { if (!blocked && !updating) dismissed = warning },
+        title = { Text(if (blocked) "Update needed" else if (newer != null) "Update available" else "A different version") },
+        text = { Text(text) },
         confirmButton = {
-            if (url != null) TextButton({
+            if (newer != null) TextButton({
+                updating = true
+                failure = null
+                scope.launch {
+                    try {
+                        AppUpdate.install(context, model.core.downloadUpdate())
+                        // (The installer's confirmation is up; if it's declined, this can be asked again.)
+                        dismissed = warning
+                    } catch (e: CoreException) {
+                        failure = e.message
+                    } catch (e: Exception) {
+                        failure = e.message ?: "The installer wouldn't take it."
+                    }
+                    updating = false
+                }
+            }, enabled = !updating) { Text(if (failure != null) "Try again" else "Update") }
+            else if (url != null) TextButton({
                 dismissed = warning
                 context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url)))
             }) { Text("Download") }
         },
         dismissButton = {
             if (blocked) TextButton({ model.logout() }) { Text("Log out") }
-            else TextButton({ dismissed = warning }) { Text("Later") }
+            else TextButton({ dismissed = warning }, enabled = !updating) { Text("Later") }
         },
     )
 }

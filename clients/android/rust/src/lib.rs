@@ -622,6 +622,8 @@ impl Shared {
 #[derive(uniffi::Object)]
 pub struct Core {
     data_dir: std::path::PathBuf,
+    /// The app update being downloaded: bytes so far, and in all (0: not known).
+    update_progress: Arc<Mutex<(u64, u64)>>,
     shared: Arc<Shared>,
     runtime: tokio::runtime::Runtime,
 }
@@ -702,7 +704,7 @@ impl Core {
                 shared.listener.changed(Change::Connection);
             }
         });
-        Arc::new(Core { data_dir, shared, runtime })
+        Arc::new(Core { data_dir, update_progress: Default::default(), shared, runtime })
     }
 
     /// Whether the server can be reached, as of the last request.

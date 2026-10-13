@@ -7,6 +7,8 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- To install the update to the server's release (see AppUpdate). -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <!-- The server is whatever the user types: plain http on a LAN is allowed, and
          certificates the user installed on the phone are trusted (res/xml). -->
@@ -35,6 +37,7 @@
                 <data android:scheme="acetate" android:host="open" />
             </intent-filter>
         </activity>
+        <receiver android:name=".UpdateReceiver" android:exported="false" />
         <!-- Downloads keep the app alive while they run (see DownloadService). -->
         <service
             android:name=".DownloadService"

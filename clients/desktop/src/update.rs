@@ -58,11 +58,7 @@ impl Update {
         state.set(Progress::Downloading(0, None));
         runtime.spawn(async move {
             let result = async {
-                // The release's checksum for it (release.yml makes `<file>.sha256`), fetched
-                // first: no checksum, no update.
-                let sum = fetch_checksum(&url).await?;
-                let archive = download(&url, &state).await?;
-                verify(&archive, &sum)?;
+                let archive = acetate_core::release::fetch_verified(&url, &|done, total| state.set(Progress::Downloading(done, total))).await?;
                 state.set(Progress::Installing);
                 tokio::task::spawn_blocking(move || {
                     let exe = std::env::current_exe().map_err(|e| format!("Can't find where the app is: {e}"))?;
@@ -88,51 +84,6 @@ impl State {
     fn set(&self, p: Progress) {
         (self.set)(p)
     }
-}
-
-async fn fetch_checksum(url: &str) -> Result<String, String> {
-    let url = format!("{url}.sha256");
-    let response = reqwest::get(&url).await.map_err(|e| format!("Couldn't reach GitHub: {e}"))?;
-    if !response.status().is_success() {
-        return Err(format!("The release has no checksum to check the download against ({url}: {}).", response.status()));
-    }
-    response.text().await.map_err(|e| format!("Couldn't read the checksum: {e}"))
-}
-
-/// Whether the download is what the checksum file (`sha256sum`'s: the hash, then the
-/// name) says.
-fn verify(archive: &[u8], checksum_file: &str) -> Result<(), String> {
-    use sha2::{Digest, Sha256};
-    let expected = checksum_file.split_whitespace().next().unwrap_or("").to_ascii_lowercase();
-    if hex::encode(Sha256::digest(archive)) == expected {
-        Ok(())
-    } else {
-        Err("The download doesn't match its checksum, so it wasn't installed.".into())
-    }
-}
-
-async fn download(url: &str, state: &State) -> Result<Vec<u8>, String> {
-    let mut response = reqwest::get(url).await.map_err(|e| format!("Couldn't reach GitHub: {e}"))?;
-    if !response.status().is_success() {
-        return Err(format!("GitHub has no {url} ({})", response.status()));
-    }
-    let total = response.content_length();
-    let mut bytes = Vec::with_capacity(total.unwrap_or(0).min(1 << 30) as usize);
-    let mut last = std::time::Instant::now();
-    while let Some(chunk) = response.chunk().await.map_err(|e| format!("The download stopped: {e}"))? {
-        bytes.extend_from_slice(&chunk);
-        // (A repaint per chunk would be a lot.)
-        if last.elapsed().as_millis() > 100 {
-            state.set(Progress::Downloading(bytes.len() as u64, total));
-            last = std::time::Instant::now();
-        }
-    }
-    if let Some(total) = total
-        && total != bytes.len() as u64
-    {
-        return Err("The download was cut short.".into());
-    }
-    Ok(bytes)
 }
 
 /// The files of the archive that go on disk, by name (they're in a folder, `Acetate/`).
@@ -227,16 +178,6 @@ mod tests {
         let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
         std::io::Write::write_all(&mut gz, &tar).unwrap();
         gz.finish().unwrap()
-    }
-
-    #[test]
-    fn a_download_must_match_its_checksum() {
-        use sha2::{Digest, Sha256};
-        let sum = hex::encode(Sha256::digest(b"archive"));
-        assert!(verify(b"archive", &format!("{sum}  Acetate-v1.0.0-linux-x86_64.tar.gz\n")).is_ok());
-        assert!(verify(b"archive", &sum.to_uppercase()).is_ok());
-        assert!(verify(b"tampered", &format!("{sum}  x\n")).is_err());
-        assert!(verify(b"archive", "").is_err());
     }
 
     #[cfg(unix)]
