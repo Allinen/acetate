@@ -1,7 +1,7 @@
 //! The command palette (Ctrl+K, anywhere): type to find any artist, album or track
 //! (fuzzy: letters in order, words anywhere) or a command. ↑/↓ choose, Enter opens (a
 //! track: plays it, then the rest of its album), Shift+Enter plays (a track: opens its
-//! album). Esc empties the line, and closes it when it's empty.
+//! album). Esc empties the line, and closes it when it's empty (so does Backspace on an empty line).
 //!
 //! The line is a commandline (`crate::commandline::schema`'s language): the search's keys
 //! (`artist:` `album:` `year:` `status:`…) filter, `go:albums` lists the pages and `do:pause`
@@ -219,6 +219,12 @@ impl Palette {
             let down = i.consume_key(Modifiers::NONE, Key::ArrowDown);
             (up, down, i.consume_key(Modifiers::NONE, Key::Tab), enter, shift_enter, i.consume_key(Modifiers::NONE, Key::Escape))
         });
+        // Backspace on an empty line closes it, like Esc.
+        let backspace = self.query.is_empty() && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Backspace));
+        if backspace {
+            self.open = false;
+            return;
+        }
         if escape {
             // Esc empties the line first, as on a page's commandline.
             if matches!(self.mode, Mode::Search) && !self.query.is_empty() {

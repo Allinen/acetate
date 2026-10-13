@@ -1405,6 +1405,13 @@ impl App {
         if self.keys_open || self.shell.modal_open || self.shell.messages.open {
             return;
         }
+        // The palette takes its own keys (Esc closes it, not "back"); only Ctrl+K reaches past it.
+        if self.pages.palette.is_open() {
+            if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, Key::K)) {
+                self.pages.palette.toggle(ctx);
+            }
+            return;
+        }
         let m = ctx.input(|i| i.modifiers);
         let key = |k: Key| ctx.input(|i| i.key_pressed(k)) || nav == Some(k);
         // By the character typed, not the key: "/" and "?" are on different keys (and
