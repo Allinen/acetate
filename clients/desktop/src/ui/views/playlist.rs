@@ -86,7 +86,7 @@ impl PlaylistPage {
         let rows = TrackRows { tracks: Some(&tracks), added: Some(&starred), faded: Some(&faded) };
         let (play_rect, _) = ui.allocate_exact_size(Vec2::new(116.0, 42.0), Sense::hover());
         if play_button(ui, "liked-play", play_rect) && !tracks.is_empty() {
-            shell.act(Action::Play { tracks: self.table.tracks(&rows), start: 0 });
+            shell.act(Action::PlayAll { tracks: self.table.tracks(&rows) });
         }
         ui.horizontal(|ui| widgets::download_chip(ui, shell, "liked", "", "Liked songs"));
         ui.add_space(16.0);
@@ -164,7 +164,7 @@ impl PlaylistPage {
                 if !self.removed.is_empty() {
                     tracks.retain(|t| live.contains(t));
                 }
-                shell.act(Action::Play { tracks, start: 0 });
+                shell.act(Action::PlayAll { tracks });
             }
             ui.add_space(8.0);
             if detail.mine {

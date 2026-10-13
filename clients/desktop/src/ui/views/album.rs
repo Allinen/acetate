@@ -201,7 +201,7 @@ impl AlbumPage {
 
             let play_rect = Rect::from_min_size(Pos2::new(left, cover_rect.bottom() - 44.0), Vec2::new(116.0, 42.0));
             if play_button(ui, "album-play", play_rect) && !tracks.is_empty() {
-                shell.act(Action::Play { tracks: tracks.to_vec(), start: 0 });
+                shell.act(Action::PlayAll { tracks: tracks.to_vec() });
             }
             let marks_rect = Rect::from_min_size(Pos2::new(play_rect.right() + 18.0, play_rect.top()), Vec2::new(460.0, play_rect.height()));
             let mut marks_ui = ui.new_child(egui::UiBuilder::new().max_rect(marks_rect).layout(egui::Layout::left_to_right(egui::Align::Center)));

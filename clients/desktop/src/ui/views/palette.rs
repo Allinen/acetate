@@ -622,7 +622,7 @@ fn search_result(shell: &mut Shell, catalog: Option<&Catalog>, entry: Entry, shi
             if shift {
                 let tracks = c.grouping_tracks(grouping.id).to_vec();
                 if !tracks.is_empty() {
-                    shell.act(Action::Play { tracks, start: 0 });
+                    shell.act(Action::PlayAll { tracks });
                 }
             } else {
                 shell.act(Action::Go(Page::Grouping(grouping.id)));
@@ -633,7 +633,7 @@ fn search_result(shell: &mut Shell, catalog: Option<&Catalog>, entry: Entry, shi
             if shift {
                 let tracks = c.artist_tracks(artist.id).to_vec();
                 if !tracks.is_empty() {
-                    shell.act(Action::Play { tracks, start: 0 });
+                    shell.act(Action::PlayAll { tracks });
                 }
             } else {
                 shell.act(Action::Go(Page::Artist(artist.id)));

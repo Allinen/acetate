@@ -180,6 +180,6 @@ pub fn album_keys(shell: &mut Shell, catalog: &Catalog, moved: &widgets::Moved, 
 pub fn play_album(shell: &mut Shell, catalog: &Catalog, album: uuid::Uuid) {
     let tracks = catalog.album_tracks(album).to_vec();
     if !tracks.is_empty() {
-        shell.act(Action::Play { tracks, start: 0 });
+        shell.act(Action::PlayAll { tracks });
     }
 }

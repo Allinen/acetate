@@ -31,6 +31,7 @@ and closes the palette when it's already empty.
 
 - `Space` play/pause, `Ctrl+←`/`Ctrl+→` previous/next, `Shift+←`/`Shift+→` seek 10 s.
 - `r` loops the current track, `z` shuffles, `m` mutes, `9`/`0` volume.
+- With shuffle on, a Play button starts at a random track of the list; double-clicking a row still starts there.
 - `Shift+S` stars what's playing. In a list, `s` stars the selected track and `+`/`−` change
   its rating by half a star.
 - `q` queues the selected track at the end; `Shift+Q` queues it first.

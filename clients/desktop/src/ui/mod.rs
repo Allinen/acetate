@@ -81,6 +81,8 @@ pub enum Action {
     Forward,
     /// Play these tracks (positions in the catalog), starting with `start`.
     Play { tracks: Vec<u32>, start: usize },
+    /// Play these tracks from the top (shuffle on: from a random one), as a Play button does.
+    PlayAll { tracks: Vec<u32> },
     /// Play this one track from this point (comparing two files).
     /// Plays `track` with `other` in step beside it (comparing: see `Controller::compare`).
     /// Opens `a` and `b` for comparing at `at`, ahead of the first play.
@@ -1167,7 +1169,8 @@ impl App {
                         self.page_since = now;
                     }
                 }
-                Action::Play { tracks, start } => self.play(tracks, start),
+                Action::Play { tracks, start } => self.play(tracks, Some(start)),
+                Action::PlayAll { tracks } => self.play(tracks, None),
                 Action::Warm { a, b, at } => {
                     let Some(catalog) = self.shell.catalog.value.clone() else { continue };
                     let controller = self.shell.controller.clone();
@@ -1359,13 +1362,16 @@ impl App {
     }
 
     /// Queues tracks from the catalog and starts playing.
-    fn play(&mut self, tracks: Vec<u32>, start: usize) {
+    fn play(&mut self, tracks: Vec<u32>, start: Option<usize>) {
         let Some(catalog) = self.shell.catalog.value.clone() else { return };
         let controller = self.shell.controller.clone();
         // Built in the background: a queue of the whole library is 185k items.
         self.shell.runtime.spawn(async move {
             let items: Vec<QueueItem> = tracks.iter().map(|&i| queue_item(&catalog, i)).collect();
-            controller.play(items, start).await
+            match start {
+                Some(start) => controller.play(items, start).await,
+                None => controller.play_all(items).await,
+            }
         });
     }
 

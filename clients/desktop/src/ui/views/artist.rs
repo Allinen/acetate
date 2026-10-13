@@ -439,7 +439,7 @@ impl ArtistPage {
                 // Its own tracks (or, with none, everything it's credited on).
                 let to_play = if own.is_empty() { tracks } else { &own[..] };
                 if play_button(ui, "artist-play", play_rect) && !to_play.is_empty() {
-                    shell.act(Action::Play { tracks: to_play.to_vec(), start: 0 });
+                    shell.act(Action::PlayAll { tracks: to_play.to_vec() });
                 }
                 ui.add_space(6.0);
                 super::album::marks(ui, shell, Kind::Artist, id);
@@ -485,7 +485,7 @@ impl ArtistPage {
                 }
                 Some(Act::Collective) => self.to_collective = Some(super::to_collective::ToCollective::open(shell, id)),
                 Some(Act::ToggleEdit) => shell.act(Action::ToggleEditMode),
-                Some(Act::Play) if !to_play.is_empty() => shell.act(Action::Play { tracks: to_play, start: 0 }),
+                Some(Act::Play) if !to_play.is_empty() => shell.act(Action::PlayAll { tracks: to_play }),
                 Some(Act::Note(note, title)) => {
                     let found = details.as_ref().and_then(|d| d.notes.iter().find(|n| Some(n.id) == note));
                     self.notes.open(crate::ui::edit::notes::Owner::Artist(id), found, &title);

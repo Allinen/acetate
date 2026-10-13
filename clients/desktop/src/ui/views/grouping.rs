@@ -127,7 +127,7 @@ impl GroupingPage {
             ui.add_space(12.0);
             let (play_rect, _) = ui.allocate_exact_size(Vec2::new(116.0, 42.0), Sense::hover());
             if play_button(ui, "grouping-play", play_rect) && !tracks.is_empty() {
-                shell.act(Action::Play { tracks: tracks.clone(), start: 0 });
+                shell.act(Action::PlayAll { tracks: tracks.clone() });
             }
             ui.add_space(18.0);
 

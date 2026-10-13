@@ -237,6 +237,12 @@ impl Controller {
         self.play_from(items, start, Duration::ZERO).await;
     }
 
+    /// Plays a list from its top: with shuffle on, from a random track instead.
+    pub async fn play_all(self: &Arc<Self>, items: Vec<QueueItem>) {
+        let start = if self.shuffle.load(Relaxed) { acetate_core::playback::random_index(items.len()) } else { 0 };
+        self.play(items, start).await;
+    }
+
     /// Like `play`, starting `at` this point of the first track, with a quick fade from
     /// what plays.
     pub async fn play_from(self: &Arc<Self>, items: Vec<QueueItem>, start: usize, at: Duration) {

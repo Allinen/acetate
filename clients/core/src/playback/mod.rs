@@ -136,23 +136,45 @@ impl PlayerView {
     }
 }
 
-/// Puts `items` in a random order (Fisher–Yates, with a small xorshift generator seeded
-/// from the clock: good enough for a playlist, no crate needed).
-pub fn shuffle<T>(items: &mut [T]) {
+/// A random number, from a small xorshift generator seeded from the clock: good enough
+/// for a playlist, no crate needed.
+fn random_numbers() -> impl FnMut() -> u64 {
     let mut state = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos() as u64)
         .unwrap_or(0x9E37_79B9_7F4A_7C15)
         | 1;
-    let mut random = move || {
+    move || {
         state ^= state << 13;
         state ^= state >> 7;
         state ^= state << 17;
         state
-    };
+    }
+}
+
+/// A random place in a list of `len` (0 if it's empty).
+pub fn random_index(len: usize) -> usize {
+    if len == 0 { 0 } else { (random_numbers()() % len as u64) as usize }
+}
+
+/// Puts `items` in a random order (Fisher–Yates).
+pub fn shuffle<T>(items: &mut [T]) {
+    let mut random = random_numbers();
     for i in (1..items.len()).rev() {
         let j = (random() % (i as u64 + 1)) as usize;
         items.swap(i, j);
     }
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::random_index;
+
+    #[test]
+    fn a_random_index_stays_inside_the_list() {
+        assert_eq!(random_index(0), 0);
+        assert_eq!(random_index(1), 0);
+        assert!((0..50).all(|_| random_index(7) < 7));
+    }
+}
