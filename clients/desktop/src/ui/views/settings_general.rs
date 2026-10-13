@@ -5,7 +5,7 @@ use eframe::egui::{self, RichText};
 
 use super::settings::{hint, section};
 use crate::account::Release;
-use crate::update::{Progress, Update};
+use crate::update::Progress;
 use crate::ui::task::Fetched;
 use crate::ui::theme::PALETTE as P;
 use crate::ui::{widgets, Action, Shell};
@@ -14,7 +14,6 @@ use crate::ui::{widgets, Action, Shell};
 pub struct GeneralTab {
     /// Which app opens acetate:// links (the system's answer), asked in the background.
     links_handler: Fetched<crate::links::Handler>,
-    update: Update,
 }
 
 impl GeneralTab {
@@ -67,8 +66,8 @@ impl GeneralTab {
 
     /// The server's release against this app's: a button to bring the app up to it, or
     /// (the server is older) only the warning: the app doesn't go back.
-    fn update(&mut self, ui: &mut egui::Ui, shell: &Shell, server: &crate::account::ServerVersion) {
-        let progress = self.update.progress();
+    fn update(&self, ui: &mut egui::Ui, shell: &Shell, server: &crate::account::ServerVersion) {
+        let progress = shell.update.progress();
         match (server.release(), &progress) {
             (_, Progress::Done(version)) => {
                 ui.label(RichText::new(format!("Updated to Acetate {version}. Restart Acetate to use it.")).color(P.text));
@@ -80,7 +79,7 @@ impl GeneralTab {
                 }
                 ui.add_space(6.0);
                 if widgets::chip(ui, &format!("Update to {}", server.version), false) {
-                    self.update.start(shell.runtime.handle(), server, &shell.waker);
+                    shell.update.start(shell.runtime.handle(), server, &shell.waker);
                 }
                 hint(ui, "Downloads that release from GitHub and puts it in place of this program; it starts the next time Acetate does.");
             }

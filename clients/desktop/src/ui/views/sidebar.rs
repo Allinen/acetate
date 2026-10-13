@@ -4,6 +4,8 @@
 
 use eframe::egui::{self, Align2, Pos2, Rect, RichText, Sense, Vec2};
 
+use crate::account::Release;
+use crate::update::Progress;
 use crate::ui::theme::{bold, font, medium, semibold, PALETTE as P};
 use crate::ui::{widgets, Action, Page, Shell};
 
@@ -154,10 +156,41 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell, page: Page, username: &str) {
         if status.on_hover_text("F5: check for changes now").clicked() {
             shell.act(Action::RefreshLibrary);
         }
-        // The app and the server are of different API versions: said under everything.
-        if let Some(warning) = shell.account.server.as_ref().and_then(|s| s.warning()) {
-            ui.add_space(4.0);
-            ui.label(RichText::new("Version mismatch").color(P.danger).font(font(12.5, medium()))).on_hover_text(warning);
+        // The server is on a newer release: the app is offered it (only ever forwards: an
+        // older server isn't followed, see `update`). Under everything.
+        if let Some(server) = shell.account.server.clone() {
+            match (server.release(), shell.update.progress()) {
+                (_, Progress::Done(version)) => {
+                    ui.add_space(4.0);
+                    ui.label(RichText::new(format!("Updated to {version}: restart to use it")).color(P.accent).font(font(12.5, medium())));
+                }
+                (_, Progress::Downloading(..)) => {
+                    ui.add_space(4.0);
+                    ui.label(RichText::new("Downloading the update…").color(P.muted).font(font(12.5, medium())));
+                }
+                (_, Progress::Installing) => {
+                    ui.add_space(4.0);
+                    ui.label(RichText::new("Installing the update…").color(P.muted).font(font(12.5, medium())));
+                }
+                (Release::ServerNewer, progress) => {
+                    // (Bottom up: the button, then what it is, then a failure.)
+                    ui.add_space(4.0);
+                    if widgets::chip(ui, &format!("Update to {}", server.version), false) {
+                        shell.update.start(shell.runtime.handle(), &server, &shell.waker);
+                    }
+                    ui.label(RichText::new(format!("Acetate {} is out on the server", server.version)).color(P.muted).small());
+                    if let Progress::Failed(err) = progress {
+                        ui.label(RichText::new(format!("The update failed: {err}")).color(P.danger).small());
+                    }
+                }
+                (Release::ServerOlder, _) => {
+                    ui.add_space(4.0);
+                    if let Some(warning) = server.warning() {
+                        ui.label(RichText::new("Server is older").color(P.danger).font(font(12.5, medium()))).on_hover_text(warning);
+                    }
+                }
+                _ => {}
+            }
         }
         // The server can't be reached: since when, and a way to ask it now.
         if let acetate_core::api::Connection::Offline { since } = shell.connection {

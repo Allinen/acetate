@@ -12,15 +12,13 @@ use eframe::egui::{self, RichText};
 use crate::account::{Compat, ServerVersion};
 use crate::ui::theme::{bold, font, PALETTE as P};
 use crate::ui::{widgets, Action, Shell};
-use crate::update::{Progress, Update};
+use crate::update::Progress;
 
 #[derive(Default)]
-pub struct Incompatible {
-    update: Update,
-}
+pub struct Incompatible;
 
 impl Incompatible {
-    pub fn show(&mut self, ui: &mut egui::Ui, shell: &mut Shell, server: &ServerVersion) {
+    pub fn show(&self, ui: &mut egui::Ui, shell: &mut Shell, server: &ServerVersion) {
         let compat = server.compat();
         ui.add_space(60.0);
         ui.label(RichText::new("This app and the server aren't the same version").font(font(26.0, bold())));
@@ -32,7 +30,7 @@ impl Incompatible {
         ui.label(RichText::new(format!("This app: Acetate {} ({})", env!("CARGO_PKG_VERSION"), numbers(crate::account::api_version(), Some(acetate_core::catalog::model::FORMAT)))).color(P.muted));
         ui.label(RichText::new(format!("The server: Acetate {} ({})", server.version, numbers(server.api, server.catalog_format))).color(P.muted));
         ui.add_space(14.0);
-        let progress = self.update.progress();
+        let progress = shell.update.progress();
         if let Progress::Done(version) = &progress {
             ui.label(RichText::new(format!("Updated to Acetate {version}. Restart Acetate to use it.")).color(P.text));
             return;
@@ -41,10 +39,10 @@ impl Incompatible {
             Compat::AppBehind => {
                 ui.label(RichText::new("The server is newer than this app. Update the app to the server's release to go on.").color(P.text));
                 ui.add_space(8.0);
-                let busy = self.update.busy();
+                let busy = shell.update.busy();
                 ui.add_enabled_ui(!busy, |ui| {
                     if widgets::chip(ui, &format!("Update to {}", server.version), false) {
-                        self.update.start(shell.runtime.handle(), server, &shell.waker);
+                        shell.update.start(shell.runtime.handle(), server, &shell.waker);
                     }
                 });
                 ui.label(RichText::new("Downloads that release from GitHub and puts it in place of this program; it starts the next time Acetate does.").color(P.faint).small());

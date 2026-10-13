@@ -165,6 +165,9 @@ pub struct Shell {
     pub account: crate::account::Account,
     /// The version warning already shown (a toast), so it isn't repeated at every refresh.
     warned_version: Option<String>,
+    /// Bringing the app up to the server's release (offered in the sidebar, Settings and
+    /// the version-mismatch page).
+    pub update: crate::update::Update,
     /// Whether the server could be reached, as of the last frame (see `api::Connection`).
     pub connection: acetate_core::api::Connection,
     /// Edit mode was on when the server went away: it comes back on with the server.
@@ -914,6 +917,7 @@ impl App {
             settings: crate::settings::Settings::load(&data_dir),
             account: crate::account::Account::default(),
             warned_version: None,
+            update: Default::default(),
             connection: acetate_core::api::Connection::Online,
             edit_mode_when_back: false,
             edit_mode: false,
@@ -1578,8 +1582,9 @@ impl eframe::App for App {
         }
         self.shell.playlists.poll();
         self.shell.account.poll();
-        // The server is of another version than this app: said once per server version.
-        if let Some(warning) = self.shell.account.server.as_ref().and_then(|s| s.warning())
+        // The server is older than this app: said once per server version. (A newer server
+        // is offered as an update instead, in the sidebar.)
+        if let Some(warning) = self.shell.account.server.as_ref().filter(|s| s.release() == crate::account::Release::ServerOlder).and_then(|s| s.warning())
             && self.shell.warned_version.as_ref() != Some(&warning)
         {
             *self.shell.controller.error.lock().unwrap() = Some((warning.clone(), Instant::now()));
