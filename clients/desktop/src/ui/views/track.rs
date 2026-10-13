@@ -202,7 +202,7 @@ impl TrackPage {
                 facts.push(date);
             }
             facts.push(widgets::length(track.and_then(|t| t.duration_ms())));
-            if let Some(status) = track.map(|t| t.status()).filter(|s| *s != "released") {
+            if let Some(status) = track.map(|t| t.status()) {
                 facts.push(status.to_string());
             }
             if track.is_some_and(|t| t.is_restricted()) {
