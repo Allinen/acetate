@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.1 - 2026-10-13
+
+### Features
+
+- With shuffle on, a Play button on a playlist, album or other track list starts at a random track
+- The desktop app offers to update to the server's release from the sidebar instead of showing a version-mismatch label; a server older than the app is only warned about
+- The Android app updates itself to the server's newer release: the core downloads the APK and checks its checksum (shared with the desktop), the system installer applies it
+
 ## 0.3.0 - 2026-10-12
 
 ### Changes
