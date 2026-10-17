@@ -34,6 +34,7 @@ mod transcode_tests;
 mod review;
 mod shares;
 mod storage;
+mod together;
 mod sources;
 mod vocabulary;
 mod tracks;
@@ -154,6 +155,8 @@ pub struct AppState {
     pub blob_changes: Arc<mirror::BlobChanges>,
     /// The health check's runs (see `health`).
     pub health: Arc<crate::health::Health>,
+    /// Shared listening sessions and who listens to what (see `together`).
+    pub together: Arc<together::Together>,
 }
 
 impl AppState {
@@ -230,6 +233,12 @@ pub fn router(state: AppState) -> Router {
         .route("/api/albums/{id}/rating", require(&[Browse], put(annotations::rate_album)))
         .route("/api/artists/{id}/rating", require(&[Browse], put(annotations::rate_artist)))
         .route("/api/tracks/{id}/played", require(&[Browse], post(annotations::played)))
+        // Listening together, and what others listen to. Hearing it takes `stream`.
+        .route("/api/together", require(&[Stream], post(together::create)))
+        .route("/api/together/join", require(&[Stream], post(together::join)))
+        .route("/api/together/{id}", require(&[Stream], get(together::get).delete(together::leave)))
+        .route("/api/together/{id}/state", require(&[Stream], put(together::set)))
+        .route("/api/now-playing", require(&[Browse], get(together::listening).put(together::report)))
         .route("/api/review", require(&[EditMetadata], get(review::list)))
         .route("/api/review/{id}/resolve", require(&[EditMetadata], post(review::resolve)))
         .route("/api/review/resolve", require(&[EditMetadata], post(review::resolve_many)))

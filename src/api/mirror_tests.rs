@@ -85,6 +85,7 @@ async fn setup(connect: PgConnectOptions) -> anyhow::Result<Setup> {
         uploads: Default::default(),
         blob_changes,
         health: Default::default(),
+        together: Default::default(),
         pool,
         store,
         web_dir: dir.path().to_path_buf(),

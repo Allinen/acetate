@@ -234,6 +234,7 @@ pub(crate) mod tests {
             uploads: Default::default(),
             blob_changes: Default::default(),
         health: Default::default(),
+        together: Default::default(),
             pool,
             store: BlobStore::open(dir.path())?,
             web_dir: dir.path().to_path_buf(),

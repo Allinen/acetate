@@ -8,6 +8,7 @@
   - [Keys](keys.md)
   - [Commands](commands.md)
   - [Offline](offline.md)
+  - [Listening together](together.md)
 - [The Android app](android.md)
 - [Editing](editing/README.md)
   - [The track editor](editing/editor.md)

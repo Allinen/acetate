@@ -72,6 +72,8 @@ pub enum Page {
     Groupings,
     /// An extra (vocals, stems, a sample…): its files, what it belongs to, who sees it.
     Extra(Uuid),
+    /// Listening together, and what others listen to.
+    Together,
 }
 
 /// Something to do, asked for by a page, a key or a button.
@@ -215,6 +217,8 @@ pub struct Shell {
     pub runtime: Runtime,
     pub api: Api,
     pub controller: Arc<Controller>,
+    /// The shared listening session joined, and what others play (see `together`).
+    pub together: crate::together::Together,
     pub covers: Covers,
     /// A cover's original, shown on its own in a popup (a click on a big cover).
     pub original: Option<covers::Original>,
@@ -910,6 +914,7 @@ impl App {
         let artist_details = crate::details::Details::new(k, a, r, c);
         let (k, a, r, c) = details("groupings");
         let grouping_details = crate::details::Details::new(k, a, r, c);
+        let together = crate::together::Together::new(api.clone(), controller.clone(), runtime.handle().clone(), cc.egui_ctx.clone(), crate::settings::Settings::load(&data_dir).share_listening);
         let mut shell = Shell {
             ctx: cc.egui_ctx.clone(),
             waker,
@@ -939,6 +944,7 @@ impl App {
             runtime,
             api,
             controller,
+            together,
             covers,
             original: None,
             watching: None,
@@ -1334,6 +1340,7 @@ impl App {
                     self.forward.clear();
                 }
                 Action::LogOut => {
+                    self.shell.together.leave();
                     self.shell.mirror.shut_down(self.shell.runtime.handle());
                     self.shell.api.logout_and_end(self.shell.runtime.handle());
                     // (The queue was kept on disk as it played; it comes back at the next login.)
@@ -1552,6 +1559,7 @@ impl eframe::App for App {
         }
         self.shell.covers.poll(&ctx);
         self.shell.take_updates();
+        self.shell.together.set_catalog(self.shell.catalog.value.clone());
         self.pages.login.poll(&mut self.shell);
         // A request was refused as not logged in: back to the login screen, saying why.
         if self.shell.api.take_expired() && self.shell.api.session().is_some() {

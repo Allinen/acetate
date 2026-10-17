@@ -15,6 +15,7 @@ pub mod grouping;
 pub mod incompatible;
 pub mod groupings;
 pub mod history;
+pub mod together;
 pub mod login;
 pub mod now_playing;
 pub mod page_commands;
@@ -80,6 +81,7 @@ pub struct Pages {
     pub settings: settings::SettingsPage,
     pub trash: trash::TrashPage,
     pub changes: changes::ChangesPage,
+    pub together: together::TogetherPage,
     grouping: grouping::GroupingPage,
     groupings: groupings::GroupingsPage,
     extra: extra::ExtraPage,
@@ -122,6 +124,11 @@ impl Pages {
             self.trash.show(ui, shell);
             return;
         }
+        if page == Page::Together {
+            let catalog = shell.catalog.value.clone();
+            self.together.show(ui, shell, catalog.as_deref());
+            return;
+        }
         if page == Page::Changes && shell.connection.is_offline() {
             offline(ui, "Changes");
             return;
@@ -148,7 +155,7 @@ impl Pages {
             Page::Groupings => self.groupings.show(ui, shell, &catalog),
             Page::Extra(id) => self.extra.show(ui, shell, id),
             Page::Changes => self.changes.show(ui, shell, &catalog),
-            Page::NowPlaying | Page::Queue | Page::Settings | Page::Trash => {}
+            Page::NowPlaying | Page::Queue | Page::Settings | Page::Trash | Page::Together => {}
         }
     }
 }

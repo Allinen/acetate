@@ -439,6 +439,7 @@ async fn serve(config: Config, owner_pool: sqlx::PgPool, store: BlobStore) -> an
         uploads: Default::default(),
         blob_changes,
         health: Default::default(),
+        together: Default::default(),
         pool,
         store,
         web_dir: config.web_dir.clone(),

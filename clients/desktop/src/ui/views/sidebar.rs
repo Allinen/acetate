@@ -35,7 +35,7 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell, page: Page, username: &str) {
         Page::Queue => Some(4),
         Page::Review => Some(5),
         // Playlists are marked in their own list below.
-        Page::Liked | Page::Playlist(_) | Page::Track(_) | Page::Settings | Page::Trash | Page::Changes | Page::Extra(_) => None,
+        Page::Liked | Page::Playlist(_) | Page::Track(_) | Page::Settings | Page::Trash | Page::Changes | Page::Extra(_) | Page::Together => None,
     };
     let height = 36.0;
     let top = ui.cursor().top();
@@ -140,6 +140,10 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell, page: Page, username: &str) {
                 if ui.add(egui::Button::new(changes).frame(false)).on_hover_text("What was changed lately in the metadata").clicked() {
                     shell.act(Action::Go(Page::Changes));
                 }
+            }
+            let together = RichText::new("Together").font(link()).color(if page == Page::Together { P.text } else if shell.together.in_session() { P.accent } else { P.muted });
+            if ui.add(egui::Button::new(together).frame(false)).on_hover_text("Listen along with others").clicked() {
+                shell.act(Action::Go(Page::Together));
             }
             let settings = RichText::new("Settings").font(link()).color(if page == Page::Settings { P.text } else { P.muted });
             if ui.add(egui::Button::new(settings).frame(false)).on_hover_text("Ctrl+,").clicked() {

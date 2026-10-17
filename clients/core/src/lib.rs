@@ -17,6 +17,7 @@
 //! - `resume`: the queue kept between runs.
 //! - `review`: the review flags.
 //! - `title_credits`: credits written into titles, found by the rules the user picks.
+//! - `together`: listening together (a shared session) and what others listen to.
 
 // Answers from background work arrive in shared slots (`Arc<Mutex<Option<…>>>`), which
 // clippy counts as "very complex types".
@@ -44,6 +45,7 @@ pub mod release;
 pub mod resume;
 pub mod review;
 pub mod title_credits;
+pub mod together;
 
 use std::sync::Arc;
 

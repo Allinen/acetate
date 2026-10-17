@@ -15,6 +15,7 @@
 //! - `root`: the folder everything's kept in, and moving it.
 //! - `settings`: volume and sound output.
 //! - `title_credits`: credits written into titles, found by the rules the user picks.
+//! - `together`: keeping the player in step with a shared listening session.
 //! - `update`: bringing the app to the server's release.
 //! - `ui`: the window, its pages and the pieces they're drawn with.
 
@@ -31,6 +32,7 @@ mod playback;
 pub use acetate_core::{account, api, catalog, commandline, details, lyrics, memory, playlists, resume, review, title_credits};
 mod root;
 mod settings;
+mod together;
 mod update;
 mod video;
 mod ui;

@@ -44,6 +44,7 @@ async fn setup(connect: PgConnectOptions) -> anyhow::Result<Setup> {
         uploads: Default::default(),
         blob_changes: Default::default(),
         health: Default::default(),
+        together: Default::default(),
         pool: pool.clone(),
         store: store.clone(),
         web_dir: dir.path().to_path_buf(),
@@ -278,5 +279,59 @@ async fn the_guide_at_docs_goes_on_to_docs_slash(_: PgPoolOptions, connect: PgCo
     assert_eq!(response.headers()["location"], "/docs/?x=1");
     assert_eq!(s.go("GET", "/docs/", None, None).await.0, StatusCode::OK);
     assert_eq!(s.go("GET", "/docs/css/book.css", None, None).await.0, StatusCode::OK);
+    Ok(())
+}
+
+#[sqlx::test]
+async fn listening_together_needs_the_code_and_hides_tracks_from_those_who_cant_see_them(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
+    let s = setup(connect).await?;
+    let admin = user(&s.owner, "alice", "admin").await?;
+    let bob = user(&s.owner, "bob", "user").await?;
+    let eve = user(&s.owner, "eve", "user").await?;
+    let vault: Uuid = sqlx::query_scalar("INSERT INTO groups (name) VALUES ('vault') RETURNING id").fetch_one(&s.owner).await?;
+    let open_track = s.ingest("01 - Glass Harbor.flac", None).await?;
+    let secret_track = s.ingest("02 - Undertow.flac", Some(vec![vault])).await?;
+    let json_of = |body: Vec<u8>| serde_json::from_slice::<Value>(&body).unwrap();
+
+    // A session: only those with the code are in it.
+    let (status, body) = s.go("POST", "/api/together", Some(&admin), None).await;
+    assert_eq!(status, StatusCode::OK);
+    let room = json_of(body);
+    let (id, code) = (room["id"].as_str().unwrap().to_string(), room["code"].as_str().unwrap().to_string());
+    let (status, _) = s.go("GET", &format!("/api/together/{id}"), Some(&bob), None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "the id alone isn't a way in");
+    let (status, _) = s.go("POST", "/api/together/join", Some(&bob), Some(json!({ "code": "WRONGCODE" }))).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, body) = s.go("POST", "/api/together/join", Some(&bob), Some(json!({ "code": code }))).await;
+    assert_eq!(status, StatusCode::OK);
+    let version = json_of(body)["version"].as_u64().unwrap();
+
+    // A change on the current version is taken; the same version again is behind.
+    let state = |tracks: Vec<Uuid>| json!({ "base": version, "list": tracks, "index": 0, "queued": [], "paused": false, "position_ms": 0 });
+    let (_, body) = s.go("PUT", &format!("/api/together/{id}/state"), Some(&bob), Some(state(vec![open_track]))).await;
+    assert_eq!(json_of(body)["accepted"], true);
+    let (_, body) = s.go("PUT", &format!("/api/together/{id}/state"), Some(&admin), Some(state(vec![secret_track]))).await;
+    let answer = json_of(body);
+    assert_eq!(answer["accepted"], false);
+    assert_eq!(answer["room"]["playing"]["list"][0], open_track.to_string());
+
+    // Outsiders can't change it; leaving works.
+    let (status, _) = s.go("PUT", &format!("/api/together/{id}/state"), Some(&eve), Some(state(vec![open_track]))).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = s.go("DELETE", &format!("/api/together/{id}"), Some(&bob), None).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // What others listen to: a track is listed only to those who can see it.
+    let (status, _) = s.go("PUT", "/api/now-playing", Some(&admin), Some(json!({ "track_id": secret_track }))).await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, body) = s.go("GET", "/api/now-playing", Some(&bob), None).await;
+    assert_eq!(json_of(body).as_array().unwrap().len(), 0, "bob can't see that track");
+    s.go("PUT", "/api/now-playing", Some(&admin), Some(json!({ "track_id": open_track, "paused": true }))).await;
+    let (_, body) = s.go("GET", "/api/now-playing", Some(&bob), None).await;
+    let listed = json_of(body);
+    assert_eq!(listed[0]["username"], "alice");
+    assert_eq!(listed[0]["paused"], true);
+    let (_, body) = s.go("GET", "/api/now-playing", Some(&admin), None).await;
+    assert_eq!(json_of(body).as_array().unwrap().len(), 0, "not your own");
     Ok(())
 }

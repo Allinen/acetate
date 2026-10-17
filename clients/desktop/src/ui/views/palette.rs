@@ -67,6 +67,7 @@ const COMMANDS: &[Command] = &[
     Command { name: "Make a share link to this page (anyone can open it; options first)", word: "share", page: false, keys: "Ctrl+Shift+L", action: || Action::CopyPageShareLink },
     Command { name: "Trash (take things back out, clean up old files)", word: "trash", page: true, keys: "", action: || Action::Go(Page::Trash) },
     Command { name: "Changes (what was changed lately in the metadata)", word: "changes", page: true, keys: "", action: || Action::Go(Page::Changes) },
+    Command { name: "Together (listen along with others, see what they listen to)", word: "together", page: true, keys: "", action: || Action::Go(Page::Together) },
     Command { name: "Edit mode on / off", word: "edit", page: false, keys: "e", action: || Action::ToggleEditMode },
     Command { name: "Show every key", word: "keys", page: false, keys: "?", action: || Action::ShowKeys },
     Command { name: "Earlier messages", word: "messages", page: false, keys: "Alt+M", action: || Action::ShowMessages },
