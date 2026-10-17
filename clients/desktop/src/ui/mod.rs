@@ -889,7 +889,7 @@ impl App {
         let runtime = Runtime::new().expect("a tokio runtime");
         let data_dir = crate::root::root();
         let saved = crate::settings::Settings::load(&data_dir);
-        theme::set_palette(&cc.egui_ctx, theme::find(&saved.theme, &saved.custom_themes));
+        theme::set_palette(&cc.egui_ctx, theme::find(&saved.theme, &saved.custom_themes).into());
         let cache_dir = crate::root::cache_dir();
         let app_lock = Arc::new(std::sync::atomic::AtomicBool::new(false));
         crate::root::hold_app_lock(app_lock.clone());

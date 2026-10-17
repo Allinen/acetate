@@ -35,7 +35,7 @@ impl AppearanceTab {
         let custom = shell.settings.custom_themes.iter().position(|t| t.name == shell.settings.theme);
         if widgets::chip(ui, "New theme from this one", false) {
             let name = self.free_name(shell, "My theme");
-            shell.settings.custom_themes.push(CustomTheme::new(name.clone(), *P));
+            shell.settings.custom_themes.push(CustomTheme::new(name.clone(), theme::find(&shell.settings.theme, &shell.settings.custom_themes)));
             self.choose(ui.ctx(), shell, name);
             return;
         }
@@ -63,9 +63,9 @@ impl AppearanceTab {
             for (label, color) in palette.colors_mut() {
                 ui.label(RichText::new(label).color(P.muted));
                 // Opaque: the picker without opacity or blending.
-                let mut rgb = [color.r(), color.g(), color.b()];
+                let mut rgb = [(*color >> 16) as u8, (*color >> 8) as u8, *color as u8];
                 if ui.color_edit_button_srgb(&mut rgb).changed() {
-                    *color = egui::Color32::from_rgb(rgb[0], rgb[1], rgb[2]);
+                    *color = u32::from_be_bytes([0, rgb[0], rgb[1], rgb[2]]);
                     changed = true;
                 }
                 ui.end_row();
@@ -73,7 +73,7 @@ impl AppearanceTab {
         });
         if changed {
             shell.settings.custom_themes[index] = CustomTheme::new(shell.settings.theme.clone(), palette);
-            theme::set_palette(ui.ctx(), palette);
+            theme::set_palette(ui.ctx(), palette.into());
             self.unsaved = true;
         }
         if self.unsaved && !ui.input(|i| i.pointer.any_down()) {
@@ -88,21 +88,21 @@ impl AppearanceTab {
     }
 
     fn choose(&mut self, ctx: &egui::Context, shell: &mut Shell, name: String) {
-        theme::set_palette(ctx, theme::find(&name, &shell.settings.custom_themes));
+        theme::set_palette(ctx, theme::find(&name, &shell.settings.custom_themes).into());
         shell.settings.theme = name;
         shell.settings.save(&shell.data_dir);
     }
 
     /// `base`, or `base 2`, `base 3`… if that's taken.
     fn free_name(&self, shell: &Shell, base: &str) -> String {
-        let taken = |name: &str| theme::PRESETS.iter().any(|(n, _)| *n == name) || shell.settings.custom_themes.iter().any(|t| t.name == name);
+        let taken = |name: &str| acetate_core::theme::is_preset(name) || shell.settings.custom_themes.iter().any(|t| t.name == name);
         std::iter::once(base.to_string()).chain((2..).map(|n| format!("{base} {n}"))).find(|name| !taken(name)).unwrap_or_default()
     }
 
     /// Takes the typed name if it's not empty or another theme's; else shows the old one again.
     fn rename(&mut self, ctx: &egui::Context, shell: &mut Shell, index: usize) {
         let new = self.name.trim().to_string();
-        let taken = theme::PRESETS.iter().any(|(n, _)| *n == new) || shell.settings.custom_themes.iter().enumerate().any(|(i, t)| i != index && t.name == new);
+        let taken = acetate_core::theme::is_preset(&new) || shell.settings.custom_themes.iter().enumerate().any(|(i, t)| i != index && t.name == new);
         if new.is_empty() || taken {
             self.name = shell.settings.theme.clone();
             return;

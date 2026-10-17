@@ -29,6 +29,7 @@ import androidx.compose.ui.unit.dp
 private enum class SettingsTab(val title: String) {
     Sound("Sound"),
     Downloads("Downloads"),
+    Appearance("Appearance"),
     Account("Account"),
 }
 
@@ -49,6 +50,7 @@ fun SettingsScreen(model: Model) {
                 when (shown) {
                     SettingsTab.Sound -> SoundTab(model)
                     SettingsTab.Downloads -> DownloadSettings(model)
+                    SettingsTab.Appearance -> AppearanceTab()
                     SettingsTab.Account -> AccountTab(model)
                 }
             }

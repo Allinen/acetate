@@ -16,6 +16,7 @@
 //! - `playlists`: playlists, kept locally like the catalog.
 //! - `resume`: the queue kept between runs.
 //! - `review`: the review flags.
+//! - `theme`: the color themes, built in and made by the user.
 //! - `title_credits`: credits written into titles, found by the rules the user picks.
 //! - `together`: listening together (a shared session) and what others listen to.
 
@@ -44,6 +45,7 @@ pub mod playlists;
 pub mod release;
 pub mod resume;
 pub mod review;
+pub mod theme;
 pub mod title_credits;
 pub mod together;
 

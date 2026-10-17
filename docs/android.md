@@ -109,8 +109,9 @@ review and the rest of library work stay on the desktop.
 
 ## Sound and data
 
-**Settings** is a page with tabs, like the desktop's: Sound, Downloads and Account. Back returns to where you opened it. In it:
+**Settings** is a page with tabs, like the desktop's: Sound, Downloads, Appearance and Account. Back returns to where you opened it. In it:
 
+- **Appearance:** the color theme, the same ones as on the desktop (see [Listening](listening.md)): pick a built-in one, or *New theme from this one* to make your own, whose colors you change with sliders. Kept on the phone.
 - **Account:** the server and who is logged in. **Change address** moves the app to another
   address of the *same* server (say a new domain): it asks the address first, and the library,
   downloads and queue stay. A different server needs a log out and a log in.

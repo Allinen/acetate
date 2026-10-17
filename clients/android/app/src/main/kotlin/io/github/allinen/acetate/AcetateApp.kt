@@ -32,6 +32,7 @@ class AcetateApp : Application() {
         Output.init(this)
         Equalizer.init(this)
         LyricsTiming.init(this)
+        Themes.init(this)
         model = Model(filesDir.path)
         model.context = this
         model.quality = Quality(this, model)

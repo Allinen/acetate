@@ -14,7 +14,7 @@ The desktop app's left sidebar has six sections, each on a number key:
 Below the sections are your playlists, with **Liked songs** (your starred tracks) first.
 Settings is `Ctrl+,`. It has tabs (Sound, This computer, Appearance, Account, and for admins Server and Mirror, then General); `h`/`l` or the arrows move between them.
 
-**Theme** (desktop Settings → Appearance) changes the colors of the whole app. Pick a built-in one (Amber, Ocean, Forest, Rose, Paper, High contrast), or press *New theme from this one* to make your own: a copy of the theme in use whose colors you change one by one, and can name or delete. The change shows as you make it.
+**Theme** (Settings → Appearance, on the desktop and the phone) changes the colors of the whole app. Pick a built-in one (Amber, Ocean, Forest, Rose, Paper, High contrast), or press *New theme from this one* to make your own: a copy of the theme in use whose colors you change one by one, and can name or delete. The change shows as you make it.
 
 ## The command palette
 
