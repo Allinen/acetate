@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.1 - 2026-10-17
+
+### Fixes
+
+- Playing something in a new, empty listening session now shares it; before, only changes to a session that already had a track were sent
+
 ## 0.4.0 - 2026-10-17
 
 ### Features
