@@ -165,7 +165,7 @@ jobs:
       - name: The name (lowercase, as the registry wants it)
         run: echo "IMAGE=${IMAGE,,}" >> "$GITHUB_ENV"
       - id: build
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         env:
           # No build record kept as an artifact of the run (nothing reads it).
           DOCKER_BUILD_RECORD_UPLOAD: "false"
