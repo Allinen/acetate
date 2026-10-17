@@ -109,7 +109,7 @@ review and the rest of library work stay on the desktop.
 
 ## Sound and data
 
-In **Settings**:
+**Settings** is a page with tabs, like the desktop's: Sound, Downloads and Account. Back returns to where you opened it. In it:
 
 - **Account:** the server and who is logged in. **Change address** moves the app to another
   address of the *same* server (say a new domain): it asks the address first, and the library,

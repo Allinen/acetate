@@ -91,7 +91,7 @@ fun DownloadSettings(model: Model) {
     )
     if (d.failed > 0uL) Text("${d.failed} couldn't be fetched", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
     Row {
-        TextButton({ model.settingsOpen = false; model.pages.add(Page.Downloads) }) { Text("Manage…") }
+        TextButton({ model.pages.add(Page.Downloads) }) { Text("Manage…") }
         if (d.files > 0uL || d.pins.isNotEmpty()) TextButton({ confirm = true }) { Text("Remove all") }
     }
     Spacer(Modifier.height(4.dp))

@@ -69,6 +69,7 @@ fun Root(model: Model) {
                     Page.Downloads -> DownloadsScreen(model)
                     Page.Changes -> ChangesScreen(model)
                     Page.Messages -> MessagesScreen(model)
+                    Page.Settings -> SettingsScreen(model)
                 }
             }
             // The keyboard takes the place of the bars while typing.
