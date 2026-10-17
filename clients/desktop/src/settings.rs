@@ -32,11 +32,15 @@ pub struct Settings {
     pub eq_gains: [f32; 10],
     /// Others may see what plays here (Together).
     pub share_listening: bool,
+    /// The color theme's name: a built-in's, or one of `custom_themes`.
+    pub theme: String,
+    /// The themes the user made.
+    pub custom_themes: Vec<crate::ui::theme::CustomTheme>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { volume: 0.8, muted: false, output: None, table_columns: Default::default(), merge_along: true, show_remaining: false, stream_kbps: None, eq_enabled: false, eq_gains: [0.0; 10], share_listening: false }
+        Settings { volume: 0.8, muted: false, output: None, table_columns: Default::default(), merge_along: true, show_remaining: false, stream_kbps: None, eq_enabled: false, eq_gains: [0.0; 10], share_listening: false, theme: crate::ui::theme::DEFAULT_THEME.to_string(), custom_themes: Vec::new() }
     }
 }
 

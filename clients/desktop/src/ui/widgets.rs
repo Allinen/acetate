@@ -385,7 +385,7 @@ pub(crate) fn og_text(text: &str, font: egui::FontId, wave: Option<f64>) -> egui
     let Some(time) = wave else {
         return egui::text::LayoutJob::single_section(text.to_string(), format(P.accent));
     };
-    let (light, deep) = (Color32::from_rgb(0xff, 0xe0, 0xb0), Color32::from_rgb(0xe0, 0x78, 0x3c));
+    let (light, deep) = (lerp_color(P.accent, Color32::WHITE, 0.55), lerp_color(P.accent, Color32::BLACK, 0.25));
     let mut job = egui::text::LayoutJob::default();
     for (n, c) in text.chars().enumerate() {
         // A wave about 12 letters long, crossing 6 letters a second.

@@ -1,11 +1,12 @@
 //! Settings, in tabs (`h`/`l` or the arrows move between them): Sound; This computer (the
-//! downloads, the library kept here, memory); Account; and for admins the Server (what it
+//! downloads, the library kept here, memory); Appearance (the color theme); Account; and for admins the Server (what it
 //! stores), the Mirror of its files and the Vocabulary; for those who manage users, Users;
 //! General. Each tab is its own file.
 
 use eframe::egui::{self, RichText};
 
 use super::settings_account::AccountTab;
+use super::settings_appearance::AppearanceTab;
 use super::settings_computer::ComputerTab;
 use super::settings_general::GeneralTab;
 use super::settings_health::HealthTab;
@@ -23,6 +24,7 @@ enum Tab {
     #[default]
     Sound,
     Computer,
+    Appearance,
     Account,
     /// Admins.
     Server,
@@ -38,12 +40,13 @@ enum Tab {
 }
 
 impl Tab {
-    const ALL: [Tab; 9] = [Tab::Sound, Tab::Computer, Tab::Account, Tab::Server, Tab::Mirror, Tab::Vocabulary, Tab::Health, Tab::Users, Tab::General];
+    const ALL: [Tab; 10] = [Tab::Sound, Tab::Computer, Tab::Appearance, Tab::Account, Tab::Server, Tab::Mirror, Tab::Vocabulary, Tab::Health, Tab::Users, Tab::General];
 
     fn name(self) -> &'static str {
         match self {
             Tab::Sound => "Sound",
             Tab::Computer => "This computer",
+            Tab::Appearance => "Appearance",
             Tab::Account => "Account",
             Tab::Server => "Server",
             Tab::Mirror => "Mirror",
@@ -65,6 +68,7 @@ pub struct SettingsPage {
     tab: Tab,
     sound: SoundTab,
     computer: ComputerTab,
+    appearance: AppearanceTab,
     account: AccountTab,
     server: ServerTab,
     /// The mirror, and moving the folder everything's kept in (shown in This computer).
@@ -129,6 +133,7 @@ impl SettingsPage {
         egui::ScrollArea::vertical().id_salt(self.tab.name()).auto_shrink([false, false]).show(ui, |ui| match self.tab {
             Tab::Sound => self.sound.show(ui, shell, player),
             Tab::Computer => self.computer.show(ui, shell, &mut self.mirror),
+            Tab::Appearance => self.appearance.show(ui, shell),
             Tab::Account => self.account.show(ui, shell),
             Tab::Server if shell.connection.is_offline() => super::offline(ui, "The server's settings"),
             Tab::Server => self.server.show(ui, shell),

@@ -118,7 +118,7 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell, player: &PlayerView, spectrum:
     for (i, value) in spectrum.bars.iter().enumerate() {
         let height = 3.0 + value * spectrum_height * 0.7;
         let x = area.left() + i as f32 * (bar_width + gap);
-        let color = widgets::lerp(P.accent, Color32::from_rgb(255, 214, 170), value * 0.8);
+        let color = widgets::lerp(P.accent, widgets::lerp(P.accent, Color32::WHITE, 0.5), value * 0.8);
         painter.rect_filled(Rect::from_min_max(Pos2::new(x, floor - height), Pos2::new(x + bar_width, floor)), CornerRadius::same(3), color);
         let reflection = height * 0.35;
         painter.rect_filled(Rect::from_min_max(Pos2::new(x, floor + 3.0), Pos2::new(x + bar_width, floor + 3.0 + reflection)), CornerRadius::same(3), color.gamma_multiply(0.12));

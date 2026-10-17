@@ -36,6 +36,7 @@ pub mod marking;
 pub mod not_imported;
 pub mod settings;
 pub mod settings_account;
+pub mod settings_appearance;
 pub mod settings_computer;
 pub mod settings_general;
 pub mod settings_health;
