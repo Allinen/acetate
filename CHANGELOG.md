@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.4.0 - 2026-10-17
+
+### Features
+
+- The desktop track page always shows the track's status, including released, not only the unusual ones
+- Listen together: invite-only shared sessions that keep everyone's player in step, and an opt-in list of what others are listening to
+- Ctrl+Enter plays the selected album in grids, and release cards on artist pages get the same hover play button as the Albums grid
+- Color themes on desktop: six built-in palettes and user-made ones (a copy of the theme in use with its colors changed), chosen in Settings → Appearance and applied live
+- Android settings are a page with Sound, Downloads and Account tabs instead of one long dialog
+- Color themes on Android, with the palettes moved to the shared core so both clients have the same ones; Settings → Appearance picks one or edits your own
+
+### Fixes
+
+- Esc in the command palette only closes it instead of also going back a page; Backspace on its empty line closes it
+- The theme color pickers choose opaque colors, without the opacity and blending options
+- The lowest spectrum bars no longer move in lockstep; the FFT window is doubled and bars narrower than one bin interpolate between bins
+
 ## 0.3.1 - 2026-10-13
 
 ### Features

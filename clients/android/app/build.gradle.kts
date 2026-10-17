@@ -90,7 +90,7 @@ android {
         targetSdk = 36
         // -Pacetate.versionCode=2 -Pacetate.versionName=0.2.0 for a release.
         versionCode = (findProperty("acetate.versionCode") as String?)?.toInt() ?: 1
-        versionName = (findProperty("acetate.versionName") as String?) ?: "0.3.1"
+        versionName = (findProperty("acetate.versionName") as String?) ?: "0.4.0"
     }
 
     // The key a release is signed with: `keystore.properties` next to settings.gradle.kts
