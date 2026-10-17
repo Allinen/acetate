@@ -18,7 +18,7 @@ libloading = "0.9.0"
 reflink-copy = "0.1.30"
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "json", "query", "zstd", "gzip", "multipart"] }
 rfd = { version = "0.17.2", default-features = false, features = ["xdg-portal"] }
-rodio = { version = "0.22.2", default-features = false, features = ["playback", "symphonia-all", "symphonia-simd"] }
+rodio = { version = "0.23.0", default-features = false, features = ["playback", "symphonia-all", "symphonia-simd"] }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 rustfft = "6.4.1"
 rusty-opus = "1.0.0"
