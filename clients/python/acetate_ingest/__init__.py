@@ -16,7 +16,7 @@
 See the project's README.
 """
 
-__version__ = "0.4.2"
+__version__ = "0.4.3"
 
 from ._shapes import *  # noqa: E402,F403  (the typed sources: NetEaseTrack, SoundCloudArtist, ...)
 from ._shapes import SHAPES, __all__ as _shape_names  # noqa: E402

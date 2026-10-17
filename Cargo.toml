@@ -3,7 +3,7 @@ members = [".", "crates/acetate-extensions"]
 
 [package]
 name = "acetate"
-version = "0.4.2"
+version = "0.4.3"
 edition = "2024"
 
 [dependencies]
