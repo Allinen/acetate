@@ -217,7 +217,7 @@ jobs:
       - name: The name (lowercase, as the registry wants it)
         run: echo "IMAGE=${IMAGE,,}" >> "$GITHUB_ENV"
       - id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ${{ env.IMAGE }}
           tags: |
