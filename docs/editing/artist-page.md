@@ -29,7 +29,7 @@ tracks:year:2019
 - `sources`, `notes` and `history` open that part of the page and scroll to it. A folded
   part that's already open is closed instead, and the list says which it will do.
 - Releases on their own are a grid: arrows or `hjkl` move, `Enter` opens one, `Shift+Enter`
-  plays it.
+  or `Ctrl+Enter` plays it.
 
 Every key, what it takes and what can follow it, generated from the app: [Commands](../commands.md).
 

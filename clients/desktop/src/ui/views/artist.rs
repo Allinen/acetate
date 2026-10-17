@@ -111,6 +111,7 @@ pub(super) fn release_cards(ui: &mut egui::Ui, shell: &mut Shell, catalog: &Cata
             let hover = ctx.animate_bool_with_time(response.id, response.hovered(), 0.16);
             let cover = Rect::from_min_size(rect.min + Vec2::new(0.0, 6.0 - hover * 4.0), Vec2::splat(CARD));
             shell.cover(ui, album.cover(), album.id(), cover, 8, hover);
+            let over_button = super::albums::play_badge(ui, &response, cover, hover);
             if let Some((at, moved)) = selected
                 && at == n
             {
@@ -129,14 +130,18 @@ pub(super) fn release_cards(ui: &mut egui::Ui, shell: &mut Shell, catalog: &Cata
             widgets::text_in(ui.painter(), Rect::from_min_size(Pos2::new(rect.left(), top + 18.0), Vec2::new(CARD, 15.0)), &sub, font(12.0, medium()), P.muted);
             widgets::share_menu(&response, shell, crate::links::Target::Album(album.id()));
             if response.clicked() {
-                shell.act(Action::Go(Page::Album(album.id())));
+                if over_button {
+                    super::albums::play_album(shell, catalog, album.id());
+                } else {
+                    shell.act(Action::Go(Page::Album(album.id())));
+                }
             }
         }
     });
 }
 
 /// All of `releases` on their own, as a grid the keys move through (arrows or hjkl;
-/// Enter opens one, Shift+Enter plays it; s, +/-, q, p as in the Albums view).
+/// Enter opens one, Shift+Enter or Ctrl+Enter plays it; s, +/-, q, p as in the Albums view).
 pub(super) fn release_grid(ui: &mut egui::Ui, shell: &mut Shell, catalog: &Catalog, releases: &[u32], selected: &mut usize, salt: impl std::hash::Hash + std::fmt::Debug) {
     let fit = (((ui.available_width() + CARD_GAP) / (CARD + CARD_GAP)) as usize).max(1);
     let page = ((ui.available_height() / (CARD + 48.0 + CARD_GAP)) as usize).max(1);

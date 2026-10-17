@@ -54,7 +54,7 @@ take (`artist:`, `cover:`, `go:`…) is in [Commands](commands.md) (the overlay'
 | `↑ ↓ ← →  or  h j k l` | move |
 | `Page Up / Down, Home / End` | move further |
 | `Enter` | open, or play from here |
-| `Shift+Enter` | play |
+| `Shift+Enter  or  Ctrl+Enter` | play |
 | `i` | the track's page |
 | `s` | star |
 | `+ / −` | rate half a star up / down |

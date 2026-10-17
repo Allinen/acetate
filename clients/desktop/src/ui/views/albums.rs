@@ -1,5 +1,5 @@
 //! All albums as a grid of covers: sorted (added, title, artist, year), filtered as you
-//! type. Keys: arrows or hjkl move, Enter opens, Shift+Enter plays.
+//! type. Keys: arrows or hjkl move, Enter opens, Shift+Enter or Ctrl+Enter plays.
 
 use std::sync::Arc;
 
@@ -113,17 +113,7 @@ impl Albums {
                         if n == self.selected {
                             ui.painter().rect_stroke(cover_rect.expand(3.0), 12, Stroke::new(2.0, P.accent), StrokeKind::Outside);
                         }
-                        // A play button fades in on hover.
-                        let button_center = cover_rect.right_bottom() - Vec2::splat(30.0);
-                        let over_button = response.hover_pos().is_some_and(|p| p.distance(button_center) < 22.0);
-                        if hover > 0.01 {
-                            ui.painter().add(
-                                Shadow { offset: [0, 4], blur: 14, spread: 0, color: Color32::from_black_alpha((120.0 * hover) as u8) }
-                                    .as_shape(Rect::from_center_size(button_center, Vec2::splat(44.0)), 22),
-                            );
-                            ui.painter().circle_filled(button_center, 20.0 + if over_button { 2.0 } else { 0.0 }, P.accent.gamma_multiply(hover));
-                            widgets::draw_icon(ui.painter(), widgets::Icon::Play, button_center, 9.0, P.bg.gamma_multiply(hover));
-                        }
+                        let over_button = play_badge(ui, &response, cover_rect, hover);
                         let text_top = cover_rect.bottom() + 10.0 + hover * 5.0;
                         widgets::text_in(ui.painter(), Rect::from_min_size(Pos2::new(rect.left(), text_top), Vec2::new(card, 18.0)), album.title(), font(13.5, semibold()), P.text);
                         let sub = match album.year() {
@@ -152,7 +142,7 @@ impl Albums {
 }
 
 /// What the keys asked for the album selected in a grid (`widgets::move_selection`):
-/// star, rate, queue, add to a playlist, Enter opens it (Shift+Enter plays it).
+/// star, rate, queue, add to a playlist, Enter opens it (Shift+Enter or Ctrl+Enter plays it).
 pub fn album_keys(shell: &mut Shell, catalog: &Catalog, moved: &widgets::Moved, id: uuid::Uuid) {
     if moved.star {
         shell.act(Action::ToggleStar(Kind::Album, id));
@@ -167,13 +157,29 @@ pub fn album_keys(shell: &mut Shell, catalog: &Catalog, moved: &widgets::Moved, 
         let tracks = catalog.album_tracks(id).iter().map(|&t| catalog.track_at(t).id()).collect();
         shell.act(Action::AddToPlaylist(tracks));
     }
-    if moved.enter {
-        if moved.shift {
+    if moved.play || moved.enter {
+        if moved.play || moved.shift {
             play_album(shell, catalog, id);
         } else {
             shell.act(Action::Go(Page::Album(id)));
         }
     }
+}
+
+/// The play button that fades in over a hovered album cover's corner (`hover`: 0 to 1);
+/// true while the pointer is on it, so a click there plays the album instead of opening it.
+pub fn play_badge(ui: &egui::Ui, response: &egui::Response, cover: Rect, hover: f32) -> bool {
+    let center = cover.right_bottom() - Vec2::splat(30.0);
+    let over = response.hover_pos().is_some_and(|p| p.distance(center) < 22.0);
+    if hover > 0.01 {
+        ui.painter().add(
+            Shadow { offset: [0, 4], blur: 14, spread: 0, color: Color32::from_black_alpha((120.0 * hover) as u8) }
+                .as_shape(Rect::from_center_size(center, Vec2::splat(44.0)), 22),
+        );
+        ui.painter().circle_filled(center, 20.0 + if over { 2.0 } else { 0.0 }, P.accent.gamma_multiply(hover));
+        widgets::draw_icon(ui.painter(), widgets::Icon::Play, center, 9.0, P.bg.gamma_multiply(hover));
+    }
+    over
 }
 
 /// Plays an album from its first track.

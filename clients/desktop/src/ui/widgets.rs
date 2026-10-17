@@ -254,6 +254,8 @@ pub struct Moved {
     /// Enter was pressed (Shift held: `shift`).
     pub enter: bool,
     pub shift: bool,
+    /// Ctrl+Enter was pressed: play it.
+    pub play: bool,
     /// `s`: star (or unstar) the selected one.
     pub star: bool,
     /// `+` / `-`: rate it half a star up or down.
@@ -278,6 +280,9 @@ pub fn move_selection(ctx: &egui::Context, selected: &mut usize, len: usize, col
         return out;
     }
     let modifiers = ctx.input(|i| i.modifiers);
+    if modifiers.command && !modifiers.alt && !modifiers.shift {
+        out.play = ctx.input(|i| i.key_pressed(Key::Enter));
+    }
     if modifiers.ctrl || modifiers.alt || modifiers.command {
         return out;
     }
