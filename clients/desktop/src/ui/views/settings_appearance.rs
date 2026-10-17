@@ -62,7 +62,12 @@ impl AppearanceTab {
         egui::Grid::new("theme-colors").num_columns(2).spacing([24.0, 8.0]).show(ui, |ui| {
             for (label, color) in palette.colors_mut() {
                 ui.label(RichText::new(label).color(P.muted));
-                changed |= ui.color_edit_button_srgba(color).changed();
+                // Opaque: the picker without opacity or blending.
+                let mut rgb = [color.r(), color.g(), color.b()];
+                if ui.color_edit_button_srgb(&mut rgb).changed() {
+                    *color = egui::Color32::from_rgb(rgb[0], rgb[1], rgb[2]);
+                    changed = true;
+                }
                 ui.end_row();
             }
         });
