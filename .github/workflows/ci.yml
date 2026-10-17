@@ -63,11 +63,14 @@ jobs:
           sudo apt-get install -y ffmpeg
           rustup toolchain install stable --profile minimal
       - uses: Swatinem/rust-cache@v2
-      # Migration 0008 creates the server's role if it isn't there, a role belongs to the
-      # whole Postgres, and the tests migrate databases in parallel: on a new Postgres two
-      # of them both find it missing and one fails. Made here first, as on any real server.
-      - name: The server's role
-        run: psql -h localhost -U acetate -d acetate -c "CREATE ROLE acetate_app NOLOGIN"
+      # Migrations 0008 and 0069 create the server's roles if they aren't there, a role
+      # belongs to the whole Postgres, and the tests migrate databases in parallel: on a new
+      # Postgres two of them both find one missing and one fails. Made here first, as on any
+      # real server.
+      - name: The server's roles
+        run: |
+          psql -h localhost -U acetate -d acetate -c "CREATE ROLE acetate_app NOLOGIN"
+          psql -h localhost -U acetate -d acetate -c "CREATE ROLE acetate_system NOLOGIN BYPASSRLS"
         env:
           PGPASSWORD: acetate
       - run: cargo test --workspace --locked
