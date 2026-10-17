@@ -8,7 +8,7 @@ use rustfft::{Fft, FftPlanner};
 
 use super::engine::Scope;
 
-const WINDOW: usize = 2048;
+const WINDOW: usize = super::engine::SCOPE_LEN;
 
 pub struct Spectrum {
     fft: Arc<dyn Fft<f32>>,
@@ -65,9 +65,17 @@ impl Spectrum {
                 let to = low * (high / low).powf((i + 1) as f32 / n as f32);
                 let a = (from / hz_per_bin) as usize;
                 let b = ((to / hz_per_bin) as usize).max(a + 1);
-                let peak = magnitudes[a.min(magnitudes.len() - 1)..b.min(magnitudes.len())]
-                    .iter()
-                    .fold(0.0f32, |m, v| m.max(*v));
+                let peak = if b - a > 1 {
+                    magnitudes[a.min(magnitudes.len() - 1)..b.min(magnitudes.len())].iter().fold(0.0f32, |m, v| m.max(*v))
+                } else {
+                    // Narrower than one FFT bin (the lowest bars): read between the
+                    // neighbouring bins at the band's centre, so adjacent bars don't
+                    // all show the same bin.
+                    let at = ((from * to).sqrt() / hz_per_bin).min((magnitudes.len() - 1) as f32);
+                    let (lo, frac) = (at as usize, at.fract());
+                    let hi = (lo + 1).min(magnitudes.len() - 1);
+                    magnitudes[lo] * (1.0 - frac) + magnitudes[hi] * frac
+                };
                 // Decibels, -72 dB (silence) to 0: that's the bar's height. Higher bands
                 // are quieter in music, so they get a gentle lift.
                 let tilt = 1.0 + 3.0 * i as f32 / n as f32;
