@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "acetate"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "acetate-extensions",
  "aes-gcm",
@@ -44,7 +44,7 @@ dependencies = [
 
 [[package]]
 name = "acetate-extensions"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "serde",
  "serde_json",
