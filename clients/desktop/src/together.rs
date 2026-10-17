@@ -324,7 +324,7 @@ async fn follow(api: Api, controller: Arc<Controller>, shared: Arc<Mutex<Shared>
                     continue;
                 }
                 // Nothing loaded: nothing the user changed.
-                if change == Change::Nothing || !local.loaded {
+                if !core::changed_by_user(&synced.room.playing, synced.position_now(), &local, &known) {
                     continue;
                 }
                 if local.list.len() + local.queued.len() > MAX_TRACKS {

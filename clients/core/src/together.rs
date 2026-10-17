@@ -171,6 +171,13 @@ pub fn compare(session: &Playing, position: Duration, local: &Local, known: &dyn
     Change::Nothing
 }
 
+/// Whether the player's user changed something the session doesn't have yet: the player
+/// differs from the session, or the session has nothing playing and the player does (the
+/// first thing played in a new session).
+pub fn changed_by_user(session: &Playing, position: Duration, local: &Local, known: &dyn Fn(Uuid) -> bool) -> bool {
+    local.loaded && (session.current().is_none() || compare(session, position, local, known) != Change::Nothing)
+}
+
 // ---- Talking to the server ----
 
 pub async fn start(api: &Api) -> Result<Room, ApiError> {
@@ -238,6 +245,15 @@ mod tests {
         let mut l = local(&[1, 2, 3], 1);
         l.position = at;
         assert_eq!(compare(&session(&[1, 2, 3], 1), at, &l, ALL), Change::Nothing);
+    }
+
+    #[test]
+    fn playing_in_an_empty_session_is_a_change_to_send() {
+        let empty = Playing::default();
+        assert_eq!(compare(&empty, Duration::ZERO, &local(&[1], 0), ALL), Change::Nothing, "nothing to apply");
+        assert!(changed_by_user(&empty, Duration::ZERO, &local(&[1], 0), ALL));
+        assert!(!changed_by_user(&empty, Duration::ZERO, &Local::default(), ALL), "nothing playing either");
+        assert!(!changed_by_user(&session(&[1], 0), Duration::ZERO, &local(&[1], 0), ALL));
     }
 
     #[test]
