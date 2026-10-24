@@ -36,7 +36,7 @@ jobs:
           "$RUNNER_TEMP/mdbook" --version
       # The book is written into ../target/book (book.toml).
       - run: $RUNNER_TEMP/mdbook build docs
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: target/book
 
