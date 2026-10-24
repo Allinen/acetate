@@ -8,7 +8,7 @@ acetate-core = { path = "../core" }
 anyhow = "1.0.104"
 arboard = { version = "3.6", features = ["wayland-data-control"] }
 dirs = "7.0.0"
-eframe = "0.36.2"
+eframe = "0.37.0"
 egui_extras = "0.36.2"
 flate2 = "1.1.10"
 fs4 = "1.1.0"
