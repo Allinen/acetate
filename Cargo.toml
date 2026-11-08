@@ -42,6 +42,14 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 uuid = { version = "1.26.1", features = ["v7", "serde"] }
 
+# Full debuginfo made target/ grow past 60 GiB. Line tables keep backtraces readable;
+# dependencies get none, and incremental caches are skipped for them.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
 # Password hashing is deliberately slow; unoptimized (debug builds) it's many times slower
 # still, making logins sluggish during development. Optimize just those crates.
 [profile.dev.package.argon2]

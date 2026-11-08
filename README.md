@@ -172,5 +172,7 @@ Reset the dev database with `scripts/reset-dev-db.sh`: empties it, reapplies the
 
 Bring a local database up to date with `scripts/migrate-db.sh` (after pulling new migrations, say): it applies the migrations that haven't run yet and nothing else. A plain `cargo build` fails while the database is behind (sqlx checks the queries against it); the script uses `sqlx migrate run` when sqlx-cli is installed, else builds against the checked-in query cache (`.sqlx`). `acetate migrate` does the same with a built binary.
 
+Build output in `target/` and `clients/target/` can reach tens of GiB. `scripts/clean-target.sh` removes what has gone unused for 14 days (needs `cargo install cargo-sweep`); `--all` wipes the dev profile instead. The dev profile keeps only line tables as debug info, which is what keeps the directories small.
+
 ## License
 [GPL-3.0](LICENSE)

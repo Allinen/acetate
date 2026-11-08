@@ -2,5 +2,13 @@
 members = ["core", "desktop", "android/rust"]
 resolver = "3"
 
+# Full debuginfo made target/ grow past 100 GiB. Line tables keep backtraces readable;
+# dependencies get none.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
 [profile.release]
 opt-level = 3
