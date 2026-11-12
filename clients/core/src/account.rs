@@ -53,8 +53,20 @@ pub enum Release {
     Unknown,
 }
 
-/// `1.2.3` (or `1.2.3-rc1`, `1.2.3+x`) as numbers.
+/// Whether a character may be part of a release's version (`1.2.3`, `1.2.3-rc1`,
+/// `1.2.3+x`). The version comes from the server and goes into the address a release is
+/// downloaded from, so nothing that means something in an address is let through: with a
+/// `/` (and `..`) a server could point the download at a release that isn't Acetate's.
+fn version_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+')
+}
+
+/// `1.2.3` (or `1.2.3-rc1`, `1.2.3+x`) as numbers. None for anything that isn't a version
+/// (see `version_char`).
 fn numbers(version: &str) -> Option<[u64; 3]> {
+    if !version.chars().all(version_char) {
+        return None;
+    }
     let mut parts = version.split(['-', '+']).next()?.split('.');
     let mut out = [0; 3];
     for n in &mut out {
@@ -64,6 +76,13 @@ fn numbers(version: &str) -> Option<[u64; 3]> {
 }
 
 impl ServerVersion {
+    /// The version as it goes into a release's address: only the characters a version has
+    /// (see `version_char`), so whatever the server said, the address stays inside
+    /// Acetate's releases (one that isn't a version is just not found there).
+    fn tag(&self) -> String {
+        self.version.chars().filter(|c| version_char(*c)).collect()
+    }
+
     pub fn release(&self) -> Release {
         if self.matches_app() {
             return Release::Same;
@@ -82,7 +101,7 @@ impl ServerVersion {
     /// download straight away.
     pub fn desktop_url(&self, os: &str) -> String {
         let ext = if os == "windows" { "zip" } else { "tar.gz" };
-        format!("{RELEASES}/download/v{0}/Acetate-v{0}-{os}-x86_64.{ext}", self.version)
+        format!("{RELEASES}/download/v{0}/Acetate-v{0}-{os}-x86_64.{ext}", self.tag())
     }
 
     /// Whether the app and the server speak the same API and catalog format. Anything else
@@ -112,12 +131,12 @@ impl ServerVersion {
 
     /// The page of the app that goes with this server (where the downloads are).
     pub fn release_url(&self) -> String {
-        format!("{RELEASES}/tag/v{}", self.version)
+        format!("{RELEASES}/tag/v{}", self.tag())
     }
 
     /// The Android app that goes with this server, to download straight away.
     pub fn apk_url(&self) -> String {
-        format!("{RELEASES}/download/v{0}/Acetate-v{0}-android.apk", self.version)
+        format!("{RELEASES}/download/v{0}/Acetate-v{0}-android.apk", self.tag())
     }
 
     /// What to tell the person when the versions differ (None: they match).
@@ -357,6 +376,16 @@ mod tests {
         *account.arrived.lock().unwrap() = Some((None, None, None));
         account.poll();
         assert!(account.can("admin"));
+    }
+
+    #[test]
+    fn a_version_cant_point_the_download_elsewhere() {
+        let server = ServerVersion { version: "9.9.9-x/../../../../../../../evil/repo/releases/download/t/a".into(), api: api_version(), catalog_format: None };
+        assert_eq!(server.release(), Release::Unknown, "not a version: no update is offered");
+        for url in [server.desktop_url("linux"), server.desktop_url("windows"), server.apk_url(), server.release_url()] {
+            let path = url.strip_prefix(RELEASES).expect("Acetate's releases");
+            assert_eq!(path.matches('/').count(), if path.starts_with("/tag/") { 2 } else { 3 }, "no folders of its own: {url}");
+        }
     }
 
     #[test]

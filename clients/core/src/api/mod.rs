@@ -158,6 +158,27 @@ pub struct Api {
     probe_first: Duration,
 }
 
+/// Writes a file only its owner can read (where the system has such a thing): the
+/// session's token is as good as the password while it lasts, and others on the machine
+/// have no business with it. One that's there already is made so too.
+fn write_private(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
+    file.write_all(bytes)
+}
+
 impl Api {
     /// `data_dir`: the app's own folder, where the session is kept between runs.
     pub fn new(data_dir: PathBuf) -> Api {
@@ -336,7 +357,7 @@ impl Api {
             .parent()
             .map(std::fs::create_dir_all)
             .transpose()
-            .and_then(|_| std::fs::write(&*self.session_file, serde_json::to_vec(session).unwrap_or_default()));
+            .and_then(|_| write_private(&self.session_file, &serde_json::to_vec(session).unwrap_or_default()));
         if let Err(err) = saved {
             eprintln!("couldn't keep the session: {err}");
         }
