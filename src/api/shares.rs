@@ -217,10 +217,7 @@ pub async fn cover(
     let cover = db::shares::cover(&mut tx, &share, cover_id).await?;
     drop(tx);
     let cover = cover.ok_or(AppError::NotFound)?;
-    let mime = cover
-        .mime
-        .and_then(|m| m.parse().ok())
-        .unwrap_or(mime::APPLICATION_OCTET_STREAM);
+    let mime = super::media::image_mime(cover.mime.as_deref());
     serve_blob(state.store.path_for(&cover.sha256).await, &mime, request).await
 }
 

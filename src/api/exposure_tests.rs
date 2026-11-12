@@ -335,3 +335,59 @@ async fn listening_together_needs_the_code_and_hides_tracks_from_those_who_cant_
     assert_eq!(json_of(body).as_array().unwrap().len(), 0, "not your own");
     Ok(())
 }
+
+/// A group opens the tracks restricted to it, so someone who manages users (and isn't an
+/// admin) can't put anyone, themselves included, into a group they aren't in.
+#[sqlx::test]
+async fn a_user_manager_only_fills_groups_they_are_in(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
+    let s = setup(connect).await?;
+    let mut tx = db::begin(&s.owner, None).await?;
+    db::groups::create(&mut tx, "managers", "", &["browse".into(), "manage_users".into()]).await?;
+    db::groups::create(&mut tx, "friends", "", &["browse".into()]).await?;
+    tx.commit().await?;
+    let manager = user(&s.owner, "mona", "managers").await?;
+    let admin = user(&s.owner, "ada", "admin").await?;
+    let me: Value = serde_json::from_slice(&s.go("GET", "/api/auth/me", Some(&manager), None).await.1)?;
+    let own = format!("/api/users/{}/groups", me["id"].as_str().unwrap());
+
+    // Into `friends` (whose permissions she has, but she isn't in it): refused, herself or anyone.
+    let (status, body) = s.go("PUT", &own, Some(&manager), Some(json!({ "groups": ["managers", "friends"] }))).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{}", String::from_utf8_lossy(&body));
+    let new = |name: &str, groups: Value| json!({ "username": name, "password": "long enough", "groups": groups });
+    assert_eq!(s.go("POST", "/api/users", Some(&manager), Some(new("fred", json!(["friends"])))).await.0, StatusCode::FORBIDDEN);
+    // Into her own group: fine. And an admin fills any.
+    let (status, made) = s.go("POST", "/api/users", Some(&manager), Some(new("mia", json!(["managers"])))).await;
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&made));
+    let mia: Value = serde_json::from_slice(&made)?;
+    let mias = format!("/api/users/{}/groups", mia["id"].as_str().unwrap());
+    assert_eq!(s.go("PUT", &mias, Some(&admin), Some(json!({ "groups": ["managers", "friends"] }))).await.0, StatusCode::OK);
+    // A group someone is in already stays through her change (and can be taken away).
+    assert_eq!(s.go("PUT", &mias, Some(&manager), Some(json!({ "groups": ["managers", "friends"] }))).await.0, StatusCode::OK);
+    assert_eq!(s.go("PUT", &mias, Some(&manager), Some(json!({ "groups": ["managers"] }))).await.0, StatusCode::OK);
+    assert_eq!(s.go("PUT", &mias, Some(&manager), Some(json!({ "groups": ["managers", "friends"] }))).await.0, StatusCode::FORBIDDEN);
+    Ok(())
+}
+
+/// A cover goes out as an image or as plain bytes, whatever type was recorded for it, and
+/// every answer tells the browser not to guess.
+#[sqlx::test]
+async fn a_cover_is_never_served_as_a_page(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
+    let s = setup(connect).await?;
+    let admin = user(&s.owner, "ada", "admin").await?;
+    let track = s.ingest("01 - Glass Harbor.flac", None).await?;
+    // As a picture taken out of a file's tags was once recorded: with the type its tags claimed.
+    let sha = s.store.put_bytes(b"<html><script>alert(1)</script></html>").await?;
+    let cover: Uuid = sqlx::query_scalar("INSERT INTO covers (track_id, blob_sha256, mime, source, position) VALUES ($1, $2, 'text/html', 'embedded', 99) RETURNING id")
+        .bind(track)
+        .bind(&sha)
+        .fetch_one(&s.owner)
+        .await?;
+    for uri in [format!("/api/covers/{cover}"), format!("/api/images/{sha}")] {
+        let request = Request::builder().uri(&uri).header("authorization", format!("Bearer {admin}")).body(Body::empty())?;
+        let response = s.app.clone().oneshot(request).await?;
+        assert_eq!(response.status(), StatusCode::OK, "{uri}");
+        assert_eq!(response.headers()["content-type"], "application/octet-stream", "{uri}");
+        assert_eq!(response.headers()["x-content-type-options"], "nosniff", "{uri}");
+    }
+    Ok(())
+}

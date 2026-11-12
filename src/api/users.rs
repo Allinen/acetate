@@ -2,7 +2,9 @@
 //!
 //! You can't hand out more than you have: a non-admin user manager can only put users in
 //! groups whose permissions they have themselves, and can't change users who have
-//! permissions they lack (e.g. demote an admin).
+//! permissions they lack (e.g. demote an admin). A group also opens the tracks restricted
+//! to it, so a non-admin can only put someone (themselves included) into groups they are
+//! in themselves.
 
 use axum::Json;
 use axum::extract::{Path, State};
@@ -47,6 +49,7 @@ pub async fn create(
 
     let mut tx = state.db(&user).await?;
     check_can_grant(&mut tx, &user, &groups).await?;
+    check_member_of(&mut tx, &user, &groups).await?;
     let hash = auth::hash_password_async(body.password).await?;
     let id = match db::users::create_user(&mut tx, username, &hash).await {
         Ok(id) => id,
@@ -79,6 +82,9 @@ pub async fn set_user_groups(
     // Both what they have now and what they'd get must be within your own permissions.
     check_can_grant(&mut tx, &user, &target.groups).await?;
     check_can_grant(&mut tx, &user, &body.groups).await?;
+    // Groups they're in already stay as they are, whoever put them there.
+    let added: Vec<String> = body.groups.iter().filter(|g| !target.groups.contains(g)).cloned().collect();
+    check_member_of(&mut tx, &user, &added).await?;
     set_groups(&mut tx, id, &body.groups).await?;
     let updated = db::users::get_user(&mut tx, id).await?.ok_or(AppError::NotFound)?;
     tx.commit().await?;
@@ -110,6 +116,32 @@ async fn check_can_grant(
         return Err(AppError::Forbidden(format!(
             "these groups have permissions you don't: {}",
             lacking.join(", ")
+        )));
+    }
+    Ok(())
+}
+
+/// Fails unless `user` is in every one of `groups` (admins: any group). Being in a group
+/// is also seeing the tracks restricted to it, which permissions don't say: without this,
+/// someone who manages users could join any group whose permissions they have and see
+/// what was restricted away from them.
+async fn check_member_of(
+    conn: &mut PgConnection,
+    user: &CurrentUser,
+    groups: &[String],
+) -> Result<(), AppError> {
+    if user.has(Permission::Admin) || groups.is_empty() {
+        return Ok(());
+    }
+    let own = match user.id() {
+        Some(id) => db::users::get_user(conn, id).await?.map(|u| u.groups).unwrap_or_default(),
+        None => Vec::new(),
+    };
+    let others: Vec<&str> = groups.iter().filter(|g| !own.contains(g)).map(String::as_str).collect();
+    if !others.is_empty() {
+        return Err(AppError::Forbidden(format!(
+            "you can only put users in groups you are in yourself (not: {}); an admin can",
+            others.join(", ")
         )));
     }
     Ok(())

@@ -347,6 +347,15 @@ async fn untrash(conn: &mut PgConnection, source_id: Uuid) -> sqlx::Result<()> {
 /// (A file's origin is always a source of the file's own track, so the filename in the
 /// message is something the user can see anyway.)
 pub async fn trash(conn: &mut PgConnection, source_id: Uuid) -> anyhow::Result<bool> {
+    // Seen by the user first: what's read as the system below (a file's name) is said in
+    // the refusal, and must not be said of a source of something hidden from them.
+    let seen: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM sources WHERE id = $1 AND trashed_at IS NULL)")
+        .bind(source_id)
+        .fetch_one(&mut *conn)
+        .await?;
+    if !seen {
+        return Ok(false);
+    }
     let system = super::as_system(conn).await?;
     let origin_of = sqlx::query_scalar!(
         r#"

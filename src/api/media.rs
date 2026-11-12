@@ -281,11 +281,23 @@ pub async fn cover(
     let Some(cover) = cover else {
         return Err(AppError::NotFound);
     };
-    let mime = cover
-        .mime
-        .and_then(|m| m.parse().ok())
-        .unwrap_or(mime::APPLICATION_OCTET_STREAM);
+    let mime = image_mime(cover.mime.as_deref());
     serve_blob(state.store.path_for(&cover.blob_sha256).await, &mime, request).await
+}
+
+/// The content type a stored image goes out with: its recorded one if that's an image
+/// format covers are kept in, otherwise plain bytes. The recorded type of a picture taken
+/// out of a file's tags was once whatever the tags said, and a browser must never be told
+/// that an uploaded file is a page (`text/html`) or a drawing with scripts
+/// (`image/svg+xml`): it would run on this server's address.
+pub(super) fn image_mime(recorded: Option<&str>) -> mime::Mime {
+    match recorded.map(str::to_ascii_lowercase).as_deref() {
+        Some("image/jpeg" | "image/jpg") => mime::IMAGE_JPEG,
+        Some("image/png") => mime::IMAGE_PNG,
+        Some("image/gif") => mime::IMAGE_GIF,
+        Some("image/webp") => "image/webp".parse().unwrap_or(mime::APPLICATION_OCTET_STREAM),
+        _ => mime::APPLICATION_OCTET_STREAM,
+    }
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -327,8 +339,7 @@ pub async fn image(
     let mut response = match scaled {
         Scaled::Resized(path) => serve_blob(path, &mime::IMAGE_JPEG, request).await?,
         Scaled::Original => {
-            let mime = image.mime.and_then(|m| m.parse().ok()).unwrap_or(mime::APPLICATION_OCTET_STREAM);
-            serve_blob(original, &mime, request).await?
+            serve_blob(original, &image_mime(image.mime.as_deref()), request).await?
         }
     };
     // `private`: one user's view (shared caches mustn't keep it); `immutable`: the same
@@ -367,4 +378,19 @@ pub(super) fn audio_mime(container: Option<&str>, codec: Option<&str>) -> mime::
         _ => "application/octet-stream",
     };
     name.parse().unwrap_or(mime::APPLICATION_OCTET_STREAM)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::image_mime;
+
+    #[test]
+    fn a_stored_image_goes_out_as_an_image_or_as_bytes() {
+        assert_eq!(image_mime(Some("image/jpeg")), mime::IMAGE_JPEG);
+        assert_eq!(image_mime(Some("image/JPG")), mime::IMAGE_JPEG);
+        assert_eq!(image_mime(Some("image/webp")).as_ref(), "image/webp");
+        for claimed in [Some("text/html"), Some("image/svg+xml"), Some("application/xhtml+xml"), Some(""), None] {
+            assert_eq!(image_mime(claimed), mime::APPLICATION_OCTET_STREAM, "{claimed:?}");
+        }
+    }
 }

@@ -11,6 +11,13 @@ use tokio::process::Command;
 /// File names taken for videos.
 pub const EXTENSIONS: &[&str] = &["mp4", "m4v", "mkv", "webm", "mov", "avi"];
 
+/// The formats `ffprobe` and `ffmpeg` may read a video as (their names for the containers
+/// of `EXTENSIONS`). Left to themselves they take a file for whatever its bytes look
+/// like, and some of what they know are scripts naming other files to read (a "concat"
+/// list, a playlist): an upload called `clip.mp4` could then have them read files that
+/// aren't it.
+const CONTAINERS: &str = "mov,matroska,webm,avi";
+
 /// Whether a file's name says it's a video.
 pub fn is_video_name(name: &str) -> bool {
     Path::new(name).extension().and_then(|e| e.to_str()).is_some_and(|e| EXTENSIONS.contains(&e.to_lowercase().as_str()))
@@ -77,7 +84,7 @@ struct Format {
 /// Reads a video's facts with `ffprobe` (None: not installed, or not a video it can read).
 pub async fn probe(path: &Path) -> Option<VideoFacts> {
     let output = Command::new("ffprobe")
-        .args(["-v", "error", "-print_format", "json", "-show_streams", "-show_format"])
+        .args(["-v", "error", "-print_format", "json", "-show_streams", "-show_format", "-format_whitelist", CONTAINERS])
         .arg(path)
         .stdin(Stdio::null())
         .output()
@@ -160,7 +167,7 @@ pub async fn examine(store: &crate::storage::BlobStore, path: &Path, name: &str)
 pub async fn thumbnail(path: &Path, duration_ms: Option<i64>) -> Option<Vec<u8>> {
     let at = duration_ms.map(|ms| (ms as f64 / 10_000.0).min(10.0)).unwrap_or(0.0);
     let output = Command::new("ffmpeg")
-        .args(["-v", "error", "-ss", &format!("{at:.2}"), "-i"])
+        .args(["-v", "error", "-format_whitelist", CONTAINERS, "-ss", &format!("{at:.2}"), "-i"])
         .arg(path)
         .args(["-frames:v", "1", "-vf", "scale='min(640,iw)':-2", "-f", "image2pipe", "-vcodec", "mjpeg", "-"])
         .stdin(Stdio::null())
@@ -218,7 +225,7 @@ pub async fn extract_audio(store: &crate::storage::BlobStore, video: &Path) -> R
     let failed = |err: &dyn std::fmt::Display| ExtractError::Failed(err.to_string());
     let temp = store.temp_file(&format!(".{extension}")).map_err(|e| failed(&e))?;
     let output = Command::new("ffmpeg")
-        .args(["-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-i"])
+        .args(["-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-format_whitelist", CONTAINERS, "-i"])
         .arg(video)
         .args(["-map", "0:a:0", "-vn", "-c:a", "copy", "-map_metadata", "-1", "-map_chapters", "-1", "-bitexact", "-f", format])
         .arg(temp.path())

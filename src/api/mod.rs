@@ -99,6 +99,15 @@ async fn docs_slash(axum::extract::OriginalUri(uri): axum::extract::OriginalUri,
     next.run(request).await
 }
 
+/// Every answer says its content type is to be taken as given
+/// (`X-Content-Type-Options: nosniff`): a browser doesn't look into an uploaded file's
+/// bytes and decide it's a page or a script after all.
+async fn no_sniffing(request: axum::extract::Request, next: middleware::Next) -> Response {
+    let mut response = next.run(request).await;
+    response.headers_mut().insert(axum::http::header::X_CONTENT_TYPE_OPTIONS, axum::http::HeaderValue::from_static("nosniff"));
+    response
+}
+
 async fn same_version(request: axum::extract::Request, next: middleware::Next) -> Response {
     if let Some(refusal) = version_refusal(&request) {
         return refusal;
@@ -458,6 +467,7 @@ pub fn router(state: AppState) -> Router {
         // Everything that isn't an API route: the few static files (the share and open pages).
         .fallback_service(ServeDir::new(&state.web_dir))
         .layer(middleware::from_fn(same_version))
+        .layer(middleware::from_fn(no_sniffing))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
 }

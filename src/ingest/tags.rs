@@ -93,7 +93,6 @@ impl RawItem {
 #[derive(Debug, Clone)]
 pub struct EmbeddedPicture {
     pub data: Vec<u8>,
-    pub mime: Option<String>,
     pub is_front_cover: bool,
 }
 
@@ -205,7 +204,6 @@ pub fn read_tags(path: &Path, extension: Option<&str>) -> anyhow::Result<TagInfo
         .iter()
         .map(|pic| EmbeddedPicture {
             data: pic.data().to_vec(),
-            mime: pic.mime_type().map(|m| m.as_str().to_string()),
             is_front_cover: pic.pic_type() == PictureType::CoverFront,
         })
         .collect();

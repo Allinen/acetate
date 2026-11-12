@@ -32,6 +32,8 @@ use crate::auth::{self, CurrentUser, Login, Permission};
 use crate::db;
 
 const COOKIE_NAME: &str = "acetate_session";
+/// The longest username a login is tried with.
+const MAX_USERNAME_BYTES: usize = 256;
 /// Matches the session lifetime in `db::users` (the server extends the session itself;
 /// this is just so the browser doesn't drop the cookie first).
 const COOKIE_MAX_AGE_SECS: u32 = 30 * 24 * 60 * 60;
@@ -188,6 +190,12 @@ pub async fn login(
 ) -> Result<Response, AppError> {
     let ip = client_ip(&headers, peer, state.trust_proxy);
     let username = body.username.trim();
+    // No account has a name this long, and the name is kept (as what failed) by the rate
+    // limits: refused before it's looked at, counted against the address alone.
+    if username.len() > MAX_USERNAME_BYTES {
+        state.rate_limits.login_failed(ip, "");
+        return Err(AppError::WrongLogin);
+    }
     if let Some(wait) = state.rate_limits.check_login(ip, username) {
         return Err(AppError::TooManyRequests(wait));
     }

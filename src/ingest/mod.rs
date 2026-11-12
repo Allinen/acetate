@@ -678,10 +678,13 @@ async fn new_track(
         for picture in &tags.pictures {
             let sha = put_image(store, &picture.data, dry_run).await?;
             if !covers.iter().any(|c| c.sha256 == sha) {
+                // What it is, from the bytes: the type the tags claim is the uploader's
+                // word, and it's what the image is served as. (One that's no image format
+                // covers are kept in stays, without a type.)
                 let image = crate::model::image_info(&picture.data);
                 covers.push(TrackCover {
                     sha256: sha,
-                    mime: picture.mime.clone(),
+                    mime: image.as_ref().map(|i| i.mime.to_string()),
                     width: image.as_ref().and_then(|i| i.width),
                     height: image.as_ref().and_then(|i| i.height),
                     size: picture.data.len() as i64,

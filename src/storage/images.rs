@@ -64,6 +64,12 @@ pub struct ImageCache {
 /// original's bytes.
 const QUALITY: u8 = 88;
 
+/// The largest picture a copy is made of: this many pixels a side, and this much memory
+/// to decode it (a 10,000 × 10,000 picture takes 400 MB as RGBA, so the memory is what
+/// stops the biggest). A picture over them is served as it is, like one that can't be read.
+const MAX_SIDE: u32 = 12_000;
+const MAX_DECODE_BYTES: u64 = 256 * 1024 * 1024;
+
 impl ImageCache {
     pub fn new(dir: PathBuf) -> ImageCache {
         let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2);
@@ -109,7 +115,15 @@ impl ImageCache {
 /// `target` as a JPEG (through a temporary file, so a half-written copy is never served).
 fn make(original: &Path, target: &Path, pixels: u32) -> anyhow::Result<()> {
     let bytes = std::fs::read(original).context("reading the original")?;
-    let image = image::load_from_memory(&bytes).context("decoding it")?;
+    // Within limits: a small file can claim to be an enormous picture, and decoding it
+    // would take the memory that says. Covers are nowhere near either limit.
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(&bytes)).with_guessed_format().context("telling what it is")?;
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(MAX_SIDE);
+    limits.max_image_height = Some(MAX_SIDE);
+    limits.max_alloc = Some(MAX_DECODE_BYTES);
+    reader.limits(limits);
+    let image = reader.decode().context("decoding it")?;
     let scaled = image.resize(pixels, pixels, image::imageops::FilterType::CatmullRom).to_rgb8();
     let mut out = Vec::new();
     let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, QUALITY);
