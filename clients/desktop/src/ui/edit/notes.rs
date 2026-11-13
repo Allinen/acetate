@@ -332,7 +332,7 @@ impl NotesView {
         let Some(e) = self.editing.as_mut() else { return };
         let mut save = false;
         let mut cancel = false;
-        let ids = ["note-title", "note-body", "note-why"].map(|n| egui::Id::new((n, owner.field().1)));
+        let ids = ["note-title", "note-body", "note-why"].map(|n| egui::Id::unique((n, owner.field().1)));
         let ctx = ui.ctx().clone();
         let in_it = ctx.memory(|m| ids.iter().any(|id| m.has_focus(*id)));
         let ready = !self.sending && !(e.title.trim().is_empty() && e.body.trim().is_empty());

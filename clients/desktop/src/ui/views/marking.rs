@@ -68,7 +68,7 @@ impl Marking {
     /// mode): the marked ones start unmarked, so they animate in.
     pub fn boxes_appear(&self, ctx: &egui::Context) {
         for id in self.marked.iter() {
-            widgets::glide_from(ctx, egui::Id::new(("mark-box", id)), 0.0);
+            widgets::glide_from(ctx, egui::Id::unique(("mark-box", id)), 0.0);
         }
     }
 
@@ -386,7 +386,7 @@ impl Marking {
     pub fn bar(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: &Catalog, len: usize, id_at: impl Fn(usize) -> Option<Key> + Copy, salt: &str) {
         // It's pulled down from behind what's above when the first track is marked, the
         // rows below sliding with it, and pulled up again when the marks are cleared.
-        let id = egui::Id::new(("marking-bar", salt));
+        let id = egui::Id::unique(("marking-bar", salt));
         let t = widgets::glide(ui.ctx(), id, if self.marked.is_empty() { 0.0 } else { 1.0 }, 0.18);
         if self.marked.is_empty() && t <= 0.0 {
             return;
@@ -526,7 +526,7 @@ fn show_editor(editor: &mut crate::ui::edit::editor::TrackEditor, ui: &mut egui:
 /// The mark's box in front of a row (18×18): ticked when marked.
 pub fn paint_box(painter: &egui::Painter, id: impl std::hash::Hash + std::fmt::Debug, rect: egui::Rect, marked: bool, hovered: bool) {
     let ctx = painter.ctx();
-    let id = egui::Id::new(("mark-box", id));
+    let id = egui::Id::unique(("mark-box", id));
     // (`glide`: a box not drawn for a while, like all of them once the marks are cleared in
     // listen mode, starts at its state instead of animating from where it was left.)
     let on = widgets::glide(ctx, id, marked as u8 as f32, 0.12);

@@ -278,7 +278,7 @@ pub struct ArtistCommands {
 impl Default for ArtistCommands {
     fn default() -> Self {
         ArtistCommands {
-            cl: CommandLine::new(egui::Id::new("artist-commandline")),
+            cl: CommandLine::new(egui::Id::unique("artist-commandline")),
             notice: None,
             artist: None,
             staged: Vec::new(),

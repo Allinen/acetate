@@ -226,7 +226,7 @@ impl UnlinkedExtras {
             shell.act(Action::Go(Page::Extra(e.id)));
         }
         if moved.enter {
-            ctx.memory_mut(|m| m.request_focus(egui::Id::new(SEARCH_ID)));
+            ctx.memory_mut(|m| m.request_focus(egui::Id::unique(SEARCH_ID)));
         }
     }
 
@@ -284,7 +284,7 @@ impl UnlinkedExtras {
                 } else {
                     format!("type the {}'s name, Enter links {}", self.target.name(), if targets.len() == 1 { "it".to_string() } else { format!("{} extras", targets.len()) })
                 };
-                let hit = self.search.show(ui, shell, Some(catalog), egui::Id::new(SEARCH_ID), &hint, &[]);
+                let hit = self.search.show(ui, shell, Some(catalog), egui::Id::unique(SEARCH_ID), &hint, &[]);
                 if let (Some((Choice::Hit(i), _)), false) = (hit, sending)
                     && self.target == Target::Merge
                 {
@@ -458,7 +458,7 @@ impl UnlinkedExtras {
                     ui.painter().rect_filled(rect, 8, P.surface.gamma_multiply(0.5));
                 }
                 let tick = egui::Rect::from_center_size(egui::pos2(rect.left() + 20.0, rect.center().y), Vec2::splat(18.0));
-                let box_response = ui.interact(tick.expand(4.0), ui.id().with(("mark-extra", e.id)), Sense::click());
+                let box_response = ui.interact(tick.expand(4.0), ui.scope_id().with(("mark-extra", e.id)), Sense::click());
                 paint_box(ui.painter(), e.id, tick, marked, box_response.hovered());
                 let thumb = egui::Rect::from_min_size(egui::pos2(rect.left() + 40.0, rect.top() + 6.0), Vec2::new(71.0, 40.0));
                 match e.thumb() {
@@ -474,7 +474,7 @@ impl UnlinkedExtras {
 
                 // "Open": its page (double-clicking the row does the same).
                 let open = egui::Rect::from_center_size(egui::pos2(rect.right() - 30.0, rect.center().y), Vec2::new(48.0, 24.0));
-                let open_response = ui.interact(open, ui.id().with(("open-extra", e.id)), Sense::click());
+                let open_response = ui.interact(open, ui.scope_id().with(("open-extra", e.id)), Sense::click());
                 let color = if open_response.hovered() { P.text } else { P.faint };
                 ui.painter().text(open.center(), egui::Align2::CENTER_CENTER, "Open", font(12.0, medium()), color);
                 if open_response.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() || response.double_clicked() {
@@ -486,7 +486,7 @@ impl UnlinkedExtras {
                 }
             }
         });
-        self.view = (out.state.offset.y, out.inner_rect.height());
+        self.view = (out.state.unclamped_offset().y, out.inner_rect.height());
         if let Some(n) = boxed {
             self.marking.toggle(n, id_at);
             self.cursor = n;
@@ -501,7 +501,7 @@ impl UnlinkedExtras {
             self.cursor = n;
             self.said = None;
             // The name is next.
-            ui.ctx().memory_mut(|m| m.request_focus(egui::Id::new(SEARCH_ID)));
+            ui.ctx().memory_mut(|m| m.request_focus(egui::Id::unique(SEARCH_ID)));
         }
     }
 }

@@ -29,7 +29,7 @@ type State = Arc<Mutex<Editing>>;
 pub fn show(ui: &mut egui::Ui, shell: &mut Shell, d: &TrackDetail) {
     let can = shell.edit_mode && shell.account.can("edit_files");
     let changes = d.original_filename_changes.as_deref().unwrap_or_default();
-    let state: State = ui.ctx().data_mut(|m| m.get_temp_mut_or_default::<State>(egui::Id::new(("og-file", d.file.id))).clone());
+    let state: State = ui.ctx().data_mut(|m| m.get_temp_mut_or_default::<State>(egui::Id::unique(("og-file", d.file.id))).clone());
     let mut put_back: Option<Option<String>> = None;
     if !changes.is_empty() {
         ui.add_space(8.0);

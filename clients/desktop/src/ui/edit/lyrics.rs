@@ -128,7 +128,7 @@ impl LyricsEditor {
     /// Ctrl+Enter in one of the fields, or while timing (outside any field): a save of
     /// these lyrics. Called before the track's form is shown, so it gets there first.
     pub fn take_keys(&mut self, ctx: &egui::Context) {
-        let in_field = [BODY_ID, LANGUAGE_ID, REASON_ID, super::lyrics_sync::TEXT_ID, super::lyrics_sync::LANGUAGE_ID].iter().any(|id| ctx.memory(|m| m.has_focus(egui::Id::new(*id))));
+        let in_field = [BODY_ID, LANGUAGE_ID, REASON_ID, super::lyrics_sync::TEXT_ID, super::lyrics_sync::LANGUAGE_ID].iter().any(|id| ctx.memory(|m| m.has_focus(egui::Id::unique(*id))));
         let ours = in_field || (self.sync.is_some() && !ctx.egui_wants_keyboard_input());
         if ours && ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Enter)) {
             self.save_asked = true;
@@ -230,7 +230,7 @@ impl LyricsEditor {
             let add = ui.add_enabled(!adding && !dirty, egui::Button::new("Add lyrics…").small());
             if add.on_disabled_hover_text("Save or discard your changes first").clicked() {
                 self.fill(Open::New, None);
-                shell.ctx.memory_mut(|m| m.request_focus(egui::Id::new(BODY_ID)));
+                shell.ctx.memory_mut(|m| m.request_focus(egui::Id::unique(BODY_ID)));
             }
         });
         self.removed(ui, shell, d);
@@ -261,7 +261,7 @@ impl LyricsEditor {
         ui.horizontal(|ui| {
             ui.checkbox(&mut self.fields.official, "Official").on_hover_text("From the artist or label, rather than transcribed by someone");
             ui.label(RichText::new("Language").color(P.faint));
-            ui.add(egui::TextEdit::singleline(&mut self.fields.language).id(egui::Id::new(LANGUAGE_ID)).hint_text("en, ja… (optional)").desired_width(110.0));
+            ui.add(egui::TextEdit::singleline(&mut self.fields.language).id(egui::Id::unique(LANGUAGE_ID)).hint_text("en, ja… (optional)").desired_width(110.0));
             if let Some(l) = current
                 && !l.source.is_empty()
             {
@@ -282,7 +282,7 @@ impl LyricsEditor {
         let body = ui.add_enabled(
             self.sync.is_none(),
             egui::TextEdit::multiline(&mut self.fields.body)
-                .id(egui::Id::new(BODY_ID))
+                .id(egui::Id::unique(BODY_ID))
                 .font(egui::TextStyle::Monospace)
                 .hint_text("The lyrics. Synced: a time in front of each line, “[01:23.45] a line”; a line in another language, “[lang:ja]” after it.")
                 .desired_rows(14)
@@ -292,7 +292,7 @@ impl LyricsEditor {
             body.request_focus();
             body.scroll_to_me(Some(egui::Align::Center));
         }
-        ui.add(egui::TextEdit::singleline(&mut self.reason).id(egui::Id::new(REASON_ID)).hint_text("Why (optional: kept with the change)").desired_width(420.0));
+        ui.add(egui::TextEdit::singleline(&mut self.reason).id(egui::Id::unique(REASON_ID)).hint_text("Why (optional: kept with the change)").desired_width(420.0));
         let can_save = dirty && !self.saving && !self.fields.body.trim().is_empty();
         ui.horizontal(|ui| {
             let text = if open == Open::New { "Add them  (Ctrl+Enter)" } else { "Save the lyrics  (Ctrl+Enter)" };

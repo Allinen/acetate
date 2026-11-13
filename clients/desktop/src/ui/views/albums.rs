@@ -104,7 +104,7 @@ impl Albums {
                         let hover = ctx.animate_bool_with_time(response.id, response.hovered(), 0.16);
                         let cover_rect = Rect::from_min_size(rect.min - Vec2::new(0.0, hover * 5.0), Vec2::splat(card));
                         shell.cover(ui, album.cover(), album.id(), cover_rect, 10, hover);
-                        let star = ctx.animate_bool_with_time(egui::Id::new(("album-star", album.id())), shell.mark(album.id()).starred, 0.18);
+                        let star = ctx.animate_bool_with_time(egui::Id::unique(("album-star", album.id())), shell.mark(album.id()).starred, 0.18);
                         if star > 0.0 {
                             let badge = cover_rect.left_top() + Vec2::splat(18.0);
                             ui.painter().circle_filled(badge, 12.0 * star, Color32::from_black_alpha((140.0 * star) as u8));
@@ -137,7 +137,7 @@ impl Albums {
                 });
             }
         });
-        self.offset = output.state.offset.y;
+        self.offset = output.state.unclamped_offset().y;
     }
 }
 

@@ -131,7 +131,7 @@ impl Artists {
                     if artist.album_count == 1 { "" } else { "s" }
                 );
                 let counts_rect = ui.painter().text(rect.right_center() - Vec2::new(18.0, 0.0), Align2::RIGHT_CENTER, counts, font(12.5, medium()), P.muted);
-                let star = ui.ctx().animate_bool_with_time(egui::Id::new(("artist-star", artist.id)), shell.mark(artist.id).starred, 0.18);
+                let star = ui.ctx().animate_bool_with_time(egui::Id::unique(("artist-star", artist.id)), shell.mark(artist.id).starred, 0.18);
                 if star > 0.0 {
                     widgets::draw_star(ui.painter(), Pos2::new(counts_rect.left() - 14.0, rect.center().y), 6.0 * star, P.accent.gamma_multiply(star));
                 }
@@ -141,7 +141,7 @@ impl Artists {
                 }
             }
         });
-        self.offset = output.state.offset.y;
+        self.offset = output.state.unclamped_offset().y;
         if self.list.is_empty() {
             ui.label(RichText::new("No artists").color(P.muted));
         }

@@ -22,13 +22,13 @@ pub fn show(ctx: &egui::Context, id: &str, title: &str, size: Vec2, add: impl Fn
     // a dropdown in the panel opens on the Foreground layer too (egui's own popups), and
     // one that just appeared goes on top of its layer; with the panel on the Tooltip layer
     // it opened *behind* it, out of sight.
-    egui::Area::new(egui::Id::new((id, "veil"))).order(egui::Order::Middle).fixed_pos(screen.min).show(ctx, |ui| {
+    egui::Area::new(egui::Id::unique((id, "veil"))).order(egui::Order::Middle).fixed_pos(screen.min).show(ctx, |ui| {
         let (rect, _) = ui.allocate_exact_size(screen.size(), Sense::click());
         ui.painter().rect_filled(rect, 0, Color32::from_black_alpha(140));
     });
     let size = Vec2::new(size.x.min(screen.width() - 48.0), size.y.min(screen.height() - 48.0));
     let top_left = Pos2::new(screen.center().x - size.x / 2.0, screen.center().y - size.y / 2.0);
-    egui::Area::new(egui::Id::new(id)).order(egui::Order::Foreground).fixed_pos(top_left).show(ctx, |ui| {
+    egui::Area::new(egui::Id::unique(id)).order(egui::Order::Foreground).fixed_pos(top_left).show(ctx, |ui| {
         let frame = egui::Frame::NONE
             .fill(P.surface)
             .corner_radius(14)

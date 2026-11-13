@@ -963,7 +963,7 @@ pub struct AlbumCommands {
 impl Default for AlbumCommands {
     fn default() -> Self {
         AlbumCommands {
-            cl: CommandLine::new(egui::Id::new("album-commandline")),
+            cl: CommandLine::new(egui::Id::unique("album-commandline")),
             notice: None,
             album: None,
             staged: Vec::new(),

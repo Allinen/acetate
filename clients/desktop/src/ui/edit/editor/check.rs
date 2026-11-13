@@ -241,7 +241,7 @@ pub fn draw(ui: &mut egui::Ui, view: &View, entries: &[Entry], cursor: Option<us
             }
         }
     });
-    ui.ctx().data_mut(|d| d.insert_temp(offset_id, output.state.offset.y));
+    ui.ctx().data_mut(|d| d.insert_temp(offset_id, output.state.unclamped_offset().y));
     clicked
 }
 

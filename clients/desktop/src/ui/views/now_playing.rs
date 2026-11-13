@@ -91,7 +91,7 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell, player: &PlayerView, spectrum:
         let rect = Rect::from_min_max(Pos2::new(left, middle + 124.0), Pos2::new(area.right(), bottom));
         if rect.height() > 60.0 {
             let mut lyrics_ui = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::top_down(egui::Align::Min)));
-            let followed_id = egui::Id::new(("now-playing-lyrics", item.track_id));
+            let followed_id = egui::Id::unique(("now-playing-lyrics", item.track_id));
             let mut followed = ctx.data(|d| d.get_temp::<Option<usize>>(followed_id)).flatten();
             egui::ScrollArea::vertical()
                 .id_salt(followed_id)

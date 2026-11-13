@@ -507,7 +507,7 @@ impl NotImported {
                     ui.checkbox(&mut self.is_og, "It's an original file (og file)").on_hover_text("The file as the artist made and named it, not a rip or a download. On to start with for WAV files");
                     if self.is_og {
                         ui.label(RichText::new("named").color(P.muted));
-                        ui.add(egui::TextEdit::singleline(&mut self.og_name).id(egui::Id::new("not-imported-og")).desired_width(360.0));
+                        ui.add(egui::TextEdit::singleline(&mut self.og_name).id(egui::Id::unique("not-imported-og")).desired_width(360.0));
                     }
                 });
                 ui.add_space(10.0);
@@ -541,7 +541,7 @@ impl NotImported {
     fn add_to_track(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: &Arc<Catalog>, p: &Problem) {
         ui.label(RichText::new("The same song already in the library (a better copy without tags, an older version…). Found by its name; type to find another.").color(P.muted));
         if let Some(search) = self.search.as_mut() {
-            let hit = search.show(ui, shell, Some(catalog), egui::Id::new("not-imported-track"), "the track: type its title or artist", &[]);
+            let hit = search.show(ui, shell, Some(catalog), egui::Id::unique("not-imported-track"), "the track: type its title or artist", &[]);
             if let Some((Choice::Hit(i), _)) = hit {
                 self.target = Some(i);
             }
@@ -588,7 +588,7 @@ impl NotImported {
     /// another original file (once that name isn't being typed).
     fn keep_draft(&mut self, shell: &Shell, p: &Problem) {
         let og = self.og();
-        let typing = shell.ctx.memory(|m| m.has_focus(egui::Id::new("not-imported-og")));
+        let typing = shell.ctx.memory(|m| m.has_focus(egui::Id::unique("not-imported-og")));
         let draft = self.draft.get_or_insert_with(|| Draft {
             og: og.clone(),
             asked: None,
@@ -704,7 +704,7 @@ impl NotImported {
                 && let Some(search) = self.search.as_mut()
             {
                 let hint = format!("the track it's a version of ({}): type its title or artist", version_label(&kind));
-                if let Some((Choice::Hit(i), _)) = search.show(ui, shell, Some(catalog), egui::Id::new("not-imported-version-of"), &hint, &[]) {
+                if let Some((Choice::Hit(i), _)) = search.show(ui, shell, Some(catalog), egui::Id::unique("not-imported-version-of"), &hint, &[]) {
                     let t = catalog.track_at(i);
                     let now = draft.editor.credits_after(track).unwrap_or_default();
                     let (lines, tracks, artists) = version_of(&kind, t, &now, catalog);
@@ -774,7 +774,7 @@ impl NotImported {
         let target: Option<(Uuid, String)> = match self.of {
             Of::Track => {
                 let search = self.search.get_or_insert_with(|| InlineSearch::new(Part::Tracks));
-                if let Some((Choice::Hit(i), _)) = search.show(ui, shell, Some(catalog), egui::Id::new("not-imported-track"), "the track: type its title or artist", &[]) {
+                if let Some((Choice::Hit(i), _)) = search.show(ui, shell, Some(catalog), egui::Id::unique("not-imported-track"), "the track: type its title or artist", &[]) {
                     self.target = Some(i);
                 }
                 self.target.and_then(|i| catalog.get_track(i)).map(|t| (t.id(), format!("the track “{}” ({})", t.title(), t.artist_display())))
@@ -783,7 +783,7 @@ impl NotImported {
                 let album = self.of == Of::Album;
                 if let Some(search) = self.of_search.as_mut() {
                     let hint = if album { "the album: type its title" } else { "the artist: type their name" };
-                    if let Some((Choice::Hit(i), _)) = search.show(ui, shell, Some(catalog), egui::Id::new("not-imported-of"), hint, &[]) {
+                    if let Some((Choice::Hit(i), _)) = search.show(ui, shell, Some(catalog), egui::Id::unique("not-imported-of"), hint, &[]) {
                         self.of_target = if album {
                             catalog.get_album(i).map(|a| (a.id(), format!("the album “{}” ({})", a.title(), a.artist_display())))
                         } else {

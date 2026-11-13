@@ -225,7 +225,7 @@ impl Sync {
     fn start_text(&mut self, ctx: &egui::Context, n: usize) {
         if let Some(line) = self.lines.get(n).filter(|l| !l.tag) {
             self.editing_text = Some((n, line.text.clone()));
-            ctx.memory_mut(|m| m.request_focus(egui::Id::new(TEXT_ID)));
+            ctx.memory_mut(|m| m.request_focus(egui::Id::unique(TEXT_ID)));
         }
     }
 
@@ -343,7 +343,7 @@ impl Sync {
             if self.languages && pressed(Modifiers::NONE, Key::L) {
                 let typed = self.lines.get(self.cursor).and_then(|l| l.language.clone()).unwrap_or_default();
                 self.editing_language = Some((self.cursor, typed));
-                ctx.memory_mut(|m| m.request_focus(egui::Id::new(LANGUAGE_ID)));
+                ctx.memory_mut(|m| m.request_focus(egui::Id::unique(LANGUAGE_ID)));
             }
             // The key typed (`l`, `o`…) isn't the first letter of what's typed next.
             if self.editing_language.is_some() || self.editing_text.is_some() {
@@ -444,7 +444,7 @@ impl Sync {
                                     && *editing == n
                                 {
                                     let field = egui::TextEdit::singleline(typed)
-                                        .id(egui::Id::new(TEXT_ID))
+                                        .id(egui::Id::unique(TEXT_ID))
                                         .hint_text("Verse 1: Wrenfield  (a part, then who sings it)")
                                         .font(font(15.0, semibold()))
                                         .desired_width(f32::INFINITY);
@@ -479,7 +479,7 @@ impl Sync {
                             if self.languages {
                                 match editing_language {
                                     Some((editing, typed)) if *editing == n => {
-                                        let field = ui.add(egui::TextEdit::singleline(typed).id(egui::Id::new(LANGUAGE_ID)).hint_text(language).desired_width(56.0));
+                                        let field = ui.add(egui::TextEdit::singleline(typed).id(egui::Id::unique(LANGUAGE_ID)).hint_text(language).desired_width(56.0));
                                         // Enter (or a click elsewhere) takes it; Esc doesn't.
                                         if field.lost_focus() {
                                             let cancelled = ui.input(|i| i.key_pressed(Key::Escape));
@@ -501,7 +501,7 @@ impl Sync {
                             if let Some((editing, typed)) = editing_text.as_mut()
                                 && *editing == n
                             {
-                                let field = egui::TextEdit::singleline(typed).id(egui::Id::new(TEXT_ID)).font(font(18.0, semibold())).desired_width(f32::INFINITY);
+                                let field = egui::TextEdit::singleline(typed).id(egui::Id::unique(TEXT_ID)).font(font(18.0, semibold())).desired_width(f32::INFINITY);
                                 // Enter (or a click elsewhere) takes it; Esc doesn't.
                                 if ui.add(field).lost_focus() {
                                     let cancelled = ui.input(|i| i.key_pressed(Key::Escape));
@@ -546,7 +546,7 @@ impl Sync {
         if let Some(n) = language_clicked {
             self.cursor = n;
             self.editing_language = Some((n, self.lines[n].language.clone().unwrap_or_default()));
-            ctx.memory_mut(|m| m.request_focus(egui::Id::new(LANGUAGE_ID)));
+            ctx.memory_mut(|m| m.request_focus(egui::Id::unique(LANGUAGE_ID)));
         }
         if let Some((n, typed)) = language_done {
             self.editing_language = None;

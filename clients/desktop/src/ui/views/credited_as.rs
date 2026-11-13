@@ -109,7 +109,7 @@ impl CreditedAs {
             done: Task::default(),
             outcome: None,
             cl: {
-                let mut cl = CommandLine::new(egui::Id::new("credited-as-line"));
+                let mut cl = CommandLine::new(egui::Id::unique("credited-as-line"));
                 cl.focus = true;
                 cl
             },
@@ -421,7 +421,7 @@ impl CreditedAs {
                 widgets::chip(ui, other, true);
             }
         });
-        let hit = self.search.show(ui, shell, Some(catalog), egui::Id::new("credited-as-to"), "another artist: type its name", &[]);
+        let hit = self.search.show(ui, shell, Some(catalog), egui::Id::unique("credited-as-to"), "another artist: type its name", &[]);
         if let Some((Hit::Hit(i), _)) = hit
             && let Some(a) = catalog.artists.get(i as usize)
         {

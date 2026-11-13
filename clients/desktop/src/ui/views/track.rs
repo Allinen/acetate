@@ -900,7 +900,7 @@ fn lyrics_heading(ui: &mut egui::Ui, shell: &mut Shell, section: &lyrics::Sectio
 /// up once per name and library (kept in egui's memory).
 fn artist_named(ctx: &egui::Context, shell: &Shell, name: &str) -> Option<Uuid> {
     type Found = std::collections::HashMap<String, Option<Uuid>>;
-    let key = egui::Id::new(("lyrics-artist-names", shell.generation));
+    let key = egui::Id::unique(("lyrics-artist-names", shell.generation));
     let name = name.to_lowercase();
     if let Some(found) = ctx.memory_mut(|m| m.data.get_temp_mut_or_default::<Found>(key).get(&name).copied()) {
         return found;
@@ -1101,7 +1101,7 @@ fn file(ui: &mut egui::Ui, shell: &mut Shell, d: &TrackDetail) {
         // Playing one again (edit mode, `replace_file`): the request's state, kept in egui's
         // memory for this track. The current file becomes an earlier one in turn.
         let can_switch = shell.edit_mode && shell.account.can("replace_file");
-        let switching: UseFile = ui.ctx().data_mut(|m| m.get_temp_mut_or_default::<UseFile>(egui::Id::new(("use-file", d.id))).clone());
+        let switching: UseFile = ui.ctx().data_mut(|m| m.get_temp_mut_or_default::<UseFile>(egui::Id::unique(("use-file", d.id))).clone());
         let answer = switching.lock().unwrap().1.take();
         match answer {
             Some(Ok(())) => {

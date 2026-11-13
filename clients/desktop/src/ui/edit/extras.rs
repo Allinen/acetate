@@ -335,7 +335,7 @@ impl ExtrasView {
         self.attach_form(ui, shell, owner, restricted);
         if let Some(search) = self.linking.as_mut() {
             let catalog = shell.catalog.value.clone();
-            let hit = search.show(ui, shell, catalog.as_deref(), egui::Id::new("extras-link"), "an extra that's there: type its name", &[]);
+            let hit = search.show(ui, shell, catalog.as_deref(), egui::Id::unique("extras-link"), "an extra that's there: type its name", &[]);
             if let (Some((Choice::Hit(i), _)), Some(c)) = (hit, catalog.as_deref())
                 && let Some(e) = c.extras.get(i as usize)
             {

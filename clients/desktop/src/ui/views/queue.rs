@@ -130,7 +130,7 @@ impl QueuePage {
 
         let mut scroll = egui::ScrollArea::vertical().auto_shrink([false, false]).id_salt("queue");
         if let Some(row) = self.scroll_to.take() {
-            let offset = ctx.data(|d| d.get_temp::<f32>(egui::Id::new("queue-offset"))).unwrap_or(0.0);
+            let offset = ctx.data(|d| d.get_temp::<f32>(egui::Id::unique("queue-offset"))).unwrap_or(0.0);
             let (top, height) = (row as f32 * ROW, ui.available_height());
             if top < offset || top + ROW > offset + height {
                 scroll = scroll.vertical_scroll_offset((top - height / 3.0).max(0.0));
@@ -143,7 +143,7 @@ impl QueuePage {
                 .map(|&row| {
                     let id = item(row)?.track_id;
                     let nth = seen.entry(id).and_modify(|n| *n += 1).or_insert(0usize);
-                    Some(egui::Id::new(("queue-row", id, *nth)))
+                    Some(egui::Id::unique(("queue-row", id, *nth)))
                 })
                 .collect()
         };
@@ -156,7 +156,7 @@ impl QueuePage {
                 let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW), Sense::click());
                 if let Row::Heading(title) = row {
                     // Headings slide with the rows around them.
-                    let slide = (widgets::glide(&ctx, egui::Id::new(("queue-heading", title)), n as f32, 0.2) - n as f32) * ROW;
+                    let slide = (widgets::glide(&ctx, egui::Id::unique(("queue-heading", title)), n as f32, 0.2) - n as f32) * ROW;
                     ui.painter().text(rect.left_bottom() + Vec2::new(4.0, -10.0 + slide), Align2::LEFT_BOTTOM, title, font(15.0, semibold()), P.muted);
                     continue;
                 }
@@ -208,7 +208,7 @@ impl QueuePage {
                 }
             }
         });
-        ctx.data_mut(|d| d.insert_temp(egui::Id::new("queue-offset"), output.state.offset.y));
+        ctx.data_mut(|d| d.insert_temp(egui::Id::unique("queue-offset"), output.state.unclamped_offset().y));
     }
 }
 

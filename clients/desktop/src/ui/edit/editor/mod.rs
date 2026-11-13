@@ -314,7 +314,7 @@ impl Default for TrackEditor {
         let id = NEXT.fetch_add(1, Ordering::Relaxed);
         TrackEditor {
             id,
-            cl: CommandLine::new(egui::Id::new(("track-editor-line", id))),
+            cl: CommandLine::new(egui::Id::unique(("track-editor-line", id))),
             staged: Vec::new(),
             names: Names::default(),
             lookup: Lookup::default(),
@@ -1390,7 +1390,7 @@ impl TrackEditor {
 
         // ---- State and preview ----
         let mut closed = esc_closed;
-        let check_id = egui::Id::new(("track-editor-check", self.id));
+        let check_id = egui::Id::unique(("track-editor-check", self.id));
         let mut check_clicked = None;
         if single {
             self.rows_view(ui, shell, catalog, targets[0], &rows, &vocab);

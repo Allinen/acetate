@@ -18,7 +18,7 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell, player: &PlayerView) {
     // Left: cover and what plays (click: now playing).
     let left = Rect::from_min_size(full.min, Vec2::new(full.width() * 0.3, full.height()));
     let cover_rect = Rect::from_min_size(left.min + Vec2::new(0.0, 4.0), Vec2::splat(56.0));
-    let response = ui.interact(left, egui::Id::new("now-playing-link"), Sense::click());
+    let response = ui.interact(left, egui::Id::unique("now-playing-link"), Sense::click());
     if response.clicked() {
         shell.act(Action::Go(Page::NowPlaying));
     }
@@ -91,7 +91,7 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell, player: &PlayerView) {
     let bar = Rect::from_center_size(Pos2::new(center_x, full.bottom() - 12.0), Vec2::new((full.width() * 0.42).min(620.0), 16.0));
     let total = current.as_ref().and_then(|c| c.duration_ms).map(|ms| Duration::from_millis(ms as u64));
     let position = player.position_now();
-    let response = ui.interact(bar, egui::Id::new("progress"), Sense::click_and_drag());
+    let response = ui.interact(bar, egui::Id::unique("progress"), Sense::click_and_drag());
     let hover = ctx.animate_bool_with_time(response.id, response.hovered() || response.dragged(), 0.12);
     let track = Rect::from_center_size(bar.center(), Vec2::new(bar.width(), 4.0 + hover * 2.0));
     let pointer_fraction = response.interact_pointer_pos().map(|p| ((p.x - track.left()) / track.width()).clamp(0.0, 1.0));
@@ -124,7 +124,7 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell, player: &PlayerView) {
         } else { widgets::clock(total) };
         let size = ui.painter().layout_no_wrap(text.clone(), font(11.0, medium()), P.muted).size();
         let rect = Rect::from_min_size(Pos2::new(bar.right() + 10.0, bar.center().y - 10.0), Vec2::new(size.x.max(34.0), 20.0));
-        let response = ui.interact(rect, egui::Id::new("total-time"), Sense::click());
+        let response = ui.interact(rect, egui::Id::unique("total-time"), Sense::click());
         let color = if response.hovered() { P.text } else { P.muted };
         ui.painter().text(rect.left_center(), Align2::LEFT_CENTER, text, font(11.0, medium()), color);
         if response.on_hover_text(if remaining { "Show the length" } else { "Show the time left" }).clicked() {
@@ -164,7 +164,7 @@ fn volume(ui: &mut egui::Ui, shell: &mut Shell, player: &PlayerView, rect: Rect)
     let level = if player.muted { 0.0 } else { player.volume };
     // The speaker: a box and a cone, and up to two arcs for how loud.
     let speaker = Rect::from_center_size(Pos2::new(rect.left() + 12.0, rect.center().y), Vec2::splat(24.0));
-    let response = ui.interact(speaker, egui::Id::new("mute"), Sense::click());
+    let response = ui.interact(speaker, egui::Id::unique("mute"), Sense::click());
     let hover = ctx.animate_bool_with_time(response.id, response.hovered(), 0.12);
     let color = widgets::lerp(P.muted, P.text, hover);
     let c = speaker.center();
@@ -193,7 +193,7 @@ fn volume(ui: &mut egui::Ui, shell: &mut Shell, player: &PlayerView, rect: Rect)
 
     // The slider.
     let track = Rect::from_min_max(Pos2::new(speaker.right() + 8.0, rect.center().y - 8.0), Pos2::new(rect.right() - 6.0, rect.center().y + 8.0));
-    let response = ui.interact(track, egui::Id::new("volume"), Sense::click_and_drag());
+    let response = ui.interact(track, egui::Id::unique("volume"), Sense::click_and_drag());
     let hover = ctx.animate_bool_with_time(response.id, response.hovered() || response.dragged(), 0.12);
     if let Some(pointer) = response.interact_pointer_pos()
         && (response.clicked() || response.dragged())
@@ -256,7 +256,7 @@ fn toast(ui: &egui::Ui, shell: &mut Shell) {
     ctx.request_repaint_after(Duration::from_secs_f32(if age < FADE_IN || left < FADE_OUT { 0.016 } else { (left - FADE_OUT).min(0.5) }));
     let screen = ctx.content_rect();
     let max_width = (screen.width() - 212.0 - 64.0).clamp(200.0, 520.0);
-    let area = egui::Area::new(egui::Id::new("toast"))
+    let area = egui::Area::new(egui::Id::unique("toast"))
         .order(egui::Order::Tooltip)
         .anchor(Align2::RIGHT_BOTTOM, Vec2::new(-16.0, -(84.0 + 12.0) + rise * 10.0))
         .show(ctx, |ui| {

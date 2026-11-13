@@ -143,7 +143,7 @@ pub enum Outcome {
 impl ShareDialog {
     /// `answer`: where the server's list of qualities arrives (the app asks).
     pub fn new(target: Target, can_original: bool, answer: Arc<Mutex<Option<Vec<u32>>>>) -> ShareDialog {
-        let mut cl = CommandLine::new(egui::Id::new("share-commandline"));
+        let mut cl = CommandLine::new(egui::Id::unique("share-commandline"));
         cl.focus = true;
         ShareDialog { target, cl, original: false, days: None, kbps: None, can_original, qualities: None, answer }
     }

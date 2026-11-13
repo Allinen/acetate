@@ -416,7 +416,7 @@ impl Shell {
         const DWELL: f64 = 0.3;
         const GRACE: f64 = 0.25;
         let ctx = ui.ctx();
-        let id = egui::Id::new("cover-preview");
+        let id = egui::Id::unique("cover-preview");
         let now = ctx.input(|i| i.time);
         let over = ctx.input(|i| i.pointer.hover_pos().is_some_and(|p| thumb.contains(p) && ui.clip_rect().contains(p) && !i.pointer.any_down()));
         let mut open = false;
@@ -485,7 +485,7 @@ impl Shell {
     /// A click on `rect` (where `cover` is drawn) shows its original.
     pub fn original_on_click(&mut self, ui: &egui::Ui, cover: Option<Cover>, rect: egui::Rect) {
         let Some(cover) = cover else { return };
-        let response = ui.interact(rect, ui.id().with(("original", cover.key.0)), egui::Sense::click());
+        let response = ui.interact(rect, ui.scope_id().with(("original", cover.key.0)), egui::Sense::click());
         if response.on_hover_cursor(egui::CursorIcon::ZoomIn).on_hover_text("Click: the original").clicked() {
             self.open_original(ui.ctx(), cover);
         }
@@ -1409,7 +1409,7 @@ impl App {
     fn keys(&mut self, ctx: &egui::Context) {
         // A key an empty commandline passed on (a digit first, or Backspace on nothing): the
         // page keys, as if outside a text field (see `edit::commandline::CommandLine::keys`).
-        let nav: Option<Key> = ctx.data_mut(|d| d.remove_temp::<Option<Key>>(egui::Id::new(edit::commandline::NAV))).flatten();
+        let nav: Option<Key> = ctx.data_mut(|d| d.remove_temp::<Option<Key>>(egui::Id::unique(edit::commandline::NAV))).flatten();
         // The key overlay takes its own keys (Esc closes it, not "back"); so does a popup.
         if self.keys_open || self.shell.modal_open || self.shell.messages.open {
             return;
@@ -1537,7 +1537,7 @@ impl App {
                 i.consume_key(egui::Modifiers::NONE, Key::Slash);
                 i.events.retain(|e| !matches!(e, egui::Event::Text(t) if t == "/"));
             });
-            let target = self.shell.slash_target.unwrap_or(egui::Id::new(views::FILTER_ID));
+            let target = self.shell.slash_target.unwrap_or(egui::Id::unique(views::FILTER_ID));
             ctx.memory_mut(|mem| mem.request_focus(target));
         }
     }
@@ -1662,7 +1662,7 @@ impl eframe::App for App {
                 }
                 // Edit mode: an accent line along the top says so; it grows out from the middle
                 // when edit mode is turned on, and shrinks back into it when it's off.
-                let edit = covers::ease_out(ctx.animate_bool_with_time(egui::Id::new("edit-line"), self.shell.edit_mode, 0.3));
+                let edit = covers::ease_out(ctx.animate_bool_with_time(egui::Id::unique("edit-line"), self.shell.edit_mode, 0.3));
                 if edit > 0.0 {
                     let top = ui.max_rect();
                     let width = (top.width() + 56.0) * edit;

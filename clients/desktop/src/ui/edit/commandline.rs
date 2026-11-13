@@ -105,7 +105,7 @@ impl CommandLine {
                 (!can_take_back && i.consume_key(Modifiers::NONE, Key::Backspace)).then_some(Key::Backspace)
             });
             if let Some(key) = nav {
-                ctx.data_mut(|d| d.insert_temp(egui::Id::new(NAV), Some(key)));
+                ctx.data_mut(|d| d.insert_temp(egui::Id::unique(NAV), Some(key)));
                 ctx.request_repaint();
             }
         }

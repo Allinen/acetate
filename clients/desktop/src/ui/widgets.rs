@@ -23,7 +23,7 @@ pub enum Icon {
 /// A small toggle button at `center`: the icon lit (accent, with a dot under it) when on.
 pub fn toggle_button(ui: &mut egui::Ui, id: &str, center: Pos2, radius: f32, icon: Icon, on: bool, tip: &str) -> bool {
     let rect = Rect::from_center_size(center, Vec2::splat(radius * 2.0));
-    let response = ui.interact(rect, egui::Id::new(id), Sense::click());
+    let response = ui.interact(rect, egui::Id::unique(id), Sense::click());
     let hover = ui.ctx().animate_bool_with_time(response.id, response.hovered(), 0.12);
     let lit = ui.ctx().animate_bool_with_time(response.id.with("on"), on, 0.15);
     let painter = ui.painter();
@@ -39,7 +39,7 @@ pub fn toggle_button(ui: &mut egui::Ui, id: &str, center: Pos2, radius: f32, ico
 /// A round icon button at `center`. `primary`: filled with the accent.
 pub fn icon_button(ui: &mut egui::Ui, id: &str, center: Pos2, radius: f32, icon: Icon, primary: bool) -> bool {
     let rect = Rect::from_center_size(center, Vec2::splat(radius * 2.0));
-    let response = ui.interact(rect, egui::Id::new(id), Sense::click());
+    let response = ui.interact(rect, egui::Id::unique(id), Sense::click());
     let hover = ui.ctx().animate_bool_with_time(response.id, response.hovered(), 0.12);
     let press = ui.ctx().animate_bool_with_time(response.id.with("press"), response.is_pointer_button_down_on(), 0.06);
     let scale = 1.0 + hover * 0.08 - press * 0.08;
@@ -355,7 +355,7 @@ pub fn link(ui: &mut egui::Ui, text: &str, font: egui::FontId, color: Color32) -
 /// wave; the file's own name shows on hover. Returns true when clicked.
 pub fn og_link(ui: &mut egui::Ui, text: &str, font: egui::FontId, original_filename: &str) -> bool {
     // Hovered last frame (the text is laid out before its response is known).
-    let key = ui.id().with(("og-hovered", text));
+    let key = ui.scope_id().with(("og-hovered", text));
     let hovered = ui.ctx().data(|d| d.get_temp::<bool>(key)).unwrap_or(false);
     let time = ui.input(|i| i.time);
     let job = og_text(text, font, hovered.then_some(time));
@@ -480,7 +480,7 @@ pub fn chip(ui: &mut egui::Ui, text: &str, active: bool) -> bool {
 /// `chip` whose text can change (it's the same button): the old text fades into the new
 /// and the pill grows or shrinks to fit. `id` names it.
 pub fn chip_morph(ui: &mut egui::Ui, id: &str, text: &str, active: bool) -> egui::Response {
-    chip_inner(ui, Some(egui::Id::new(("chip-morph", id))), text, active)
+    chip_inner(ui, Some(egui::Id::unique(("chip-morph", id))), text, active)
 }
 
 fn chip_inner(ui: &mut egui::Ui, morph: Option<egui::Id>, text: &str, active: bool) -> egui::Response {

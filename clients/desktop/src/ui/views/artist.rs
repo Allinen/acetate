@@ -545,7 +545,7 @@ impl ArtistPage {
             {
                 let set = self.reveal.take_if(|r| r.0 == Reveal::Sources).map(|r| r.1);
                 let open = ui
-                    .scope_builder(egui::UiBuilder::new().id(egui::Id::new("artist-sections")), |ui| {
+                    .scope_builder(egui::UiBuilder::new().scope_id(egui::Id::unique("artist-sections")), |ui| {
                         super::track::section_set(ui, &format!("Sources ({})", d.sources.len()), false, set, |ui| super::track::sources(ui, &d.sources))
                     })
                     .inner;
@@ -576,7 +576,7 @@ impl ArtistPage {
                 let set = self.reveal.take_if(|r| r.0 == Reveal::History).map(|r| r.1);
                 let names = std::collections::HashMap::new();
                 let open = ui
-                    .scope_builder(egui::UiBuilder::new().id(egui::Id::new("artist-history")), |ui| {
+                    .scope_builder(egui::UiBuilder::new().scope_id(egui::Id::unique("artist-history")), |ui| {
                         super::track::section_set(ui, &format!("History ({})", revisions.len()), false, set, |ui| {
                             self.history.show_revisions(ui, shell, catalog, super::history::Of::Artist(id), revisions, &names, |_| String::new());
                         })

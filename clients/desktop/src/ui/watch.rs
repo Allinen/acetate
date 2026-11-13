@@ -41,7 +41,7 @@ impl Watch {
     pub fn show(&mut self, ctx: &egui::Context) -> bool {
         let screen = ctx.content_rect();
         let mut close = false;
-        egui::Area::new(egui::Id::new("watch")).order(egui::Order::Foreground).fixed_pos(screen.min).show(ctx, |ui| {
+        egui::Area::new(egui::Id::unique("watch")).order(egui::Order::Foreground).fixed_pos(screen.min).show(ctx, |ui| {
             let (rect, _) = ui.allocate_exact_size(screen.size(), Sense::click());
             ui.painter().rect_filled(rect, 0, Color32::BLACK);
             let player = match &mut self.player {
@@ -75,7 +75,7 @@ impl Watch {
                 }
             }
             // A click on the video pauses; a double click is fullscreen.
-            let on_video = ui.interact(video, egui::Id::new("watch-video"), Sense::click());
+            let on_video = ui.interact(video, egui::Id::unique("watch-video"), Sense::click());
             if on_video.double_clicked() {
                 self.fullscreen = !self.fullscreen;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.fullscreen));
@@ -94,7 +94,7 @@ impl Watch {
             let position = player.position().unwrap_or(0.0);
             let duration = player.duration().unwrap_or(0.0);
             let track = Rect::from_min_max(Pos2::new(bar.min.x + 150.0, mid - 3.0), Pos2::new(bar.max.x - 330.0, mid + 3.0));
-            let seek = ui.interact(track.expand2(Vec2::new(0.0, 10.0)), egui::Id::new("watch-seek"), Sense::click_and_drag());
+            let seek = ui.interact(track.expand2(Vec2::new(0.0, 10.0)), egui::Id::unique("watch-seek"), Sense::click_and_drag());
             let pointer = seek.interact_pointer_pos().map(|p| ((p.x - track.min.x) / track.width()).clamp(0.0, 1.0));
             if seek.dragged() {
                 self.dragging = pointer;

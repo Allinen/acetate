@@ -273,7 +273,7 @@ impl AlbumPage {
                 // An id of their own (not this album's): what's opened stays open on
                 // the next album.
                 let reveal = self.reveal.take_if(|r| matches!(r.0, Reveal::Credits | Reveal::Covers | Reveal::Sources));
-                folds = ui.scope_builder(egui::UiBuilder::new().id(egui::Id::new("album-sections")), |ui| view_sections(ui, shell, &d, reveal)).inner;
+                folds = ui.scope_builder(egui::UiBuilder::new().scope_id(egui::Id::unique("album-sections")), |ui| view_sections(ui, shell, &d, reveal)).inner;
             }
 
             // Edit mode: the album's own data (title, kind, date, artists).
@@ -321,7 +321,7 @@ impl AlbumPage {
                 let set = self.reveal.take_if(|r| r.0 == Reveal::History).map(|r| r.1);
                 let names: std::collections::HashMap<Uuid, String> = d.credits.iter().filter_map(|c| Some((c.alias_id?, c.alias.clone()?))).collect();
                 let open = ui
-                    .scope_builder(egui::UiBuilder::new().id(egui::Id::new("album-history")), |ui| {
+                    .scope_builder(egui::UiBuilder::new().scope_id(egui::Id::unique("album-history")), |ui| {
                         super::track::section_set(ui, &format!("History ({})", revisions.len()), false, set, |ui| {
                             self.history.show_revisions(ui, shell, catalog, super::history::Of::Album(id), revisions, &names, |_| String::new());
                         })
@@ -567,7 +567,7 @@ pub fn details_panel(ui: &mut egui::Ui, id: &str, add: impl FnOnce(&mut egui::Ui
 
 /// The big round-cornered Play button.
 pub fn play_button(ui: &mut egui::Ui, id: &str, rect: Rect) -> bool {
-    let response = ui.interact(rect, egui::Id::new(id), Sense::click());
+    let response = ui.interact(rect, egui::Id::unique(id), Sense::click());
     let hover = ui.ctx().animate_bool_with_time(response.id, response.hovered(), 0.12);
     ui.painter().rect_filled(rect.expand(hover * 2.0), 21, P.accent);
     widgets::draw_icon(ui.painter(), widgets::Icon::Play, rect.left_center() + Vec2::new(28.0, 0.0), 7.0, P.bg);

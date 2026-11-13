@@ -34,7 +34,7 @@ impl Messages {
         }
         let close = ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape) || i.consume_key(Modifiers::ALT, Key::M));
         let screen = ctx.content_rect();
-        let veil = egui::Area::new(egui::Id::new("messages-veil")).order(egui::Order::Foreground).fixed_pos(screen.min).show(ctx, |ui| {
+        let veil = egui::Area::new(egui::Id::unique("messages-veil")).order(egui::Order::Foreground).fixed_pos(screen.min).show(ctx, |ui| {
             let (rect, response) = ui.allocate_exact_size(screen.size(), Sense::click());
             ui.painter().rect_filled(rect, 0, Color32::from_black_alpha(140));
             response.clicked()
@@ -44,7 +44,7 @@ impl Messages {
             return;
         }
         let width = (screen.width() - 80.0).clamp(300.0, 900.0);
-        egui::Area::new(egui::Id::new("messages"))
+        egui::Area::new(egui::Id::unique("messages"))
             .order(egui::Order::Tooltip)
             .pivot(Align2::CENTER_CENTER)
             .fixed_pos(Pos2::new(screen.center().x, screen.center().y))

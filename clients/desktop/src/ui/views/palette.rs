@@ -183,7 +183,7 @@ impl Palette {
         self.selected = 0;
         self.hits = Hits::default();
         self.made_for = None;
-        ctx.memory_mut(|m| m.request_focus(egui::Id::new(INPUT_ID)));
+        ctx.memory_mut(|m| m.request_focus(egui::Id::unique(INPUT_ID)));
     }
 
     pub fn show(&mut self, ctx: &egui::Context, shell: &mut Shell) {
@@ -244,7 +244,7 @@ impl Palette {
 
         // A dim veil over the app; a click on it closes the palette.
         let screen = ctx.content_rect();
-        let veil = egui::Area::new(egui::Id::new("palette-veil")).order(egui::Order::Foreground).fixed_pos(screen.min).show(ctx, |ui| {
+        let veil = egui::Area::new(egui::Id::unique("palette-veil")).order(egui::Order::Foreground).fixed_pos(screen.min).show(ctx, |ui| {
             let (rect, response) = ui.allocate_exact_size(screen.size(), Sense::click());
             ui.painter().rect_filled(rect, 0, Color32::from_black_alpha(110));
             response.clicked()
@@ -256,7 +256,7 @@ impl Palette {
 
         let width = (screen.width() * 0.5).clamp(480.0, 720.0);
         let top = screen.top() + screen.height() * 0.14;
-        let area = egui::Area::new(egui::Id::new("palette")).order(egui::Order::Tooltip).fixed_pos(Pos2::new(screen.center().x - width / 2.0, top));
+        let area = egui::Area::new(egui::Id::unique("palette")).order(egui::Order::Tooltip).fixed_pos(Pos2::new(screen.center().x - width / 2.0, top));
         area.show(ctx, |ui| {
             let frame = egui::Frame::NONE
                 .fill(P.surface)
@@ -268,7 +268,7 @@ impl Palette {
                 ui.set_width(width - 20.0);
                 let input = ui.add(
                     egui::TextEdit::singleline(&mut self.query)
-                        .id(egui::Id::new(INPUT_ID))
+                        .id(egui::Id::unique(INPUT_ID))
                         .hint_text(match &self.mode {
                             Mode::Search => "Search anything (artist:… album:… year:… status:…), go: a page, do: a command".to_string(),
                             Mode::AddTo(tracks) if tracks.len() == 1 => "Add the track to which playlist? (or type a new name)".to_string(),
@@ -359,7 +359,7 @@ impl Palette {
 
     /// Replaces the line with `text`, the cursor after it, and asks the library again.
     fn write(&mut self, ctx: &egui::Context, text: String) {
-        let id = egui::Id::new(INPUT_ID);
+        let id = egui::Id::unique(INPUT_ID);
         let mut state = egui::text_edit::TextEditState::load(ctx, id).unwrap_or_default();
         let end = egui::text::CCursor::new(text.chars().count());
         state.cursor.set_char_range(Some(egui::text::CCursorRange::one(end)));

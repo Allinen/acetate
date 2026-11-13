@@ -370,7 +370,7 @@ impl TrackTable {
         let popup = self.marking.popup_open();
         // The marks' boxes: in edit mode, and in listen mode while tracks are marked.
         // The column slides open and shut (the rows slide with it).
-        let boxes_open = widgets::glide(&ctx, egui::Id::new(("mark-column", options.key)), if shell.edit_mode || !self.marking.is_empty() { 1.0 } else { 0.0 }, 0.18);
+        let boxes_open = widgets::glide(&ctx, egui::Id::unique(("mark-column", options.key)), if shell.edit_mode || !self.marking.is_empty() { 1.0 } else { 0.0 }, 0.18);
         let boxes = boxes_open > 0.0;
         if !self.marking.is_empty() && !self.had_marks {
             self.marking.boxes_appear(&ctx);
@@ -609,7 +609,7 @@ impl TrackTable {
                                     // Pops in when starred and shrinks away when unstarred (a row's first
                                     // sight starts at its state: scrolling doesn't animate).
                                     let starred = shell.mark(t.id()).starred;
-                                    let on = ctx.animate_bool_with_time(egui::Id::new(("row-star", t.id())), starred, 0.18);
+                                    let on = ctx.animate_bool_with_time(egui::Id::unique(("row-star", t.id())), starred, 0.18);
                                     if on > 0.0 {
                                         // The gap to the title shrinks with the star (not all at once).
                                         let gap = ui.spacing().item_spacing.x;

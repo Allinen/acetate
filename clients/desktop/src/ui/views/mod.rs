@@ -261,7 +261,7 @@ fn heading(ui: &mut egui::Ui, title: &str, count: usize) {
 fn filter(ui: &mut egui::Ui, text: &mut String, hint: &str) -> bool {
     let response = ui.add(
         egui::TextEdit::singleline(text)
-            .id(egui::Id::new(FILTER_ID))
+            .id(egui::Id::unique(FILTER_ID))
             .hint_text(format!("{hint}   /"))
             .desired_width(360.0)
             .margin(egui::Margin::symmetric(12, 8)),
@@ -269,7 +269,7 @@ fn filter(ui: &mut egui::Ui, text: &mut String, hint: &str) -> bool {
     // Not drawn last pass means the page was just opened. (Keyed by the hint: every page
     // shares the field's id, so going from one page to another has no gap in it.)
     let pass = ui.ctx().cumulative_pass_nr();
-    let seen = egui::Id::new(("filter_seen_pass", hint));
+    let seen = egui::Id::unique(("filter_seen_pass", hint));
     let last: Option<u64> = ui.ctx().data_mut(|d| d.get_temp(seen));
     ui.ctx().data_mut(|d| d.insert_temp(seen, pass));
     if last.is_none_or(|l| l + 1 < pass) {

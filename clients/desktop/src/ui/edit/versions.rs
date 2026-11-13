@@ -117,7 +117,7 @@ impl VersionsBar {
             if ui.add_enabled(can, egui::Button::new("Rename…").small()).clicked() {
                 self.naming = Some(Naming::Rename(editing, current.label.clone()));
                 self.error = None;
-                shell.ctx.memory_mut(|m| m.request_focus(egui::Id::new(NAME_ID)));
+                shell.ctx.memory_mut(|m| m.request_focus(egui::Id::unique(NAME_ID)));
             }
             let button = ui.add_enabled(can && !changed, egui::Button::new("New version…").small());
             if button
@@ -127,7 +127,7 @@ impl VersionsBar {
             {
                 self.naming = Some(Naming::New(String::new()));
                 self.error = None;
-                shell.ctx.memory_mut(|m| m.request_focus(egui::Id::new(NAME_ID)));
+                shell.ctx.memory_mut(|m| m.request_focus(egui::Id::unique(NAME_ID)));
             }
             if self.busy {
                 ui.label(RichText::new("…").color(P.muted));
@@ -142,7 +142,7 @@ impl VersionsBar {
                 Naming::Rename(_, text) => (text, "Its name", "Rename"),
             };
             ui.horizontal(|ui| {
-                let field = ui.add(egui::TextEdit::singleline(text).id(egui::Id::new(NAME_ID)).hint_text(hint).desired_width(320.0));
+                let field = ui.add(egui::TextEdit::singleline(text).id(egui::Id::unique(NAME_ID)).hint_text(hint).desired_width(320.0));
                 let entered = field.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
                 let ok = !text.trim().is_empty();
                 if (ui.add_enabled(ok, egui::Button::new(action)).clicked() || entered) && ok {

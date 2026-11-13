@@ -231,7 +231,7 @@ pub fn overlay(ctx: &egui::Context, open: &mut bool) {
     if !*open {
         return;
     }
-    let tab_id = egui::Id::new("keys-tab-commands");
+    let tab_id = egui::Id::unique("keys-tab-commands");
     let mut commands = ctx.data(|d| d.get_temp::<bool>(tab_id)).unwrap_or(false);
     let (close, switch) = ctx.input_mut(|i| {
         let close = i.consume_key(Modifiers::NONE, Key::Escape)
@@ -246,7 +246,7 @@ pub fn overlay(ctx: &egui::Context, open: &mut bool) {
     }
     commands ^= switch;
     let screen = ctx.content_rect();
-    let veil = egui::Area::new(egui::Id::new("keys-veil")).order(egui::Order::Foreground).fixed_pos(screen.min).show(ctx, |ui| {
+    let veil = egui::Area::new(egui::Id::unique("keys-veil")).order(egui::Order::Foreground).fixed_pos(screen.min).show(ctx, |ui| {
         let (rect, response) = ui.allocate_exact_size(screen.size(), Sense::click());
         ui.painter().rect_filled(rect, 0, Color32::from_black_alpha(140));
         response.clicked()
@@ -277,7 +277,7 @@ pub fn overlay(ctx: &egui::Context, open: &mut bool) {
     let sizes: Vec<usize> = groups.iter().map(|g| g.2.len() + if g.1.is_empty() { 2 } else { 3 }).collect();
     let columns = spread(&sizes, count);
     let max_height = (screen.height() - 80.0).max(200.0);
-    egui::Area::new(egui::Id::new("keys"))
+    egui::Area::new(egui::Id::unique("keys"))
         .order(egui::Order::Tooltip)
         .pivot(Align2::CENTER_CENTER)
         .fixed_pos(Pos2::new(screen.center().x, screen.center().y))

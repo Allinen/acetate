@@ -42,14 +42,14 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell, page: Page, username: &str) {
     let width = ui.available_width();
     // The highlight slides between sections. Coming back from a page without one (a
     // playlist, settings) it fades in where the section is, not slides from where it was.
-    let shown = ctx.animate_bool_with_time(egui::Id::new("sidebar-highlight-shown"), active.is_some(), 0.15);
-    let last_y = egui::Id::new("sidebar-highlight-y");
-    let was_shown = egui::Id::new("sidebar-highlight-was");
+    let shown = ctx.animate_bool_with_time(egui::Id::unique("sidebar-highlight-shown"), active.is_some(), 0.15);
+    let last_y = egui::Id::unique("sidebar-highlight-y");
+    let was_shown = egui::Id::unique("sidebar-highlight-was");
     let y = match active {
         Some(active) => {
             let came_back = !ctx.data(|d| d.get_temp::<bool>(was_shown)).unwrap_or(false);
             let time = if came_back { 0.0 } else { 0.22 };
-            ctx.animate_value_with_time(egui::Id::new("sidebar-highlight"), top + active as f32 * (height + 4.0), time)
+            ctx.animate_value_with_time(egui::Id::unique("sidebar-highlight"), top + active as f32 * (height + 4.0), time)
         }
         None => ctx.data(|d| d.get_temp::<f32>(last_y)).unwrap_or(top),
     };
@@ -218,7 +218,7 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell, page: Page, username: &str) {
                 ui.label(RichText::new(text).color(P.danger).font(font(12.5, medium())))
                     .on_hover_text("The server can't be reached. What's kept here still plays; it's asked again now and then.");
                 // "Trying…" while the server is asked (a connection gives up after 4 s).
-                let id = egui::Id::new("try-now");
+                let id = egui::Id::unique("try-now");
                 let now = ui.ctx().input(|i| i.time);
                 let asked = ui.ctx().data(|d| d.get_temp::<f64>(id)).is_some_and(|at| now - at < 4.0);
                 let label = if asked { "Trying…" } else { "Try now" };

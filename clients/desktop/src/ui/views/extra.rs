@@ -472,7 +472,7 @@ impl ExtraPage {
         }
         if let Some((part, search)) = self.linking.as_mut() {
             let catalog = shell.catalog.value.clone();
-            let hit = search.show(ui, shell, catalog.as_deref(), egui::Id::new("extra-link"), "type its name", &[]);
+            let hit = search.show(ui, shell, catalog.as_deref(), egui::Id::unique("extra-link"), "type its name", &[]);
             if let (Some((Choice::Hit(i), _)), Some(c)) = (hit, catalog.as_deref()) {
                 let (kind, target) = match part {
                     Part::Tracks => ("track", c.get_track(i).map(|t| t.id())),
@@ -533,7 +533,7 @@ impl ExtraPage {
         ui.label(RichText::new("Their files and links come here (a file or link this one has already stays behind). Each goes to the trash; an admin can purge it after a week, and taking it out before undoes the merge. They must be seen by the same people.").color(P.muted).small());
         let catalog = shell.catalog.value.clone();
         m.search.skip = std::iter::once(id).chain(m.picked.iter().map(|(p, _)| *p)).collect();
-        if let Some((Choice::Hit(i), _)) = m.search.show(ui, shell, catalog.as_deref(), egui::Id::new("extra-merge"), "type the name of an extra to add", &[])
+        if let Some((Choice::Hit(i), _)) = m.search.show(ui, shell, catalog.as_deref(), egui::Id::unique("extra-merge"), "type the name of an extra to add", &[])
             && let Some(e) = catalog.as_deref().and_then(|c| c.extras.get(i as usize))
             && e.id != id
             && !m.picked.iter().any(|(p, _)| *p == e.id)

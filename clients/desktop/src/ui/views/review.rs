@@ -190,7 +190,7 @@ impl Review {
             ui.label(RichText::new("Review").font(font(28.0, bold())));
             ui.add_space(12.0);
             let hint = if self.showing_not_imported { "/  filter: words in the name, folder, reason or tags" } else { "/  filter: words, or artist:… album:… year:… status:… flag:…" };
-            ui.add(egui::TextEdit::singleline(&mut self.filter).id(egui::Id::new(super::FILTER_ID)).hint_text(hint).desired_width(260.0));
+            ui.add(egui::TextEdit::singleline(&mut self.filter).id(egui::Id::unique(super::FILTER_ID)).hint_text(hint).desired_width(260.0));
             egui::ComboBox::from_id_salt("review-group").selected_text(format!("group by {}", self.group.name())).show_ui(ui, |ui| {
                 for group in Group::ALL {
                     ui.selectable_value(&mut self.group, group, group.name());

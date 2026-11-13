@@ -141,7 +141,7 @@ fn fonts(ctx: &egui::Context) {
             system.push(name);
         }
     }
-    // egui's own fonts stay as fallbacks for symbols (▶, ⏸...).
+    // egui's own fonts stay as fallbacks for symbols (▶...).
     let fallbacks: Vec<String> = fonts.families[&FontFamily::Proportional].clone();
     let family = |first: &str| {
         let mut list = vec![first.to_string()];
@@ -222,7 +222,7 @@ mod tests {
         let mut output = ctx.run_ui(Default::default(), |_| {});
         output.textures_delta.clear();
         // (Not "✕" (U+2715): it isn't there. "×" is.)
-        let missing: Vec<char> = "→↓↑←▶−×✓✗♪●⏸…·“”’"
+        let missing: Vec<char> = "→↓↑←▶−×✓✗♪●…·“”’"
             .chars()
             .filter(|c| !ctx.fonts_mut(|f| f.has_glyph(&font(14.0, medium()), *c)))
             .collect();
