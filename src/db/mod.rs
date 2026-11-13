@@ -169,10 +169,20 @@ pub async fn app_pool(owner: &PgPool, options: &PgConnectOptions, password: &str
     if sqlx::PgConnection::connect_with(&login).await.is_err() {
         // (A hex password needs no quoting; ALTER ROLE can't take a parameter.)
         assert!(password.bytes().all(|b| b.is_ascii_alphanumeric()), "the app role's password is plain letters and digits");
-        let mut tx = owner.begin().await?;
-        sqlx::query("SELECT pg_advisory_xact_lock(7305)").execute(&mut *tx).await?;
-        sqlx::query(sqlx::AssertSqlSafe(format!("ALTER ROLE {APP_ROLE} LOGIN PASSWORD '{password}'"))).execute(&mut *tx).await?;
-        tx.commit().await?;
+        // (Advisory locks are per database, so they can't order two databases' changes to
+        // a role: Postgres then fails one with "tuple concurrently updated". Try again.)
+        let alter = format!("ALTER ROLE {APP_ROLE} LOGIN PASSWORD '{password}'");
+        let mut attempt = 0;
+        loop {
+            match sqlx::query(sqlx::AssertSqlSafe(alter.clone())).execute(owner).await {
+                Ok(_) => break,
+                Err(e) if attempt < 5 && e.to_string().contains("tuple concurrently updated") => {
+                    attempt += 1;
+                    tokio::time::sleep(Duration::from_millis(50 * attempt)).await;
+                }
+                Err(e) => return Err(e),
+            }
+        }
     }
     PgPoolOptions::new()
         .max_connections(10)
