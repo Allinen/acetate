@@ -81,6 +81,9 @@ it); without it, every `.mp4` is imported as a track.
   print(report.summary())
   ```
 
+  In asyncio programs, `AsyncAcetate` has the same methods to `await`, without blocking
+  the event loop while a file is sent.
+
 ## Checking afterwards
 
 `acetate verify <dir>` confirms (read-only) that every file under `<dir>` is safely stored,
