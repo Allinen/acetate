@@ -13,9 +13,9 @@
 set -eu
 cd "$(dirname "$0")"
 
-mpv_release=20261001
-mpv_archive=mpv-dev-x86_64-20261001-git-3186d369f9.7z
-mpv_sha256=de0aa24a39e27b07d9f663616f8d09c91586c7328d8c33fbfbc8e3888c35d89c
+mpv_release=20261111
+mpv_archive=mpv-dev-x86_64-20261111-git-bcde6b93cc.7z
+mpv_sha256=273c079b11ea5575822f972756f4c9a71149a5c10130353abeb8586738938452
 
 target=x86_64-pc-windows-gnu
 out=../target/windows
