@@ -1,5 +1,27 @@
 	# Changelog
 
+## 0.4.4 - 2026-11-14
+
+### Security
+
+- Covers taken out of a file's tags are served with a content type read from the bytes, not the one the tags claimed (an upload could put a page on the server's address); stored images go out only as an image format covers are kept in, else as plain bytes, and every answer carries `X-Content-Type-Options: nosniff`
+- Someone with `manage_users` who isn't an admin can only put users into groups they are in themselves, since a group also opens the tracks restricted to it
+- Smaller cover copies are decoded within size and memory limits
+- ffprobe and ffmpeg read videos only as video containers, not as whatever the bytes look like (a concat list could name other files to read)
+- A login with a username over 256 bytes is refused before the rate limits keep the name
+- Trashing a source checks that the caller can see it before reading it
+- App updates stay inside Acetate's releases: the server's version is only used in the download address if it is a plain version, so one with slashes and dots can't point the download (and its checksum) at another repository
+- The clients' session file (the login's token) is readable by its owner only
+- The downloads of yt-dlp and mdBook in the image and the docs workflow are checked against pinned versions and SHA-256 checksums
+
+### Fixes
+
+- `GET /api/extensions` is open to accounts with `upload` as well as `browse`, so an ingest-only account can use the Python library's `load_extensions()` without being given access to the library
+
+### Changes
+
+- Dependencies updated across the server and the clients, including egui 0.37 and rodio 0.23 for the desktop app
+
 ## 0.4.3 - 2026-10-17
 
 - Fix CI migrations
