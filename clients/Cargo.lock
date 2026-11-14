@@ -128,7 +128,7 @@ dependencies = [
 
 [[package]]
 name = "acetate-core"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "acetate-extensions",
  "anyhow",
@@ -148,7 +148,7 @@ dependencies = [
 
 [[package]]
 name = "acetate-desktop"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "acetate-core",
  "anyhow",
@@ -188,7 +188,7 @@ dependencies = [
 
 [[package]]
 name = "acetate-extensions"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "serde",
  "serde_json",
@@ -197,7 +197,7 @@ dependencies = [
 
 [[package]]
 name = "acetate-ffi"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "acetate-core",
  "android_logger",
