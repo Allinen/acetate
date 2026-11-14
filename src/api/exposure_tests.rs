@@ -391,3 +391,19 @@ async fn a_cover_is_never_served_as_a_page(_: PgPoolOptions, connect: PgConnectO
     }
     Ok(())
 }
+
+/// An account that may only upload still needs the extensions' shapes to describe what it
+/// sends; one with neither upload nor browse gets nothing.
+#[sqlx::test]
+async fn an_ingest_only_account_reads_the_extensions(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
+    let s = setup(connect).await?;
+    let mut tx = db::begin(&s.owner, None).await?;
+    db::groups::create(&mut tx, "ingesters", "", &["upload".into()]).await?;
+    db::groups::create(&mut tx, "streamers", "", &["stream".into()]).await?;
+    tx.commit().await?;
+    let ingester = user(&s.owner, "ivy", "ingesters").await?;
+    let streamer = user(&s.owner, "sam", "streamers").await?;
+    assert_eq!(s.go("GET", "/api/extensions", Some(&ingester), None).await.0, StatusCode::OK);
+    assert_eq!(s.go("GET", "/api/extensions", Some(&streamer), None).await.0, StatusCode::FORBIDDEN);
+    Ok(())
+}

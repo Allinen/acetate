@@ -139,7 +139,8 @@ JSON in `extensions/soundcloud/metadata.py`; each has tests next to it
 * The server loads the built-in extensions (compiled into the image: YouTube, SoundCloud,
   NetEase, QQ, Kuwo) and then the folder `ACETATE_EXTENSIONS_DIR`. A folder
   with a built-in's name replaces it.
-* `GET /api/extensions` serves every extension's data (not its program).
+* `GET /api/extensions` serves every extension's data (not its program) to anyone who can
+  `browse` or `upload`, so an ingest-only account works with the Python client.
   Desktop and phone keep it with the catalog (`clients/core`), so **link parsing is
   written once**, in Rust, in `clients/core`, from the data.
 * The Python client reads the same data instead of the generated `_shapes.py`.
