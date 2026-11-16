@@ -5,6 +5,7 @@
 //! - `api`: talking to the server; `account`: who's logged in, what they may do.
 //! - `catalog`: the library kept locally, and its lookups.
 //! - `details`: everything about one track, album or artist, for their pages.
+//! - `gpu`: the GPU drawn with, falling back to the next when one can't be used.
 //! - `links`: links to share, and opening the app from one (`acetate://`).
 //! - `lyrics`: synced lyrics (LRC).
 //! - `mirror`: the server's blobs kept on this machine (admins), also headless
@@ -26,6 +27,7 @@
 // debug build keeps it, for what's printed).
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+mod gpu;
 mod links;
 mod mirror;
 mod playback;
@@ -63,6 +65,7 @@ fn main() -> eframe::Result {
             .with_inner_size([1280.0, 820.0])
             .with_min_inner_size([900.0, 560.0]),
         event_loop_builder: x11_unless_asked_not_to(),
+        wgpu_options: gpu::options(),
         ..Default::default()
     };
     eframe::run_native("Acetate", options, Box::new(move |cc| Ok(Box::new(ui::App::new(cc, link)))))

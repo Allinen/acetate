@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 acetate-core = { path = "../core" }
 anyhow = "1.0.104"
+pollster = "1.0.1"
 arboard = { version = "3.6", features = ["wayland-data-control"] }
 dirs = "7.0.0"
 eframe = "0.37.0"
