@@ -61,6 +61,16 @@ impl Default for PlaylistPage {
 }
 
 impl PlaylistPage {
+    /// The page is opened again: what it showed of changes since it was left is cleared;
+    /// the filter, sorting and scroll stay as they were.
+    pub fn opened(&mut self) {
+        self.history = false;
+        self.confirm_trash = false;
+        self.describing = None;
+        self.liked_seen.clear();
+        self.removed.clear();
+    }
+
     pub fn show_liked(&mut self, ui: &mut egui::Ui, shell: &mut Shell, catalog: &Arc<Catalog>, player: &PlayerView) {
         let (mut tracks, mut starred) = liked(shell, catalog);
         let facts = format!("{} · star a track to add it here (s)", count_and_length(catalog, tracks.iter().copied()));

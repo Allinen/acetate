@@ -75,7 +75,9 @@ pub struct Pages {
     tracks: tracks::Tracks,
     album: album::AlbumPage,
     artist: artist::ArtistPage,
-    playlist: playlist::PlaylistPage,
+    /// Each playlist page (and Liked songs) visited, with its filter, sorting and scroll:
+    /// they're still as left when it's opened again.
+    playlists: Vec<(Page, playlist::PlaylistPage)>,
     track: track::TrackPage,
     review: review::Review,
     queue: queue::QueuePage,
@@ -89,6 +91,17 @@ pub struct Pages {
 }
 
 impl Pages {
+    fn playlist(&mut self, page: Page) -> &mut playlist::PlaylistPage {
+        let at = match self.playlists.iter().position(|(p, _)| *p == page) {
+            Some(at) => at,
+            None => {
+                self.playlists.push((page, Default::default()));
+                self.playlists.len() - 1
+            }
+        };
+        &mut self.playlists[at].1
+    }
+
     /// A page was opened (not returned to): album and artist pages start at the top.
     pub fn opened(&mut self, page: Page) {
         match page {
@@ -96,7 +109,7 @@ impl Pages {
             Page::Artist(_) => self.artist = Default::default(),
             Page::Grouping(_) => self.grouping = Default::default(),
             Page::Extra(_) => self.extra = Default::default(),
-            Page::Playlist(_) | Page::Liked => self.playlist = Default::default(),
+            Page::Playlist(_) | Page::Liked => self.playlist(page).opened(),
             Page::Track(_) => self.track = Default::default(),
             Page::Queue => self.queue.opened(),
             Page::Review => self.review.opened(),
@@ -148,8 +161,9 @@ impl Pages {
             Page::Tracks => self.tracks.show(ui, shell, &catalog, player),
             Page::Album(id) => self.album.show(ui, shell, &catalog, id, player),
             Page::Artist(id) => self.artist.show(ui, shell, &catalog, id, player),
-            Page::Liked => self.playlist.show_liked(ui, shell, &catalog, player),
-            Page::Playlist(id) => self.playlist.show(ui, shell, &catalog, id, player),
+            // (Its own id: each keeps its own scroll.)
+            Page::Liked => ui.push_id(page_key(page), |ui| self.playlist(page).show_liked(ui, shell, &catalog, player)).inner,
+            Page::Playlist(id) => ui.push_id(page_key(page), |ui| self.playlist(page).show(ui, shell, &catalog, id, player)).inner,
             Page::Track(id) => self.track.show(ui, shell, &catalog, id, player),
             Page::Review => self.review.show(ui, shell, &catalog, player),
             Page::Grouping(id) => self.grouping.show(ui, shell, &catalog, id, player),
@@ -159,6 +173,10 @@ impl Pages {
             Page::NowPlaying | Page::Queue | Page::Settings | Page::Trash | Page::Together => {}
         }
     }
+}
+
+fn page_key(page: Page) -> String {
+    format!("{page:?}")
 }
 
 /// A page that needs the server, while it's away.
