@@ -449,7 +449,7 @@ impl Sync {
                                         .font(font(15.0, semibold()))
                                         .desired_width(f32::INFINITY);
                                     if ui.add(field).lost_focus() {
-                                        let cancelled = ui.input(|i| i.key_pressed(Key::Escape));
+                                        let cancelled = crate::ui::field::left_by_esc(ui.ctx());
                                         text_done = Some((n, (!cancelled).then(|| typed.clone())));
                                     }
                                     return;
@@ -482,7 +482,7 @@ impl Sync {
                                         let field = ui.add(egui::TextEdit::singleline(typed).id(egui::Id::unique(LANGUAGE_ID)).hint_text(language).desired_width(56.0));
                                         // Enter (or a click elsewhere) takes it; Esc doesn't.
                                         if field.lost_focus() {
-                                            let cancelled = ui.input(|i| i.key_pressed(Key::Escape));
+                                            let cancelled = crate::ui::field::left_by_esc(ui.ctx());
                                             language_done = Some((n, (!cancelled).then(|| typed.clone())));
                                         }
                                     }
@@ -504,7 +504,7 @@ impl Sync {
                                 let field = egui::TextEdit::singleline(typed).id(egui::Id::unique(TEXT_ID)).font(font(18.0, semibold())).desired_width(f32::INFINITY);
                                 // Enter (or a click elsewhere) takes it; Esc doesn't.
                                 if ui.add(field).lost_focus() {
-                                    let cancelled = ui.input(|i| i.key_pressed(Key::Escape));
+                                    let cancelled = crate::ui::field::left_by_esc(ui.ctx());
                                     text_done = Some((n, (!cancelled).then(|| typed.clone())));
                                 }
                                 return;

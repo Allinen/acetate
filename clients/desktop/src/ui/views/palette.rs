@@ -252,7 +252,7 @@ impl Palette {
             frame.show(ui, |ui| {
                 ui.set_width(width - 20.0);
                 let input = ui.add(
-                    egui::TextEdit::singleline(&mut self.query)
+                    field::keeps_esc(egui::TextEdit::singleline(&mut self.query))
                         .id(egui::Id::unique(INPUT_ID))
                         .hint_text(match &self.mode {
                             Mode::Search => "Search anything (artist:… album:… year:… status:…), go: a page, do: a command".to_string(),

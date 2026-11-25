@@ -108,7 +108,7 @@ impl CommandLine {
 
     /// The field. A change starts the list from its top.
     pub fn field(&mut self, ui: &mut egui::Ui, enabled: bool, hint: &str) -> egui::Response {
-        let response = ui.add_enabled(enabled, egui::TextEdit::singleline(&mut self.text).id(self.id).hint_text(hint).desired_width(f32::INFINITY));
+        let response = ui.add_enabled(enabled, field::keeps_esc(egui::TextEdit::singleline(&mut self.text)).id(self.id).hint_text(hint).desired_width(f32::INFINITY));
         if response.changed() {
             self.highlighted = 0;
         }

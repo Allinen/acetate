@@ -15,6 +15,29 @@ use eframe::egui::{self, Key, Modifiers};
 /// it next as if pressed outside a field.
 pub const NAV: &str = "field-nav";
 
+/// The field `edit`, keeping the cursor on Esc (egui would let go of it as the frame
+/// begins, before `keys` could see the Esc): `keys` lets go of it, and the field's owner
+/// knows. Every field that uses `keys` is drawn with this.
+pub fn keeps_esc(edit: egui::TextEdit<'_>) -> egui::TextEdit<'_> {
+    let filter = egui::EventFilter { horizontal_arrows: true, vertical_arrows: true, tab: false, escape: true };
+    edit.event_filter(filter)
+}
+
+/// Where the app notes that this frame's Esc was spent letting go of a text field.
+const LEFT_BY_ESC: &str = "field-left-by-esc";
+
+/// Notes whether this frame's Esc was spent letting go of a text field (the app's keys do,
+/// taking it, so that it doesn't also go back or close a popup).
+pub fn set_left_by_esc(ctx: &egui::Context, left: bool) {
+    ctx.data_mut(|d| d.insert_temp(egui::Id::unique(LEFT_BY_ESC), left));
+}
+
+/// A text field was let go of by Esc this frame: for a field that cancels on Esc (the Esc
+/// itself was taken).
+pub fn left_by_esc(ctx: &egui::Context) -> bool {
+    ctx.data(|d| d.get_temp::<bool>(egui::Id::unique(LEFT_BY_ESC))).unwrap_or(false)
+}
+
 /// Which keys the field takes, besides Esc and Backspace.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Rules {
@@ -177,5 +200,38 @@ mod tests {
         let rules = Rules { page_digits: true, ..Default::default() };
         assert_eq!(frame(&ctx, digit(), "", rules).1, Some(Key::Num3));
         assert_eq!(frame(&ctx, digit(), "a", rules).1, None);
+    }
+
+    /// egui lets go of a plain text field on Esc before anything in the frame runs (so the
+    /// app saw no field, and went back); a field drawn with `keeps_esc` still has the
+    /// cursor then, and `keys` takes the Esc and lets go of it.
+    #[test]
+    fn esc_reaches_the_field_before_egui_lets_go_of_it() {
+        for keep in [false, true] {
+            let ctx = egui::Context::default();
+            let id = egui::Id::unique(("esc-field", keep));
+            let mut text = String::from("abc");
+            let (mut at_start, mut got) = (false, Keys::default());
+            let mut frame = |events: Vec<egui::Event>, focus: bool| {
+                let input = egui::RawInput { events, ..Default::default() };
+                let mut output = ctx.run_ui(input, |ui| {
+                    at_start = ui.ctx().egui_wants_keyboard_input();
+                    got = keys(ui.ctx(), id, &text, Rules::default());
+                    let edit = egui::TextEdit::singleline(&mut text).id(id);
+                    let response = ui.add(if keep { keeps_esc(edit) } else { edit });
+                    if focus {
+                        response.request_focus();
+                    }
+                });
+                output.textures_delta.clear();
+            };
+            frame(Vec::new(), true);
+            frame(Vec::new(), false);
+            frame(vec![key(Key::Escape, false)], false);
+            assert_eq!(at_start, keep, "the field has the cursor as the frame begins (keeps_esc: {keep})");
+            assert_eq!(got.escape, keep);
+            assert!(!ctx.memory(|m| m.has_focus(id)), "either way the field is let go of");
+            assert_eq!(text, "abc", "what's typed stays");
+        }
     }
 }

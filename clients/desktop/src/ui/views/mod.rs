@@ -281,7 +281,7 @@ fn filter(ui: &mut egui::Ui, text: &mut String, hint: &str) -> bool {
     let id = egui::Id::unique(FILTER_ID);
     crate::ui::field::keys(ui.ctx(), id, text, crate::ui::field::Rules::default());
     let response = ui.add(
-        egui::TextEdit::singleline(text)
+        crate::ui::field::keeps_esc(egui::TextEdit::singleline(text))
             .id(id)
             .hint_text(format!("{hint}   /"))
             .desired_width(360.0)

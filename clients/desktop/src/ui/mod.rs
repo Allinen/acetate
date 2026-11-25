@@ -868,6 +868,8 @@ pub struct App {
     settings_changed: Option<Instant>,
     /// The `?` overlay (every key) is open.
     keys_open: bool,
+    /// The text field that had the cursor as the last frame ended (see `keys`).
+    focus_before: Option<egui::Id>,
     spectrum: Spectrum,
     last_time: f64,
     /// When freed memory was last given back (see `memory::trim`).
@@ -996,6 +998,7 @@ impl App {
             shell,
             settings_changed: None,
             keys_open: false,
+            focus_before: None,
             spectrum: Spectrum::new(64),
             last_time: 0.0,
             last_trim: 0.0,
@@ -1417,6 +1420,11 @@ impl App {
         // A key an empty field passed on (Backspace on nothing, or a commandline's first
         // digit): the page keys, as if outside a text field (see `field::keys`).
         let nav: Option<Key> = ctx.data_mut(|d| d.remove_temp::<Option<Key>>(egui::Id::unique(field::NAV))).flatten();
+        // egui lets go of a text field on Esc as the frame begins, before anything here
+        // runs (the search fields keep it: `field::keeps_esc`, they take Esc themselves).
+        // That Esc was spent leaving the field: not "back", nor closing a popup too.
+        let left = self.focus_before.is_some() && ctx.memory(|m| m.focused()).is_none() && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Escape));
+        field::set_left_by_esc(ctx, left);
         self.shell.field_back = false;
         // The key overlay takes its own keys (Esc closes it, not "back"); so does a popup,
         // and a dropdown or right-click menu (Esc closes it, but leaves the key for others
@@ -1703,6 +1711,8 @@ impl eframe::App for App {
         keymap::overlay(&ctx, &mut self.keys_open);
         self.shell.messages.show(&ctx);
         self.apply(&ctx);
+        // (A text field's: a button can have the focus too, after Tab.)
+        self.focus_before = ctx.memory(|m| m.focused()).filter(|&id| egui::text_edit::TextEditState::load(&ctx, id).is_some());
     }
 }
 

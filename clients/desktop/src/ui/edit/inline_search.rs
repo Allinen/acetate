@@ -60,7 +60,7 @@ impl InlineSearch {
         // field).
         let rules = field::Rules { up: true, down: true, enter: true, ..Default::default() };
         let field::Keys { up, down, enter, shift_enter, .. } = field::keys(ui.ctx(), id, &self.query, rules);
-        let response = ui.add(egui::TextEdit::singleline(&mut self.query).id(id).hint_text(hint).desired_width(420.0));
+        let response = ui.add(field::keeps_esc(egui::TextEdit::singleline(&mut self.query)).id(id).hint_text(hint).desired_width(420.0));
         if response.changed() {
             self.ask(shell, catalog);
         }
