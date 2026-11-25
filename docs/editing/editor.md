@@ -99,4 +99,4 @@ artwork as a cover.
 Each track's changes are shown in the history's words, plus the albums that change with them
 (`along:off` to leave those alone), and its review flags afterwards: fixed, still there, new.
 The flags come from the server's own checks. `Ctrl+Enter` applies what you see.
-`Esc` clears the commandline; again, it discards the changes (asking first).
+`Esc` leaves the commandline (what's typed stays); again, it discards the changes (asking first).

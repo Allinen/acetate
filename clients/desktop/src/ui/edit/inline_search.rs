@@ -1,18 +1,20 @@
 //! A search field in a form, with its matches listed under it as you type (artists or
 //! albums from the catalog, fuzzy as in the palette), plus extra choices the form adds
 //! ("New artist “…”"). ↑/↓ choose, Enter takes the chosen one (Shift+Enter too: the form
-//! decides what Shift means), Esc empties the field. After a choice the field is empty
-//! again and keeps the cursor, so the next one can be typed right away.
+//! decides what Shift means); Esc and Backspace as in any field (`ui::field`). After a
+//! choice the field is empty again and keeps the cursor, so the next one can be typed
+//! right away.
 //!
 //! The search runs in the background, like the palette's: typing never waits.
 
 
-use eframe::egui::{self, Key, Modifiers, RichText};
+use eframe::egui::{self, RichText};
 
 use crate::catalog::search::{Part, Search};
 use crate::catalog::Catalog;
 use crate::ui::task::Task;
 use crate::ui::theme::{font, medium, PALETTE as P};
+use crate::ui::field;
 use crate::ui::Shell;
 
 /// What was chosen: a match (its position in the catalog) or one of the extras.
@@ -54,25 +56,11 @@ impl InlineSearch {
         {
             self.hits.retain(|&h| c.extras.get(h as usize).is_none_or(|e| !self.skip.contains(&e.id)));
         }
-        let focused = ui.ctx().memory(|m| m.has_focus(id));
-        // Keys for the list, taken before the field sees them.
-        let (up, down, enter, shift_enter, escape) = if focused {
-            ui.ctx().input_mut(|i| {
-                let shift_enter = i.consume_key(Modifiers::SHIFT, Key::Enter);
-                let enter = i.consume_key(Modifiers::NONE, Key::Enter);
-                let up = i.consume_key(Modifiers::NONE, Key::ArrowUp);
-                let down = i.consume_key(Modifiers::NONE, Key::ArrowDown);
-                let escape = !self.query.is_empty() && i.consume_key(Modifiers::NONE, Key::Escape);
-                (up, down, enter, shift_enter, escape)
-            })
-        } else {
-            (false, false, false, false, false)
-        };
+        // Keys for the list, taken before the field sees them (Esc and Backspace as in any
+        // field).
+        let rules = field::Rules { up: true, down: true, enter: true, ..Default::default() };
+        let field::Keys { up, down, enter, shift_enter, .. } = field::keys(ui.ctx(), id, &self.query, rules);
         let response = ui.add(egui::TextEdit::singleline(&mut self.query).id(id).hint_text(hint).desired_width(420.0));
-        if escape {
-            self.query.clear();
-            self.hits.clear();
-        }
         if response.changed() {
             self.ask(shell, catalog);
         }

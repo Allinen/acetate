@@ -11,6 +11,7 @@
 //! Enter open or play · Shift+Enter play.
 
 pub mod covers;
+pub mod field;
 pub mod files;
 pub mod watch;
 pub mod edit;
@@ -196,6 +197,9 @@ pub struct Shell {
     /// The page uses Esc and Backspace itself (an artist's section shown alone: they go
     /// back to the whole page), so they don't leave it. Set by the page each frame.
     pub page_takes_back: bool,
+    /// Backspace on an empty field, passed on to the page that takes "back" itself
+    /// (`page_takes_back`): this frame's, set by the app's keys.
+    pub field_back: bool,
     /// The page's own keys are on (the track editor's rows): the app's one-key shortcuts
     /// (e, r, m…) wait.
     pub page_takes_keys: bool,
@@ -939,6 +943,7 @@ impl App {
             page_takes_space: false,
             modal_open: false,
             modal_was_open: false,
+            field_back: false,
             page_takes_back: false,
             page_takes_keys: false,
             slash_target: None,
@@ -1409,9 +1414,10 @@ impl App {
 
     /// Keys that work everywhere (outside text fields).
     fn keys(&mut self, ctx: &egui::Context) {
-        // A key an empty commandline passed on (a digit first, or Backspace on nothing): the
-        // page keys, as if outside a text field (see `edit::commandline::CommandLine::keys`).
-        let nav: Option<Key> = ctx.data_mut(|d| d.remove_temp::<Option<Key>>(egui::Id::unique(edit::commandline::NAV))).flatten();
+        // A key an empty field passed on (Backspace on nothing, or a commandline's first
+        // digit): the page keys, as if outside a text field (see `field::keys`).
+        let nav: Option<Key> = ctx.data_mut(|d| d.remove_temp::<Option<Key>>(egui::Id::unique(field::NAV))).flatten();
+        self.shell.field_back = false;
         // The key overlay takes its own keys (Esc closes it, not "back"); so does a popup,
         // and a dropdown or right-click menu (Esc closes it, but leaves the key for others
         // to see: it's not "back" too).
@@ -1515,6 +1521,9 @@ impl App {
             if key(k) {
                 self.shell.act(Action::Go(page));
             }
+        }
+        if nav == Some(Key::Backspace) && self.shell.page_takes_back {
+            self.shell.field_back = true;
         }
         if (key(Key::Escape) || key(Key::Backspace)) && !self.shell.form_dirty && !self.shell.page_takes_back {
             self.shell.act(Action::Back);

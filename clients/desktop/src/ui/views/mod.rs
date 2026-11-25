@@ -274,12 +274,15 @@ fn heading(ui: &mut egui::Ui, title: &str, count: usize) {
     });
 }
 
-/// The filter field. Enter, Esc or ↓ leave it (so the arrows move through the list
-/// again). Arriving on a page puts the cursor here. Returns whether the text changed.
+/// The filter field. Esc and Backspace as in any field (`ui::field`); Enter or ↓ leave it
+/// too, and the list under it sees them (it moves on to its first row). Arriving on a page
+/// puts the cursor here. Returns whether the text changed.
 fn filter(ui: &mut egui::Ui, text: &mut String, hint: &str) -> bool {
+    let id = egui::Id::unique(FILTER_ID);
+    crate::ui::field::keys(ui.ctx(), id, text, crate::ui::field::Rules::default());
     let response = ui.add(
         egui::TextEdit::singleline(text)
-            .id(egui::Id::unique(FILTER_ID))
+            .id(id)
             .hint_text(format!("{hint}   /"))
             .desired_width(360.0)
             .margin(egui::Margin::symmetric(12, 8)),
@@ -293,7 +296,7 @@ fn filter(ui: &mut egui::Ui, text: &mut String, hint: &str) -> bool {
     if last.is_none_or(|l| l + 1 < pass) {
         response.request_focus();
     }
-    if response.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Escape) || i.key_pressed(egui::Key::Enter) || i.key_pressed(egui::Key::ArrowDown)) {
+    if response.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter) || i.key_pressed(egui::Key::ArrowDown)) {
         response.surrender_focus();
     }
     response.changed()

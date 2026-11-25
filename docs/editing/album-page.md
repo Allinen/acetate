@@ -39,7 +39,7 @@ tracks:year:2019 | og:yes
 
 - `tracks:words` filters its tracks, the same way as the library's filter (`year:`, `status:`
   and the rest work in it). `tracks:` alone shows them all again. The list follows while you
-  type, and `Enter` keeps it; `Esc` puts back what was there.
+  type, and `Enter` keeps it; emptying the line puts back what was there.
 - `og:yes` / `og:no` turns the *Original files* chip on or off.
 - `credits`, `covers`, `sources`, `notes`, `extras` and `history` open that part of the page
   and scroll to it. A folded part that's already open is closed instead, and the list says

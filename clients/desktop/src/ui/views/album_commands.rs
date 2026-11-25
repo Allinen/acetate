@@ -7,7 +7,7 @@
 //!   and `rating:3.5` (`-rating` clears it) are yours, saved at once.
 //! * `tracks:words` filters its tracks (as the library's filter does: `tracks:year:2019`),
 //!   `tracks:` shows them all; `og:` / `og:yes` / `og:no` sets the Original files chip. Live
-//!   while they're typed, kept with Enter; Esc puts back what they were.
+//!   while they're typed, kept with Enter; emptying the line puts back what they were.
 //! * `credits`, `covers`, `sources`, `notes`, `extras`, `history` (and `merges` in edit
 //!   mode) open that part of the page and scroll to it; a folded one that's open is closed.
 //! * `edit:3` opens the track editor for its third track (a quick fix, listen mode too, as

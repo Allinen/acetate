@@ -6,15 +6,14 @@
 //!
 //! Keys in the field: ↑/↓ choose in the list, Tab takes the choice and leaves a space (the
 //! list then shows what can follow; it never writes a key by itself), Enter takes it and
-//! does the line, Backspace on an empty field takes the last chip back, Esc empties it.
+//! does the line, Backspace on an empty field takes the last chip back (with none: back, as
+//! in any field), Esc leaves the field (`ui::field`: the keys all fields share).
 
-use eframe::egui::{self, Key, Modifiers, RichText};
+use eframe::egui::{self, RichText};
 
 use crate::commandline::schema;
+use crate::ui::field;
 use crate::ui::theme::{font, medium, PALETTE as P};
-
-/// Where a key an empty commandline passes on to the app waits (`ctx.data`).
-pub const NAV: &str = "commandline-nav";
 
 pub struct CommandLine {
     id: egui::Id,
@@ -36,9 +35,9 @@ pub struct Pressed {
     pub down: bool,
     pub tab: bool,
     pub enter: bool,
-    /// Backspace on an empty field.
+    /// Backspace on an empty field (taken only when the page can take a change back).
     pub back: bool,
-    /// Esc with something typed (it's emptied).
+    /// Esc: the field was let go of.
     pub escape: bool,
 }
 
@@ -86,37 +85,13 @@ impl CommandLine {
 
     /// The field's keys (when it has the cursor), taken before it sees them. ↑/↓ move
     /// through `choices`; with none, ↓ is taken only if `down_too` (the page has rows below).
-    /// Backspace is taken (on an empty field) only if `can_take_back`.
+    /// Backspace is taken (on an empty field) only if `can_take_back`, else it's "back".
+    /// Nothing typed yet: a digit is a page key (or the volume's).
     pub fn keys(&mut self, ctx: &egui::Context, choices: usize, down_too: bool, can_take_back: bool) -> Pressed {
         let empty = self.text.is_empty();
-        // Nothing typed yet: a digit is a page key (or the volume's), Backspace goes back
-        // (unless it takes a staged change back). Passed on to the app, and not typed.
-        if empty {
-            const DIGITS: [Key; 10] = [Key::Num0, Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5, Key::Num6, Key::Num7, Key::Num8, Key::Num9];
-            let nav = ctx.input_mut(|i| {
-                let digit = i.events.iter().find_map(|e| match e {
-                    egui::Event::Text(t) if t.len() == 1 && t.as_bytes()[0].is_ascii_digit() && !i.modifiers.any() => Some(DIGITS[(t.as_bytes()[0] - b'0') as usize]),
-                    _ => None,
-                });
-                if digit.is_some() {
-                    i.events.retain(|e| !matches!(e, egui::Event::Text(t) if t.len() == 1 && t.as_bytes()[0].is_ascii_digit()));
-                    return digit;
-                }
-                (!can_take_back && i.consume_key(Modifiers::NONE, Key::Backspace)).then_some(Key::Backspace)
-            });
-            if let Some(key) = nav {
-                ctx.data_mut(|d| d.insert_temp(egui::Id::unique(NAV), Some(key)));
-                ctx.request_repaint();
-            }
-        }
-        let pressed = ctx.input_mut(|i| Pressed {
-            up: choices > 0 && i.consume_key(Modifiers::NONE, Key::ArrowUp),
-            down: (choices > 0 || (empty && down_too)) && i.consume_key(Modifiers::NONE, Key::ArrowDown),
-            tab: i.consume_key(Modifiers::NONE, Key::Tab),
-            enter: i.consume_key(Modifiers::NONE, Key::Enter),
-            back: empty && can_take_back && i.consume_key(Modifiers::NONE, Key::Backspace),
-            escape: !empty && i.consume_key(Modifiers::NONE, Key::Escape),
-        });
+        let rules = field::Rules { up: choices > 0, down: choices > 0 || (empty && down_too), tab: true, enter: true, own_back: can_take_back, page_digits: true };
+        let keys = field::keys(ctx, self.id, &self.text, rules);
+        let pressed = Pressed { up: keys.up, down: keys.down, tab: keys.tab, enter: keys.enter || keys.shift_enter, back: keys.back, escape: keys.escape };
         if pressed.up {
             self.highlighted = self.highlighted.saturating_sub(1);
         }
@@ -124,7 +99,9 @@ impl CommandLine {
             self.highlighted = (self.highlighted + 1).min(choices - 1);
         }
         if pressed.escape {
-            self.text.clear();
+            // (Not asked for again: it was let go of on purpose.)
+            self.focus = false;
+            self.gently = false;
         }
         pressed
     }

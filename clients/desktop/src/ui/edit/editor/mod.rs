@@ -1097,8 +1097,10 @@ impl TrackEditor {
                     self.cl.cursor_to_end(&ctx);
                 }
             }
-            // (Esc emptied the line.) A prompt let go: back to the check.
+            // Esc on a prompt: never mind (what it wrote in the line goes with it), back to
+            // the check.
             if escape && self.prompt.take().is_some() {
+                self.cl.text.clear();
                 self.to_check = true;
             }
         }

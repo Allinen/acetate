@@ -317,7 +317,8 @@ impl ArtistPage {
         if let Some(section) = self.expanded {
             // Esc or Backspace (outside a field): back to the whole page, not away from it.
             shell.page_takes_back = true;
-            let back_key = !ctx.egui_wants_keyboard_input() && !shell.modal_was_open && !shell.palette_open && ctx.input(|i| i.key_pressed(egui::Key::Escape) || i.key_pressed(egui::Key::Backspace));
+            let back_key = !ctx.egui_wants_keyboard_input() && !shell.modal_was_open && !shell.palette_open && ctx.input(|i| i.key_pressed(egui::Key::Escape) || i.key_pressed(egui::Key::Backspace))
+                || shell.field_back;
             let rows: &[u32] = match section {
                 Section::Releases => &releases,
                 Section::Tracks => &own,

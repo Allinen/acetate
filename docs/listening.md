@@ -26,8 +26,8 @@ The line is a [commandline](searching.md): `artist:`, `album:`, `year:`, `status
 search keys filter. `go:` lists the pages (`go:albums`, `go:queue`) and `do:` the other commands
 (`do:pause`, `do:shuffle`); each command shows its `go:`/`do:` form under its name. With nothing
 typed, the keys are listed too. `Tab` writes the highlighted key or command in full (on anything
-else it moves down), `Enter` on a key writes it and lets you keep typing. `Esc` empties the line,
-and closes the palette when it's already empty.
+else it moves down), `Enter` on a key writes it and lets you keep typing. `Esc`, or `Backspace` on an
+empty line, closes the palette.
 
 ## Playing
 

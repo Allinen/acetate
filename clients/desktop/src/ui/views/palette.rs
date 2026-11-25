@@ -1,7 +1,7 @@
 //! The command palette (Ctrl+K, anywhere): type to find any artist, album or track
 //! (fuzzy: letters in order, words anywhere) or a command. ↑/↓ choose, Enter opens (a
 //! track: plays it, then the rest of its album), Shift+Enter plays (a track: opens its
-//! album). Esc empties the line, and closes it when it's empty (so does Backspace on an empty line).
+//! album). Esc closes it (so does Backspace on an empty line).
 //!
 //! The line is a commandline (`crate::commandline::schema`'s language): the search's keys
 //! (`artist:` `album:` `year:` `status:`…) filter, `go:albums` lists the pages and `do:pause`
@@ -19,13 +19,14 @@
 
 
 use std::sync::Arc;
-use eframe::egui::{self, Align2, Color32, Key, Modifiers, Pos2, Rect, RichText, Sense, Shadow, Vec2};
+use eframe::egui::{self, Align2, Color32, Pos2, Rect, RichText, Sense, Shadow, Vec2};
 
 use uuid::Uuid;
 
 use crate::catalog::search::{Hits, Search};
 use crate::commandline::schema::{self, Kind, Schema, Spec};
 use crate::catalog::Catalog;
+use crate::ui::field;
 use crate::ui::task::Task;
 use crate::ui::theme::{font, medium, semibold, PALETTE as P};
 use crate::ui::edit::PickKind;
@@ -211,29 +212,13 @@ impl Palette {
             self.selected = 0;
         }
 
-        // Keys for the list, taken before the text field sees them.
-        let (up, down, tab, enter, shift_enter, escape) = ctx.input_mut(|i| {
-            // Shift+Enter first: a plain Enter may also match with Shift held.
-            let shift_enter = i.consume_key(Modifiers::SHIFT, Key::Enter);
-            let enter = i.consume_key(Modifiers::NONE, Key::Enter);
-            let up = i.consume_key(Modifiers::NONE, Key::ArrowUp);
-            let down = i.consume_key(Modifiers::NONE, Key::ArrowDown);
-            (up, down, i.consume_key(Modifiers::NONE, Key::Tab), enter, shift_enter, i.consume_key(Modifiers::NONE, Key::Escape))
-        });
-        // Backspace on an empty line closes it, like Esc.
-        let backspace = self.query.is_empty() && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Backspace));
-        if backspace {
+        // Keys for the list, taken before the text field sees them. The palette is only
+        // its field: Esc, or Backspace on an empty line (`ui::field`), closes it.
+        let rules = field::Rules { up: true, down: true, tab: true, enter: true, own_back: true, page_digits: false };
+        let field::Keys { up, down, tab, enter, shift_enter, back, escape } = field::keys(ctx, egui::Id::unique(INPUT_ID), &self.query, rules);
+        if back || escape {
             self.open = false;
             return;
-        }
-        if escape {
-            // Esc empties the line first, as on a page's commandline.
-            if matches!(self.mode, Mode::Search) && !self.query.is_empty() {
-                self.write(ctx, String::new());
-            } else {
-                self.open = false;
-                return;
-            }
         }
         // Tab writes a key or command in full; on anything else it moves down.
         let completes = tab.then(|| self.entries.get(self.selected).and_then(|e| completion(*e))).flatten();
@@ -342,7 +327,7 @@ impl Palette {
                     chosen = Some((self.entries[self.selected], shift_enter));
                 }
                 ui.add_space(4.0);
-                ui.label(RichText::new("↑↓ choose · Enter opens · Shift+Enter plays · Tab completes · Esc empties").color(P.faint).small());
+                ui.label(RichText::new("↑↓ choose · Enter opens · Shift+Enter plays · Tab completes · Esc closes").color(P.faint).small());
                 // A key is written into the line, and the typing goes on.
                 if let Some((Entry::Insert(i), _)) = chosen {
                     self.write(ctx, INSERTS[i].0.to_string());
