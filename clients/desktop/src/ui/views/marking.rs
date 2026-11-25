@@ -327,7 +327,7 @@ impl Marking {
                 self.credited_as = Some(super::credited_as::CreditedAs::open(tracks));
             }
         }
-        if self.popup_open() || ctx.egui_wants_keyboard_input() {
+        if self.popup_open() || shell.modal_was_open || ctx.egui_wants_keyboard_input() {
             return;
         }
         let may_clear = !self.bulk.has_changes() || self.bulk.applied();

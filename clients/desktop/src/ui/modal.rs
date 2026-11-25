@@ -96,4 +96,38 @@ mod tests {
         let below = Pos2::new(button.center().x, button.bottom() + 20.0);
         assert_eq!(ctx.layer_id_at(below), Some(list), "the dropdown is in front, not behind the popup");
     }
+
+    /// A right-click menu that's open is seen as open before it's drawn again (where the
+    /// app's keys look, so Esc closing it isn't also "back"), and not once Esc closed it.
+    #[test]
+    fn an_open_menu_is_seen_before_it_is_drawn() {
+        let ctx = egui::Context::default();
+        let screen = egui::Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0));
+        let row = std::cell::Cell::new(egui::Rect::NOTHING);
+        let seen_first = std::cell::RefCell::new(Vec::new());
+        let frame = |events: Vec<egui::Event>| {
+            let input = egui::RawInput { screen_rect: Some(screen), events, ..Default::default() };
+            let mut output = ctx.run_ui(input, |ui| {
+                seen_first.borrow_mut().push(egui::Popup::is_any_open(ui.ctx()));
+                let response = ui.add(egui::Label::new("a row").sense(Sense::click()));
+                row.set(response.rect);
+                response.context_menu(|ui| {
+                    let _ = ui.button("an entry");
+                });
+            });
+            output.textures_delta.clear();
+        };
+        frame(Vec::new());
+        let at = row.get().center();
+        let press = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Secondary, pressed, modifiers: Modifiers::NONE };
+        frame(vec![egui::Event::PointerMoved(at)]);
+        frame(vec![press(true)]);
+        frame(vec![press(false)]);
+        frame(Vec::new());
+        assert_eq!(seen_first.borrow().last().copied(), Some(true), "the menu is open as the frame begins");
+        let esc = egui::Event::Key { key: Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE };
+        frame(vec![esc]);
+        frame(Vec::new());
+        assert_eq!(seen_first.borrow().last().copied(), Some(false), "Esc closed it");
+    }
 }

@@ -76,7 +76,7 @@ impl GroupingPage {
         if self.all_releases {
             shell.page_takes_back = true;
             let ctx = ui.ctx().clone();
-            let mut back = !ctx.egui_wants_keyboard_input() && ctx.input(|i| i.key_pressed(egui::Key::Escape) || i.key_pressed(egui::Key::Backspace));
+            let mut back = !ctx.egui_wants_keyboard_input() && !shell.modal_was_open && !shell.palette_open && ctx.input(|i| i.key_pressed(egui::Key::Escape) || i.key_pressed(egui::Key::Backspace));
             ui.horizontal(|ui| {
                 back |= ui.button(format!("‹ {}", grouping.name)).on_hover_text("Back to the whole page (Esc)").clicked();
                 ui.label(RichText::new(format!("Releases  {}", thousands(releases.len()))).font(font(22.0, bold())));
@@ -94,7 +94,7 @@ impl GroupingPage {
         if self.all_extras {
             shell.page_takes_back = true;
             let ctx = ui.ctx().clone();
-            let mut back = !ctx.egui_wants_keyboard_input() && ctx.input(|i| i.key_pressed(egui::Key::Escape) || i.key_pressed(egui::Key::Backspace));
+            let mut back = !ctx.egui_wants_keyboard_input() && !shell.modal_was_open && !shell.palette_open && ctx.input(|i| i.key_pressed(egui::Key::Escape) || i.key_pressed(egui::Key::Backspace));
             ui.horizontal(|ui| {
                 back |= ui.button(format!("‹ {}", grouping.name)).on_hover_text("Back to the whole page (Esc)").clicked();
                 ui.label(RichText::new(format!("Extras  {}", thousands(extras.iter().filter(|e| !e.hidden).count()))).font(font(22.0, bold())));

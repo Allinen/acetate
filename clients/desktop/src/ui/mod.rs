@@ -207,8 +207,10 @@ pub struct Shell {
     /// What Ctrl+L links to on a list page (not a track's, album's or artist's): the
     /// selected track or album, as the list said last frame.
     pub list_target: Option<crate::links::Target>,
-    /// A popup was open last frame. A page's forms are drawn before the popup (a track
-    /// list's, below them), so they leave Ctrl+Enter and Esc to it by this.
+    /// A popup was open last frame, or one of egui's dropdowns or right-click menus. A
+    /// page's forms are drawn before the popup (a track list's, below them), so they leave
+    /// Ctrl+Enter and Esc to it by this. (A dropdown or menu closes on Esc without taking
+    /// it: without this, the same Esc would also reach the page.)
     pub modal_was_open: bool,
     /// The palette is open (it takes Esc, before the page's form could).
     pub palette_open: bool,
@@ -1410,8 +1412,10 @@ impl App {
         // A key an empty commandline passed on (a digit first, or Backspace on nothing): the
         // page keys, as if outside a text field (see `edit::commandline::CommandLine::keys`).
         let nav: Option<Key> = ctx.data_mut(|d| d.remove_temp::<Option<Key>>(egui::Id::unique(edit::commandline::NAV))).flatten();
-        // The key overlay takes its own keys (Esc closes it, not "back"); so does a popup.
-        if self.keys_open || self.shell.modal_open || self.shell.messages.open {
+        // The key overlay takes its own keys (Esc closes it, not "back"); so does a popup,
+        // and a dropdown or right-click menu (Esc closes it, but leaves the key for others
+        // to see: it's not "back" too).
+        if self.keys_open || self.shell.modal_open || self.shell.messages.open || egui::Popup::is_any_open(ctx) {
             return;
         }
         // The palette takes its own keys (Esc closes it, not "back"); only Ctrl+K reaches past it.
@@ -1677,7 +1681,7 @@ impl eframe::App for App {
                 self.shell.page_takes_back = false;
                 self.shell.page_takes_keys = false;
                 self.shell.slash_target = None;
-                self.shell.modal_was_open = self.shell.modal_open;
+                self.shell.modal_was_open = self.shell.modal_open || egui::Popup::is_any_open(&ctx);
                 self.shell.list_target = None;
                 self.shell.modal_open = false;
                 self.shell.palette_open = self.pages.palette.is_open();
