@@ -201,7 +201,10 @@ impl CoverList {
                         (Some(c), _) | (None, Some(What::Existing(c))) | (None, Some(What::Copy(c))) => c.cover(),
                         _ => None,
                     };
-                    if response.on_hover_cursor(egui::CursorIcon::ZoomIn).on_hover_text(format!("{note} · click: the original")).clicked()
+                    if let Some(cover) = opens {
+                        shell.cover_menu(&response, cover);
+                    }
+                    if response.on_hover_cursor(egui::CursorIcon::ZoomIn).on_hover_text(format!("{note} · click: the original · right-click: copy it")).clicked()
                         && let Some(cover) = opens
                     {
                         shell.open_original(ui.ctx(), cover);

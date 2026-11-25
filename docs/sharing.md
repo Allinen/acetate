@@ -12,6 +12,14 @@ There are two kinds of link.
 
 Right-click a track or album for the Share menu.
 
+## Copying a cover
+
+To paste a cover into another app, copy it as an image: right-click a track or album (or any
+cover) → *Copy cover*, type *Copy cover* on a track's or album's commandline, or press
+`Ctrl+C` while a cover is open in full (click a big cover). What's copied is the original
+image, full size, as it was uploaded: it's fetched first (from the mirror, if this computer
+keeps one), and a notice says when it's on the clipboard.
+
 ## The share popup
 
 It has its own commandline, and the same things by mouse:

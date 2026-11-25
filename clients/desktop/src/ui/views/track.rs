@@ -310,7 +310,7 @@ impl TrackPage {
         if let Some(act) = act {
             // Something to look at (a section, the note editor, another page): the keys go
             // there. Something yours (a star, a link copied) or edit mode: they stay.
-            let elsewhere = !matches!(act, Act::Star(_) | Act::Rate(_) | Act::CopyLink | Act::ShareLink | Act::ToggleEdit | Act::Queue(_) | Act::EditVersion(_) | Act::NewVersion(_) | Act::RenameVersion(..) | Act::ShowVersion(_));
+            let elsewhere = !matches!(act, Act::Star(_) | Act::Rate(_) | Act::CopyLink | Act::ShareLink | Act::CopyCover | Act::ToggleEdit | Act::Queue(_) | Act::EditVersion(_) | Act::NewVersion(_) | Act::RenameVersion(..) | Act::ShowVersion(_));
             if elsewhere && let Some(editor) = shell.track_editors.get_mut(&id) {
                 editor.let_go(ui.ctx());
             }
@@ -357,6 +357,12 @@ impl TrackPage {
                 let track = catalog.track(id);
                 if let Some(cover) = track.and_then(|t| t.cover()).or_else(|| d.and_then(|d| d.covers.first()?.cover())) {
                     shell.open_original(ctx, cover);
+                }
+            }
+            Act::CopyCover => {
+                let track = catalog.track(id);
+                if let Some(cover) = track.and_then(|t| t.cover()).or_else(|| d.and_then(|d| d.covers.first()?.cover())) {
+                    shell.copy_cover(ctx, cover);
                 }
             }
             Act::Sync => {
@@ -554,7 +560,10 @@ impl TrackPage {
                             (Some(w), Some(h)) => format!("{w}×{h} · {}", c.source),
                             _ => c.source.clone(),
                         };
-                        let response = response.on_hover_cursor(egui::CursorIcon::ZoomIn).on_hover_text(format!("{size} · click: the original"));
+                        if let Some(cover) = c.cover() {
+                            shell.cover_menu(&response, cover);
+                        }
+                        let response = response.on_hover_cursor(egui::CursorIcon::ZoomIn).on_hover_text(format!("{size} · click: the original · right-click: copy it"));
                         if response.clicked()
                             && let Some(cover) = c.cover()
                         {

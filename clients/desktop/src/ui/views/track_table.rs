@@ -674,7 +674,8 @@ impl TrackTable {
                         });
                     }
                     let response = row.response();
-                    widgets::share_menu(&response, shell, crate::links::Target::Track(catalog.track_at(rows.track(self.order[n])).id()));
+                    let track = catalog.track_at(rows.track(self.order[n]));
+                    widgets::item_menu(&response, shell, crate::links::Target::Track(track.id()), track.cover());
                     if response.double_clicked() {
                         double = Some(n);
                     } else if response.clicked() {

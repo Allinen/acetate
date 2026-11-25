@@ -409,6 +409,11 @@ impl AlbumPage {
             }
             Act::Rate(rating) => shell.act(Action::Rate(Kind::Album, id, rating)),
             Act::CopyLink => shell.act(Action::CopyLink(Target::Album(id))),
+            Act::CopyCover => {
+                if let Some(cover) = catalog.album(id).and_then(|a| a.cover()) {
+                    shell.copy_cover(&shell.ctx.clone(), cover);
+                }
+            }
             Act::ShareLink => shell.act(Action::CopyShareLink(Target::Album(id))),
             Act::Go(page) => shell.act(Action::Go(page)),
             // A folded part that's open is closed; anything else opened and scrolled to.
@@ -497,7 +502,10 @@ fn view_sections(ui: &mut egui::Ui, shell: &mut Shell, d: &crate::details::Album
                         (Some(w), Some(h)) => format!("{w}×{h} · {}", c.source),
                         _ => c.source.clone(),
                     };
-                    let response = response.on_hover_cursor(egui::CursorIcon::ZoomIn).on_hover_text(format!("{size} · click: the original"));
+                    if let Some(cover) = c.cover() {
+                        shell.cover_menu(&response, cover);
+                    }
+                    let response = response.on_hover_cursor(egui::CursorIcon::ZoomIn).on_hover_text(format!("{size} · click: the original · right-click: copy it"));
                     if response.clicked()
                         && let Some(cover) = c.cover()
                     {

@@ -135,6 +135,8 @@ pub enum Act {
     Watch(Uuid, String),
     /// Its cover, the original in full.
     Cover,
+    /// Its cover's original, to the clipboard (as an image).
+    CopyCover,
     Merge,
     /// The lyrics' form opens (a new entry if there are none) with the timing popup on.
     Sync,
@@ -559,6 +561,9 @@ pub fn actions(typed: &str, here: &Here) -> Vec<Row> {
     }
     if track.is_some_and(|t| t.cover().is_some()) && found("Cover in full", &["cover", "original", "image"]) {
         rows.push(act("Cover in full", "the original image", Act::Cover));
+    }
+    if track.is_some_and(|t| t.cover().is_some()) && found("Copy cover", &["cover", "image"]) {
+        rows.push(act("Copy cover", "the original image, to paste into another app", Act::CopyCover));
     }
     for &section in here.sections {
         if found(section.title(), &[section.title().split(' ').next().unwrap_or("")]) {

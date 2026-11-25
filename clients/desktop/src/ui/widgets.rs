@@ -444,14 +444,21 @@ pub fn download_chip(ui: &mut egui::Ui, shell: &mut crate::ui::Shell, kind: &str
     }
 }
 
-/// A right-click menu on a track row or an album tile with "Share" in it: a click copies
-/// the link, Shift+click makes a share link (as the pages' "Share").
-pub fn share_menu(response: &egui::Response, shell: &mut crate::ui::Shell, target: crate::links::Target) {
+/// A right-click menu on a track row or an album tile: "Share" (a click copies the link,
+/// Shift+click makes a share link, as the pages' "Share") and, with a cover, "Copy cover"
+/// (its original, as an image).
+pub fn item_menu(response: &egui::Response, shell: &mut crate::ui::Shell, target: crate::links::Target, cover: Option<crate::catalog::model::Cover>) {
     response.context_menu(|ui| {
         let item = ui.button("Share").on_hover_text("Copies a link, for someone with an account (Ctrl+L). Shift+click: the popup for a share link anyone can open (Ctrl+Shift+L).");
         if item.clicked() {
             let shift = ui.input(|i| i.modifiers.shift);
             shell.act(if shift { crate::ui::Action::CopyShareLink(target) } else { crate::ui::Action::CopyLink(target) });
+            ui.close();
+        }
+        if let Some(cover) = cover
+            && ui.button("Copy cover").on_hover_text("The original image, to paste into another app").clicked()
+        {
+            shell.copy_cover(ui.ctx(), cover);
             ui.close();
         }
     });

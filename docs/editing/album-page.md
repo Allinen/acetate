@@ -26,7 +26,8 @@ rating:4.5
 - `queue:` puts it at the end of the queue, `queue:next` before what's queued.
 - `star:` stars it, or unstars it if it's starred (`star:yes`, `star:no` and `-star` say
   which). `rating:3.5` is your rating, in half stars; `-rating` clears it.
-- *Copy link* and *Make a share link…* (as words) copy its link or open the share popup.
+- *Copy link* and *Make a share link…* (as words) copy its link or open the share popup;
+  *Copy cover* copies its cover (the original image) to paste into another app.
 
 Every key, what it takes and what can follow it, generated from the app: [Commands](../commands.md).
 

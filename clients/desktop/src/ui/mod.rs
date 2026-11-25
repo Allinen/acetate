@@ -488,13 +488,37 @@ impl Shell {
         self.original_on_click(ui, cover, rect);
     }
 
-    /// A click on `rect` (where `cover` is drawn) shows its original.
+    /// A click on `rect` (where `cover` is drawn) shows its original; a right-click offers
+    /// to copy it (see `cover_menu`).
     pub fn original_on_click(&mut self, ui: &egui::Ui, cover: Option<Cover>, rect: egui::Rect) {
         let Some(cover) = cover else { return };
         let response = ui.interact(rect, ui.scope_id().with(("original", cover.key.0)), egui::Sense::click());
-        if response.on_hover_cursor(egui::CursorIcon::ZoomIn).on_hover_text("Click: the original").clicked() {
+        self.cover_menu(&response, cover);
+        if response.on_hover_cursor(egui::CursorIcon::ZoomIn).on_hover_text("Click: the original · right-click: copy it").clicked() {
             self.open_original(ui.ctx(), cover);
         }
+    }
+
+    /// A right-click menu on a cover: "Copy image" (its original, see `copy_cover`) and
+    /// "Show original".
+    pub fn cover_menu(&mut self, response: &egui::Response, cover: Cover) {
+        response.context_menu(|ui| {
+            if ui.button("Copy image").on_hover_text("The original, to paste into another app").clicked() {
+                self.copy_cover(ui.ctx(), cover);
+                ui.close();
+            }
+            if ui.button("Show original").clicked() {
+                self.open_original(ui.ctx(), cover);
+                ui.close();
+            }
+        });
+    }
+
+    /// Copies a cover's original (unchanged, full size) to the clipboard, as an image. It's
+    /// fetched in the background; a notice says when it's there.
+    pub fn copy_cover(&mut self, ctx: &egui::Context, cover: Cover) {
+        self.covers.copy_original(ctx, cover.key);
+        self.playlists.notice = Some(("Copying the cover…".into(), Instant::now()));
     }
 
     /// Shows a cover's original (unchanged, full size) in a popup. It's fetched now, and
@@ -529,10 +553,12 @@ impl Shell {
         self.modal_open = true;
         original.poll(ctx);
         let title = match &original.loaded {
-            Some(Ok((_, [w, h], bytes))) => format!("Original · {w}×{h} · {:.1} MB", *bytes as f64 / 1_000_000.0),
+            Some(Ok((_, [w, h], bytes))) => format!("Original · {w}×{h} · {:.1} MB · Ctrl+C: copy", *bytes as f64 / 1_000_000.0),
             _ => "Original".to_string(),
         };
         let screen = ctx.content_rect().size();
+        // Ctrl+C (egui makes it a copy event) or the button: the image to the clipboard.
+        let mut copy = ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Copy)));
         let closed = modal::show(ctx, "original-cover", &title, screen - egui::Vec2::splat(48.0), |ui| match &original.loaded {
             None => {
                 ui.label(egui::RichText::new("Loading the original…").color(P.muted));
@@ -547,10 +573,20 @@ impl Shell {
                 let scale = (room.x / *w as f32).min(room.y / *h as f32).min(1.0 / ppp);
                 let size = egui::vec2(*w as f32, *h as f32) * scale;
                 ui.centered_and_justified(|ui| {
-                    ui.add(egui::Image::from_texture(texture).fit_to_exact_size(size));
+                    let image = ui.add(egui::Image::from_texture(texture).fit_to_exact_size(size).sense(egui::Sense::click()));
+                    image.context_menu(|ui| {
+                        if ui.button("Copy image").clicked() {
+                            copy = true;
+                            ui.close();
+                        }
+                    });
                 });
             }
         });
+        let key = original.key;
+        if copy && matches!(original.loaded, Some(Ok(_))) {
+            self.copy_cover(ctx, Cover { id: Uuid::nil(), key });
+        }
         if closed {
             self.original = None;
         }
@@ -1616,6 +1652,9 @@ impl eframe::App for App {
         self.take_share(&ctx);
         self.shell.take_sent();
         if let Some(notice) = self.shell.controller.notice.lock().unwrap().take() {
+            self.shell.playlists.notice = Some((notice, Instant::now()));
+        }
+        if let Some(notice) = self.shell.covers.take_copied() {
             self.shell.playlists.notice = Some((notice, Instant::now()));
         }
         self.shell.playlists.poll();

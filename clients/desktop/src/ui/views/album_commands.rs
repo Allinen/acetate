@@ -221,6 +221,8 @@ pub enum Act {
     Rate(i16),
     CopyLink,
     ShareLink,
+    /// Its cover's original, to the clipboard (as an image).
+    CopyCover,
     Go(Page),
     /// Opened and scrolled to.
     Reveal(Reveal),
@@ -740,6 +742,9 @@ fn actions(typed: &str, here: &Here) -> Vec<Row> {
     }
     if found("Make a share link", &["share", "link"]) {
         rows.push(act("Make a share link…", "anyone can open it (Ctrl+Shift+L)", Act::ShareLink));
+    }
+    if here.catalog.album(here.id).is_some_and(|a| a.cover().is_some()) && found("Copy cover", &["cover", "image"]) {
+        rows.push(act("Copy cover", "the original image, to paste into another app", Act::CopyCover));
     }
     for &section in here.sections {
         if found(section.title(), &[section.title().split(' ').next().unwrap_or("")]) {

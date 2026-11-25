@@ -119,6 +119,8 @@ pub struct Covers {
     /// Decoded images from the background, waiting to be uploaded.
     done: Arc<Mutex<Vec<((CoverKey, CoverSize), Option<ColorImage>)>>>,
     loading: usize,
+    /// What became of the last "Copy image" (said once, see `take_copied`).
+    copied: Arc<Mutex<Option<String>>>,
     dir: Arc<PathBuf>,
     api: Api,
     runtime: Handle,
@@ -127,7 +129,7 @@ pub struct Covers {
 
 impl Covers {
     pub fn new(api: Api, runtime: Handle, cache_dir: PathBuf) -> Covers {
-        Covers { states: HashMap::new(), done: Arc::default(), loading: 0, dir: Arc::new(cache_dir), api, runtime, here: Here::default() }
+        Covers { states: HashMap::new(), done: Arc::default(), loading: 0, copied: Arc::default(), dir: Arc::new(cache_dir), api, runtime, here: Here::default() }
     }
 
     /// Where covers are on this computer (for whoever is logged in).
@@ -137,6 +139,34 @@ impl Covers {
 
     pub fn here(&self) -> Here {
         self.here.clone()
+    }
+
+    /// Puts the original of an image on the clipboard (as an image, to paste into another
+    /// app): fetched in the background (from the mirror if it has it), then said in a
+    /// notice (`take_copied`).
+    pub fn copy_original(&self, ctx: &egui::Context, key: CoverKey) {
+        let (api, here, sink, ctx) = (self.api.clone(), self.here.clone(), self.copied.clone(), ctx.clone());
+        self.runtime.spawn(async move {
+            let mirrored = tokio::task::spawn_blocking(move || here.original(key)).await.ok().flatten();
+            let fetched = match mirrored {
+                Some(bytes) => Ok(bytes),
+                None => api.image(&format!("{:016x}", key.0), None).await.map_err(|err| err.message),
+            };
+            let said = match fetched {
+                Ok(bytes) => tokio::task::spawn_blocking(move || to_clipboard(&bytes)).await.unwrap_or_else(|err| Err(err.to_string())),
+                Err(err) => Err(err),
+            };
+            *sink.lock().unwrap() = Some(match said {
+                Ok([w, h]) => format!("Cover copied ({w}×{h})"),
+                Err(err) => format!("Couldn't copy the cover: {err}"),
+            });
+            ctx.request_repaint();
+        });
+    }
+
+    /// What became of a "Copy image", once (for a notice).
+    pub fn take_copied(&self) -> Option<String> {
+        self.copied.lock().unwrap().take()
     }
 
     /// Covers that didn't load (the server was away) are tried again when next shown.
@@ -290,6 +320,23 @@ async fn load(api: &Api, dir: &Path, here: &Here, key: CoverKey, size: CoverSize
     .flatten()
 }
 
+/// Decodes an image and puts it on the clipboard. Ok: its size in pixels.
+fn to_clipboard(bytes: &[u8]) -> Result<[usize; 2], String> {
+    let image = image::load_from_memory(bytes).map_err(|err| format!("it isn't an image this can read ({err})"))?.to_rgba8();
+    let size = [image.width() as usize, image.height() as usize];
+    let data = arboard::ImageData { width: size[0], height: size[1], bytes: image.into_raw().into() };
+    // One clipboard, open as long as the app runs: on Linux what's copied is served by the
+    // app that copied it, while its clipboard is open (a clipboard manager, if there is one,
+    // keeps a copy of its own).
+    static CLIPBOARD: Mutex<Option<arboard::Clipboard>> = Mutex::new(None);
+    let mut clipboard = CLIPBOARD.lock().unwrap();
+    if clipboard.is_none() {
+        *clipboard = Some(arboard::Clipboard::new().map_err(|err| err.to_string())?);
+    }
+    clipboard.as_mut().expect("opened above").set_image(data).map_err(|err| err.to_string())?;
+    Ok(size)
+}
+
 /// The original of an image, fetched to be looked at on its own (a popup), kept only
 /// while it's open.
 pub struct Original {
@@ -349,6 +396,20 @@ mod tests {
         let mut out = std::io::Cursor::new(Vec::new());
         image::RgbImage::new(width, height).write_to(&mut out, image::ImageFormat::Png).unwrap();
         out.into_inner()
+    }
+
+    /// Copies an image to this desktop's clipboard, as "Copy image" does, and reads it back
+    /// (another app sees the same: `wl-paste -l` lists image/png meanwhile):
+    /// `ACETATE_TEST_CLIPBOARD=1 cargo test copied_image -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn a_copied_image_is_on_the_clipboard() {
+        if std::env::var("ACETATE_TEST_CLIPBOARD").is_err() {
+            return;
+        }
+        assert_eq!(to_clipboard(&png(30, 20)).unwrap(), [30, 20]);
+        let image = arboard::Clipboard::new().unwrap().get_image().expect("an image on the clipboard");
+        assert_eq!((image.width, image.height), (30, 20));
     }
 
     #[test]

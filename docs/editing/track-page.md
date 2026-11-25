@@ -28,8 +28,8 @@ rating:4.5
 - `queue:` puts it at the end of the queue, `queue:next` before what's queued.
 - `star:` stars it, or unstars it if it's starred (`star:yes`, `star:no` and `-star` say
   which). `rating:3.5` is your rating, in half stars; `-rating` clears it.
-- *Copy link*, *Make a share link…*, *Watch the video* and *Cover in full* (as words) do
-  what they say.
+- *Copy link*, *Make a share link…*, *Watch the video*, *Cover in full* and *Copy cover*
+  (as words) do what they say.
 
 Every key, what it takes and what can follow it, generated from the app: [Commands](../commands.md).
 

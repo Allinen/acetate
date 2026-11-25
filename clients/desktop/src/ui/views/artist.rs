@@ -128,7 +128,7 @@ pub(super) fn release_cards(ui: &mut egui::Ui, shell: &mut Shell, catalog: &Cata
                 None => album.kind().to_string(),
             };
             widgets::text_in(ui.painter(), Rect::from_min_size(Pos2::new(rect.left(), top + 18.0), Vec2::new(CARD, 15.0)), &sub, font(12.0, medium()), P.muted);
-            widgets::share_menu(&response, shell, crate::links::Target::Album(album.id()));
+            widgets::item_menu(&response, shell, crate::links::Target::Album(album.id()), album.cover());
             if response.clicked() {
                 if over_button {
                     super::albums::play_album(shell, catalog, album.id());
