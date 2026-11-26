@@ -34,13 +34,14 @@ services:
         condition: service_healthy
     # Who owns the files it writes on the disk(s) below.
     user: "${ACETATE_UID:-1000}:${ACETATE_GID:-1000}"
+    # Every setting in .env reaches the server (docs/admin/configuration.md), not only the
+    # ones named below: Compose otherwise uses .env just to fill in the ${...} in this file.
+    env_file: .env
     environment:
       DATABASE_URL: postgres://acetate:${POSTGRES_PASSWORD}@postgres:5432/acetate
       # Where blobs go (see the README, "File storage"): names → paths inside the
       # container. The first is the default.
       ACETATE_VOLUMES: ${ACETATE_VOLUMES:?set ACETATE_VOLUMES in .env}
-      ACETATE_SECURE_COOKIES: ${ACETATE_SECURE_COOKIES:-false}
-      ACETATE_TRUST_PROXY: ${ACETATE_TRUST_PROXY:-false}
       # Your own extensions (see docs/admin/extensions.md): the folder below.
       ACETATE_EXTENSIONS_DIR: /extensions
     ports:
