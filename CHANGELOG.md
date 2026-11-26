@@ -1,5 +1,29 @@
 	# Changelog
 
+## 0.4.5 - 2026-11-27
+
+### Upgrading
+
+- With Docker Compose, take the new `deploy/compose.yaml`: it passes every setting in `.env` to the server. Before, only a few named ones got through, and the rest (such as `ACETATE_UPLOAD_DAILY_GB` and `ACETATE_MAX_UPLOAD_MB`) were silently ignored, so check that what's in your `.env` is what you want before restarting
+
+### Features
+
+- Desktop: copy a cover's original image to the clipboard with "Copy cover" on a right-click of a cover, track row or album tile, from a track's or album's commandline, or with Ctrl+C in the original-cover popup
+- Desktop: every search field (page commandlines, list filters, form searches, the palette) uses the same keys. Esc leaves the field and keeps what's typed, Backspace on an empty field goes back, and holding Backspace to delete text stops at the empty field instead of going back through pages
+- Covers can be up to 50 MiB instead of 20
+
+### Fixes
+
+- Desktop: the app starts when a GPU can't be used (for example when its memory is full) by falling back to the next one. On Linux it first tries the GPU the screens are plugged into, then the software renderer
+- Desktop: Esc in a text field only leaves the field, and Esc or Backspace with a dropdown or right-click menu open only closes it. Before, both also went back a page or closed the popup
+- Desktop: playlist pages and Liked songs keep their filter, sorting and scroll position when you leave and come back
+- Desktop: saving a person or group in Settings → Users no longer brings back the old values, and no longer throws away unsaved edits in other rows
+- Desktop: the Settings section for `acetate://` links is named after them, so it no longer reads like an empty list of share links
+
+### Changes
+
+- Dependencies updated across the server and the clients, including rusqlite 0.43, rfd 0.18 and souvlaki 0.9 for the desktop app, and Gradle 9.9 for Android
+
 ## 0.4.4 - 2026-11-14
 
 ### Security
