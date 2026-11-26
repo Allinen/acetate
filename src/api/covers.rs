@@ -12,8 +12,10 @@ use crate::db;
 use crate::db::covers::{CoverOwner, NewCover};
 use crate::model::sources::SourceOwner;
 
-/// Largest cover image accepted.
-pub const MAX_COVER_BYTES: usize = 20 * 1024 * 1024;
+/// Largest cover image accepted. Was 20 MiB until a 3000×3000 JPEG of mostly noise came
+/// in at 25 MB: a full-resolution cover can be that big without being unreasonable. Decoding
+/// one for the smaller copies is limited separately, by pixels (`storage::images`).
+pub const MAX_COVER_BYTES: usize = 50 * 1024 * 1024;
 
 #[derive(Debug, Serialize)]
 pub struct AddedCover {
