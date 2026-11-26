@@ -22,19 +22,19 @@ impl GeneralTab {
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui, shell: &mut Shell) {
-        section(ui, "Links");
+        section(ui, "acetate:// links");
         use crate::links::Handler;
-        let how = if crate::links::CAN_REGISTER { "“Open links here” sets that up" } else { "clients/desktop/install.sh sets that up" };
+        let how = if crate::links::CAN_REGISTER { "“Open links here” fixes that." } else { "Run clients/desktop/install.sh to set that up." };
         let handler = self.links_handler.get().cloned();
         match &handler {
             Some(Handler::Here) => {
-                ui.label(RichText::new("Links to tracks, albums and artists open here.").color(P.text));
+                ui.label(RichText::new("This app opens them.").color(P.text));
             }
             Some(Handler::Other(other)) => {
-                ui.label(RichText::new(format!("Links to tracks, albums and artists open in {other}, not here: {how}.")).color(P.danger));
+                ui.label(RichText::new(format!("{other} opens them, not this app. {how}")).color(P.danger));
             }
             Some(Handler::Nobody) => {
-                ui.label(RichText::new(format!("Links to tracks, albums and artists don't open here yet: {how}.")).color(P.muted));
+                ui.label(RichText::new(format!("Nothing opens them yet. {how}")).color(P.muted));
             }
             None => {
                 ui.label(RichText::new("Checking…").color(P.faint));
@@ -46,7 +46,7 @@ impl GeneralTab {
                 Err(err) => shell.controller.report(err),
             }
         }
-        hint(ui, "Ctrl+L (or “Share” on a page) copies a link to the track, album or artist shown, for someone with an account here; Ctrl+Shift+L (or Shift+click “Share”) opens a popup to make a share link anyone can open: its expiry, and whether it plays the original file or a lower-quality copy. Opened by someone logged in, either one goes to the app (or the web UI, if the app doesn't take it).");
+        hint(ui, "Ctrl+L (or “Share”) copies one for the track, album or artist you're looking at. Only people with an account here can open it; for a link anyone can open, see Account → Share links.");
 
         section(ui, "Keys");
         if widgets::chip(ui, "Show every key  ?", false) {

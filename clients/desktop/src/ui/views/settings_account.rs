@@ -125,7 +125,7 @@ impl AccountTab {
                 ui.label(RichText::new(format!("Couldn't ask the server: {err}")).color(P.danger));
             }
             Some(Ok(list)) if list.is_empty() => {
-                ui.label(RichText::new("None yet: Ctrl+Shift+L on a track or album makes one.").color(P.faint));
+                ui.label(RichText::new("None yet: Ctrl+Shift+L (or Shift+click “Share”) on a track or album makes one.").color(P.faint));
             }
             Some(Ok(list)) => {
                 let busy = self.revoking.is_running();
