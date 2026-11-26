@@ -72,8 +72,12 @@ pub struct UsersTab {
     loaded_users: Option<Result<Vec<User>, String>>,
     loaded_groups: Option<Result<Vec<Group>, String>>,
     loaded_permissions: Vec<Permission>,
-    /// A person's groups being changed (by id); absent: as the server has them.
+    /// A person's groups being changed (by id); absent: as the server has them. Only
+    /// drafts that differ from the server are kept, so once a save's reload brings the
+    /// saved values the draft drops out by itself (instead of a stale one being made
+    /// from the old values while the reload is on its way).
     user_drafts: HashMap<Uuid, BTreeSet<String>>,
+    /// Likewise for groups.
     group_drafts: HashMap<Uuid, GroupDraft>,
     new_user: NewUser,
     new_group: GroupDraft,
@@ -92,9 +96,15 @@ impl UsersTab {
 
     pub fn show(&mut self, ui: &mut egui::Ui, shell: &mut Shell) {
         if let Some(users) = self.users.poll() {
+            if let Ok(users) = &users {
+                self.user_drafts.retain(|id, _| users.iter().any(|u| u.id == *id));
+            }
             self.loaded_users = Some(users);
         }
         if let Some(groups) = self.groups.poll() {
+            if let Ok(groups) = &groups {
+                self.group_drafts.retain(|id, _| groups.iter().any(|g| g.id == *id));
+            }
             self.loaded_groups = Some(groups);
         }
         if let Some(Ok(permissions)) = self.permissions.poll() {
@@ -102,8 +112,6 @@ impl UsersTab {
         }
         if let Some(done) = self.action.poll() {
             if done.is_ok() {
-                self.user_drafts.clear();
-                self.group_drafts.clear();
                 self.deleting = None;
                 self.opened(shell);
             }
@@ -145,7 +153,7 @@ impl UsersTab {
 
     fn user_row(&mut self, ui: &mut egui::Ui, shell: &Shell, user: &User, groups: &[Group], busy: bool) {
         let server_has: BTreeSet<String> = user.groups.iter().cloned().collect();
-        let draft = self.user_drafts.entry(user.id).or_insert_with(|| server_has.clone());
+        let mut draft = self.user_drafts.remove(&user.id).unwrap_or_else(|| server_has.clone());
         ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new(&user.username).strong());
             if !user.has_password {
@@ -164,19 +172,22 @@ impl UsersTab {
                 }
             }
         });
-        let changed = *draft != server_has;
-        let draft = draft.clone();
+        let changed = draft != server_has;
+        let mut discard = false;
         ui.horizontal(|ui| {
             if ui.add_enabled(changed && !busy, egui::Button::new("Save").small()).clicked() {
-                let body = serde_json::json!({ "groups": draft });
+                let body = serde_json::json!({ "groups": &draft });
                 let path = format!("/api/users/{}/groups", user.id);
                 let name = user.username.clone();
                 self.action.send_with(shell, |api| async move { api.send_json::<serde_json::Value>(reqwest::Method::PUT, &path, Some(body)).await.map(|_| format!("Saved {name}'s groups.")).map_err(|e| e.message) });
             }
             if ui.add_enabled(changed, egui::Button::new("Discard").small()).clicked() {
-                self.user_drafts.remove(&user.id);
+                discard = true;
             }
         });
+        if changed && !discard {
+            self.user_drafts.insert(user.id, draft);
+        }
     }
 
     fn new_user_form(&mut self, ui: &mut egui::Ui, shell: &Shell, groups: &[Group], busy: bool) {
@@ -269,7 +280,7 @@ impl UsersTab {
             });
         });
         self.loaded_permissions = permissions;
-        if !discard {
+        if !discard && draft != server {
             self.group_drafts.insert(group.id, draft);
         }
         ui.separator();
