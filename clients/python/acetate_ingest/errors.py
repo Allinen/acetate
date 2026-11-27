@@ -31,6 +31,16 @@ class ServerError(AcetateError):
         return f"{type(self).__name__}({self.status}, {self.code!r}, {self.message!r})"
 
 
+class AlreadyKnown(ServerError):
+    """409 for a lost song that wouldn't be one: a track has one of its platform ids
+    (`code` `already_held`) or another lost song does (`already_lost`). `id` is that
+    track's or lost song's."""
+
+    def __init__(self, status: int, code: str, message: str, id: str) -> None:
+        super().__init__(status, code, message)
+        self.id = id
+
+
 class NotLoggedIn(ServerError):
     """401: the token is wrong, expired or logged out. Log in again."""
 

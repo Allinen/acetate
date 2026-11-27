@@ -13,7 +13,7 @@ const SHA: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 async fn extras_are_made_filled_linked_and_kept(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
     let lib = setup(connect).await?;
     let mut tx = db::begin(&lib.app, Some(lib.carol)).await?;
-    let (id, access) = db::extras::create(&mut tx, " V vocals ", " Vocals ", &About::default(), &[Link::Track(lib.v)], None, "").await?;
+    let (id, access) = db::extras::create(&mut tx, " V vocals ", " Vocals ", &About::default(), &[Link::Track(lib.v)], None, None, "").await?;
     assert_eq!(access, Access::default(), "V isn't restricted");
     db::blobs::register(&mut tx, SHA, "main", Some(3)).await?;
     let facts = FileFacts { codec: Some("pcm_s16le".into()), duration_ms: Some(1000), ..Default::default() };
@@ -23,7 +23,7 @@ async fn extras_are_made_filled_linked_and_kept(_: PgPoolOptions, connect: PgCon
     assert_eq!(db::extras::stored_as(&mut tx, &"b".repeat(64)).await?, None);
     assert!(db::extras::link(&mut tx, id, Link::Artist(lib.both), "").await?);
     assert!(!db::extras::link(&mut tx, id, Link::Artist(lib.both), "").await?, "once");
-    assert!(db::extras::edit(&mut tx, id, "V vocals (dry)", "vocals", &About::default(), "").await?);
+    assert!(db::extras::edit(&mut tx, id, "V vocals (dry)", "vocals", &About::default(), None, "").await?);
 
     let extra = db::extras::get(&mut tx, id).await?.unwrap();
     assert_eq!((extra.name.as_str(), extra.kind.as_str()), ("V vocals (dry)", "vocals"));
@@ -42,7 +42,7 @@ async fn extras_are_made_filled_linked_and_kept(_: PgPoolOptions, connect: PgCon
     assert!(db::extras::unlink(&mut tx, id, Link::Artist(lib.both), "").await?);
     let what: Vec<String> = db::extras::history(&mut tx, id).await?.into_iter().map(|l| l.what).collect();
     assert_eq!(what, ["unlinked", "brought back", "taken off", "file taken off", "edited", "linked", "file added", "linked", "made"]);
-    assert!(db::extras::create(&mut tx, " ", "", &About::default(), &[], None, "").await.is_err(), "a name is needed");
+    assert!(db::extras::create(&mut tx, " ", "", &About::default(), &[], None, None, "").await.is_err(), "a name is needed");
     tx.commit().await?;
 
     let mut tx = db::begin(&lib.app, Some(lib.carol)).await?;
@@ -55,11 +55,11 @@ async fn extras_are_seen_like_their_tracks(_: PgPoolOptions, connect: PgConnectO
     let lib = setup(connect).await?;
     // Bob (friends) attaches vocals to H: restricted like H, to friends.
     let mut tx = db::begin(&lib.app, Some(lib.bob)).await?;
-    let (hidden, access) = db::extras::create(&mut tx, "H vocals", "vocals", &About::default(), &[Link::Track(lib.h)], None, "").await?;
+    let (hidden, access) = db::extras::create(&mut tx, "H vocals", "vocals", &About::default(), &[Link::Track(lib.h)], None, None, "").await?;
     assert_eq!(access, Access { restricted: true, groups: vec![lib.friends] });
     // Another, on H and V, open to everyone (said so).
     let open = Access::default();
-    let (both, _) = db::extras::create(&mut tx, "Shared sample", "sample", &About::default(), &[Link::Track(lib.h), Link::Track(lib.v)], Some(open), "").await?;
+    let (both, _) = db::extras::create(&mut tx, "Shared sample", "sample", &About::default(), &[Link::Track(lib.h), Link::Track(lib.v)], Some(open), None, "").await?;
     assert!(db::extras::get(&mut tx, hidden).await?.is_some());
     tx.commit().await?;
 
@@ -75,7 +75,7 @@ async fn extras_are_seen_like_their_tracks(_: PgPoolOptions, connect: PgConnectO
     // Carol can't restrict one to a group she isn't in (she'd lose it): said so.
     let mut tx = db::begin(&lib.app, Some(lib.carol)).await?;
     let friends_only = Access { restricted: true, groups: vec![lib.friends] };
-    let err = db::extras::create(&mut tx, "Mine", "clip", &About::default(), &[Link::Track(lib.v)], Some(friends_only), "").await.unwrap_err();
+    let err = db::extras::create(&mut tx, "Mine", "clip", &About::default(), &[Link::Track(lib.v)], Some(friends_only), None, "").await.unwrap_err();
     assert!(err.to_string().contains("hide it from you"), "{err}");
     drop(tx);
 
@@ -101,7 +101,7 @@ async fn extras_are_in_the_catalog_and_its_deltas(_: PgPoolOptions, connect: PgC
     };
     let since = version(lib.carol).await?;
     let mut tx = db::begin(&lib.app, Some(lib.bob)).await?;
-    let (open, _) = db::extras::create(&mut tx, "Sample", "sample", &About::default(), &[Link::Track(lib.v), Link::Track(lib.h)], None, "").await?;
+    let (open, _) = db::extras::create(&mut tx, "Sample", "sample", &About::default(), &[Link::Track(lib.v), Link::Track(lib.h)], None, None, "").await?;
     tx.commit().await?;
 
     // Carol: the new extra in the delta, its row without H (she can't see it).
@@ -231,7 +231,7 @@ async fn an_extra_goes_with_a_track_and_its_single(_: PgPoolOptions, connect: Pg
     let lib = setup(connect).await?;
     let mut tx = db::begin(&lib.app, Some(lib.carol)).await?;
     let single = db::review_bulk::make_singles(&mut tx, &[lib.o], "").await?.made[0].album_id;
-    let (id, _) = db::extras::create(&mut tx, "O vocals", "vocals", &About::default(), &[Link::Track(lib.o)], None, "").await?;
+    let (id, _) = db::extras::create(&mut tx, "O vocals", "vocals", &About::default(), &[Link::Track(lib.o)], None, None, "").await?;
     let linked = |extra: db::extras::Extra| extra.links.iter().map(|l| (l.kind.clone(), l.id)).collect::<Vec<_>>();
     let extra = db::extras::get(&mut tx, id).await?.unwrap();
     assert_eq!(linked(extra), [("track".to_string(), lib.o), ("album".to_string(), single)]);
@@ -272,7 +272,7 @@ async fn a_single_goes_with_its_track_in_a_small_delta(_: PgPoolOptions, connect
 async fn extras_follow_a_track_merge(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
     let lib = setup(connect).await?;
     let mut tx = db::begin(&lib.app, Some(lib.alice)).await?;
-    let (extra, _) = db::extras::create(&mut tx, "O stems", "stems", &About::default(), &[Link::Track(lib.o)], None, "").await?;
+    let (extra, _) = db::extras::create(&mut tx, "O stems", "stems", &About::default(), &[Link::Track(lib.o)], None, None, "").await?;
     let merged = db::revisions::merge_tracks(&mut tx, lib.v, lib.o, &Default::default(), None, None, "").await?;
     let on_v = db::extras::linked_to(&mut tx, Link::Track(lib.v)).await?;
     assert_eq!(on_v.iter().map(|e| e.id).collect::<Vec<_>>(), [extra]);
@@ -298,8 +298,8 @@ async fn extras_follow_album_and_artist_merges(_: PgPoolOptions, connect: PgConn
     let mut tx = db::begin(&lib.app, Some(lib.alice)).await?;
     let split = db::revisions::create_album(&mut tx, &crate::model::AlbumData { title: "Album A".into(), ..Default::default() }, db::revisions::Source::Edit, "").await?;
     let zed = db::ingest::find_or_create_artist(&mut tx, "Zed").await?.id;
-    let (on_album, _) = db::extras::create(&mut tx, "Album art stems", "stems", &About::default(), &[Link::Album(split)], None, "").await?;
-    let (on_artist, _) = db::extras::create(&mut tx, "Zed samples", "sample", &About::default(), &[Link::Artist(zed)], None, "").await?;
+    let (on_album, _) = db::extras::create(&mut tx, "Album art stems", "stems", &About::default(), &[Link::Album(split)], None, None, "").await?;
+    let (on_artist, _) = db::extras::create(&mut tx, "Zed samples", "sample", &About::default(), &[Link::Artist(zed)], None, None, "").await?;
     let merged = db::album_merges::merge_album(&mut tx, split, lib.album, "").await?;
     db::revisions::merge_artist(&mut tx, zed, lib.x, false, false, "").await?;
     let ids = |v: Vec<db::extras::Extra>| v.iter().map(|e| e.id).collect::<Vec<_>>();
@@ -320,7 +320,7 @@ async fn extras_are_linked_to_groupings(_: PgPoolOptions, connect: PgConnectOpti
     let lib = setup(connect).await?;
     let mut tx = db::begin(&lib.app, Some(lib.carol)).await?;
     let crew = db::groupings::create(&mut tx, "collective", "Tide Crew", "", "").await?;
-    let (id, access) = db::extras::create(&mut tx, "Crew stems", "stems", &About::default(), &[Link::Grouping(crew)], None, "").await?;
+    let (id, access) = db::extras::create(&mut tx, "Crew stems", "stems", &About::default(), &[Link::Grouping(crew)], None, None, "").await?;
     assert_eq!(access, Access::default(), "no track: seen by everyone");
     assert!(!db::extras::link(&mut tx, id, Link::Grouping(crew), "").await?, "once");
     assert!(db::extras::link(&mut tx, id, Link::Grouping(uuid::Uuid::now_v7()), "").await.is_err(), "a grouping that's there");
@@ -348,9 +348,9 @@ async fn extras_are_merged_and_the_merge_undone(_: PgPoolOptions, connect: PgCon
     let mut tx = db::begin(&lib.app, Some(lib.alice)).await?;
     db::blobs::register(&mut tx, SHA, "main", Some(3)).await?;
     db::blobs::register(&mut tx, &other_sha, "main", Some(3)).await?;
-    let (keep, _) = db::extras::create(&mut tx, "V vocals", "vocals", &About::default(), &[Link::Track(lib.v)], None, "").await?;
-    let (twin, _) = db::extras::create(&mut tx, "V vocals again", "vocals", &About::default(), &[Link::Track(lib.v), Link::Artist(lib.both)], None, "").await?;
-    let (stems, _) = db::extras::create(&mut tx, "V stems", "stems", &About::default(), &[Link::Artist(lib.both)], None, "").await?;
+    let (keep, _) = db::extras::create(&mut tx, "V vocals", "vocals", &About::default(), &[Link::Track(lib.v)], None, None, "").await?;
+    let (twin, _) = db::extras::create(&mut tx, "V vocals again", "vocals", &About::default(), &[Link::Track(lib.v), Link::Artist(lib.both)], None, None, "").await?;
+    let (stems, _) = db::extras::create(&mut tx, "V stems", "stems", &About::default(), &[Link::Artist(lib.both)], None, None, "").await?;
     let facts = FileFacts::default();
     let kept_file = db::extras::add_file(&mut tx, keep, SHA, "vox.wav", 3, &facts, "").await?;
     // The same bytes in two extras: from before they were refused.
@@ -424,7 +424,7 @@ async fn extras_are_merged_and_the_merge_undone(_: PgPoolOptions, connect: PgCon
 async fn an_extra_that_became_a_track_is_taken_off(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
     let lib = setup(connect).await?;
     let mut tx = db::begin(&lib.app, Some(lib.carol)).await?;
-    let (id, _) = db::extras::create(&mut tx, "Clip [dQw4w9WgXcQ].mp4", "video", &About::default(), &[], None, "").await?;
+    let (id, _) = db::extras::create(&mut tx, "Clip [dQw4w9WgXcQ].mp4", "video", &About::default(), &[], None, None, "").await?;
     db::extras::made_track(&mut tx, id, lib.o, "from YouTube").await?;
     assert!(db::extras::get(&mut tx, id).await?.unwrap().hidden, "taken off, kept");
     let log = db::extras::history(&mut tx, id).await?;
@@ -439,7 +439,7 @@ async fn an_extra_that_became_a_track_is_taken_off(_: PgPoolOptions, connect: Pg
 async fn images_in_extras_are_images(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
     let lib = setup(connect).await?;
     let mut tx = db::begin(&lib.app, Some(lib.bob)).await?;
-    let (id, _) = db::extras::create(&mut tx, "H photos", "other", &About::default(), &[Link::Track(lib.h)], None, "").await?;
+    let (id, _) = db::extras::create(&mut tx, "H photos", "other", &About::default(), &[Link::Track(lib.h)], None, None, "").await?;
     db::blobs::register(&mut tx, SHA, "main", Some(3)).await?;
     let facts = FileFacts { container: Some("png".into()), width: Some(4), height: Some(3), ..Default::default() };
     db::extras::add_file(&mut tx, id, SHA, "shoot/a.png", 3, &facts, "").await?;

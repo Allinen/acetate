@@ -35,6 +35,8 @@ pub enum Owner {
     Artist(Uuid),
     /// A grouping (a collective's accounts: shaped like an artist's).
     Grouping(Uuid),
+    /// A lost song (an extra): where the song was, shaped like a track's.
+    Extra(Uuid),
 }
 
 impl Owner {
@@ -42,6 +44,7 @@ impl Owner {
         match self {
             Owner::Album(_) => "album",
             Owner::Artist(_) | Owner::Grouping(_) => "artist",
+            Owner::Extra(_) => "track",
         }
     }
 
@@ -50,6 +53,7 @@ impl Owner {
             Owner::Album(id) => format!("/api/albums/{id}/sources"),
             Owner::Artist(id) => format!("/api/artists/{id}/sources"),
             Owner::Grouping(id) => format!("/api/groupings/{id}/sources"),
+            Owner::Extra(id) => format!("/api/extras/{id}/sources"),
         }
     }
 
@@ -59,6 +63,8 @@ impl Owner {
             Owner::Album(id) => shell.album_details.refresh(id),
             Owner::Artist(id) => shell.artist_details.refresh(id),
             Owner::Grouping(id) => shell.grouping_details.refresh(id),
+            // Its page loads it itself: see `SourcesEditor::take_changed`.
+            Owner::Extra(_) => {}
         }
     }
 }
@@ -83,9 +89,17 @@ pub struct SourcesEditor {
     answer: Task<Result<String, String>>,
     /// What the last save or trash said (Ok: done, in words).
     result: Option<Result<String, String>>,
+    /// A save or trash went through since `take_changed` was last asked.
+    changed: bool,
 }
 
 impl SourcesEditor {
+    /// Whether the sources changed since this was last asked (for a page that loads its
+    /// details itself).
+    pub fn take_changed(&mut self) -> bool {
+        std::mem::take(&mut self.changed)
+    }
+
     pub fn show(&mut self, ui: &mut egui::Ui, shell: &mut Shell, owner: Owner, sources: &[Source]) {
         if self.owner != Some(owner) {
             *self = SourcesEditor { owner: Some(owner), ..Default::default() };
@@ -94,6 +108,7 @@ impl SourcesEditor {
             self.busy = false;
             if result.is_ok() {
                 self.form = None;
+                self.changed = true;
                 owner.refresh(shell);
             }
             self.result = Some(result);

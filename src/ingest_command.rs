@@ -408,7 +408,7 @@ async fn add_video(pool: &PgPool, store: &BlobStore, path: &Path, options: &Opti
         facts.imported_from = Some(path.to_string_lossy().to_string());
         let title = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| name.clone());
         let access = options.restrict_to.clone().map(|groups| db::extras::Access { restricted: true, groups });
-        let (extra, _) = db::extras::create(&mut tx, &title, "video", &Default::default(), &[], access, IMPORTED).await?;
+        let (extra, _) = db::extras::create(&mut tx, &title, "video", &Default::default(), &[], access, None, IMPORTED).await?;
         db::extras::add_file(&mut tx, extra, &sha256, &name, size, &facts, IMPORTED).await?;
         tx.commit().await?;
         let note = match (facts.width, facts.height) {

@@ -23,6 +23,8 @@ pub struct ArtistPage {
     notes: crate::ui::edit::notes::NotesView,
     /// Its extras, and attaching them in edit mode.
     extras: crate::ui::edit::extras::ExtrasView,
+    /// "New lost song…" (edit mode).
+    new_lost: super::lost_songs::NewLostSong,
     /// Its tracks (as a primary artist), those it's featured on, those it produced.
     list: TrackTable,
     featured: TrackTable,
@@ -67,6 +69,8 @@ pub enum Section {
     Tracks,
     Featured,
     Produced,
+    /// Songs of theirs whose audio isn't here (extras of kind "lost_song").
+    LostSongs,
     Extras,
 }
 
@@ -77,6 +81,7 @@ impl Section {
             Section::Tracks => "Tracks",
             Section::Featured => "Featured on",
             Section::Produced => "Produced",
+            Section::LostSongs => "Lost songs",
             Section::Extras => "Extras",
         }
     }
@@ -212,7 +217,10 @@ impl ArtistPage {
         let all_tracks = catalog.artist_tracks(id);
         let all_albums = catalog.artist_albums(id);
         // Its extras (from its details), for the section at the bottom.
-        let extras: Vec<crate::details::Extra> = shell.artist_details.get(id).value.as_ref().map(|d| d.extras.clone()).unwrap_or_default();
+        // Lost songs are extras too, with a section of their own.
+        let (lost_songs, extras): (Vec<crate::details::Extra>, Vec<crate::details::Extra>) =
+            shell.artist_details.get(id).value.as_ref().map(|d| d.extras.clone()).unwrap_or_default().into_iter().partition(|e| e.lost.is_some());
+        let lost_shown: Vec<&crate::details::Extra> = lost_songs.iter().filter(|e| !e.hidden).collect();
         // Only what's credited under the names chosen (if any are).
         let names = credited_names(catalog, all_tracks, id);
         if names.len() < 2 {
@@ -275,6 +283,9 @@ impl ArtistPage {
         let extras_shown = extras.iter().filter(|e| !e.hidden).count();
         let mut sections = vec![(Section::Releases, releases.len()), (Section::Tracks, own.len()), (Section::Featured, featured.len()), (Section::Produced, produced.len())];
         sections.retain(|(_, n)| *n > 0);
+        if !lost_shown.is_empty() || may_edit {
+            sections.push((Section::LostSongs, lost_shown.len()));
+        }
         if crate::ui::edit::extras::ExtrasView::worth_showing(shell, &extras) {
             sections.push((Section::Extras, extras_shown));
         }
@@ -324,9 +335,13 @@ impl ArtistPage {
                 Section::Tracks => &own,
                 Section::Featured => &featured,
                 Section::Produced => &produced,
-                Section::Extras => &[],
+                Section::Extras | Section::LostSongs => &[],
             };
-            let count = if section == Section::Extras { extras_shown } else { rows.len() };
+            let count = match section {
+                Section::Extras => extras_shown,
+                Section::LostSongs => lost_shown.len(),
+                _ => rows.len(),
+            };
             let mut back = back_key;
             ui.horizontal(|ui| {
                 if ui.button(format!("‹ {}", artist.name)).on_hover_text("Back to the whole page (Esc)").clicked() {
@@ -335,7 +350,7 @@ impl ArtistPage {
                 ui.label(RichText::new(format!("{}  {}", section.title(), thousands(count))).font(font(22.0, bold())));
             });
             // (The chips choose tracks: nothing to do with extras.)
-            if chips_shown && section != Section::Extras {
+            if chips_shown && !matches!(section, Section::Extras | Section::LostSongs) {
                 ui.add_space(4.0);
                 name_chips(ui, &mut self.filters);
             }
@@ -346,6 +361,15 @@ impl ArtistPage {
             }
             match section {
                 Section::Releases => release_grid(ui, shell, catalog, rows, &mut self.release, ("artist-releases-all", id)),
+                Section::LostSongs => {
+                    egui::ScrollArea::vertical().id_salt(("artist-lost-all", id)).auto_shrink([false, false]).show(ui, |ui| {
+                        if may_edit {
+                            self.new_lost.show(ui, shell, id);
+                            ui.add_space(8.0);
+                        }
+                        super::lost_songs::rows(ui, shell, &lost_shown);
+                    });
+                }
                 Section::Extras => {
                     egui::ScrollArea::vertical().id_salt(("artist-extras-all", id)).auto_shrink([false, false]).show(ui, |ui| {
                         self.extras.show(ui, shell, crate::ui::edit::extras::Owner::Artist(id), &extras, false, true);
@@ -609,7 +633,11 @@ impl ArtistPage {
             if releases.is_empty() && own.is_empty() && featured.is_empty() && produced.is_empty() {
                 let text = if !filters.names.is_empty() { "Nothing credited under these names." } else { "This artist has no tracks yet: go add some (Review, or a track's page in edit mode)." };
                 ui.label(RichText::new(text).color(P.muted));
-                return;
+                // (Their lost songs are still theirs.)
+                if lost_shown.is_empty() && !may_edit {
+                    return;
+                }
+                ui.add_space(12.0);
             }
             // The first shown takes the keys until another is clicked.
             let shown = [!own.is_empty(), !featured.is_empty(), !produced.is_empty()];
@@ -647,6 +675,22 @@ impl ArtistPage {
                 }
                 if rows.len() > PREVIEW_ROWS && ui.small_button(format!("All {} ›", thousands(rows.len()))).clicked() {
                     self.expanded = Some(section);
+                }
+                ui.add_space(18.0);
+            }
+
+            // ---- Its lost songs: the first few (edit mode: there to make one) ----
+            if !lost_shown.is_empty() || may_edit {
+                if section_heading(ui, Section::LostSongs.title(), lost_shown.len(), lost_shown.len() > PREVIEW_ROWS) {
+                    self.expanded = Some(Section::LostSongs);
+                }
+                if may_edit {
+                    self.new_lost.show(ui, shell, id);
+                    ui.add_space(6.0);
+                }
+                super::lost_songs::rows(ui, shell, &lost_shown[..lost_shown.len().min(PREVIEW_ROWS)]);
+                if lost_shown.len() > PREVIEW_ROWS && ui.small_button(format!("All {} ›", thousands(lost_shown.len()))).clicked() {
+                    self.expanded = Some(Section::LostSongs);
                 }
                 ui.add_space(18.0);
             }

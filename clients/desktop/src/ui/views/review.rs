@@ -14,7 +14,8 @@
 //! needs fixing, and the file's name, folder and tags to fix from.
 //!
 //! A proposal (changes a tool suggests) shows what it would change and why, to adopt or
-//! reject (`review_proposal`).
+//! reject (`review_proposal`). A track that may be a lost song shows that lost song, to say
+//! whether it is; lost songs a tool proposed are listed above (`review_lost`).
 //!
 //! Keys: Ctrl+Enter saves; then, if the server says nothing's missing anymore, "fix
 //! later" is marked done and the next track comes. Ctrl+↓/↑ next/previous (anywhere);
@@ -140,6 +141,8 @@ pub struct Review {
     asked_not_imported: bool,
     /// Proposals' adopting and rejecting.
     proposals: super::review_proposal::Proposals,
+    /// Tracks that may be lost songs.
+    lost_found: super::review_lost::LostFound,
 }
 
 impl Review {
@@ -266,6 +269,7 @@ impl Review {
             }
         });
         ui.add_space(4.0);
+        super::review_lost::proposed(ui, shell, catalog);
         if self.showing_unlinked {
             ui.add_space(6.0);
             self.unlinked.show(ui, shell, catalog, &self.filter);
@@ -793,6 +797,11 @@ impl Review {
                 related(ui, shell, f);
                 if f.kind == "proposal"
                     && let Some(notice) = self.proposals.show(ui, shell, f, detail.as_deref())
+                {
+                    self.notice = Some(notice);
+                }
+                if f.kind == "lost_song_found"
+                    && let Some(notice) = self.lost_found.show(ui, shell, catalog, f)
                 {
                     self.notice = Some(notice);
                 }

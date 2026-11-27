@@ -20,6 +20,8 @@ refused or failed on, which you can fix as drafts and import.
 - **Yours:** `flag:note` in the [editor](editing/editor.md).
 - **Tools:** *proposal*. A script or a language model suggests changes to a track (a
   field, a whole new version, sources) instead of making them, with where it found them.
+- **Lost songs:** *lost song found*. The track has a platform id (the same SoundCloud song,
+  say) that a [lost song](editing/artist-page.md#lost-songs) has.
 
 ## Proposals
 
@@ -32,6 +34,17 @@ proposed it reads the reason, so it doesn't propose the same thing again.
 Tools send them through `POST /api/tracks/edit`: a track's `flags.add` takes
 `{"proposal": {key, agent, job_id?, base_revision_id?, patch?, new_variant?, sources?, evidence?}}`.
 A track has at most one open proposal per `key`. `POST /api/review/{id}/adopt` adopts one.
+
+## Lost songs
+
+A *lost song found* flag shows the lost song next to the track. **It's this song** gives the
+track the lost song's sources it doesn't have yet and takes the lost song off (it's kept, and
+its page can bring it back). Anything else worth keeping from it, like images, can be moved
+by hand first. **Not this song** settles the flag, and the same pair isn't flagged again.
+(`POST /api/review/{id}/found` does the first.)
+
+Lost songs a tool proposed are listed above the tracks, under *Proposed lost songs*. Each one
+opens its page, where you accept it or take it off.
 
 ## Keys
 

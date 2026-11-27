@@ -12,6 +12,7 @@ use sqlx::PgConnection;
 use uuid::Uuid;
 
 use super::revisions::EditRejected;
+use crate::model::sources::SourceOwner;
 
 /// What an extra is linked to.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -72,6 +73,67 @@ pub struct Access {
     #[serde(default)]
     pub groups: Vec<Uuid>,
 }
+
+/// What is known about a lost song (an extra of kind `lost_song`, migration 0072): a song
+/// whose audio the library doesn't have. Its name is the title; its links, the artists.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Lost {
+    pub status: LostStatus,
+    /// The artists as the song was credited where it was seen ("A ft. B"), which its links
+    /// to artists can't say.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub artists_shown: String,
+    /// As for tracks: "2019", "2019-05" or "2019-05-12".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub release_date: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LostStatus {
+    /// Suggested by a tool; a person accepts it (it becomes `Lost`) or takes it off.
+    Proposed,
+    /// Known to exist, and nothing of its audio is here.
+    Lost,
+    /// Only a snippet or preview of it is here (among its files).
+    Snippet,
+}
+
+impl Lost {
+    pub fn checked(&self) -> anyhow::Result<Lost> {
+        let artists_shown = self.artists_shown.trim().to_string();
+        if artists_shown.chars().count() > 500 {
+            return Err(EditRejected::Invalid("the artists shown are too long".into()).into());
+        }
+        let release_date = self.release_date.as_deref().map(str::trim).filter(|d| !d.is_empty()).map(str::to_string);
+        if let Some(date) = &release_date
+            && !is_partial_date(date)
+        {
+            return Err(EditRejected::Invalid(format!("“{date}” isn't a date like 2019, 2019-05 or 2019-05-12")).into());
+        }
+        if self.duration_ms.is_some_and(|d| !(0..=86_400_000).contains(&d)) {
+            return Err(EditRejected::Invalid("that length isn't one".into()).into());
+        }
+        Ok(Lost { status: self.status, artists_shown, release_date, duration_ms: self.duration_ms })
+    }
+}
+
+/// "2019", "2019-05" or "2019-05-12" (a real month and day).
+fn is_partial_date(date: &str) -> bool {
+    let parts: Vec<&str> = date.split('-').collect();
+    let digits = |p: &str, n: usize| p.len() == n && p.bytes().all(|b| b.is_ascii_digit());
+    match parts[..] {
+        [y] => digits(y, 4),
+        [y, m] => digits(y, 4) && digits(m, 2) && (1..=12).contains(&m.parse::<u32>().unwrap_or(0)),
+        [y, m, d] => digits(y, 4) && digits(m, 2) && digits(d, 2) && chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d").is_ok(),
+        _ => false,
+    }
+}
+
+pub const LOST_SONG: &str = "lost_song";
 
 /// One of an extra's files.
 #[derive(Debug, Serialize)]
@@ -134,6 +196,10 @@ pub struct Extra {
     pub created_by: Option<String>,
     pub files: Vec<ExtraFile>,
     pub links: Vec<Linked>,
+    /// A lost song's facts (kind `lost_song`), else none.
+    pub lost: Option<Lost>,
+    /// A lost song's sources (other extras have none).
+    pub sources: Vec<super::sources::Source>,
 }
 
 #[derive(Debug, Serialize)]
@@ -189,6 +255,16 @@ fn checked_kind(kind: &str) -> String {
     if kind.is_empty() { "other".into() } else { kind.chars().take(60).collect() }
 }
 
+/// A lost song has its facts; nothing else has any.
+fn checked_lost(kind: &str, lost: Option<&Lost>) -> anyhow::Result<Option<Lost>> {
+    match (kind == LOST_SONG, lost) {
+        (true, Some(lost)) => Ok(Some(lost.checked()?)),
+        (true, None) => Err(EditRejected::Invalid("a lost song needs `lost` (its status, at least)".into()).into()),
+        (false, Some(_)) => Err(EditRejected::Invalid("only a lost song has `lost`".into()).into()),
+        (false, None) => Ok(None),
+    }
+}
+
 async fn log(conn: &mut PgConnection, extra: Uuid, what: &str, details: serde_json::Value, reason: &str) -> sqlx::Result<()> {
     sqlx::query!("INSERT INTO extra_log (extra_id, what, details, reason) VALUES ($1, $2, $3, $4)", extra, what, details, reason.trim())
         .execute(conn)
@@ -213,11 +289,15 @@ pub async fn access_of_track(conn: &mut PgConnection, track: Uuid) -> anyhow::Re
 /// A new extra, linked to `links` (each must be there and not merged away). `access`: who
 /// sees it; None: like the first linked track (everyone, without one). Returns its id and
 /// the access it got.
-pub async fn create(conn: &mut PgConnection, name: &str, kind: &str, about: &About, links: &[Link], access: Option<Access>, reason: &str) -> anyhow::Result<(Uuid, Access)> {
+/// `lost`: what is known about it, for a lost song (and only then).
+#[allow(clippy::too_many_arguments)]
+pub async fn create(conn: &mut PgConnection, name: &str, kind: &str, about: &About, links: &[Link], access: Option<Access>, lost: Option<&Lost>, reason: &str) -> anyhow::Result<(Uuid, Access)> {
     let name = checked_name(name)?;
     let kind = checked_kind(kind);
     known_kind(conn, &kind).await?;
     let about = about.checked()?;
+    let lost = checked_lost(&kind, lost)?;
+    let lost_json = lost.as_ref().map(serde_json::to_value).transpose()?;
     let access = match access {
         Some(access) => access,
         None => match links.iter().find_map(|l| if let Link::Track(t) = l { Some(*t) } else { None }) {
@@ -229,15 +309,20 @@ pub async fn create(conn: &mut PgConnection, name: &str, kind: &str, about: &Abo
     // between). Restricted from the start, the visibility check would refuse the new row
     // (no group sees it yet).
     let id = sqlx::query_scalar!(
-        "INSERT INTO extras (name, kind, description, source) VALUES ($1, $2, $3, $4) RETURNING id",
+        "INSERT INTO extras (name, kind, description, source, lost) VALUES ($1, $2, $3, $4, $5) RETURNING id",
         name,
         kind,
         about.description,
-        about.source
+        about.source,
+        lost_json
     )
     .fetch_one(&mut *conn)
     .await?;
-    log(conn, id, "made", json!({ "name": name, "kind": kind, "about": about, "access": access }), reason).await?;
+    let mut made = json!({ "name": name, "kind": kind, "about": about, "access": access });
+    if let Some(lost) = &lost_json {
+        made["lost"] = lost.clone();
+    }
+    log(conn, id, "made", made, reason).await?;
     for link in links {
         self::link(conn, id, *link, reason).await?;
     }
@@ -308,29 +393,54 @@ async fn set_restricted(conn: &mut PgConnection, extra: Uuid, restricted: bool) 
     Ok(())
 }
 
-/// Its name, kind, description and source.
-pub async fn edit(conn: &mut PgConnection, extra: Uuid, name: &str, kind: &str, about: &About, reason: &str) -> anyhow::Result<bool> {
+/// Its name, kind, description and source, and a lost song's facts. `lost`: None keeps a
+/// lost song's as they are (a lost song made one needs them). A lost song with sources
+/// can't become another kind (they'd be on something that can't have them).
+#[allow(clippy::too_many_arguments)]
+pub async fn edit(conn: &mut PgConnection, extra: Uuid, name: &str, kind: &str, about: &About, lost: Option<&Lost>, reason: &str) -> anyhow::Result<bool> {
     let (name, kind, about) = (checked_name(name)?, checked_kind(kind), about.checked()?);
     known_kind(conn, &kind).await?;
-    let now = sqlx::query!("SELECT name, kind, description, source FROM extras WHERE id = $1 FOR UPDATE", extra)
+    let now = sqlx::query!("SELECT name, kind, description, source, lost FROM extras WHERE id = $1 FOR UPDATE", extra)
         .fetch_optional(&mut *conn)
         .await?
         .ok_or(EditRejected::NotFound("extra"))?;
-    if now.name == name && now.kind == kind && now.description == about.description && now.source == about.source {
+    let lost = match lost {
+        Some(lost) => checked_lost(&kind, Some(lost))?,
+        None if kind == LOST_SONG => match &now.lost {
+            Some(json) => Some(serde_json::from_value::<Lost>(json.clone())?),
+            None => checked_lost(&kind, None)?,
+        },
+        None => None,
+    };
+    if now.kind == LOST_SONG && kind != LOST_SONG {
+        let sources = sqlx::query_scalar!(r#"SELECT count(*) AS "n!" FROM sources WHERE extra_id = $1 AND trashed_at IS NULL"#, extra)
+            .fetch_one(&mut *conn)
+            .await?;
+        if sources > 0 {
+            return Err(EditRejected::Invalid("a lost song with sources stays a lost song (move its sources to the trash first)".into()).into());
+        }
+    }
+    let lost_json = lost.as_ref().map(serde_json::to_value).transpose()?;
+    if now.name == name && now.kind == kind && now.description == about.description && now.source == about.source && now.lost == lost_json {
         return Ok(false);
     }
     sqlx::query!(
-        "UPDATE extras SET name = $2, kind = $3, description = $4, source = $5 WHERE id = $1",
+        "UPDATE extras SET name = $2, kind = $3, description = $4, source = $5, lost = $6 WHERE id = $1",
         extra,
         name,
         kind,
         about.description,
-        about.source
+        about.source,
+        lost_json
     )
     .execute(&mut *conn)
     .await?;
-    let from = json!({ "name": now.name, "kind": now.kind, "description": now.description, "source": now.source });
-    let to = json!({ "name": name, "kind": kind, "description": about.description, "source": about.source });
+    let mut from = json!({ "name": now.name, "kind": now.kind, "description": now.description, "source": now.source });
+    let mut to = json!({ "name": name, "kind": kind, "description": about.description, "source": about.source });
+    if now.lost.is_some() || lost_json.is_some() {
+        from["lost"] = now.lost.unwrap_or(serde_json::Value::Null);
+        to["lost"] = lost_json.unwrap_or(serde_json::Value::Null);
+    }
     log(conn, extra, "edited", json!({ "from": from, "to": to }), reason).await?;
     Ok(true)
 }
@@ -518,6 +628,9 @@ struct MergeDetails {
     files: Vec<Uuid>,
     link_ids: Vec<Uuid>,
     dropped_links: Vec<Link>,
+    /// A lost song's sources (merges from before 0072 have none).
+    #[serde(default)]
+    sources: super::sources::MovedSources,
 }
 
 fn link_of(track: Option<Uuid>, album: Option<Uuid>, artist: Option<Uuid>, grouping: Option<Uuid>) -> Option<Link> {
@@ -526,6 +639,7 @@ fn link_of(track: Option<Uuid>, album: Option<Uuid>, artist: Option<Uuid>, group
 
 struct Candidate {
     name: String,
+    lost_song: bool,
     restricted: bool,
     groups: Vec<Uuid>,
     from_track: Option<Uuid>,
@@ -535,14 +649,14 @@ struct Candidate {
 
 async fn candidate(conn: &mut PgConnection, id: Uuid) -> anyhow::Result<Candidate> {
     let row = sqlx::query!(
-        r#"SELECT name, is_restricted, from_track_id, merged_into, hidden_at IS NOT NULL AS "hidden!" FROM extras WHERE id = $1 FOR UPDATE"#,
+        r#"SELECT name, kind, is_restricted, from_track_id, merged_into, hidden_at IS NOT NULL AS "hidden!" FROM extras WHERE id = $1 FOR UPDATE"#,
         id
     )
     .fetch_optional(&mut *conn)
     .await?
     .ok_or(EditRejected::NotFound("extra"))?;
     let groups = sqlx::query_scalar!("SELECT group_id FROM extra_access WHERE extra_id = $1 ORDER BY group_id", id).fetch_all(&mut *conn).await?;
-    Ok(Candidate { name: row.name, restricted: row.is_restricted, groups, from_track: row.from_track_id, merged_into: row.merged_into, hidden: row.hidden })
+    Ok(Candidate { name: row.name, lost_song: row.kind == LOST_SONG, restricted: row.is_restricted, groups, from_track: row.from_track_id, merged_into: row.merged_into, hidden: row.hidden })
 }
 
 /// Merges extras into `target`: their files and links move to it (a file whose bytes it has
@@ -577,6 +691,9 @@ pub async fn merge(conn: &mut PgConnection, target: Uuid, sources: &[Uuid], reas
         }
         if c.from_track.is_some() {
             return Err(EditRejected::Invalid(format!("“{}” was made from a track: make it a track again first", c.name)).into());
+        }
+        if c.lost_song != kept.lost_song {
+            return Err(EditRejected::Invalid(format!("“{}” and “{}” aren't both lost songs: a lost song is merged only with another", c.name, kept.name)).into());
         }
         if c.restricted != kept.restricted || c.groups != kept.groups {
             return Err(EditRejected::Invalid(format!("“{}” and “{}” aren't seen by the same people: change that first (their files would be opened to others)", c.name, kept.name)).into());
@@ -629,7 +746,8 @@ pub async fn merge(conn: &mut PgConnection, target: Uuid, sources: &[Uuid], reas
         )
         .execute(&mut *conn)
         .await?;
-        let details = MergeDetails { into: target, files: report.files_moved.iter().map(|f| f.id).collect(), link_ids, dropped_links: dropped };
+        let sources = super::sources::move_all(conn, SourceOwner::Extra(id), SourceOwner::Extra(target)).await?;
+        let details = MergeDetails { into: target, files: report.files_moved.iter().map(|f| f.id).collect(), link_ids, dropped_links: dropped, sources };
         log(conn, id, "merged into", serde_json::to_value(&details)?, reason).await?;
         let files: Vec<_> = report.files_moved.iter().map(|f| json!({ "id": f.id, "name": f.name })).collect();
         log(conn, target, "merged in", json!({ "from": id, "name": report.name, "files": files, "links": report.links_moved }), reason).await?;
@@ -671,6 +789,7 @@ pub async fn unmerge(conn: &mut PgConnection, extra: Uuid, reason: &str) -> anyh
         .execute(&mut *conn)
         .await?;
     }
+    super::sources::unmove_all(conn, &details.sources, SourceOwner::Extra(extra), SourceOwner::Extra(details.into)).await?;
     sqlx::query!("UPDATE extras SET merged_into = NULL, hidden_at = NULL, trashed_at = NULL, trashed_by = NULL WHERE id = $1", extra).execute(&mut *conn).await?;
     log(conn, extra, "merge undone", json!({ "from": details.into }), reason).await?;
     log(conn, details.into, "merge undone", json!({ "extra": extra }), reason).await?;
@@ -820,7 +939,7 @@ pub async fn file_blob(conn: &mut PgConnection, file: Uuid) -> sqlx::Result<Opti
 pub async fn get(conn: &mut PgConnection, id: Uuid) -> sqlx::Result<Option<Extra>> {
     let Some(row) = sqlx::query!(
         r#"SELECT e.id, e.name, e.kind, e.description, e.source, e.from_track_id, e.is_restricted,
-                  e.hidden_at IS NOT NULL AS "hidden!", e.merged_into, e.created_at, u.username AS "created_by?"
+                  e.hidden_at IS NOT NULL AS "hidden!", e.merged_into, e.created_at, u.username AS "created_by?", e.lost
            FROM extras e LEFT JOIN users u ON u.id = e.created_by WHERE e.id = $1"#,
         id
     )
@@ -853,6 +972,9 @@ pub async fn get(conn: &mut PgConnection, id: Uuid) -> sqlx::Result<Option<Extra
         created_by: row.created_by,
         files: files(conn, id).await?,
         links: links(conn, id).await?,
+        sources: if row.lost.is_some() { super::sources::list_for(conn, id).await? } else { Vec::new() },
+        // Written by `create`/`edit` only, from a `Lost`.
+        lost: row.lost.and_then(|l| serde_json::from_value(l).ok()),
     }))
 }
 
@@ -1021,7 +1143,7 @@ pub async fn track_to_extra(conn: &mut PgConnection, track: Uuid, kind: &str, na
     links.extend(artists.into_iter().map(Link::Artist));
     let access = access_of_track(conn, track).await?;
     let name = name.map(str::trim).filter(|n| !n.is_empty()).unwrap_or(&row.title).to_string();
-    let (extra, access) = create(conn, &name, kind, &about, &links, Some(access), reason).await?;
+    let (extra, access) = create(conn, &name, kind, &about, &links, Some(access), None, reason).await?;
     let facts = FileFacts {
         container: row.container,
         codec: row.codec,

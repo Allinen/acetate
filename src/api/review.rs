@@ -231,3 +231,13 @@ pub async fn adopt(
     }
     Ok(Json(edited))
 }
+
+/// `POST /api/review/{id}/found`: a `lost_song_found` flag resolved as found: the track
+/// gets the lost song's sources it lacks and the lost song is taken off (see
+/// `db::lost_songs::found`). "Not this song" is an ordinary resolve.
+pub async fn found(State(state): State<AppState>, user: CurrentUser, Path(id): Path<Uuid>) -> Result<Json<db::lost_songs::Found>, AppError> {
+    let mut tx = state.db(&user).await?;
+    let found = db::lost_songs::found(&mut tx, id).await?.ok_or(AppError::NotFound)?;
+    tx.commit().await?;
+    Ok(Json(found))
+}

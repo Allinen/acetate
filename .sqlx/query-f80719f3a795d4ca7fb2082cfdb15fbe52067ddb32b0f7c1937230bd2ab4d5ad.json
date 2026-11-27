@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT id FROM sources\n            WHERE (track_id = $1 OR album_id = $1 OR artist_id = $1 OR grouping_id = $1)\n              AND platform = $2 AND external_id = $3\n            ",
+  "query": "\n                    SELECT id FROM sources\n                    WHERE (track_id = $1 OR album_id = $1 OR artist_id = $1 OR grouping_id = $1 OR extra_id = $1) AND platform = $2 AND external_id = $3\n                    ",
   "describe": {
     "columns": [
       {
@@ -26,5 +26,5 @@
       false
     ]
   },
-  "hash": "dc591d95824641f3f8c71ba481a10e87c418a4a2348b4df26fbca1a89b968fe1"
+  "hash": "f80719f3a795d4ca7fb2082cfdb15fbe52067ddb32b0f7c1937230bd2ab4d5ad"
 }

@@ -185,6 +185,12 @@ pub struct Extra {
     /// What it belongs to (those the user sees).
     #[serde(default)]
     pub links: Vec<ExtraLink>,
+    /// A lost song's facts (kind "lost_song").
+    #[serde(default)]
+    pub lost: Option<crate::catalog::model::Lost>,
+    /// A lost song's sources (where it was).
+    #[serde(default)]
+    pub sources: Vec<Source>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

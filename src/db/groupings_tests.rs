@@ -257,10 +257,10 @@ async fn an_artists_extras_move_to_its_collective(_: PgPoolOptions, connect: PgC
 
     let mut tx = db::begin(&lib.owner, None).await?;
     let crew = db::groupings::create(&mut tx, "collective", "Tide Crew", "", "").await?;
-    let (stems, _) = db::extras::create(&mut tx, "Stems", "stems", &About::default(), &[Link::Artist(mira), Link::Track(track)], None, "").await?;
-    let (both, _) = db::extras::create(&mut tx, "Both", "sample", &About::default(), &[Link::Artist(mira), Link::Grouping(crew)], None, "").await?;
+    let (stems, _) = db::extras::create(&mut tx, "Stems", "stems", &About::default(), &[Link::Artist(mira), Link::Track(track)], None, None, "").await?;
+    let (both, _) = db::extras::create(&mut tx, "Both", "sample", &About::default(), &[Link::Artist(mira), Link::Grouping(crew)], None, None, "").await?;
     let friends_only = Some(Access { restricted: true, groups: vec![lib.friends] });
-    let (demo, _) = db::extras::create(&mut tx, "Demo", "clip", &About::default(), &[Link::Artist(mira)], friends_only, "").await?;
+    let (demo, _) = db::extras::create(&mut tx, "Demo", "clip", &About::default(), &[Link::Artist(mira)], friends_only, None, "").await?;
     tx.commit().await?;
 
     // Carol (not in friends) sees two of them move.

@@ -30,6 +30,7 @@ from acetate_ingest import (
     ServerError,
     TrackHint,
 )
+from acetate_ingest import AlreadyKnown
 
 AUDIO = os.path.join(os.path.dirname(__file__), "..", "..", "..", "test-audio")
 URL = os.environ.get("ACETATE_TEST_URL")
@@ -191,6 +192,49 @@ class AgainstAServer(unittest.TestCase):
         self.acetate._request("POST", f"/api/review/{flag['id']}/resolve", json_body={"resolution": "rejected: tests"})
         settled = [f for f in self.acetate.review_flags(kind="proposal", resolved=True, track_id=track_id) if f["id"] == flag["id"]]
         self.assertEqual(settled[0]["resolution"], "rejected: tests")
+
+    def test_a_lost_song_made_refused_found(self):
+        song_id = uuid.uuid4().int % 10**12
+        description = Description(origin=NetEaseTrack(song_id=song_id), flag="from the Python library's tests")
+        path = os.path.join(AUDIO, "lantern demo.mp3")
+        report = self.acetate.ingest(path, description)
+        with open(path, "rb") as f:
+            sha256 = hashlib.sha256(f.read()).hexdigest()
+        track_id = report.track_id or self.acetate.lookup_files([sha256])[0]["tracks"][0]["track_id"]
+        # (Imported by another test already: it gets this run's id.)
+        held = {"platform": "netease", "data": {"song_id": song_id}}
+        self.acetate.edit_tracks({"tracks": [{"track_id": track_id, "sources": {"add": [held]}}], "reason": "tests"})
+        artist_id = self.acetate.track(track_id)["credits"][0]["artist_id"]
+        lost = {"status": "proposed", "artists_shown": "Mira Vale ft. Someone", "release_date": "2019-05"}
+        gone = {"platform": "netease", "data": {"song_id": song_id + 1}}
+
+        preview = self.acetate.create_lost_song("Gone", [artist_id], lost, sources=[gone], preview=True)
+        self.assertTrue(preview["preview"])
+        self.assertEqual(self.acetate.lookup_sources([("netease", str(song_id + 1))])[0]["owners"], [], "nothing kept")
+
+        made = self.acetate.create_lost_song("Gone", [artist_id], lost, sources=[gone], reason="tests")
+        [hit] = self.acetate.lookup_sources([("netease", str(song_id + 1))])
+        self.assertEqual(hit["owners"], [{"kind": "lost_song", "id": made["id"]}])
+        listed = self.acetate.lost_songs(artist_id=artist_id, status="proposed")
+        self.assertIn(made["id"], [e["id"] for e in listed])
+        with self.assertRaises(AlreadyKnown) as again:
+            self.acetate.create_lost_song("Gone again", [artist_id], lost, sources=[gone])
+        self.assertEqual((again.exception.code, again.exception.id), ("already_lost", made["id"]))
+        with self.assertRaises(AlreadyKnown) as refused:
+            self.acetate.create_lost_song("Not gone", [artist_id], lost, sources=[held])
+        self.assertEqual((refused.exception.code, refused.exception.id), ("already_held", track_id))
+
+        added = self.acetate.add_extra_files(made["id"], [(f"cover-{song_id}.png", png(song_id % 251))])
+        self.assertEqual(len(added["files"]), 1, added)
+
+        # The track gets the lost song's platform id: flagged, then found.
+        edit = {"tracks": [{"track_id": track_id, "sources": {"add": [gone]}}], "reason": "tests"}
+        self.assertIsNone(self.acetate.edit_tracks(edit)["tracks"][0].get("error"))
+        [flag] = self.acetate.review_flags(kind="lost_song_found", track_id=track_id)
+        self.assertEqual(flag["related"]["extra_id"], made["id"])
+        found = self.acetate._request("POST", f"/api/review/{flag['id']}/found", json_body={})
+        self.assertEqual((found["track_id"], found["extra_id"]), (track_id, made["id"]))
+        self.assertEqual(self.acetate.lookup_sources([("netease", str(song_id + 1))])[0]["owners"], [{"kind": "track", "id": track_id}])
 
 
 if __name__ == "__main__":

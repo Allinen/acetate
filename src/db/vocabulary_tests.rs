@@ -77,9 +77,9 @@ async fn extras_have_the_libraries_kinds(_: PgPoolOptions, connect: PgConnectOpt
     let lib = setup(connect).await?;
     let mut tx = db::begin(&lib.app, Some(lib.carol)).await?;
     let about = db::extras::About::default();
-    let err = db::extras::create(&mut tx, "Ref", "reference mix", &about, &[], None, "").await.unwrap_err().to_string();
+    let err = db::extras::create(&mut tx, "Ref", "reference mix", &about, &[], None, None, "").await.unwrap_err().to_string();
     assert!(err.contains("isn't a kind of extra"), "{err}");
     db::vocabulary::add(&mut tx, new("extra_kind", "reference")).await?;
-    db::extras::create(&mut tx, "Ref", "reference", &about, &[], None, "").await?;
+    db::extras::create(&mut tx, "Ref", "reference", &about, &[], None, None, "").await?;
     Ok(())
 }

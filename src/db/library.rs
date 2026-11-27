@@ -45,7 +45,7 @@ pub const GROUPING_COLUMNS: &[&str] = &["id", "kind", "name", "track_count", "al
 /// (only those seen). `files`: how many (not taken off); `first_file`/`duration_ms`: the first audio
 /// one's (by name), to play (none: no audio). `video`: its first video file (to watch);
 /// `thumb_key`: that video's thumbnail (`GET /api/images/{key}`). `hidden`: taken off (a delta sends it so the client drops it).
-pub const EXTRA_COLUMNS: &[&str] = &["id", "name", "kind", "is_restricted", "hidden", "links", "files", "first_file", "duration_ms", "video", "thumb_key"];
+pub const EXTRA_COLUMNS: &[&str] = &["id", "name", "kind", "is_restricted", "hidden", "links", "files", "first_file", "duration_ms", "video", "thumb_key", "lost"];
 
 /// The extras (all, or these ones) the user can see, see `EXTRA_COLUMNS`.
 pub async fn extras_json(conn: &mut PgConnection, ids: Option<&[Uuid]>) -> sqlx::Result<String> {
@@ -60,7 +60,7 @@ pub async fn extras_json(conn: &mut PgConnection, ids: Option<&[Uuid]>) -> sqlx:
                                  COALESCE(final_track(l.track_id), final_album(l.album_id), final_artist(l.artist_id), l.grouping_id)) ORDER BY l.id)
                              FROM extra_links l WHERE l.extra_id = e.id), '[]'::json),
                    (SELECT count(*) FROM extra_files f WHERE f.extra_id = e.id AND f.hidden_at IS NULL),
-                   first.id, first.duration_ms, video.id, left(video.thumb_sha256, 16)
+                   first.id, first.duration_ms, video.id, left(video.thumb_sha256, 16), e.lost
                ) ORDER BY e.id), '[]'::json)::text AS "rows!"
         FROM extras e
         LEFT JOIN LATERAL (

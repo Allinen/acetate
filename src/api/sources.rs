@@ -60,6 +60,17 @@ pub async fn add_grouping_source(
     add(&state, &user, SourceOwner::Grouping(id), source).await
 }
 
+/// `POST /api/extras/{id}/sources`, same body as for tracks: a lost song's (other extras
+/// have none).
+pub async fn add_extra_source(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<Uuid>,
+    Json(source): Json<NewSource>,
+) -> Result<Json<AddedSnapshot>, AppError> {
+    add(&state, &user, SourceOwner::Extra(id), source).await
+}
+
 #[derive(Debug, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Accounts {

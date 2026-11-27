@@ -1,5 +1,18 @@
 	# Changelog
 
+## Unreleased
+
+### Upgrading
+
+- Update the apps along with the server. The API version is now 10 and the catalog format 12
+
+### Features
+
+- Lost songs: songs whose audio the library doesn't have (deleted uploads, songs only a snippet is left of) can be kept on their artists' pages, with their status, what is known of them, images and snippets as files, and where they were as sources. They're extras of the new kind *lost song*. In edit mode, an artist's page has **New lost song…**
+- A track that turns up with a lost song's platform id gets a *lost song found* flag. On the Review page, **It's this song** gives the track the lost song's sources and takes the lost song off
+- Tools can propose lost songs (`POST /api/lost-songs`, with `preview`). The Review page lists them so you can accept them or take them off. `POST /api/lookup/sources` finds lost songs too (`kind: "lost_song"`), and `GET /api/lost-songs` lists them
+- Python library: `create_lost_song`, `lost_songs` and `add_extra_files`
+
 ## 0.4.6 - 2026-11-27
 
 ### Upgrading

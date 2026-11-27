@@ -37,6 +37,7 @@ from .description import (  # noqa: E402
 )
 from .errors import (  # noqa: E402
     AcetateError,
+    AlreadyKnown,
     CantConnect,
     InvalidDescription,
     NotLoggedIn,
@@ -72,6 +73,7 @@ __all__ = [
     "Report",
     "Resolved",
     "AcetateError",
+    "AlreadyKnown",
     "InvalidDescription",
     "CantConnect",
     "ServerError",

@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE review_flags SET resolved_at = now(), resolved_by = current_app_user(), resolution = $2\n         WHERE kind = 'lost_song_found' AND resolved_at IS NULL AND related ->> 'extra_id' = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b699a58d0f7d02cc18fab62a45920011db20a29116bc2cebc4c38fc73f2acd83"
+}

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n                    SELECT id FROM sources\n                    WHERE (track_id = $1 OR album_id = $1 OR artist_id = $1 OR grouping_id = $1) AND platform = $2 AND external_id = $3\n                    ",
+  "query": "\n                INSERT INTO sources (track_id, album_id, artist_id, grouping_id, extra_id, platform, external_id)\n                VALUES ($1, $2, $3, $4, $5, $6, $7)\n                RETURNING id\n                ",
   "describe": {
     "columns": [
       {
@@ -18,6 +18,10 @@
     "parameters": {
       "Left": [
         "Uuid",
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Uuid",
         "Text",
         "Text"
       ]
@@ -26,5 +30,5 @@
       false
     ]
   },
-  "hash": "6a60ea566974e945b39df76f1e1c6b310da22bdc5d795de602eb7f6f5ee17555"
+  "hash": "f84c2eec1f2f92285300d9c4696edf3431791b72a7d1db4935ffe92309da7cf1"
 }

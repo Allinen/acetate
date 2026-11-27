@@ -26,6 +26,9 @@ pub enum SourceOwner {
     /// A grouping (a collective: the platform accounts it is). Its sources have the
     /// shapes of an artist's: an account is one.
     Grouping(Uuid),
+    /// A lost song (an extra of kind `lost_song`, migration 0072). Its sources have the
+    /// shapes of a track's: they're where the song was.
+    Extra(Uuid),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,13 +41,13 @@ pub enum Kind {
 impl SourceOwner {
     pub fn id(&self) -> Uuid {
         match self {
-            SourceOwner::Track(id) | SourceOwner::Album(id) | SourceOwner::Artist(id) | SourceOwner::Grouping(id) => *id,
+            SourceOwner::Track(id) | SourceOwner::Album(id) | SourceOwner::Artist(id) | SourceOwner::Grouping(id) | SourceOwner::Extra(id) => *id,
         }
     }
 
     pub fn kind(&self) -> Kind {
         match self {
-            SourceOwner::Track(_) => Kind::Track,
+            SourceOwner::Track(_) | SourceOwner::Extra(_) => Kind::Track,
             SourceOwner::Album(_) => Kind::Album,
             SourceOwner::Artist(_) | SourceOwner::Grouping(_) => Kind::Artist,
         }

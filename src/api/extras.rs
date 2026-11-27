@@ -11,7 +11,8 @@ use super::media::serve_blob;
 use super::{AppError, AppState};
 use crate::auth::{CurrentUser, Permission};
 use crate::db;
-use crate::db::extras::{About, Access, Extra, FromTrack, Link, LogEntry, MergeReport};
+use crate::db::extras::{About, Access, Extra, FromTrack, Link, LogEntry, Lost, LostStatus, MergeReport};
+use crate::db::lost_songs::NewLostSong;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -27,6 +28,8 @@ pub struct NewExtra {
     source: String,
     /// Who sees it (needs `manage_access`); absent: like the first linked track.
     access: Option<Access>,
+    /// A lost song's facts (kind `lost_song`, and only then).
+    lost: Option<Lost>,
     #[serde(default)]
     reason: String,
 }
@@ -39,9 +42,69 @@ pub async fn create(State(state): State<AppState>, user: CurrentUser, Json(body)
         return Err(AppError::Forbidden("choosing who sees an extra needs the manage_access permission (without it, it's seen like its track)".into()));
     }
     let mut tx = state.db(&user).await?;
-    let (id, access) = db::extras::create(&mut tx, &body.name, &body.kind, &About { description: body.description.clone(), source: body.source.clone() }, &body.links, body.access, &body.reason).await?;
+    let (id, access) = db::extras::create(&mut tx, &body.name, &body.kind, &About { description: body.description.clone(), source: body.source.clone() }, &body.links, body.access, body.lost.as_ref(), &body.reason).await?;
     tx.commit().await?;
     Ok(Json(serde_json::json!({ "id": id, "access": access })))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreateLostSong {
+    name: String,
+    artist_ids: Vec<Uuid>,
+    lost: Lost,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    sources: Vec<crate::model::sources::NewSource>,
+    #[serde(default)]
+    reason: String,
+    /// Check it and answer, keeping nothing.
+    #[serde(default)]
+    preview: bool,
+}
+
+/// `POST /api/lost-songs`, JSON `{"name", "artist_ids": [...], "lost": {"status": "lost",
+/// "artists_shown", "release_date", "duration_ms"}, "description", "sources": [{"platform",
+/// "data"}], "reason", "preview"}` (sources need `edit_sources`): a lost song, seen like an
+/// open extra. Answers `{id}`; 409 with `code` `already_held` (a track has one of its
+/// platform ids: `id` is the track) or `already_lost` (`id` is that lost song).
+pub async fn create_lost_song(State(state): State<AppState>, user: CurrentUser, Json(body): Json<CreateLostSong>) -> Result<Json<serde_json::Value>, AppError> {
+    if !body.sources.is_empty() && !user.has(Permission::EditSources) {
+        return Err(AppError::Forbidden("giving it sources needs edit_sources".into()));
+    }
+    let song = NewLostSong { name: body.name, artist_ids: body.artist_ids, lost: body.lost, description: body.description, sources: body.sources };
+    let mut tx = state.db(&user).await?;
+    let id = match db::lost_songs::create(&mut tx, &song, &body.reason).await? {
+        Ok(id) => id,
+        Err(known) => {
+            let code = match known {
+                db::lost_songs::Known::AlreadyHeld { .. } => "already_held",
+                db::lost_songs::Known::AlreadyLost { .. } => "already_lost",
+            };
+            return Err(AppError::Known { code, message: known.message(), id: known.id() });
+        }
+    };
+    if body.preview {
+        tx.rollback().await?;
+    } else {
+        tx.commit().await?;
+    }
+    Ok(Json(serde_json::json!({ "id": id, "preview": body.preview })))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct LostSongsQuery {
+    artist: Option<Uuid>,
+    status: Option<LostStatus>,
+    limit: Option<i64>,
+}
+
+/// `GET /api/lost-songs?artist=&status=&limit=`: lost songs (not taken off), as
+/// `GET /api/extras/{id}` answers each, by title.
+pub async fn lost_songs(State(state): State<AppState>, user: CurrentUser, axum::extract::Query(q): axum::extract::Query<LostSongsQuery>) -> Result<Json<Vec<Extra>>, AppError> {
+    let mut tx = state.db(&user).await?;
+    Ok(Json(db::lost_songs::list(&mut tx, q.artist, q.status, q.limit.unwrap_or(200).clamp(1, 1000)).await?))
 }
 
 /// `GET /api/extras/{id}`.
@@ -66,14 +129,16 @@ pub struct Edit {
     description: String,
     #[serde(default)]
     source: String,
+    /// A lost song's facts; absent: as they are.
+    lost: Option<Lost>,
     #[serde(default)]
     reason: String,
 }
 
-/// `PUT /api/extras/{id}`, JSON `{"name", "kind", "description", "source", "reason"}`.
+/// `PUT /api/extras/{id}`, JSON `{"name", "kind", "description", "source", "lost", "reason"}`.
 pub async fn edit(State(state): State<AppState>, user: CurrentUser, Path(id): Path<Uuid>, Json(body): Json<Edit>) -> Result<Json<serde_json::Value>, AppError> {
     let mut tx = state.db(&user).await?;
-    let changed = db::extras::edit(&mut tx, id, &body.name, &body.kind, &About { description: body.description.clone(), source: body.source.clone() }, &body.reason).await?;
+    let changed = db::extras::edit(&mut tx, id, &body.name, &body.kind, &About { description: body.description.clone(), source: body.source.clone() }, body.lost.as_ref(), &body.reason).await?;
     tx.commit().await?;
     Ok(Json(serde_json::json!({ "changed": changed })))
 }
@@ -277,7 +342,7 @@ pub async fn from_problem(State(state): State<AppState>, user: CurrentUser, Path
     }
     let path = state.store.path_for(&open.sha256).await;
     let facts = crate::ingest::video::examine(&state.store, &path, &open.uploaded_filename).await;
-    let (id, _) = db::extras::create(&mut tx, &body.name, &body.kind, &About { description: body.description.clone(), source: body.source.clone() }, &body.links, None, &body.reason).await?;
+    let (id, _) = db::extras::create(&mut tx, &body.name, &body.kind, &About { description: body.description.clone(), source: body.source.clone() }, &body.links, None, None, &body.reason).await?;
     db::extras::add_file(&mut tx, id, &open.sha256, &open.uploaded_filename, open.size_bytes, &facts, &body.reason).await?;
     db::problems::resolve(&mut tx, problem, "made an extra").await?;
     tx.commit().await?;

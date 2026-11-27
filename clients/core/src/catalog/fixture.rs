@@ -44,8 +44,8 @@ pub fn sample_json() -> String {
         "groupings": {"columns": ["id", "kind", "name", "track_count", "album_count", "artists"], "rows": [
             ["00000000-0000-7000-8000-0000000000d1", "era", "Early", 1, 1, ["00000000-0000-7000-8000-0000000000a1"]]
         ]},
-        "extras": {"columns": ["id", "name", "kind", "is_restricted", "hidden", "links", "files", "first_file", "duration_ms", "video", "thumb_key"], "rows": [
-            ["00000000-0000-7000-8000-0000000000e9", "Second (vocals)", "vocals", false, false, [["track", "00000000-0000-7000-8000-000000000001"]], 1, "00000000-0000-7000-8000-0000000000ea", 1000, null, null]
+        "extras": {"columns": ["id", "name", "kind", "is_restricted", "hidden", "links", "files", "first_file", "duration_ms", "video", "thumb_key", "lost"], "rows": [
+            ["00000000-0000-7000-8000-0000000000e9", "Second (vocals)", "vocals", false, false, [["track", "00000000-0000-7000-8000-000000000001"]], 1, "00000000-0000-7000-8000-0000000000ea", 1000, null, null, null]
         ]},
         "playlists": [{"id": "00000000-0000-7000-8000-0000000000f9", "name": "Mine", "description": "", "public": false, "owner": "ann", "mine": true, "entries": 2, "duration_ms": 3000}]
     })

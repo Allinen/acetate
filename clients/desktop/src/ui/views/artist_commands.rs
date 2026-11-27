@@ -941,7 +941,7 @@ mod tests {
             { "id": Uuid::from_u128(1), "name": "Glass Harbor (vocals)", "kind": "vocals", "description": "dry", "source": "the session", "is_restricted": false }
         ]))
         .unwrap();
-        let library = vec![crate::catalog::model::Extra { id: Uuid::from_u128(2), name: "Stems".into(), kind: "stems".into(), is_restricted: false, hidden: false, links: vec![], files: 0, first_file: None, duration_ms: None, video: None, thumb_key: None }];
+        let library = vec![crate::catalog::model::Extra { id: Uuid::from_u128(2), name: "Stems".into(), kind: "stems".into(), is_restricted: false, hidden: false, links: vec![], files: 0, first_file: None, duration_ms: None, video: None, thumb_key: None, lost: None }];
         let edit = Here { edit_mode: true, may_edit: true, extras: &own, library_extras: &library, ..here(&[], &[]) };
         let known = Known::default();
         let does = |text: &str, here: &Here| resolve(text, here, &known).into_iter().map(|r| r.map(|(_, d)| d)).collect::<Vec<_>>();

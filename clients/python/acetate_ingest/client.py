@@ -25,6 +25,7 @@ from ._shapes import SHAPES
 from .description import Description, Image
 from .errors import (
     AcetateError,
+    AlreadyKnown,
     CantConnect,
     InvalidDescription,
     NotLoggedIn,
@@ -127,6 +128,26 @@ class _Client:
             if len(page) < REVIEW_PAGE:
                 return flags
             before = page[-1]["id"]
+
+    def _create_lost_song(
+        self,
+        name: str,
+        artist_ids: list[str],
+        lost: dict[str, Any],
+        description: str,
+        sources: list[dict[str, Any]],
+        reason: str,
+        preview: bool,
+    ) -> _Operation[dict[str, Any]]:
+        body = {"name": name, "artist_ids": artist_ids, "lost": lost, "description": description, "sources": sources, "reason": reason, "preview": preview}
+        return (yield _Call("POST", "/api/lost-songs", json_body=body))
+
+    def _add_extra_files(self, extra_id: str, files: list[AudioFile | tuple[str, AudioFile]], reason: str) -> _Operation[dict[str, Any]]:
+        parts: list[_Part] = [_Part("reason", None, reason.encode())] if reason else []
+        for n, file in enumerate(files):
+            name, content = file if isinstance(file, tuple) else (_name_of(file, "file"), file)
+            parts.append((yield from self._file_part(f"file{n}", name, _content(content, "file"))))
+        return (yield _Call("POST", f"/api/extras/{extra_id}/files", multipart=parts))
 
     def _login(self, username: str, password: str) -> _Operation[None]:
         answer = yield _Call("POST", "/api/auth/login", json_body={"username": username, "password": password})
@@ -371,6 +392,38 @@ class Acetate(_Client):
         `resolution`: a rejected proposal's says why). E.g. `kind="proposal"`."""
         return self._run(self._review_flags(kind, resolved, track_id))
 
+    # ---- Lost songs ----
+
+    def create_lost_song(
+        self,
+        name: str,
+        artist_ids: list[str],
+        lost: dict[str, Any],
+        *,
+        description: str = "",
+        sources: list[dict[str, Any]] | None = None,
+        reason: str = "",
+        preview: bool = False,
+    ) -> dict[str, Any]:
+        """Makes a lost song (a song whose audio the library doesn't have) on these
+        artists' pages: `lost` is `{"status": "lost" | "snippet" | "proposed",
+        "artists_shown"?, "release_date"?, "duration_ms"?}`, `sources` are track-shaped
+        (`{"platform", "data"}`: where it was). Answers `{"id", "preview"}`; `preview`
+        checks it and keeps nothing. Raises `AlreadyKnown` if a track or another lost song
+        has one of its platform ids."""
+        return self._run(self._create_lost_song(name, artist_ids, lost, description, sources or [], reason, preview))
+
+    def lost_songs(self, *, artist_id: str | None = None, status: str | None = None, limit: int = 200) -> list[dict[str, Any]]:
+        """Lost songs (not taken off), by an artist and of a status if given, by title,
+        each as `GET /api/extras/{id}` answers it (`lost`, `sources`, `files`, `links`…)."""
+        return self._run(self._search("/api/lost-songs", artist=artist_id, status=status, limit=limit))
+
+    def add_extra_files(self, extra_id: str, files: list[AudioFile | tuple[str, AudioFile]], *, reason: str = "") -> dict[str, Any]:
+        """Adds files (images, a snippet…) to an extra, such as a lost song: paths, or
+        `(name, bytes or file)` for those without a name of their own. Answers
+        `{"files": [id…], "already": [...]}` (`already`: files an extra has already)."""
+        return self._run(self._add_extra_files(extra_id, files, reason))
+
     # ---- Ingesting ----
 
     def ingest(
@@ -531,6 +584,28 @@ class AsyncAcetate(_Client):
     async def review_flags(self, *, kind: str | None = None, resolved: bool = False, track_id: str | None = None) -> list[dict[str, Any]]:
         """As `Acetate.review_flags`."""
         return await self._run(self._review_flags(kind, resolved, track_id))
+
+    async def create_lost_song(
+        self,
+        name: str,
+        artist_ids: list[str],
+        lost: dict[str, Any],
+        *,
+        description: str = "",
+        sources: list[dict[str, Any]] | None = None,
+        reason: str = "",
+        preview: bool = False,
+    ) -> dict[str, Any]:
+        """See `Acetate.create_lost_song`."""
+        return await self._run(self._create_lost_song(name, artist_ids, lost, description, sources or [], reason, preview))
+
+    async def lost_songs(self, *, artist_id: str | None = None, status: str | None = None, limit: int = 200) -> list[dict[str, Any]]:
+        """See `Acetate.lost_songs`."""
+        return await self._run(self._search("/api/lost-songs", artist=artist_id, status=status, limit=limit))
+
+    async def add_extra_files(self, extra_id: str, files: list[AudioFile | tuple[str, AudioFile]], *, reason: str = "") -> dict[str, Any]:
+        """See `Acetate.add_extra_files`."""
+        return await self._run(self._add_extra_files(extra_id, files, reason))
 
     async def ingest(
         self,
@@ -735,6 +810,8 @@ def _server_error(status: int, reason: str, headers: Any, text: bytes) -> Server
     message = body.get("message") or f"{status} {reason}"
     retry_after = headers.get("Retry-After")
     retry = int(retry_after) if retry_after and retry_after.isdigit() else None
+    if status == 409 and code in ("already_held", "already_lost") and isinstance(body.get("id"), str):
+        return AlreadyKnown(status, code, message, body["id"])
     if status == 401:
         return NotLoggedIn(status, code, message)
     if status == 413:

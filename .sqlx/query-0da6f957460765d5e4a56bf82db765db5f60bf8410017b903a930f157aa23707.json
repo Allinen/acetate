@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT e.id, e.name, e.kind, e.description, e.source, e.from_track_id, e.is_restricted,\n                  e.hidden_at IS NOT NULL AS \"hidden!\", e.merged_into, e.created_at, u.username AS \"created_by?\"\n           FROM extras e LEFT JOIN users u ON u.id = e.created_by WHERE e.id = $1",
+  "query": "SELECT e.id, e.name, e.kind, e.description, e.source, e.from_track_id, e.is_restricted,\n                  e.hidden_at IS NOT NULL AS \"hidden!\", e.merged_into, e.created_at, u.username AS \"created_by?\", e.lost\n           FROM extras e LEFT JOIN users u ON u.id = e.created_by WHERE e.id = $1",
   "describe": {
     "columns": [
       {
@@ -118,6 +118,17 @@
             "name": "username"
           }
         }
+      },
+      {
+        "ordinal": 11,
+        "name": "lost",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "extras",
+            "name": "lost"
+          }
+        }
       }
     ],
     "parameters": {
@@ -136,8 +147,9 @@
       null,
       true,
       false,
+      true,
       true
     ]
   },
-  "hash": "0aee561aea7f912b26a4b9bfe04b0e61c769f454cc97c0b90f6e54130e70b627"
+  "hash": "0da6f957460765d5e4a56bf82db765db5f60bf8410017b903a930f157aa23707"
 }

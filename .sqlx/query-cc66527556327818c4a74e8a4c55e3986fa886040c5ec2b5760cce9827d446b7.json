@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT name, kind, description, source FROM extras WHERE id = $1 FOR UPDATE",
+  "query": "SELECT name, kind, is_restricted, from_track_id, merged_into, hidden_at IS NOT NULL AS \"hidden!\" FROM extras WHERE id = $1 FOR UPDATE",
   "describe": {
     "columns": [
       {
@@ -27,25 +27,42 @@
       },
       {
         "ordinal": 2,
-        "name": "description",
-        "type_info": "Text",
+        "name": "is_restricted",
+        "type_info": "Bool",
         "origin": {
           "Table": {
             "table": "extras",
-            "name": "description"
+            "name": "is_restricted"
           }
         }
       },
       {
         "ordinal": 3,
-        "name": "source",
-        "type_info": "Text",
+        "name": "from_track_id",
+        "type_info": "Uuid",
         "origin": {
           "Table": {
             "table": "extras",
-            "name": "source"
+            "name": "from_track_id"
           }
         }
+      },
+      {
+        "ordinal": 4,
+        "name": "merged_into",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "extras",
+            "name": "merged_into"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "hidden!",
+        "type_info": "Bool",
+        "origin": "Expression"
       }
     ],
     "parameters": {
@@ -57,8 +74,10 @@
       false,
       false,
       false,
-      false
+      true,
+      true,
+      null
     ]
   },
-  "hash": "98530339c54e7e46bd0e0fe8b0ecf6eb39b0eff90aec012456cb897d4ad87abd"
+  "hash": "cc66527556327818c4a74e8a4c55e3986fa886040c5ec2b5760cce9827d446b7"
 }

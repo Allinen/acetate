@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE extras SET name = $2, kind = $3, description = $4, source = $5, lost = $6 WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Jsonb"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "8f04db3d1b61a08a9f8b15ddf4d4278a5992f7d8bc2c3c9353d01bad61a97b8f"
+}

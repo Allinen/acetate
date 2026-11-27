@@ -255,6 +255,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/review", require(&[EditMetadata], get(review::list)))
         .route("/api/review/{id}/resolve", require(&[EditMetadata], post(review::resolve)))
         .route("/api/review/{id}/adopt", require(&[EditMetadata], post(review::adopt)))
+        .route("/api/review/{id}/found", require(&[EditMetadata, EditSources], post(review::found)))
         .route("/api/review/resolve", require(&[EditMetadata], post(review::resolve_many)))
         .route("/api/review/ambiguous", require(&[EditMetadata], post(review::settle_ambiguous)))
         .route("/api/review/merge-duplicates", require(&[EditMetadata], post(review::merge_duplicates)))
@@ -289,6 +290,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/extras/{id}/hidden", require(&[EditMetadata], post(extras::set_hidden)))
         .route("/api/extras/{id}/links", require(&[EditMetadata], post(extras::link)))
         .route("/api/extras/{id}/merge", require(&[EditMetadata], post(extras::merge)))
+        .route("/api/extras/{id}/sources", require(&[EditSources], post(sources::add_extra_source)))
+        .route("/api/lost-songs", require(&[Browse], get(extras::lost_songs)).merge(require(&[EditMetadata], post(extras::create_lost_song))))
         .route("/api/extras/{id}/to-track", require(&[EditMetadata], post(extras::to_track)))
         .route("/api/extras/{id}/undo-track", require(&[EditMetadata], post(extras::undo_track)))
         .route("/api/extras/{id}/back-to-track", require(&[EditMetadata], post(extras::back_to_track)))
@@ -506,6 +509,9 @@ pub enum AppError {
     /// A track that was made into this extra: 404, with the extra's id (`extra_id`) to go
     /// to instead.
     BecameExtra(uuid::Uuid),
+    /// Something has this already (a platform id a lost song would get): 409, with its
+    /// `code` and the `id` of what has it.
+    Known { code: &'static str, message: String, id: uuid::Uuid },
     Internal(anyhow::Error),
 }
 
@@ -536,6 +542,9 @@ impl IntoResponse for AppError {
                     "extra_id": extra,
                 });
                 return (StatusCode::NOT_FOUND, Json(body)).into_response();
+            }
+            AppError::Known { code, message, id } => {
+                return (StatusCode::CONFLICT, Json(json!({ "code": code, "message": message, "id": id }))).into_response();
             }
             AppError::UploadQuota { message, wait } => {
                 let secs = wait.as_secs() + 1;

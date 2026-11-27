@@ -1,0 +1,36 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT final_track(s.track_id) AS track_id, s.extra_id\n           FROM sources s\n           LEFT JOIN extras e ON e.id = s.extra_id\n           WHERE s.platform = $1 AND s.external_id = $2 AND s.trashed_at IS NULL\n             AND (s.track_id IS NOT NULL OR (e.kind = 'lost_song' AND e.hidden_at IS NULL AND e.merged_into IS NULL))\n           ORDER BY s.track_id IS NULL, s.id\n           LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "track_id",
+        "type_info": "Uuid",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "extra_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "sources",
+            "name": "extra_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null,
+      true
+    ]
+  },
+  "hash": "9f97dc421d5058fd8d748dca9c195c863cfca5369c1115b870638f00b2d3231f"
+}

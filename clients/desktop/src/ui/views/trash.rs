@@ -357,7 +357,7 @@ impl TrashPage {
                             if let (Some(id), Some(kind), Some(name)) = (item.owner_id, item.owner_kind.as_deref(), item.owner.as_deref()) {
                                 ui.label(RichText::new(if kind == "extra" { "into" } else { "of" }).color(P.faint));
                                 let page = match kind {
-                                    "extra" => Page::Extra(id),
+                                    "extra" | "lost_song" => Page::Extra(id),
                                     "album" => Page::Album(id),
                                     "artist" => Page::Artist(id),
                                     _ => Page::Track(id),

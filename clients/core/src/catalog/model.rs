@@ -183,16 +183,39 @@ pub struct Extra {
     pub video: Option<Uuid>,
     #[serde(default)]
     pub thumb_key: Option<String>,
+    /// A lost song's facts (kind "lost_song": a song whose audio the library doesn't have).
+    #[serde(default)]
+    pub lost: Option<Lost>,
+}
+
+/// What is known about a lost song (the server's `db::extras::Lost`).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Lost {
+    /// "proposed" (by a tool, to accept or take off), "lost" or "snippet" (only a snippet of
+    /// it is among its files).
+    pub status: String,
+    /// The artists as it was credited where it was seen ("A ft. B").
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub artists_shown: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub release_date: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<i64>,
 }
 
 impl Extra {
+    /// A lost song (kind "lost_song"), which has its own place on an artist's page.
+    pub fn is_lost_song(&self) -> bool {
+        self.lost.is_some()
+    }
+
     /// Its video's thumbnail, as a cover to show.
     pub fn thumb(&self) -> Option<Cover> {
         Some(Cover { id: self.video?, key: CoverKey::from_hex(self.thumb_key.as_deref()?)? })
     }
 }
 
-pub(super) const EXTRA_COLUMNS: &[&str] = &["id", "name", "kind", "is_restricted", "hidden", "links", "files", "first_file", "duration_ms", "video", "thumb_key"];
+pub(super) const EXTRA_COLUMNS: &[&str] = &["id", "name", "kind", "is_restricted", "hidden", "links", "files", "first_file", "duration_ms", "video", "thumb_key", "lost"];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Artist {

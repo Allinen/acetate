@@ -79,3 +79,33 @@ staged and says why, and the rest are still saved.
 
 The note editor opens with the cursor in the text. `Ctrl+Enter` saves the note. `Esc`
 leaves the text; `Esc` again asks, and a third time throws the note away.
+
+## Lost songs
+
+A **lost song** is a song of the artist's whose audio the library doesn't have: an upload
+that was deleted, something only ever played live, a song that only survives as a snippet.
+The *Lost songs* section lists them, after the tracks. In edit mode, **New lost song…**
+makes one with a title (and, if you know them, the artists as it was credited and a date),
+then opens its page.
+
+A lost song is an extra (of kind *lost song*), so its page works like an extra's. Whatever is
+left of it goes in as its files: cover art, screenshots of posts, a snippet. On top of that it has:
+
+- **A status:** *lost*, *only a snippet* (a snippet or preview is among its files), or
+  *proposed*. A proposed lost song was suggested by a tool, and its page asks you to
+  **Accept** it or **Take it off**.
+- **What is known:** the artists as it was credited ("A ft. B"), a date (`2019`, `2019-05`
+  or `2019-05-12`) and a length.
+- **Where it was:** sources, shaped like a track's (the SoundCloud upload that was deleted,
+  say). A lost song with sources stays a lost song.
+
+When a track turns up with one of a lost song's platform ids (it's imported, or the id is
+added to it, or the other way round), the track gets a *lost song found* flag on the
+[Review](../review.md) page.
+
+Tools make them through `POST /api/lost-songs` (`{name, artist_ids, lost: {status,
+artists_shown?, release_date?, duration_ms?}, description?, sources?, preview?}`). It's
+refused (409) if a track already has one of its platform ids (`already_held`) or another lost
+song does (`already_lost`), and the answer gives the `id` of whichever has it.
+`GET /api/lost-songs?artist=&status=` lists them, and `POST /api/lookup/sources` finds them
+as `{"kind": "lost_song"}`.

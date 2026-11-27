@@ -28,6 +28,9 @@ use crate::ui::{widgets, Action, Page, Shell};
 
 type Slot<T> = Arc<Mutex<Option<Result<T, String>>>>;
 
+/// The kind of extra a lost song is (the server's `db::extras::LOST_SONG`).
+pub const LOST_SONG: &str = "lost_song";
+
 #[derive(Debug, Clone, Deserialize)]
 struct LogEntry {
     what: String,
@@ -86,6 +89,77 @@ pub struct ExtraPage {
     selected: usize,
     merging: Option<Merging>,
     preview_arrived: Task<Result<MergeReport, String>>,
+    /// A lost song's facts, as in the form (filled from what's loaded).
+    lost: LostForm,
+    sources: crate::ui::edit::sources::SourcesEditor,
+}
+
+/// A lost song's facts being edited: its status, and the rest as typed.
+#[derive(Default)]
+struct LostForm {
+    status: String,
+    artists_shown: String,
+    release_date: String,
+    /// "m:ss".
+    length: String,
+}
+
+impl LostForm {
+    fn of(lost: Option<&crate::catalog::model::Lost>) -> LostForm {
+        let Some(l) = lost else { return LostForm { status: "lost".into(), ..Default::default() } };
+        LostForm {
+            status: l.status.clone(),
+            artists_shown: l.artists_shown.clone(),
+            release_date: l.release_date.clone().unwrap_or_default(),
+            length: l.duration_ms.map(|ms| widgets::length(Some(ms))).unwrap_or_default(),
+        }
+    }
+
+    /// As the server takes it (None: the length isn't one).
+    fn json(&self) -> Option<serde_json::Value> {
+        let duration_ms = match self.length.trim() {
+            "" => None,
+            typed => Some(parse_length(typed)?),
+        };
+        Some(serde_json::json!({
+            "status": self.status,
+            "artists_shown": self.artists_shown.trim(),
+            "release_date": Some(self.release_date.trim()).filter(|d| !d.is_empty()),
+            "duration_ms": duration_ms,
+        }))
+    }
+}
+
+/// "3:05" (or "185", seconds) as milliseconds.
+fn parse_length(typed: &str) -> Option<i64> {
+    let (m, s) = typed.split_once(':').unwrap_or(("0", typed));
+    let (m, s): (i64, i64) = (m.trim().parse().ok()?, s.trim().parse().ok()?);
+    (m >= 0 && (0..60).contains(&s) || (m == 0 && s >= 0)).then_some((m * 60 + s) * 1000)
+}
+
+/// What the page says a lost song's status is.
+fn status_text(status: &str) -> &str {
+    match status {
+        "proposed" => "proposed",
+        "snippet" => "only a snippet",
+        "lost" => "lost",
+        other => other,
+    }
+}
+
+/// A lost song's facts, in a line: who it was credited to, when, how long.
+fn lost_facts(lost: &crate::catalog::model::Lost) -> Vec<String> {
+    let mut facts = Vec::new();
+    if !lost.artists_shown.is_empty() {
+        facts.push(lost.artists_shown.clone());
+    }
+    if let Some(date) = &lost.release_date {
+        facts.push(date.clone());
+    }
+    if lost.duration_ms.is_some() {
+        facts.push(widgets::length(lost.duration_ms));
+    }
+    facts
 }
 
 /// The page of what an extra belongs to.
@@ -161,6 +235,7 @@ impl ExtraPage {
                 self.kind = e.kind.clone();
                 self.description = e.description.clone();
                 self.source = e.source.clone();
+                self.lost = LostForm::of(e.lost.as_ref());
                 self.filled = true;
             }
             self.loaded = Some(result);
@@ -200,6 +275,10 @@ impl ExtraPage {
             self.history = None;
             self.ask(shell, id);
             shell.act(Action::RefreshLibrary);
+        }
+        if self.sources.take_changed() {
+            self.history = None;
+            self.ask(shell, id);
         }
         let extra = match &self.loaded {
             None => {
@@ -272,8 +351,19 @@ impl ExtraPage {
         };
 
         egui::ScrollArea::vertical().id_salt(("extra-page", id)).auto_shrink([false, false]).show(ui, |ui| {
-            ui.label(RichText::new(format!("EXTRA  ·  {}", extra.kind.to_uppercase())).font(font(11.0, semibold())).color(P.accent));
+            let heading = match &extra.lost {
+                Some(lost) => format!("LOST SONG  ·  {}", status_text(&lost.status).to_uppercase()),
+                None => format!("EXTRA  ·  {}", extra.kind.to_uppercase()),
+            };
+            ui.label(RichText::new(heading).font(font(11.0, semibold())).color(P.accent));
             ui.label(RichText::new(&extra.name).font(font(34.0, bold())));
+            if let Some(lost) = &extra.lost {
+                let facts = lost_facts(lost);
+                if !facts.is_empty() {
+                    ui.label(RichText::new(facts.join("  ·  ")).font(font(15.0, medium())).color(P.text));
+                }
+                self.proposed(ui, shell, &extra, lost, can);
+            }
             if let Some(into) = extra.merged_into {
                 ui.horizontal_wrapped(|ui| {
                     ui.label(RichText::new("Merged into another extra: this one is in the trash (taking it out of there undoes the merge).").color(P.accent));
@@ -354,6 +444,21 @@ impl ExtraPage {
                 ui.add_space(8.0);
             }
 
+            // A lost song's sources: where it was.
+            if extra.lost.is_some() {
+                if can {
+                    super::album::panel(ui, "lost-song-sources", |ui| {
+                        ui.label(RichText::new("Where it was (sources)").font(font(14.0, semibold())));
+                        self.sources.show(ui, shell, crate::ui::edit::sources::Owner::Extra(id), &extra.sources);
+                    });
+                    ui.add_space(10.0);
+                } else if !extra.sources.is_empty() {
+                    ui.label(RichText::new("Where it was").font(font(17.0, bold())));
+                    super::track::sources(ui, &extra.sources);
+                    ui.add_space(10.0);
+                }
+            }
+
             // ---- Its images, then all its files ----
             let images = crate::ui::edit::extras::images([&extra]);
             if !images.is_empty() {
@@ -415,6 +520,28 @@ impl ExtraPage {
         });
     }
 
+    /// A proposed lost song (suggested by a tool): accepted (it becomes lost) or taken off.
+    fn proposed(&mut self, ui: &mut egui::Ui, shell: &mut Shell, extra: &Extra, lost: &crate::catalog::model::Lost, can: bool) {
+        if lost.status != "proposed" || extra.hidden {
+            return;
+        }
+        ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new("A tool suggested this lost song: is it one?").color(P.accent));
+            if can {
+                if ui.add_enabled(!self.sending, egui::Button::new("Accept")).on_hover_text("It becomes a lost song").clicked() {
+                    let mut accepted = lost.clone();
+                    accepted.status = "lost".into();
+                    let body = serde_json::json!({ "name": extra.name, "kind": extra.kind, "description": extra.description, "source": extra.source, "lost": accepted, "reason": "accepted the proposal" });
+                    self.send_with(shell, reqwest::Method::PUT, format!("/api/extras/{}", extra.id), body, "Accepted: it's a lost song.".into());
+                }
+                if ui.add_enabled(!self.sending, egui::Button::new("Take it off")).on_hover_text("Not a lost song (kept, and can be brought back)").clicked() {
+                    self.send(shell, format!("/api/extras/{}/hidden", extra.id), serde_json::json!({ "hidden": true, "reason": "rejected the proposal" }), "Taken off (kept).".into());
+                }
+            }
+        });
+        ui.add_space(4.0);
+    }
+
     fn result_line(&self, ui: &mut egui::Ui) {
         if self.sending {
             ui.label(RichText::new("Working…").color(P.muted));
@@ -449,9 +576,34 @@ impl ExtraPage {
         });
         ui.add(egui::TextEdit::multiline(&mut self.description).hint_text("Description (optional)").desired_rows(3).desired_width(f32::INFINITY));
         ui.add(egui::TextEdit::singleline(&mut self.source).hint_text("Source (optional): a link, or where it came from").desired_width(f32::INFINITY));
-        let changed = self.name.trim() != extra.name || self.kind.trim() != extra.kind || self.description.trim() != extra.description || self.source.trim() != extra.source;
-        if ui.add_enabled(changed && !self.sending && !self.name.trim().is_empty(), egui::Button::new("Save")).clicked() {
-            let body = serde_json::json!({ "name": self.name.trim(), "kind": self.kind.trim(), "description": self.description.trim(), "source": self.source.trim() });
+        let lost_song = self.kind.trim() == LOST_SONG;
+        if lost_song {
+            ui.horizontal_wrapped(|ui| {
+                ui.label("Status");
+                for (status, text) in [("lost", "Lost"), ("snippet", "Only a snippet"), ("proposed", "Proposed")] {
+                    if widgets::chip(ui, text, self.lost.status == status) {
+                        self.lost.status = status.to_string();
+                    }
+                }
+            });
+            ui.add(egui::TextEdit::singleline(&mut self.lost.artists_shown).hint_text("Artists as it was credited (e.g. A ft. B)").desired_width(360.0));
+            ui.horizontal(|ui| {
+                ui.add(egui::TextEdit::singleline(&mut self.lost.release_date).hint_text("Date: 2019, 2019-05 or 2019-05-12").desired_width(220.0));
+                ui.add(egui::TextEdit::singleline(&mut self.lost.length).hint_text("Length (3:05)").desired_width(90.0));
+            });
+        }
+        let lost = if lost_song { self.lost.json() } else { Some(serde_json::Value::Null) };
+        let typed: Option<crate::catalog::model::Lost> = lost.clone().and_then(|l| serde_json::from_value(l).ok());
+        let lost_changed = lost_song && typed.as_ref() != extra.lost.as_ref();
+        let changed = self.name.trim() != extra.name || self.kind.trim() != extra.kind || self.description.trim() != extra.description || self.source.trim() != extra.source || lost_changed;
+        if lost.is_none() {
+            ui.label(RichText::new("The length is minutes and seconds (3:05).").color(P.danger));
+        }
+        if ui.add_enabled(changed && lost.is_some() && !self.sending && !self.name.trim().is_empty(), egui::Button::new("Save")).clicked() {
+            let mut body = serde_json::json!({ "name": self.name.trim(), "kind": self.kind.trim(), "description": self.description.trim(), "source": self.source.trim() });
+            if lost_song {
+                body["lost"] = lost.unwrap_or_default();
+            }
             self.send_with(shell, reqwest::Method::PUT, format!("/api/extras/{id}"), body, "Saved.".into());
         }
         ui.add_space(10.0);
@@ -682,5 +834,19 @@ impl ExtraPage {
         self.sending = true;
         self.result = None;
         self.answer.send_with(shell, |api| async move { api.send_json::<serde_json::Value>(method, &path, Some(body)).await.map(|_| text).map_err(|e| e.message) });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_length;
+
+    #[test]
+    fn lengths_are_minutes_and_seconds() {
+        assert_eq!(parse_length("3:05"), Some(185_000));
+        assert_eq!(parse_length("185"), Some(185_000));
+        assert_eq!(parse_length("0:59"), Some(59_000));
+        assert_eq!(parse_length("3:75"), None);
+        assert_eq!(parse_length("a:05"), None);
     }
 }

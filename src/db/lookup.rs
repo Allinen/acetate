@@ -98,7 +98,7 @@ pub struct PlatformId {
 pub struct SourceHit {
     pub platform: String,
     pub external_id: String,
-    /// `[{kind: "track" | "album" | "artist" | "grouping", id}]`, merged ones as the one
+    /// `[{kind: "track" | "album" | "artist" | "grouping" | "lost_song", id}]`, merged ones as the one
     /// they went into, each once.
     pub owners: serde_json::Value,
 }
@@ -116,10 +116,13 @@ pub async fn sources(conn: &mut PgConnection, ids: &[PlatformId]) -> sqlx::Resul
                    FROM sources s
                    CROSS JOIN LATERAL (
                        SELECT CASE WHEN s.track_id IS NOT NULL THEN 'track' WHEN s.album_id IS NOT NULL THEN 'album'
-                                   WHEN s.artist_id IS NOT NULL THEN 'artist' ELSE 'grouping' END AS kind,
-                              COALESCE(final_track(s.track_id), final_album(s.album_id), final_artist(s.artist_id), s.grouping_id) AS id
+                                   WHEN s.artist_id IS NOT NULL THEN 'artist' WHEN s.grouping_id IS NOT NULL THEN 'grouping'
+                                   ELSE 'lost_song' END AS kind,
+                              COALESCE(final_track(s.track_id), final_album(s.album_id), final_artist(s.artist_id), s.grouping_id, s.extra_id) AS id
                    ) o
                    WHERE s.platform = q.platform AND s.external_id = q.external_id AND s.trashed_at IS NULL
+                     -- A lost song taken off (found, or not a song after all) isn't one.
+                     AND (s.extra_id IS NULL OR EXISTS (SELECT 1 FROM extras e WHERE e.id = s.extra_id AND e.hidden_at IS NULL))
                ), '[]') AS "owners!"
         FROM unnest($1::text[], $2::text[]) WITH ORDINALITY AS q(platform, external_id, n)
         ORDER BY q.n
