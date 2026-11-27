@@ -17,6 +17,9 @@
 # and the Release workflow builds the apps and the image from the tag (it checks the tag
 # against the versions again). Look at API_VERSION and CATALOG_FORMAT first: they are
 # printed below, and change only when a change would break an app that doesn't have it.
+# A server running a bumped API_VERSION or CATALOG_FORMAT refuses every app that doesn't
+# have it, and apps update only from published releases: release a bump before (or with)
+# deploying it, never after.
 set -euo pipefail
 export PATH="$HOME/.cargo/bin:$PATH"
 cd "$(dirname "$0")/.."

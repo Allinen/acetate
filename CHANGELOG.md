@@ -1,5 +1,30 @@
 	# Changelog
 
+## 0.4.6 - 2026-11-27
+
+### Upgrading
+
+- Update the apps along with the server. The API version is now 9, and apps from 0.4.5 and earlier can't talk to a 0.4.6 server (or the other way round)
+- Optionally run `acetate reread-dates --dry-run`, then `acetate reread-dates`, to fill in release dates that were imported as only a year when the file's tags have the full date somewhere else (see below)
+- Optionally run `acetate reprobe-extras` so images added to extras before this release are shown and served as images
+
+### Features
+
+- Proposals: a script or a language model can suggest changes to a track (fields, a new version, sources) with where it found them, instead of making the changes itself. They show up on the Review page with each field as it is and as proposed. **Adopt** makes the edit as you, and **Reject…** asks why so the tool doesn't suggest the same thing again. Adopting is refused if the track was edited after the proposal was made. Tools send proposals through `POST /api/tracks/edit` (see the Review guide)
+- Lookups for tools outside Acetate: which files have these bytes (`POST /api/lookup/files`), which tracks have this platform id (`POST /api/lookup/sources`), and tracks by title (`GET /api/tracks/search`)
+- Python library: `lookup_files`, `lookup_sources`, `search_tracks`, `search_artists`, `search_albums` and `track` to look things up, plus editing tracks, making proposals and reading review flags back, in both the sync and async clients
+- Images in extras are treated as images. Their size and format are read on upload, they're served (and made smaller) like covers, and an image is its own thumbnail
+- Desktop: a folder dropped on *Attach extra…* (or picked with *Choose a folder…*) becomes one extra named after the folder, and its files keep their paths inside it (`day 1/IMG_0001.jpg`). While the form is open it takes every file dropped or pasted, images and text files included
+- Desktop: an extra's images are shown as a grid on its page, and as a strip on the pages of the artists and tracks it's linked to. A click shows one at full size, and ←/→ go through the rest
+- Import: when a file's date tag holds only a year, the full date is taken from elsewhere in its tags if one with the same year exists (ID3v2.3 TDAT, RELEASETIME / RELEASEDATE, a WAV's RIFF INFO ICRD). With no date tag at all, the original release date is used. A full date from a different year isn't used and becomes an import warning instead. The first revision says where the date came from
+- `acetate reread-dates [--dry-run]` does the same for tracks already in the library, but only where the date is still what the import read (not given with the upload and not edited since). A single that holds only that track gets the same date
+- `acetate reprobe-extras [--dry-run]` reads the dimensions and format of images added to extras before this release
+
+### Fixes
+
+- An extra counts as a video only when it has a video stream, not because of its size
+- `acetate verify` counts covers as stored
+
 ## 0.4.5 - 2026-11-27
 
 ### Upgrading
