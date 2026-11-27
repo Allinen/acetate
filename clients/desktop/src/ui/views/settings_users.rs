@@ -3,6 +3,11 @@
 //! union of their groups'. The `admin` group can't be changed. Every row is a draft: it is
 //! saved in one go (or discarded). What you may hand out is the server's call: it refuses
 //! permissions you don't have yourself.
+//!
+//! A person's token (for a bot or script, which sends it as `Authorization: Bearer`) is
+//! had by logging in as them with their password: the token goes to the clipboard and is
+//! never shown, and is a session of theirs like any other (it lasts while it is used, and
+//! ends with the rest when their password changes).
 
 use std::collections::{BTreeSet, HashMap};
 
@@ -85,6 +90,16 @@ pub struct UsersTab {
     deleting: Option<Uuid>,
     action: Task<Result<String, String>>,
     said: Option<Result<String, String>>,
+    /// The person whose token is being asked for, and their password as typed.
+    token_for: Option<Uuid>,
+    token_password: String,
+    /// A login as them: the token, and their name.
+    token: Task<Result<(String, String), String>>,
+}
+
+#[derive(Deserialize)]
+struct LoginAnswer {
+    token: String,
 }
 
 impl UsersTab {
@@ -116,6 +131,15 @@ impl UsersTab {
                 self.opened(shell);
             }
             self.said = Some(done);
+        }
+        if let Some(done) = self.token.poll() {
+            if done.is_ok() {
+                self.token_for = None;
+            }
+            self.said = Some(done.map(|(token, name)| {
+                ui.ctx().copy_text(token);
+                format!("Copied a token for {name} to the clipboard. Sent as “Authorization: Bearer <token>”; it is one of {name}'s sessions, and lasts while it is used.")
+            }));
         }
         match &self.said {
             Some(Ok(text)) => {
@@ -160,6 +184,9 @@ impl UsersTab {
                 ui.label(RichText::new("no password: can't log in").color(P.faint));
             }
         });
+        if user.has_password {
+            self.token_row(ui, shell, user);
+        }
         ui.horizontal_wrapped(|ui| {
             for group in groups {
                 let on = draft.contains(&group.name);
@@ -188,6 +215,37 @@ impl UsersTab {
         if changed && !discard {
             self.user_drafts.insert(user.id, draft);
         }
+    }
+
+    /// "Copy token": asks for the person's password, logs in as them, and puts the token
+    /// on the clipboard (not on screen, which may be shared or streamed).
+    fn token_row(&mut self, ui: &mut egui::Ui, shell: &Shell, user: &User) {
+        let asking = self.token_for == Some(user.id);
+        if !asking {
+            if ui.add(egui::Button::new("Copy token…").small()).on_hover_text("For a bot or script: logs in as them with their password and copies the session token").clicked() {
+                self.token_for = Some(user.id);
+                self.token_password.clear();
+            }
+            return;
+        }
+        let running = self.token.is_running();
+        ui.horizontal_wrapped(|ui| {
+            let field = ui.add(egui::TextEdit::singleline(&mut self.token_password).password(true).hint_text(format!("{}'s password", user.username)).desired_width(180.0));
+            let entered = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            let ready = !self.token_password.is_empty() && !running;
+            if ui.add_enabled(ready, egui::Button::new("Copy").small()).clicked() || (entered && ready) {
+                let password = std::mem::take(&mut self.token_password);
+                let name = user.username.clone();
+                let body = serde_json::json!({ "username": name, "password": password });
+                self.token.send_with(shell, |api| async move {
+                    api.send_json::<LoginAnswer>(reqwest::Method::POST, "/api/auth/login", Some(body)).await.map(|answer| (answer.token, name)).map_err(|e| e.message)
+                });
+            }
+            if ui.add(egui::Button::new("Cancel").small()).clicked() {
+                self.token_for = None;
+                self.token_password.clear();
+            }
+        });
     }
 
     fn new_user_form(&mut self, ui: &mut egui::Ui, shell: &Shell, groups: &[Group], busy: bool) {
