@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT variant_id AS \"variant_id!\" FROM track_revisions WHERE id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "variant_id!",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "track_revisions",
+            "name": "variant_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "1f853fe89faa836d979a58e6f8a0d222fd32712fd2873160a25e0ed6aa6ae50d"
+}

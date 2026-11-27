@@ -254,6 +254,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/now-playing", require(&[Browse], get(together::listening).put(together::report)))
         .route("/api/review", require(&[EditMetadata], get(review::list)))
         .route("/api/review/{id}/resolve", require(&[EditMetadata], post(review::resolve)))
+        .route("/api/review/{id}/adopt", require(&[EditMetadata], post(review::adopt)))
         .route("/api/review/resolve", require(&[EditMetadata], post(review::resolve_many)))
         .route("/api/review/ambiguous", require(&[EditMetadata], post(review::settle_ambiguous)))
         .route("/api/review/merge-duplicates", require(&[EditMetadata], post(review::merge_duplicates)))

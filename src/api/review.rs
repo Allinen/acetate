@@ -7,7 +7,7 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use super::{AppError, AppState};
-use crate::auth::CurrentUser;
+use crate::auth::{CurrentUser, Permission};
 use crate::db;
 use crate::db::review::Flag;
 
@@ -188,4 +188,46 @@ pub async fn merge_duplicates(
         tx.commit().await?;
     }
     Ok(Json(done))
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct Adopt {
+    /// A proposed new version: make it the one shown, too.
+    make_shown: bool,
+    /// Say what it would do, keep nothing.
+    preview: bool,
+}
+
+/// `POST /api/review/{id}/adopt`, JSON `{"make_shown": false, "preview": false}`
+/// (optional): makes the edit a proposal proposes, as the user, and settles it. 409 if the
+/// version changed since it was proposed (a person merges it by hand then); 400 if the
+/// edit is refused otherwise. Answers what `POST /api/tracks/edit` would.
+pub async fn adopt(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<Uuid>,
+    body: Option<Json<Adopt>>,
+) -> Result<Json<db::track_edits::Edited>, AppError> {
+    let options = body.map(|Json(b)| b).unwrap_or_default();
+    let mut tx = state.db(&user).await?;
+    let (edit, made_variant) = db::review::adoption(&mut tx, id).await?.ok_or(AppError::NotFound)?;
+    let may = db::track_edits::May { relations: user.has(Permission::EditRelations), sources: user.has(Permission::EditSources) };
+    let edited = db::track_edits::edit(&mut tx, &edit, may, super::failure).await?;
+    let track = &edited.tracks[0];
+    if let Some(failure) = &track.error {
+        return Err(if failure.code == "stale" { AppError::Conflict(failure.message.clone()) } else { AppError::BadRequest(failure.message.clone()) });
+    }
+    if options.make_shown && made_variant
+        && let Some(written) = &track.meta
+    {
+        let variant = sqlx::query_scalar!(r#"SELECT variant_id AS "variant_id!" FROM track_revisions WHERE id = $1"#, written.revision_id).fetch_one(&mut *tx).await?;
+        db::revisions::set_primary_variant(&mut tx, track.track_id, variant).await?;
+    }
+    if options.preview {
+        tx.rollback().await?;
+    } else {
+        tx.commit().await?;
+    }
+    Ok(Json(edited))
 }

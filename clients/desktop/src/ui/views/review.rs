@@ -13,6 +13,9 @@
 //! Right, the selected track's form, with the cursor already in the first field that
 //! needs fixing, and the file's name, folder and tags to fix from.
 //!
+//! A proposal (changes a tool suggests) shows what it would change and why, to adopt or
+//! reject (`review_proposal`).
+//!
 //! Keys: Ctrl+Enter saves; then, if the server says nothing's missing anymore, "fix
 //! later" is marked done and the next track comes. Ctrl+↓/↑ next/previous (anywhere);
 //! outside text fields also j/k or ↓/↑, Space plays the track (or pauses it), u skips, d (Ctrl+D anywhere)
@@ -135,6 +138,8 @@ pub struct Review {
     /// Showing artists and albums nobody uses anymore instead of the flagged tracks.
     showing_unused: bool,
     asked_not_imported: bool,
+    /// Proposals' adopting and rejecting.
+    proposals: super::review_proposal::Proposals,
 }
 
 impl Review {
@@ -786,6 +791,11 @@ impl Review {
                 }
                 ui.label(RichText::new(line).color(P.muted));
                 related(ui, shell, f);
+                if f.kind == "proposal"
+                    && let Some(notice) = self.proposals.show(ui, shell, f, detail.as_deref())
+                {
+                    self.notice = Some(notice);
+                }
                 if f.kind == "ambiguous_artist" {
                     let name = f.related.get("name").and_then(|n| n.as_str()).unwrap_or("?");
                     ui.label(RichText::new(format!("Which artist “{name}” is: on its credit below (click one, or c on the row).")).color(P.faint).small());

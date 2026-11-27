@@ -18,6 +18,20 @@ refused or failed on, which you can fix as drafts and import.
   release date. A flag is raised when a track starts missing one, and settled once it's
   there again. `acetate review-checks` lists them and turns them on or off.
 - **Yours:** `flag:note` in the [editor](editing/editor.md).
+- **Tools:** *proposal*. A script or a language model suggests changes to a track (a
+  field, a whole new version, sources) instead of making them, with where it found them.
+
+## Proposals
+
+A proposal shows each field it would change, as it is and as proposed, any new version
+or sources, and the pages it found them on. **Adopt** makes the change, as you, and
+settles it. If the track was edited since it was proposed, adopting is refused: change it
+by hand in the form below, then reject the proposal. **Reject…** asks why; the tool that
+proposed it reads the reason, so it doesn't propose the same thing again.
+
+Tools send them through `POST /api/tracks/edit`: a track's `flags.add` takes
+`{"proposal": {key, agent, job_id?, base_revision_id?, patch?, new_variant?, sources?, evidence?}}`.
+A track has at most one open proposal per `key`. `POST /api/review/{id}/adopt` adopts one.
 
 ## Keys
 

@@ -828,3 +828,68 @@ async fn proposals_are_flags_a_track_can_have_several_of(_: PgPoolOptions, conne
     assert_eq!(done.tracks[0].error.as_ref().map(|e| e.code.as_str()), Some("stale"));
     Ok(())
 }
+
+#[sqlx::test]
+async fn adopting_a_proposal_makes_its_edit_and_settles_only_it(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
+    use crate::db::review::Proposal;
+    use serde_json::json;
+    let lib = setup(connect).await?;
+    let mut conn = lib.owner.acquire().await?;
+    let (variant, base, _, _, _) = state(&mut conn, lib.o).await?;
+    let propose = |related: serde_json::Value| {
+        let app = lib.app.clone();
+        let (bob, track) = (lib.bob, lib.o);
+        async move {
+            let proposal: Proposal = serde_json::from_value(related)?;
+            let mut tx = db::begin(&app, Some(bob)).await?;
+            db::review::propose(&mut tx, track, &proposal).await?;
+            let id: Uuid = sqlx::query_scalar("SELECT id FROM review_flags WHERE kind = 'proposal' AND related ->> 'key' = $1 AND resolved_at IS NULL")
+                .bind(&proposal.key)
+                .fetch_one(&mut *tx)
+                .await?;
+            tx.commit().await?;
+            anyhow::Ok(id)
+        }
+    };
+    let adopt = |flag: Uuid| {
+        let app = lib.app.clone();
+        let bob = lib.bob;
+        async move {
+            let mut tx = db::begin(&app, Some(bob)).await?;
+            let (edit, made_variant) = db::review::adoption(&mut tx, flag).await?.expect("an open proposal");
+            let edited = db::track_edits::edit(&mut tx, &edit, ALL, describe).await?;
+            tx.commit().await?;
+            anyhow::Ok((edited.tracks.into_iter().next().unwrap(), made_variant))
+        }
+    };
+
+    let date = propose(json!({ "key": "date", "agent": "enrich", "base_revision_id": base, "patch": { "release_date": "2020-01-02" },
+                                "sources": [{ "platform": "custom", "data": { "label": "forum", "description": "a post" } }] })).await?;
+    let title = propose(json!({ "key": "title", "agent": "enrich", "base_revision_id": base, "patch": { "title": "Other!" } })).await?;
+    let version = propose(json!({ "key": "sc", "agent": "enrich", "new_variant": { "label": "SoundCloud", "data": { "title": "other (sc)" } } })).await?;
+
+    let (done, made_variant) = adopt(date).await?;
+    assert!(done.error.is_none() && !made_variant, "{:?}", done.error);
+    let (_, _, data, _, _) = state(&mut conn, lib.o).await?;
+    assert_eq!(data.release_date.as_deref(), Some("2020-01-02"));
+    let sources: i64 = sqlx::query_scalar("SELECT count(*) FROM sources WHERE track_id = $1 AND platform = 'custom'").bind(lib.o).fetch_one(&mut *conn).await?;
+    assert_eq!(sources, 2, "the proposed source is added");
+    let still_open: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM review_flags WHERE track_id = $1 AND kind = 'proposal' AND resolved_at IS NULL ORDER BY id").bind(lib.o).fetch_all(&mut *conn).await?;
+    assert_eq!(still_open, [title, version]);
+
+    // Made against the revision before the date: stale now.
+    let (done, _) = adopt(title).await?;
+    assert_eq!(done.error.as_ref().map(|e| e.code.as_str()), Some("stale"));
+
+    // A new version (the shown one stays).
+    let (done, made_variant) = adopt(version).await?;
+    assert!(done.error.is_none() && made_variant, "{:?}", done.error);
+    let variants: i64 = sqlx::query_scalar("SELECT count(*) FROM track_variants WHERE track_id = $1").bind(lib.o).fetch_one(&mut *conn).await?;
+    assert_eq!(variants, 2);
+    assert_eq!(state(&mut conn, lib.o).await?.0, variant);
+
+    // Settled: nothing to adopt anymore.
+    let mut tx = db::begin(&lib.app, Some(lib.bob)).await?;
+    assert!(db::review::adoption(&mut tx, date).await?.is_none());
+    Ok(())
+}

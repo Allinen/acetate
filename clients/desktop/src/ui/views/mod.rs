@@ -26,6 +26,7 @@ pub mod merge;
 pub mod queue;
 pub mod review;
 pub mod review_bulk;
+pub mod review_proposal;
 pub mod unlinked_extras;
 pub mod credited_as;
 pub mod credited_as_line;

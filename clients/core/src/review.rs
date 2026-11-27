@@ -21,7 +21,7 @@ use crate::api::Api;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Flag {
     pub id: Uuid,
-    /// "fix_later", "possible_duplicate", "ambiguous_artist", "merged_artist".
+    /// "fix_later", "possible_duplicate", "ambiguous_artist", "merged_artist", "proposal"…
     pub kind: String,
     pub track_id: Uuid,
     #[serde(default)]

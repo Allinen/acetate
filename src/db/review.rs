@@ -576,6 +576,9 @@ pub async fn propose(conn: &mut PgConnection, track_id: Uuid, proposal: &Proposa
     if proposal.patch.is_none() && proposal.new_variant.is_none() && proposal.sources.is_empty() {
         return Err(invalid("it proposes nothing: give a `patch`, a `new_variant` or `sources`".into()));
     }
+    if proposal.patch.is_some() && proposal.new_variant.is_some() {
+        return Err(invalid("a `patch` of one version or a `new_variant`, not both (they'd be one edit of the metadata)".into()));
+    }
     let mut fields: Vec<String> = Vec::new();
     let mut variant_id = None;
     if let Some(patch) = &proposal.patch {
@@ -626,6 +629,65 @@ pub async fn propose(conn: &mut PgConnection, track_id: Uuid, proposal: &Proposa
     .execute(conn)
     .await?;
     Ok(made.rows_affected() > 0)
+}
+
+/// The edit that adopts the open proposal `flag_id` (None: there's no such open proposal
+/// the user can see): its patch applied to the revision it was made against (so a version
+/// changed since is refused as stale), or its new version, and its sources; the flag
+/// settled with it. Also whether it makes a new version.
+pub async fn adoption(conn: &mut PgConnection, flag_id: Uuid) -> anyhow::Result<Option<(super::track_edits::Edit, bool)>> {
+    use super::track_edits::{Edit, FlagsEdit, MetaEdit, SourcesEdit, TrackEdit, AddSource};
+    let Some(row) = sqlx::query!("SELECT track_id, related FROM review_flags WHERE id = $1 AND kind = 'proposal' AND resolved_at IS NULL", flag_id)
+        .fetch_optional(&mut *conn)
+        .await?
+    else {
+        return Ok(None);
+    };
+    let mut related = row.related;
+    if let Some(object) = related.as_object_mut() {
+        // Filled in by `propose`, not part of what was sent.
+        object.remove("fields");
+        object.remove("variant_id");
+    }
+    let proposal: Proposal = serde_json::from_value(related)?;
+    let meta = if let Some(patch) = &proposal.patch {
+        let base = proposal.base_revision_id.ok_or_else(|| anyhow::anyhow!("proposal {flag_id} has a patch without a base"))?;
+        let base_row = sqlx::query!(r#"SELECT variant_id AS "variant_id!", data FROM track_revisions WHERE id = $1"#, base).fetch_one(&mut *conn).await?;
+        let mut data = base_row.data;
+        if let Some(object) = data.as_object_mut() {
+            object.extend(patch.clone());
+        }
+        Some(MetaEdit { variant_id: Some(base_row.variant_id), base_revision_id: Some(base), new_variant: None, label: None, data: serde_json::from_value(data)? })
+    } else {
+        proposal.new_variant.as_ref().map(|v| MetaEdit { variant_id: None, base_revision_id: None, new_variant: Some(v.label.clone()), label: None, data: v.data.clone() })
+    };
+    let made_variant = proposal.new_variant.is_some();
+    let sources = (!proposal.sources.is_empty()).then(|| SourcesEdit {
+        add: proposal.sources.iter().map(|s| AddSource { id: None, platform: s.platform.clone(), data: s.data.clone() }).collect(),
+        ..Default::default()
+    });
+    let track = TrackEdit {
+        track_id: row.track_id,
+        meta,
+        facts: None,
+        along: true,
+        sync: false,
+        covers: None,
+        sources,
+        single: false,
+        groups: None,
+        flags: Some(FlagsEdit { add: Vec::new(), settle: Vec::new(), settle_ids: vec![flag_id] }),
+    };
+    let edit = Edit {
+        reason: format!("adopted a proposal from {}", proposal.agent),
+        new_artists: Vec::new(),
+        new_albums: Vec::new(),
+        new_groupings: Vec::new(),
+        artist_sources: Vec::new(),
+        new_review_kinds: Vec::new(),
+        tracks: vec![track],
+    };
+    Ok(Some((edit, made_variant)))
 }
 
 /// Settles open flags by their ids, if they're the track's (a track editor settling one
