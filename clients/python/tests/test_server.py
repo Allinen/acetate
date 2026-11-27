@@ -193,6 +193,40 @@ class AgainstAServer(unittest.TestCase):
         settled = [f for f in self.acetate.review_flags(kind="proposal", resolved=True, track_id=track_id) if f["id"] == flag["id"]]
         self.assertEqual(settled[0]["resolution"], "rejected: tests")
 
+    def test_the_catalog_then_proposals_adopted_in_bulk(self):
+        song_id = uuid.uuid4().int % 10**12
+        description = Description(origin=NetEaseTrack(song_id=song_id), flag="from the Python library's tests")
+        path = os.path.join(AUDIO, "lantern demo.mp3")
+        report = self.acetate.ingest(path, description)
+        with open(path, "rb") as f:
+            sha256 = hashlib.sha256(f.read()).hexdigest()
+        track_id = report.track_id or self.acetate.lookup_files([sha256])[0]["tracks"][0]["track_id"]
+
+        catalog = self.acetate.catalog()
+        self.assertTrue(catalog["version"])
+        [row] = [t for t in catalog["tracks"] if t["id"] == track_id]
+        self.assertIn("platforms", row)
+
+        variant = next(v for v in self.acetate.track(track_id)["variants"])
+        day = f"19{song_id % 90 + 10}-01-02"
+        date = {"key": f"bulk-date:{song_id}", "agent": "python tests", "job_id": "bulk", "base_revision_id": variant["revision_id"], "patch": {"release_date": day}}
+        title = {**date, "key": f"bulk-title:{song_id}", "patch": {"title": f"Bulk {song_id}"}}
+        for proposal in (date, title):
+            self.acetate.propose(track_id, proposal)
+        flags = {f["related"]["key"]: f["id"] for f in self.acetate.review_flags(kind="proposal", track_id=track_id)}
+        ids = [flags[date["key"]], flags[title["key"]], str(uuid.uuid4())]
+        before = self.acetate.track(track_id)["release_date"]
+
+        preview = self.acetate.adopt_many(ids, preview=True)
+        self.assertEqual((preview["adopted"], preview["stale"], preview["missing"]), (ids[:1], ids[1:2], ids[2:]))
+        self.assertEqual(self.acetate.track(track_id)["release_date"], before, "a preview keeps nothing")
+        self.assertEqual(self.acetate.adopt_many(ids), preview)
+        self.assertEqual(self.acetate.track(track_id)["release_date"], day)
+        open_keys = {f["related"]["key"] for f in self.acetate.review_flags(kind="proposal", track_id=track_id)}
+        self.assertNotIn(date["key"], open_keys)
+        self.assertIn(title["key"], open_keys, "the stale one is left open")
+        self.acetate._request("POST", f"/api/review/{ids[1]}/resolve", json_body={"resolution": "rejected: tests"})
+
     def test_a_lost_song_made_refused_found(self):
         song_id = uuid.uuid4().int % 10**12
         description = Description(origin=NetEaseTrack(song_id=song_id), flag="from the Python library's tests")

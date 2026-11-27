@@ -160,3 +160,74 @@ async fn the_catalog_says_where_tracks_come_from(_: PgPoolOptions, connect: PgCo
     assert_eq!(platforms(&rows, lib.o), json!(["custom"]));
     Ok(())
 }
+
+#[sqlx::test]
+async fn proposals_adopt_in_bulk_each_on_its_own(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
+    use crate::db::review::Proposal;
+    use crate::db::review_bulk::{Adopted, RefusedProposal};
+    use crate::db::revisions::EditRejected;
+    use crate::db::track_edits::{Failure, May};
+    let lib = setup(connect).await?;
+    let describe = |err: anyhow::Error| {
+        let code = if matches!(err.downcast_ref::<EditRejected>(), Some(EditRejected::Stale { .. })) { "stale" } else { "error" };
+        Failure { code: code.into(), message: err.to_string() }
+    };
+    let may = May { relations: true, sources: true };
+    // O alone on a single of its own; V shares album A with H.
+    let mut tx = db::begin(&lib.owner, None).await?;
+    db::review_bulk::make_singles(&mut tx, &[lib.o], "").await?;
+    tx.commit().await?;
+    let base = |track: Uuid| {
+        sqlx::query_scalar::<_, Uuid>(
+            "SELECT r.id FROM track_revisions r JOIN tracks t ON t.primary_variant_id = r.variant_id WHERE t.id = $1 ORDER BY r.id DESC LIMIT 1",
+        )
+        .bind(track)
+        .fetch_one(&lib.owner)
+    };
+    let album_date = |track: Uuid| {
+        sqlx::query_scalar::<_, Option<String>>("SELECT a.release_date FROM albums a JOIN album_tracks at ON at.album_id = a.id WHERE at.track_id = $1")
+            .bind(track)
+            .fetch_one(&lib.owner)
+    };
+    let a_before = album_date(lib.v).await?;
+    let mut ids = Vec::new();
+    let mut tx = db::begin(&lib.app, Some(lib.bob)).await?;
+    for (track, related) in [
+        (lib.o, json!({ "key": "date", "agent": "dates", "base_revision_id": base(lib.o).await?, "patch": { "release_date": "2021-03-04" } })),
+        (lib.v, json!({ "key": "date", "agent": "dates", "base_revision_id": base(lib.v).await?, "patch": { "release_date": "2019-05-06" } })),
+        // From the same revision as V's date: stale once that's adopted.
+        (lib.v, json!({ "key": "title", "agent": "dates", "base_revision_id": base(lib.v).await?, "patch": { "title": "V!" } })),
+        (lib.o, json!({ "key": "source", "agent": "other", "sources": [{ "platform": "custom", "data": { "label": "seen", "description": "a post" } }] })),
+    ] {
+        let proposal: Proposal = serde_json::from_value(related)?;
+        db::review::propose(&mut tx, track, &proposal).await?;
+        ids.push(sqlx::query_scalar::<_, Uuid>("SELECT id FROM review_flags WHERE track_id = $1 AND kind = 'proposal' AND related ->> 'key' = $2 AND resolved_at IS NULL")
+            .bind(track)
+            .bind(&proposal.key)
+            .fetch_one(&mut *tx)
+            .await?);
+    }
+    tx.commit().await?;
+    let named: Vec<Uuid> = [ids.as_slice(), &[ids[0], Uuid::max()]].concat();
+    let expected = Adopted { adopted: vec![ids[0], ids[1], ids[3]], stale: vec![ids[2]], refused: Vec::<RefusedProposal>::new(), missing: vec![Uuid::max()] };
+
+    // A preview says the same and keeps nothing.
+    let mut tx = db::begin(&lib.app, Some(lib.bob)).await?;
+    assert_eq!(db::review_bulk::adopt_proposals(&mut tx, &named, may, describe).await?, expected);
+    tx.rollback().await?;
+    assert_eq!(open_kinds(&lib, lib.o).await?.iter().filter(|k| *k == "proposal").count(), 2);
+
+    let mut tx = db::begin(&lib.app, Some(lib.bob)).await?;
+    assert_eq!(db::review_bulk::adopt_proposals(&mut tx, &named, may, describe).await?, expected, "the same id twice counts once");
+    tx.commit().await?;
+    let date = |track: Uuid| sqlx::query_scalar::<_, Option<String>>("SELECT release_date FROM tracks WHERE id = $1").bind(track).fetch_one(&lib.owner);
+    assert_eq!(date(lib.o).await?.as_deref(), Some("2021-03-04"));
+    assert_eq!(date(lib.v).await?.as_deref(), Some("2019-05-06"));
+    assert_eq!(album_date(lib.o).await?.as_deref(), Some("2021-03-04"), "its single follows");
+    assert_eq!(album_date(lib.v).await?, a_before, "an album with other tracks doesn't");
+    let sources: i64 = sqlx::query_scalar("SELECT count(*) FROM sources WHERE track_id = $1 AND platform = 'custom' AND trashed_at IS NULL").bind(lib.o).fetch_one(&lib.owner).await?;
+    assert!(sources >= 1);
+    let open: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM review_flags WHERE kind = 'proposal' AND resolved_at IS NULL").fetch_all(&lib.owner).await?;
+    assert_eq!(open, [ids[2]], "only the stale one is left open");
+    Ok(())
+}

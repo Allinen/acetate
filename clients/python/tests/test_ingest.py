@@ -3,8 +3,10 @@
 A real server: see test_server.py.
 """
 
+import asyncio
 import email.parser
 import email.policy
+import gzip
 import http.server
 import json
 import os
@@ -16,6 +18,7 @@ from datetime import datetime, timezone
 
 from acetate_ingest import (
     Acetate,
+    AsyncAcetate,
     Album,
     AlbumHint,
     ArtistHint,
@@ -200,8 +203,17 @@ class StandIn(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         length = int(self.headers["Content-Length"])
         StandIn.got.append((self.path, dict(self.headers), self.rfile.read(length)))
+        self.reply()
+
+    def do_GET(self):
+        StandIn.got.append((self.path, dict(self.headers), b""))
+        self.reply()
+
+    def reply(self):
         status, headers, body = StandIn.answer
         data = json.dumps(body).encode()
+        if headers.get("Content-Encoding") == "gzip":
+            data = gzip.compress(data)
         self.send_response(status)
         for key, value in headers.items():
             self.send_header(key, value)
@@ -269,6 +281,29 @@ class Sending(unittest.TestCase):
         self.assertEqual(parts["file"].get_content(), sent_audio)
         self.assertEqual(parts["tags_file"].get_content(), b"tagged")
         self.assertEqual(parts["image-0"].get_content(), b"\xff\xd8jpeg")
+
+    def test_the_catalog_comes_compressed_its_rows_as_dicts(self):
+        StandIn.answer = (200, {"Content-Encoding": "gzip"}, {
+            "format": 12, "version": "7", "delta": False,
+            "tracks": {"columns": ["id", "title", "platforms"], "rows": [["t1", "Song", ["custom"]], ["t2", "Other", []]]},
+            "issues": {"columns": ["track_id", "flags"], "rows": [["t1", [["f1", "weak_source"]]]]},
+            "playlists": [],
+        })
+        for catalog in (Acetate(self.url, "tok").catalog(), asyncio.run(AsyncAcetate(self.url, "tok").catalog())):
+            self.assertEqual(catalog["tracks"], [{"id": "t1", "title": "Song", "platforms": ["custom"]}, {"id": "t2", "title": "Other", "platforms": []}])
+            self.assertEqual(catalog["issues"], [{"track_id": "t1", "flags": [["f1", "weak_source"]]}])
+            self.assertEqual((catalog["version"], catalog["playlists"]), ("7", []))
+        path, headers, _ = StandIn.got[0]
+        self.assertEqual((path, headers["Accept-Encoding"]), ("/api/catalog", "gzip"))
+
+    def test_proposals_adopt_in_batches(self):
+        StandIn.answer = (200, {}, {"adopted": ["a"], "stale": [], "refused": [{"flag_id": "r", "message": "no"}], "missing": []})
+        done = Acetate(self.url, "tok").adopt_many([f"f{n}" for n in range(600)], preview=True)
+        self.assertEqual(done, {"adopted": ["a", "a"], "stale": [], "refused": [{"flag_id": "r", "message": "no"}] * 2, "missing": []})
+        sent = [json.loads(body) for _, _, body in StandIn.got]
+        self.assertEqual([len(b["flag_ids"]) for b in sent], [500, 100])
+        self.assertTrue(all(b["preview"] for b in sent))
+        self.assertEqual({path for path, _, _ in StandIn.got}, {"/api/review/adopt"})
 
     def test_bytes_need_a_name(self):
         acetate = Acetate(self.url, "tok")

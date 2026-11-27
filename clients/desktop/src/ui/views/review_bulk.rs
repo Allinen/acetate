@@ -8,9 +8,12 @@
 //! * No album: each track gets a single of its own (`POST /api/tracks/singles`).
 //! * Possible duplicate: the pairs with the same title and about the same length are
 //!   merged (`POST /api/review/merge-duplicates`), after a preview of exactly which.
+//! * Proposal: by the tool and run that made them, each run previewed, then adopted
+//!   (`POST /api/review/adopt`: each as Adopt makes one, a track changed since left open)
+//!   or rejected with why (which the tool reads back).
 //!
-//! What it'll act on is taken when the popup opens and listed in full first; nothing
-//! happens before the button.
+//! The marked tracks if any are marked, else what's shown. What it'll act on is taken when
+//! the popup opens and listed in full first; nothing happens before the button.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -96,10 +99,41 @@ struct MergeRun {
 /// The server takes at most this many flags at once; more need a narrower filter.
 const MERGE_LIMIT: usize = 10_000;
 
+/// Proposals adopted per request: each is an edit, so batches are small (the server takes
+/// up to 1,000) and the progress moves.
+const ADOPT_BATCH: usize = 200;
+
+/// Proposals from one run of one tool (its `agent` and `job_id`).
+struct Batch {
+    agent: String,
+    /// The run's id ("" when the tool gave none).
+    run: String,
+    flags: Vec<Uuid>,
+    /// The last preview (true) or adopt (false), and what came of it.
+    outcome: Option<(bool, Result<Adopted, String>)>,
+    rejected: bool,
+}
+
+/// What `POST /api/review/adopt` did (or, previewed, would do).
+#[derive(Debug, Default, Deserialize)]
+struct Adopted {
+    adopted: Vec<Uuid>,
+    stale: Vec<Uuid>,
+    refused: Vec<RefusedProposal>,
+    missing: Vec<Uuid>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RefusedProposal {
+    message: String,
+}
+
 enum Answer {
     Name(usize, Result<Settled, String>),
     Singles(Result<Singles, String>),
     Merge(MergeRun),
+    /// A batch's preview (true) or adopt (false).
+    Adopt(usize, bool, Result<Adopted, String>),
 }
 
 pub struct ReviewBulk {
@@ -108,9 +142,18 @@ pub struct ReviewBulk {
     /// The shown tracks (catalog places) and their open flags of the kind.
     tracks: Vec<u32>,
     flags: Vec<Uuid>,
-    /// Ambiguous artists: the names (most flags first), and flags with no details yet.
+    /// Whether they're the marked tracks (else the shown ones).
+    marked: bool,
+    /// Ambiguous artists: the names (most flags first), and flags with no details yet
+    /// (of either kind).
     names: Vec<Name>,
     unknown: usize,
+    /// Proposals: by the tool and run that made them.
+    batches: Vec<Batch>,
+    /// Why, to reject a batch.
+    reject_why: String,
+    /// How many the work under way is of (progress counts up to it).
+    working_on: usize,
     resolution: String,
     reason: String,
     sending: bool,
@@ -125,7 +168,7 @@ pub struct ReviewBulk {
 
 impl ReviewBulk {
     /// For `kind`, the shown `tracks` (catalog places): their open flags of that kind now.
-    pub fn open(shell: &Shell, catalog: &Catalog, kind: &str, tracks: Vec<u32>, filter: &str) -> ReviewBulk {
+    pub fn open(shell: &Shell, catalog: &Catalog, kind: &str, tracks: Vec<u32>, marked: bool, filter: &str) -> ReviewBulk {
         let vocab = shell.account.vocab.clone().unwrap_or_default();
         let kind_name = vocab.review_kind_name(kind).to_string();
         let done = &shell.flags.done;
@@ -136,6 +179,7 @@ impl ReviewBulk {
             .map(|(id, _)| *id)
             .collect();
         let (names, unknown) = if kind == "ambiguous_artist" { names(&shell.flags.list, &flags) } else { (Vec::new(), 0) };
+        let (batches, unknown) = if kind == "proposal" { batches(&shell.flags.list, &flags) } else { (Vec::new(), unknown) };
         let filter = filter.trim();
         let resolution = if filter.is_empty() { format!("{kind_name}: marked done in bulk") } else { format!("{kind_name}: marked done in bulk ({filter})") };
         ReviewBulk {
@@ -143,8 +187,12 @@ impl ReviewBulk {
             kind_name,
             tracks,
             flags,
+            marked,
             names,
             unknown,
+            batches,
+            reject_why: String::new(),
+            working_on: 0,
             resolution,
             reason: String::new(),
             sending: false,
@@ -162,7 +210,7 @@ impl ReviewBulk {
         for answer in answers {
             self.sending = false;
             // A preview changed nothing.
-            if !matches!(answer, Answer::Merge(MergeRun { dry_run: true, .. })) {
+            if !matches!(answer, Answer::Merge(MergeRun { dry_run: true, .. }) | Answer::Adopt(_, true, _)) {
                 shell.act(Action::RefreshLibrary);
             }
             match answer {
@@ -176,6 +224,12 @@ impl ReviewBulk {
                     }))
                 }
                 Answer::Merge(run) => self.merge = Some(run),
+                Answer::Adopt(n, preview, result) => {
+                    if !preview && let Ok(done) = &result {
+                        shell.flags.take_out(&done.adopted);
+                    }
+                    self.batches[n].outcome = Some((preview, result));
+                }
                 Answer::Singles(result) => {
                     self.singles = Some(result.map(|s| {
                         let mut text = format!("{} singles made", thousands(s.made.len()));
@@ -189,11 +243,13 @@ impl ReviewBulk {
         }
         shell.modal_open = true;
         let ctx = shell.ctx.clone();
-        let title = format!("{}: {} flags shown", self.kind_name, thousands(self.flags.len()));
+        let title = format!("{}: {} flags {}", self.kind_name, thousands(self.flags.len()), if self.marked { "marked" } else { "shown" });
         let mut resolve = false;
         let mut singles = false;
         let mut settle: Option<usize> = None;
         let mut merge: Option<bool> = None;
+        let mut adopt: Option<(usize, bool)> = None;
+        let mut reject: Option<usize> = None;
         let mut cancel = false;
         let closed = crate::ui::modal::show(&ctx, "review-bulk", &title, Vec2::new(900.0, 760.0), |ui| {
             if self.flags.is_empty() {
@@ -206,6 +262,10 @@ impl ReviewBulk {
             }
             if self.kind == "possible_duplicate" {
                 self.duplicates(ui, &mut merge);
+                ui.add_space(10.0);
+            }
+            if self.kind == "proposal" {
+                self.proposals(ui, &mut adopt, &mut reject);
                 ui.add_space(10.0);
             }
             if self.kind == "missing_album" {
@@ -233,17 +293,22 @@ impl ReviewBulk {
                 }
                 ui.add_space(10.0);
             }
-            ui.label(RichText::new("Mark them done").font(font(14.0, semibold())));
-            ui.label(format!(
-                "The {} “{}” flags of the tracks below are marked done, with this note. Their other flags stay open.",
-                thousands(self.flags.len()),
-                self.kind_name
-            ));
-            ui.horizontal(|ui| {
-                ui.add(egui::TextEdit::singleline(&mut self.resolution).desired_width(520.0));
-                resolve = ui.add_enabled(!self.sending, egui::Button::new(format!("Mark {} done", thousands(self.flags.len())))).clicked();
+            // A proposal is adopted or rejected (the tool reads why), not just marked done.
+            if self.kind == "proposal" {
                 cancel = ui.button("Close").clicked();
-            });
+            } else {
+                ui.label(RichText::new("Mark them done").font(font(14.0, semibold())));
+                ui.label(format!(
+                    "The {} “{}” flags of the tracks below are marked done, with this note. Their other flags stay open.",
+                    thousands(self.flags.len()),
+                    self.kind_name
+                ));
+                ui.horizontal(|ui| {
+                    ui.add(egui::TextEdit::singleline(&mut self.resolution).desired_width(520.0));
+                    resolve = ui.add_enabled(!self.sending, egui::Button::new(format!("Mark {} done", thousands(self.flags.len())))).clicked();
+                    cancel = ui.button("Close").clicked();
+                });
+            }
             ui.add_space(10.0);
             ui.label(RichText::new(format!("The tracks ({})", thousands(self.tracks.len()))).font(font(14.0, semibold())));
             let row = 20.0;
@@ -269,7 +334,103 @@ impl ReviewBulk {
         if let Some(dry_run) = merge {
             self.merge_duplicates(shell, dry_run);
         }
+        if let Some((n, preview)) = adopt {
+            self.adopt(shell, n, preview);
+        }
+        if let Some(n) = reject {
+            let resolution = format!("rejected: {}", self.reject_why.trim());
+            shell.flags.resolve(&shell.api, shell.runtime.handle(), &self.batches[n].flags, &resolution);
+            self.batches[n].rejected = true;
+            shell.act(Action::RefreshLibrary);
+        }
         (closed || cancel) && !self.sending
+    }
+
+    /// Proposals: a row per run, to preview, adopt or reject. `adopt`: Some((batch, preview?))
+    /// when one is asked for; `reject`: the batch to reject.
+    fn proposals(&mut self, ui: &mut egui::Ui, adopt: &mut Option<(usize, bool)>, reject: &mut Option<usize>) {
+        ui.label(RichText::new("Adopt or reject them, a run at a time").font(font(14.0, semibold())));
+        ui.label("By the tool and run that proposed them. Adopting makes each change as you, the way Adopt makes one; a track edited since it was proposed is left open, to change by hand. Preview first: it says what would happen and keeps nothing. Rejecting asks why: the tool reads it, so it doesn't propose the same again.");
+        if self.unknown > 0 {
+            ui.label(RichText::new(format!("{} proposals aren't loaded yet (who made them unknown): left out.", thousands(self.unknown))).color(P.faint).small());
+        }
+        ui.add(egui::TextEdit::singleline(&mut self.reject_why).hint_text("Why, to reject a run").desired_width(380.0));
+        egui::ScrollArea::vertical().id_salt("review-bulk-batches").max_height(300.0).show(ui, |ui| {
+            for (n, batch) in self.batches.iter().enumerate() {
+                let done = batch.rejected || matches!(batch.outcome, Some((false, Ok(_))));
+                let would = match &batch.outcome {
+                    Some((true, Ok(preview))) => Some(preview.adopted.len()),
+                    _ => None,
+                };
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(RichText::new(batch.agent.as_str()).font(font(14.0, semibold())));
+                    if !batch.run.is_empty() {
+                        ui.label(RichText::new(batch.run.as_str()).color(P.muted));
+                    }
+                    ui.label(RichText::new(format!("{} proposals", thousands(batch.flags.len()))).color(P.muted));
+                    if ui.add_enabled(!self.sending && !done, egui::Button::new("Preview")).clicked() {
+                        *adopt = Some((n, true));
+                    }
+                    let text = format!("Adopt {}", thousands(would.unwrap_or(0)));
+                    if ui.add_enabled(!self.sending && !done && would.unwrap_or(0) > 0, egui::Button::new(text)).clicked() {
+                        *adopt = Some((n, false));
+                    }
+                    let text = format!("Reject {}", thousands(batch.flags.len()));
+                    if ui.add_enabled(!self.sending && !done && !self.reject_why.trim().is_empty(), egui::Button::new(text)).clicked() {
+                        *reject = Some(n);
+                    }
+                });
+                if batch.rejected {
+                    ui.label(RichText::new("Rejected.").color(P.accent));
+                }
+                match &batch.outcome {
+                    Some((preview, Ok(result))) => {
+                        ui.label(RichText::new(adopted_text(*preview, result)).color(if *preview { P.muted } else { P.accent }));
+                        for refused in result.refused.iter().take(5) {
+                            ui.label(RichText::new(refused.message.as_str()).color(P.danger).small());
+                        }
+                    }
+                    Some((_, Err(err))) => {
+                        ui.label(RichText::new(err.as_str()).color(P.danger));
+                    }
+                    None => {}
+                }
+            }
+        });
+        if self.sending {
+            let done = self.progress.load(Ordering::Relaxed);
+            ui.label(RichText::new(format!("Working… {} of {}", thousands(done), thousands(self.working_on))).color(P.muted));
+        }
+    }
+
+    fn adopt(&mut self, shell: &Shell, n: usize, preview: bool) {
+        self.sending = true;
+        self.progress.store(0, Ordering::Relaxed);
+        self.working_on = self.batches[n].flags.len();
+        let (api, answer, ctx, progress, flags) = (shell.api.clone(), self.answer.clone(), shell.ctx.clone(), self.progress.clone(), self.batches[n].flags.clone());
+        shell.runtime.spawn(async move {
+            let mut all = Adopted::default();
+            let mut result = Ok(());
+            for batch in flags.chunks(ADOPT_BATCH) {
+                let body = serde_json::json!({ "flag_ids": batch, "preview": preview });
+                match api.send_json::<Adopted>(reqwest::Method::POST, "/api/review/adopt", Some(body)).await {
+                    Ok(done) => {
+                        all.adopted.extend(done.adopted);
+                        all.stale.extend(done.stale);
+                        all.refused.extend(done.refused);
+                        all.missing.extend(done.missing);
+                        progress.fetch_add(batch.len(), Ordering::Relaxed);
+                        ctx.request_repaint();
+                    }
+                    Err(err) => {
+                        result = Err(format!("{} adopted, then: {}", thousands(all.adopted.len()), err.message));
+                        break;
+                    }
+                }
+            }
+            answer.lock().unwrap().push(Answer::Adopt(n, preview, result.map(|_| all)));
+            ctx.request_repaint();
+        });
     }
 
     /// Ambiguous artists: a row per name, its candidates to choose from, and the button.
@@ -445,6 +606,44 @@ impl ReviewBulk {
     }
 }
 
+/// What adopting a batch did, or would do.
+fn adopted_text(preview: bool, done: &Adopted) -> String {
+    let (adopted, stale) = if preview { ("would be adopted", "would stay open (changed since)") } else { ("adopted", "left open (changed since)") };
+    let mut text = format!("{} {adopted}", thousands(done.adopted.len()));
+    if !done.stale.is_empty() {
+        text.push_str(&format!(", {} {stale}", thousands(done.stale.len())));
+    }
+    if !done.refused.is_empty() {
+        text.push_str(&format!(", {} refused", thousands(done.refused.len())));
+    }
+    if !done.missing.is_empty() {
+        text.push_str(&format!(", {} settled already", thousands(done.missing.len())));
+    }
+    text
+}
+
+/// The proposal `flags` by the tool and run that made them (a tool's runs together, the
+/// newest first); and how many aren't in `list`.
+fn batches(list: &[Flag], flags: &[Uuid]) -> (Vec<Batch>, usize) {
+    let by_id: HashMap<Uuid, &Flag> = list.iter().map(|f| (f.id, f)).collect();
+    let mut batches: Vec<Batch> = Vec::new();
+    let mut unknown = 0;
+    for id in flags {
+        let Some(flag) = by_id.get(id) else {
+            unknown += 1;
+            continue;
+        };
+        let text = |key: &str| flag.related.get(key).and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let (agent, run) = (text("agent"), text("job_id"));
+        match batches.iter().position(|b| b.agent == agent && b.run == run) {
+            Some(at) => batches[at].flags.push(*id),
+            None => batches.push(Batch { agent, run, flags: vec![*id], outcome: None, rejected: false }),
+        }
+    }
+    batches.sort_by(|a, b| a.agent.cmp(&b.agent).then_with(|| b.run.cmp(&a.run)));
+    (batches, unknown)
+}
+
 /// A pair as listed: the title(s), both lengths, and which file stays (of the two).
 fn pair_text(pair: &Pair) -> String {
     let title = if pair.kept.title == pair.merged.title { format!("“{}”", pair.kept.title) } else { format!("“{}” ← “{}”", pair.kept.title, pair.merged.title) };
@@ -507,6 +706,36 @@ mod tests {
             "imported_from": null,
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn proposals_go_by_tool_and_run() {
+        let uuid = |n: u8| format!("00000000-0000-7000-8000-0000000000{n:02x}");
+        let proposal = |id: u8, agent: &str, run: Option<&str>| -> Flag {
+            serde_json::from_value(serde_json::json!({
+                "id": uuid(id), "kind": "proposal", "track_id": uuid(id + 100),
+                "related": {"key": "k", "agent": agent, "job_id": run},
+                "related_artists": [], "imported_from": null,
+            }))
+            .unwrap()
+        };
+        let list = [
+            proposal(1, "research.dates.telegram/code", Some("dates-1")),
+            proposal(2, "research.dates.telegram/code", Some("dates-2")),
+            proposal(3, "research.dates.soundcloud/code", Some("dates-1")),
+            proposal(4, "research.dates.telegram/code", Some("dates-2")),
+            proposal(5, "by hand", None),
+        ];
+        let ids: Vec<Uuid> = list.iter().map(|f| f.id).chain([Uuid::max()]).collect();
+        let (batches, unknown) = batches(&list, &ids);
+        assert_eq!(unknown, 1);
+        let shown: Vec<(&str, &str, usize)> = batches.iter().map(|b| (b.agent.as_str(), b.run.as_str(), b.flags.len())).collect();
+        assert_eq!(shown, [
+            ("by hand", "", 1),
+            ("research.dates.soundcloud/code", "dates-1", 1),
+            ("research.dates.telegram/code", "dates-2", 2),
+            ("research.dates.telegram/code", "dates-1", 1),
+        ]);
     }
 
     #[test]

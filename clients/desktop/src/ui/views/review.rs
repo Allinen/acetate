@@ -22,7 +22,7 @@
 //! outside text fields also j/k or ↓/↑, Space plays the track (or pauses it), u skips, d (Ctrl+D anywhere)
 //! marks its flags done (of the chip's kind, if one's chosen). Ctrl+M compares a possible
 //! duplicate side by side (to merge), and closes it again. b (or "Bulk…"), with a chip
-//! chosen: the bulk tools for what's shown (`review_bulk`).
+//! chosen: the bulk tools for the marked tracks, else what's shown (`review_bulk`).
 //!
 //! Marking many, as in a track table (`marking`, the same tools): the box in front of a
 //! row, `x`, or Ctrl+click marks or unmarks one; Shift+click or Shift+↑/↓ a range; Ctrl+A
@@ -292,7 +292,7 @@ impl Review {
         }
         ui.horizontal(|ui| {
             ui.label(RichText::new(status).color(P.faint).small());
-            let tip = if self.only.is_some() { "The bulk tools for what's shown (b)" } else { "Choose a kind of flag first (a chip)" };
+            let tip = if self.only.is_some() { "The bulk tools for the marked tracks, else what's shown (b)" } else { "Choose a kind of flag first (a chip)" };
             if ui.add_enabled(self.only.is_some() && !self.entries.is_empty(), egui::Button::new("Bulk…").small()).on_hover_text(tip).on_disabled_hover_text(tip).clicked() {
                 self.open_bulk(shell, catalog);
             }
@@ -544,11 +544,14 @@ impl Review {
         }
     }
 
-    /// The bulk tools, for the chosen chip's kind and the tracks shown.
+    /// The bulk tools, for the chosen chip's kind and the tracks marked (none: those shown).
     fn open_bulk(&mut self, shell: &Shell, catalog: &Catalog) {
         let Some(kind) = self.only.clone() else { return };
-        let tracks: Vec<u32> = self.entries.iter().map(|e| e.track).collect();
-        self.bulk = Some(super::review_bulk::ReviewBulk::open(shell, catalog, &kind, tracks, &self.filter));
+        let entries = &self.entries;
+        let id_at = |n: usize| entries.get(n).map(|e| (catalog.track_at(e.track).id(), 0));
+        let marked = self.marking.marked_rows(entries.len(), id_at);
+        let tracks: Vec<u32> = if marked.is_empty() { entries.iter().map(|e| e.track).collect() } else { marked.iter().map(|&n| entries[n].track).collect() };
+        self.bulk = Some(super::review_bulk::ReviewBulk::open(shell, catalog, &kind, tracks, !marked.is_empty(), &self.filter));
     }
 
     fn keys(&mut self, ctx: &egui::Context, shell: &mut Shell, catalog: &Catalog, player: &PlayerView) {

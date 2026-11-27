@@ -9,6 +9,7 @@ differs between the two.
 from __future__ import annotations
 
 import asyncio
+import gzip
 import http.client
 import io
 import json
@@ -51,6 +52,8 @@ LOOKUP_BATCH = 1000
 
 #: Review flags per page.
 REVIEW_PAGE = 500
+#: Proposals adopted per request (the server takes up to 1,000: each is an edit).
+ADOPT_BATCH = 500
 
 T = TypeVar("T")
 C = TypeVar("C", bound="_Client")
@@ -128,6 +131,18 @@ class _Client:
             if len(page) < REVIEW_PAGE:
                 return flags
             before = page[-1]["id"]
+
+    def _adopt_many(self, flag_ids: list[str], preview: bool) -> _Operation[dict[str, list[Any]]]:
+        done: dict[str, list[Any]] = {"adopted": [], "stale": [], "refused": [], "missing": []}
+        for start in range(0, len(flag_ids), ADOPT_BATCH):
+            body = {"flag_ids": flag_ids[start : start + ADOPT_BATCH], "preview": preview}
+            answer = yield _Call("POST", "/api/review/adopt", json_body=body)
+            for key, items in done.items():
+                items += answer.get(key, [])
+        return done
+
+    def _catalog(self) -> _Operation[dict[str, Any]]:
+        return _rows(dict((yield _Call("GET", "/api/catalog"))))
 
     def _create_lost_song(
         self,
@@ -263,7 +278,8 @@ class _Client:
         data: bytes | None = None,
     ) -> tuple[urllib.parse.SplitResult, str, dict[str, str], Iterator[bytes]]:
         """The request's address, target, headers (all but Host) and body, a piece at a time."""
-        headers = {"User-Agent": f"acetate-ingest/{__version__} (Python)", "Accept": "application/json"}
+        # Only the catalog is sent compressed; it's tens of MB as plain JSON.
+        headers = {"User-Agent": f"acetate-ingest/{__version__} (Python)", "Accept": "application/json", "Accept-Encoding": "gzip"}
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
         chunks: Iterator[bytes] = iter(())
@@ -287,6 +303,8 @@ class _Client:
         return url, url.path + (f"?{url.query}" if url.query else ""), headers, chunks
 
     def _answer(self, response: http.client.HTTPResponse, text: bytes) -> Any:
+        if (response.headers.get("Content-Encoding") or "").lower() == "gzip":
+            text = gzip.decompress(text)
         if response.status >= 400:
             raise _server_error(response.status, response.reason, response.headers, text)
         return json.loads(text) if text else None
@@ -391,6 +409,20 @@ class Acetate(_Client):
         """Review flags, newest first: open ones, or settled ones (`resolved`, with their
         `resolution`: a rejected proposal's says why). E.g. `kind="proposal"`."""
         return self._run(self._review_flags(kind, resolved, track_id))
+
+    def adopt_many(self, flag_ids: list[str], *, preview: bool = False) -> dict[str, list[Any]]:
+        """Adopts these proposals, each as the Review page's Adopt would (a proposed new
+        version isn't made the shown one), as many requests as it takes. Answers the flag
+        ids `adopted`, `stale` (the track changed since: left open), `refused`
+        (`{"flag_id", "message"}`) and `missing` (not an open proposal you can see).
+        `preview` keeps nothing."""
+        return self._run(self._adopt_many(flag_ids, preview))
+
+    def catalog(self) -> dict[str, Any]:
+        """The whole library as you see it (`GET /api/catalog`): `tracks`, `albums`,
+        `artists`, `extras`, `issues` (each track's open review flags), `lyrics`… each a
+        list of dicts by the server's column names, plus `version`."""
+        return self._run(self._catalog())
 
     # ---- Lost songs ----
 
@@ -585,6 +617,14 @@ class AsyncAcetate(_Client):
         """As `Acetate.review_flags`."""
         return await self._run(self._review_flags(kind, resolved, track_id))
 
+    async def adopt_many(self, flag_ids: list[str], *, preview: bool = False) -> dict[str, list[Any]]:
+        """As `Acetate.adopt_many`."""
+        return await self._run(self._adopt_many(flag_ids, preview))
+
+    async def catalog(self) -> dict[str, Any]:
+        """As `Acetate.catalog`."""
+        return await self._run(self._catalog())
+
     async def create_lost_song(
         self,
         name: str,
@@ -680,6 +720,15 @@ class AsyncAcetate(_Client):
         finally:
             connection.close()
         return self._answer(response, text)
+
+
+def _rows(catalog: dict[str, Any]) -> dict[str, Any]:
+    """The catalog with each of its parts (`{"columns", "rows"}`, a row an array) as a
+    list of dicts."""
+    for name, part in catalog.items():
+        if isinstance(part, dict) and set(part) == {"columns", "rows"}:
+            catalog[name] = [dict(zip(part["columns"], row)) for row in part["rows"]]
+    return catalog
 
 
 class _AsyncConnection:

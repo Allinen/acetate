@@ -7,6 +7,8 @@
 //!   as disc 1, track 1), so the "missing album" flag settles itself;
 //! * `merge_duplicates`: possible duplicates with the same title and about the same
 //!   length are merged (the `merge-duplicates` command too);
+//! * `adopt_proposals`: proposals adopted, each as one adopted by itself (a tool's batch
+//!   of date fixes, say);
 //! * resolving many flags at once is `review::resolve_many`.
 //!
 //! Everything goes through revisions, like a change made by hand, and only touches what
@@ -17,6 +19,7 @@ use sqlx::PgConnection;
 use uuid::Uuid;
 
 use super::revisions::{self, EditRejected, Source};
+use super::track_edits;
 use crate::model::{AlbumData, AlbumMembership, Credit, TrackFacts};
 
 /// What `settle_ambiguous` did.
@@ -326,4 +329,68 @@ mod tests {
         let order = [None, Some("mp3"), Some("aac"), Some("flac"), Some("pcm_s16le"), Some("pcm_s24le")].map(format_rank);
         assert_eq!(order, [0, 1, 1, 2, 3, 3]);
     }
+}
+
+/// A proposal `adopt_proposals` left open because its edit was refused.
+#[derive(Debug, Serialize, PartialEq)]
+pub struct RefusedProposal {
+    pub flag_id: Uuid,
+    pub message: String,
+}
+
+/// What `adopt_proposals` did, by flag.
+#[derive(Debug, Default, Serialize, PartialEq)]
+pub struct Adopted {
+    /// Their edits made and the flags settled.
+    pub adopted: Vec<Uuid>,
+    /// Left open: the track was edited since it was proposed (a person changes it by hand,
+    /// then rejects the proposal).
+    pub stale: Vec<Uuid>,
+    /// Left open: the edit was refused for another reason.
+    pub refused: Vec<RefusedProposal>,
+    /// Not an open proposal the user can see (settled since, or never one).
+    pub missing: Vec<Uuid>,
+}
+
+/// Many proposals adopted at once, each as `review::adoption` makes it (a proposed new
+/// version isn't made the shown one): a track at a time, so one that fails leaves the
+/// others. The edits of one tool (`agent`, which the reason names) run as one, in the
+/// order given; a second proposal for a track the first one just changed is stale, as it
+/// would be adopted by itself.
+pub async fn adopt_proposals(
+    conn: &mut PgConnection,
+    flags: &[Uuid],
+    may: track_edits::May,
+    describe: impl Fn(anyhow::Error) -> track_edits::Failure,
+) -> anyhow::Result<Adopted> {
+    let mut done = Adopted::default();
+    let mut groups: Vec<(track_edits::Edit, Vec<Uuid>)> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for &flag in flags {
+        if !seen.insert(flag) {
+            continue;
+        }
+        let Some((edit, _)) = super::review::adoption(conn, flag).await? else {
+            done.missing.push(flag);
+            continue;
+        };
+        match groups.iter_mut().find(|(group, _)| group.reason == edit.reason) {
+            Some((group, ids)) => {
+                group.tracks.extend(edit.tracks);
+                ids.push(flag);
+            }
+            None => groups.push((edit, vec![flag])),
+        }
+    }
+    for (edit, ids) in groups {
+        let edited = track_edits::edit(conn, &edit, may, &describe).await?;
+        for (flag, track) in ids.into_iter().zip(edited.tracks) {
+            match track.error {
+                None => done.adopted.push(flag),
+                Some(failure) if failure.code == "stale" => done.stale.push(flag),
+                Some(failure) => done.refused.push(RefusedProposal { flag_id: flag, message: failure.message }),
+            }
+        }
+    }
+    Ok(done)
 }

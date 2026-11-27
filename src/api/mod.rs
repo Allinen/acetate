@@ -255,6 +255,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/review", require(&[EditMetadata], get(review::list)))
         .route("/api/review/{id}/resolve", require(&[EditMetadata], post(review::resolve)))
         .route("/api/review/{id}/adopt", require(&[EditMetadata], post(review::adopt)))
+        .route("/api/review/adopt", require(&[EditMetadata], post(review::adopt_many)))
         .route("/api/review/{id}/found", require(&[EditMetadata, EditSources], post(review::found)))
         .route("/api/review/resolve", require(&[EditMetadata], post(review::resolve_many)))
         .route("/api/review/ambiguous", require(&[EditMetadata], post(review::settle_ambiguous)))

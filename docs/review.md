@@ -33,7 +33,11 @@ proposed it reads the reason, so it doesn't propose the same thing again.
 
 Tools send them through `POST /api/tracks/edit`: a track's `flags.add` takes
 `{"proposal": {key, agent, job_id?, base_revision_id?, patch?, new_variant?, sources?, evidence?}}`.
-A track has at most one open proposal per `key`. `POST /api/review/{id}/adopt` adopts one.
+A track has at most one open proposal per `key`. `POST /api/review/{id}/adopt` adopts one;
+`POST /api/review/adopt` `{"flag_ids": [...], "preview"?}` adopts up to 1,000, each as if on
+its own, and answers which were `adopted`, `stale` (left open), `refused` and `missing`. A
+track's single (the album it's alone on) gets the date, title or artists adopted too, as with
+any edit.
 
 ## Lost songs
 
@@ -60,7 +64,7 @@ opens its page, where you accept it or take it off.
 | `c` on the artist | ambiguous artist: credit the next candidate |
 | `Ctrl+V` | paste an image: a new cover |
 | `Ctrl+V` | in the input field, paste YouTube link or SoundCloud metadata |
-| `b` | bulk tools for what's shown |
+| `b` | bulk tools for the marked tracks, else what's shown |
 
 Marking many works as in any track list (`x`, `Shift`, `Ctrl+A`); the editor then changes
 all of them.
@@ -90,10 +94,14 @@ extra's own page; unlinking is done there.
 
 ## Bulk tools
 
-With a chip chosen, `b` (or "Bulk…") acts on exactly what's shown. It lists everything
-first; nothing happens before the button.
+With a chip chosen, `b` (or "Bulk…") acts on the marked tracks, or if none are marked, on
+exactly what's shown. It lists everything first; nothing happens before the button.
 
-- Any kind: mark the shown flags done, with one note.
+- Any kind but proposals: mark the flags done, with one note.
 - Ambiguous artist: credit each name to one of its candidates, on all its tracks at once.
 - No album: give each track a single of its own.
 - Possible duplicate: merge the pairs with the same title and about the same length.
+- Proposal: a row per run of each tool (who proposed them, and the run's id). **Preview**
+  says how many would be adopted and how many tracks changed since; **Adopt N** then adopts
+  them, each as Adopt does one (those changed since stay open). **Reject N** takes the reason
+  typed above the rows; the tool reads it.

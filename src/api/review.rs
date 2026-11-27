@@ -190,6 +190,41 @@ pub async fn merge_duplicates(
     Ok(Json(done))
 }
 
+/// How many proposals one bulk adopt may name: each is an edit (a revision, its checks),
+/// so a batch is a request's worth of work, not a list's.
+const ADOPT_LIMIT: usize = 1_000;
+
+#[derive(Debug, Deserialize)]
+pub struct AdoptMany {
+    flag_ids: Vec<Uuid>,
+    #[serde(default)]
+    preview: bool,
+}
+
+/// `POST /api/review/adopt`, JSON `{"flag_ids": [...], "preview": false}`: many proposals
+/// adopted at once, each as `POST /api/review/{id}/adopt` would (a proposed new version
+/// isn't made the shown one). Answers which were `adopted`, which are `stale` (the track
+/// edited since), `refused` (with why) or `missing` (not an open proposal the user can
+/// see). `preview` keeps nothing. See `db::review_bulk::adopt_proposals`.
+pub async fn adopt_many(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Json(body): Json<AdoptMany>,
+) -> Result<Json<db::review_bulk::Adopted>, AppError> {
+    if body.flag_ids.len() > ADOPT_LIMIT {
+        return Err(AppError::BadRequest(format!("at most {ADOPT_LIMIT} at once")));
+    }
+    let mut tx = state.db(&user).await?;
+    let may = db::track_edits::May { relations: user.has(Permission::EditRelations), sources: user.has(Permission::EditSources) };
+    let done = db::review_bulk::adopt_proposals(&mut tx, &body.flag_ids, may, super::failure).await?;
+    if body.preview {
+        tx.rollback().await?;
+    } else {
+        tx.commit().await?;
+    }
+    Ok(Json(done))
+}
+
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct Adopt {
