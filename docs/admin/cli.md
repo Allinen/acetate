@@ -15,4 +15,5 @@ act as the system with no login. Many one-off tools list what they would do unle
 | `import-navidrome --db …` | [users, plays, stars, ratings from Navidrome](../library/navidrome.md) |
 | `verify [dir] [--blobs]` | check files are safely stored (read-only) |
 | `reread-dates [--dry-run]` | complete release dates that are only a year from the rest of the date in the file's tags (ID3v2.3 TDAT, RELEASETIME, a WAV's RIFF INFO); only dates nobody changed since the import |
+| `reprobe-extras [--dry-run]` | give images in extras added before extras knew images their dimensions and format, so they're shown and served as images |
 | `review-checks [--on x\|--off x]` | list or toggle the [review checks](../review.md) |

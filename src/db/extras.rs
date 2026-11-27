@@ -91,7 +91,8 @@ pub struct ExtraFile {
     pub height: Option<i32>,
     pub frame_rate: Option<f32>,
     pub video_codec: Option<String>,
-    /// A video's thumbnail: the start of its image's hash (`GET /api/images/{hash}`).
+    /// A video's thumbnail, or an image itself: the start of its image's hash (`GET
+    /// /api/images/{hash}`). An image is a file with a `width` but no `video_codec`.
     pub thumb: Option<String>,
     pub hidden: bool,
     pub added_at: DateTime<Utc>,
@@ -907,7 +908,8 @@ async fn files(conn: &mut PgConnection, extra: Uuid) -> sqlx::Result<Vec<ExtraFi
     sqlx::query_as!(
         ExtraFile,
         r#"SELECT id, name, sha256, size_bytes, container, codec, sample_rate, channels, bit_depth, duration_ms,
-                  width, height, frame_rate, video_codec, left(thumb_sha256, 16) AS thumb,
+                  width, height, frame_rate, video_codec,
+                  left(CASE WHEN width IS NOT NULL AND video_codec IS NULL THEN sha256 ELSE thumb_sha256 END, 16) AS thumb,
                   hidden_at IS NOT NULL AS "hidden!", added_at
            FROM extra_files WHERE extra_id = $1 ORDER BY lower(name), id"#,
         extra
@@ -1068,7 +1070,7 @@ pub async fn back_to_track(conn: &mut PgConnection, extra: Uuid, reason: &str) -
 async fn video_stays(conn: &mut PgConnection, extra: Uuid, track: Uuid) -> sqlx::Result<bool> {
     sqlx::query_scalar!(
         r#"SELECT EXISTS (SELECT 1 FROM extra_files x
-                          WHERE x.extra_id = $1 AND x.width IS NOT NULL AND x.hidden_at IS NULL
+                          WHERE x.extra_id = $1 AND x.video_codec IS NOT NULL AND x.hidden_at IS NULL
                             AND NOT EXISTS (SELECT 1 FROM tracks t JOIN files f ON f.id = t.file_id
                                             WHERE t.id = $2 AND f.sha256 = x.sha256)) AS "stays!""#,
         extra,

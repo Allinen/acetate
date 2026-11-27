@@ -10,6 +10,7 @@ mod ingest_command;
 mod model;
 mod navidrome;
 mod reread_dates_command;
+mod reprobe_extras_command;
 mod storage;
 mod user_commands;
 mod verify_command;
@@ -95,6 +96,13 @@ enum Command {
     /// are changed, as a new revision; the rest is reported.
     RereadDates {
         /// Work out and print what would change, without changing anything.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Give images in extras that were added before extras knew images their dimensions
+    /// and format, so they're shown and served as images.
+    ReprobeExtras {
+        /// Say what would change, without changing anything.
         #[arg(long)]
         dry_run: bool,
     },
@@ -377,6 +385,9 @@ async fn main() -> anyhow::Result<()> {
         },
         Command::RereadDates { dry_run } => {
             reread_dates_command::run(&pool, &store, reread_dates_command::Options { dry_run }).await
+        }
+        Command::ReprobeExtras { dry_run } => {
+            reprobe_extras_command::run(&pool, &store, reprobe_extras_command::Options { dry_run }).await
         }
         Command::ReviewChecks { on, off } => {
             let mut tx = db::begin(&pool, None).await?;

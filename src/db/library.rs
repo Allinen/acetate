@@ -65,12 +65,12 @@ pub async fn extras_json(conn: &mut PgConnection, ids: Option<&[Uuid]>) -> sqlx:
         FROM extras e
         LEFT JOIN LATERAL (
             SELECT f.id, f.duration_ms FROM extra_files f
-            WHERE f.extra_id = e.id AND f.hidden_at IS NULL AND (f.codec IS NOT NULL OR f.duration_ms IS NOT NULL) AND f.width IS NULL
+            WHERE f.extra_id = e.id AND f.hidden_at IS NULL AND (f.codec IS NOT NULL OR f.duration_ms IS NOT NULL) AND f.video_codec IS NULL
             ORDER BY lower(f.name), f.id LIMIT 1
         ) first ON true
         LEFT JOIN LATERAL (
             SELECT f.id, f.thumb_sha256 FROM extra_files f
-            WHERE f.extra_id = e.id AND f.hidden_at IS NULL AND f.width IS NOT NULL
+            WHERE f.extra_id = e.id AND f.hidden_at IS NULL AND f.video_codec IS NOT NULL
             ORDER BY lower(f.name), f.id LIMIT 1
         ) video ON true
         WHERE $1::uuid[] IS NULL OR e.id = ANY($1)

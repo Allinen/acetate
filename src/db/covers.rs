@@ -261,7 +261,8 @@ pub struct Image {
 }
 
 /// The cover image whose hash is (or starts with) `hash` (16 to 64 lowercase hex
-/// digits), if a cover the user can see uses it: an album cover counts when one of the
+/// digits), if a cover the user can see uses it (or a video thumbnail or an image in an
+/// extra they can see): an album cover counts when one of the
 /// album's tracks is visible, as for `GET /api/covers/{id}`.
 pub async fn image_by_hash(conn: &mut PgConnection, hash: &str) -> sqlx::Result<Option<Image>> {
     let valid = (16..=64).contains(&hash.len()) && hash.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
@@ -282,6 +283,11 @@ pub async fn image_by_hash(conn: &mut PgConnection, hash: &str) -> sqlx::Result<
         SELECT f.thumb_sha256, 'image/jpeg'
         FROM extra_files f
         WHERE f.thumb_sha256 LIKE $1 || '%'
+        UNION ALL
+        -- An image kept as an extra's file (see `ingest::video::image_facts`).
+        SELECT f.sha256, 'image/' || f.container
+        FROM extra_files f
+        WHERE f.sha256 LIKE $1 || '%' AND f.width IS NOT NULL AND f.video_codec IS NULL
         UNION ALL
         -- An image the user staged (only theirs: row-level security).
         SELECT s.blob_sha256, s.mime

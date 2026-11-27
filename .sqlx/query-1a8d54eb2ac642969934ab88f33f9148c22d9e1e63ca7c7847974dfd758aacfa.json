@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT t.id AS track, t.title, e.id AS extra, e.hidden_at IS NOT NULL AS \"extra_hidden!\",\n                  xf.name AS file_name, xf.sha256, f.id AS file\n           FROM tracks t\n           JOIN files f ON f.id = t.file_id\n           JOIN extra_files xf ON xf.sha256 = f.sha256 AND xf.width IS NOT NULL\n           JOIN extras e ON e.id = xf.extra_id\n           WHERE t.merged_into IS NULL AND t.became_extra_id IS NULL\n           ORDER BY t.title, t.id",
+  "query": "SELECT t.id AS track, t.title, e.id AS extra, e.hidden_at IS NOT NULL AS \"extra_hidden!\",\n                  xf.name AS file_name, xf.sha256, f.id AS file\n           FROM tracks t\n           JOIN files f ON f.id = t.file_id\n           JOIN extra_files xf ON xf.sha256 = f.sha256 AND xf.video_codec IS NOT NULL\n           JOIN extras e ON e.id = xf.extra_id\n           WHERE t.merged_into IS NULL AND t.became_extra_id IS NULL\n           ORDER BY t.title, t.id",
   "describe": {
     "columns": [
       {
@@ -89,5 +89,5 @@
       false
     ]
   },
-  "hash": "8060dd57e73a71e27c3420ce235526602709f9846a81e9ee3eb90575be6f1cde"
+  "hash": "1a8d54eb2ac642969934ab88f33f9148c22d9e1e63ca7c7847974dfd758aacfa"
 }

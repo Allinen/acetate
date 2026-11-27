@@ -432,3 +432,29 @@ async fn an_extra_that_became_a_track_is_taken_off(_: PgPoolOptions, connect: Pg
     assert!(db::extras::set_hidden(&mut tx, id, false, "").await?, "and can be brought back");
     Ok(())
 }
+
+/// An image (a `width`, no `video_codec`) is neither the extra's video nor its audio, and
+/// `GET /api/images` finds it by the start of its hash, for those who see the extra.
+#[sqlx::test]
+async fn images_in_extras_are_images(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
+    let lib = setup(connect).await?;
+    let mut tx = db::begin(&lib.app, Some(lib.bob)).await?;
+    let (id, _) = db::extras::create(&mut tx, "H photos", "other", &About::default(), &[Link::Track(lib.h)], None, "").await?;
+    db::blobs::register(&mut tx, SHA, "main", Some(3)).await?;
+    let facts = FileFacts { container: Some("png".into()), width: Some(4), height: Some(3), ..Default::default() };
+    db::extras::add_file(&mut tx, id, SHA, "shoot/a.png", 3, &facts, "").await?;
+
+    let extra = db::extras::get(&mut tx, id).await?.unwrap();
+    assert_eq!((extra.files[0].name.as_str(), extra.files[0].thumb.as_deref()), ("shoot/a.png", Some(&SHA[..16])), "its own key");
+    let rows: Vec<Vec<serde_json::Value>> = serde_json::from_str(&db::library::extras_json(&mut tx, None).await?)?;
+    let column = |name: &str| db::library::EXTRA_COLUMNS.iter().position(|c| *c == name).unwrap();
+    assert!(rows[0][column("video")].is_null() && rows[0][column("first_file")].is_null(), "not a video, not audio");
+    let image = db::covers::image_by_hash(&mut tx, &SHA[..16]).await?.unwrap();
+    assert_eq!((image.blob_sha256.as_str(), image.mime.as_deref()), (SHA, Some("image/png")));
+    tx.commit().await?;
+
+    // Carol doesn't see H's extra (restricted like H), so not its image either.
+    let mut tx = db::begin(&lib.app, Some(lib.carol)).await?;
+    assert!(db::covers::image_by_hash(&mut tx, &SHA[..16]).await?.is_none());
+    Ok(())
+}

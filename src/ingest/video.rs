@@ -122,7 +122,7 @@ fn rate(text: &str) -> Option<f32> {
 }
 
 /// What an extra's new file is: a video (read with `ffprobe`, a thumbnail stored in `store`),
-/// or audio (as tracks are probed), or neither (only its size is known).
+/// an image, or audio (as tracks are probed), or none of them (only its size is known).
 pub async fn examine(store: &crate::storage::BlobStore, path: &Path, name: &str) -> crate::db::extras::FileFacts {
     use crate::db::extras::FileFacts;
     if is_video_name(name)
@@ -146,6 +146,9 @@ pub async fn examine(store: &crate::storage::BlobStore, path: &Path, name: &str)
             ..Default::default()
         };
     }
+    if let Some(image) = image_facts(path).await {
+        return image;
+    }
     let path = path.to_path_buf();
     let extension = Path::new(name).extension().and_then(|e| e.to_str()).map(str::to_lowercase);
     match tokio::task::spawn_blocking(move || super::probe::probe_file(&path, extension.as_deref())).await {
@@ -160,6 +163,24 @@ pub async fn examine(store: &crate::storage::BlobStore, path: &Path, name: &str)
         },
         _ => FileFacts::default(),
     }
+}
+
+/// An image's facts: its size in `width`/`height` and its format in `container` ("jpeg",
+/// "png", "webp", "gif"). With no `video_codec`, which is what tells it from a video. No
+/// thumbnail: `/api/images` sizes the image itself.
+pub async fn image_facts(path: &Path) -> Option<crate::db::extras::FileFacts> {
+    use tokio::io::AsyncReadExt;
+    let mut head = [0u8; 16];
+    let read = tokio::fs::File::open(path).await.ok()?.read(&mut head).await.ok()?;
+    imagesize::image_type(&head[..read]).ok()?;
+    let bytes = tokio::fs::read(path).await.ok()?;
+    let image = crate::model::image_info(&bytes)?;
+    Some(crate::db::extras::FileFacts {
+        container: Some(image.mime.trim_start_matches("image/").to_string()),
+        width: image.width,
+        height: image.height,
+        ..Default::default()
+    })
 }
 
 /// A thumbnail: a JPEG frame a tenth of the way in (at most 10 s), at most 640 wide. None:

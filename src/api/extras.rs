@@ -175,6 +175,7 @@ pub async fn add_files(State(state): State<AppState>, user: CurrentUser, Path(id
             }
             continue;
         };
+        let filename = checked_file_name(&filename).map_err(|why| AppError::BadRequest(format!("file name '{filename}': {why}")))?;
         let pending = super::uploads::receive(&state, &user, field).await?;
         let (sha256, size) = (pending.sha256.clone(), pending.size as i64);
         let mut tx = state.db(&user).await?;
@@ -193,6 +194,26 @@ pub async fn add_files(State(state): State<AppState>, user: CurrentUser, Path(id
         return Err(AppError::BadRequest("no file field in the form".into()));
     }
     Ok(Json(serde_json::json!({ "files": added, "already": already })))
+}
+
+/// An extra's file name: a name, or a path under the folder the extra was made from
+/// (`photos/2019/a.jpg`, `/` between folders), as a client sends it. Nothing that could
+/// climb out of a folder when the files are saved again.
+pub fn checked_file_name(name: &str) -> Result<String, &'static str> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("empty");
+    }
+    if name.chars().count() > 500 {
+        return Err("longer than 500 characters");
+    }
+    if name.chars().any(|c| c.is_control() || c == '\\') {
+        return Err("has a control character or a backslash");
+    }
+    if name.split('/').any(|part| part.is_empty() || part == "." || part == "..") {
+        return Err("has an empty, '.' or '..' folder (or starts or ends with '/')");
+    }
+    Ok(name.to_string())
 }
 
 /// `GET /api/extra-files/by-sha256/{sha256}`: the extra that has a file with these bytes
@@ -297,7 +318,7 @@ pub async fn track_to_extra(State(state): State<AppState>, user: CurrentUser, Pa
     if crate::ingest::video::is_video_name(&done.file) {
         let path = state.store.path_for(&done.sha256).await;
         let facts = crate::ingest::video::examine(&state.store, &path, &done.file).await;
-        if facts.width.is_some() {
+        if facts.video_codec.is_some() {
             db::extras::set_file_facts(&mut tx, done.file_id, &facts).await?;
         }
     }
@@ -400,7 +421,7 @@ async fn make_track(state: &AppState, user: &CurrentUser, extra: &Extra, file: &
         tags_from: None,
     };
     // A video's track plays its sound, taken out of it as it is; the video stays an extra.
-    let (staged, name) = if file.width.is_some() {
+    let (staged, name) = if file.video_codec.is_some() {
         audio_of_video(state, file).await?
     } else {
         (crate::ingest::StagedFile::stored(&state.store, &file.sha256, file.size_bytes as u64).await, file.name.clone())
@@ -572,6 +593,56 @@ mod tests {
         let files: i64 = sqlx::query_scalar("SELECT count(*) FROM extra_files").fetch_one(&owner).await?;
         assert_eq!(files, 1);
         Ok(())
+    }
+
+    /// A folder's files keep their place in it (`shoot/day 1/a.png`); a name that could
+    /// climb out of the folder is refused. An image gets its size, and is served by
+    /// `GET /api/images` (as it is, or made smaller).
+    #[sqlx::test]
+    async fn images_keep_their_folders_and_are_served(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
+        use tower::ServiceExt;
+        let (_owner, app, _dir) = app(connect).await?;
+        let alice = user(&_owner, "alice").await?;
+        let multipart = Some("multipart/form-data; boundary=b");
+        let mut png = Vec::new();
+        image::RgbImage::new(4, 3).write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)?;
+        let with = |name: &str, bytes: &[u8]| {
+            let mut form = format!("--b\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{name}\"\r\n\r\n").into_bytes();
+            form.extend(bytes);
+            form.extend(b"\r\n--b--\r\n");
+            Body::from(form)
+        };
+        let (_, made) = send(&app, "POST", "/api/extras", &alice, Body::from(serde_json::json!({ "name": "Shoot", "kind": "other" }).to_string()), Some("application/json")).await;
+        let id = made["id"].as_str().unwrap().to_string();
+        let (status, got) = send(&app, "POST", &format!("/api/extras/{id}/files"), &alice, with("shoot/day 1/a.png", &png), multipart).await;
+        assert_eq!(status, StatusCode::OK, "{got}");
+        for bad in ["../a.png", "/a.png", "a//b.png", "a/./b.png", "a/"] {
+            let (status, got) = send(&app, "POST", &format!("/api/extras/{id}/files"), &alice, with(bad, b"other bytes"), multipart).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}: {got}");
+        }
+
+        let (_, extra) = send(&app, "GET", &format!("/api/extras/{id}"), &alice, Body::empty(), None).await;
+        let file = &extra["files"][0];
+        assert_eq!(extra["files"].as_array().unwrap().len(), 1, "{extra}");
+        assert_eq!((file["name"].as_str(), file["width"].as_i64(), file["height"].as_i64()), (Some("shoot/day 1/a.png"), Some(4), Some(3)));
+        assert_eq!((file["container"].as_str(), file["video_codec"].as_str()), (Some("png"), None));
+        let key = file["thumb"].as_str().unwrap();
+        assert_eq!(key, &hex::encode(Sha256::digest(&png))[..16]);
+        for size in ["", "?size=small"] {
+            let request = axum::http::Request::get(format!("/api/images/{key}{size}")).header("authorization", format!("Bearer {alice}")).body(Body::empty())?;
+            let response = app.clone().oneshot(request).await?;
+            assert_eq!(response.status(), StatusCode::OK, "{size}");
+            assert_eq!(response.headers()["content-type"], "image/png", "{size}: small enough already, as it is");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn file_names_stay_in_their_folder() {
+        assert_eq!(super::checked_file_name(" shoot/day 1/a.png ").as_deref(), Ok("shoot/day 1/a.png"));
+        for bad in ["", " ", "..", "../a", "a/../b", "/a", "a/", "a//b", "a\\b", "a\nb", "x".repeat(501).as_str()] {
+            assert!(super::checked_file_name(bad).is_err(), "{bad:?}");
+        }
     }
 
     /// A video kept as an extra becomes a track from what YouTube says of it: looked at

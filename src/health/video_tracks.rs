@@ -35,7 +35,7 @@ async fn find(pool: &PgPool) -> anyhow::Result<Vec<Found>> {
                   xf.name AS file_name, xf.sha256, f.id AS file
            FROM tracks t
            JOIN files f ON f.id = t.file_id
-           JOIN extra_files xf ON xf.sha256 = f.sha256 AND xf.width IS NOT NULL
+           JOIN extra_files xf ON xf.sha256 = f.sha256 AND xf.video_codec IS NOT NULL
            JOIN extras e ON e.id = xf.extra_id
            WHERE t.merged_into IS NULL AND t.became_extra_id IS NULL
            ORDER BY t.title, t.id"#

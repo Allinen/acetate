@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, name, sha256, size_bytes, container, codec, sample_rate, channels, bit_depth, duration_ms,\n                  width, height, frame_rate, video_codec, left(thumb_sha256, 16) AS thumb,\n                  hidden_at IS NOT NULL AS \"hidden!\", added_at\n           FROM extra_files WHERE extra_id = $1 ORDER BY lower(name), id",
+  "query": "SELECT id, name, sha256, size_bytes, container, codec, sample_rate, channels, bit_depth, duration_ms,\n                  width, height, frame_rate, video_codec,\n                  left(CASE WHEN width IS NOT NULL AND video_codec IS NULL THEN sha256 ELSE thumb_sha256 END, 16) AS thumb,\n                  hidden_at IS NOT NULL AS \"hidden!\", added_at\n           FROM extra_files WHERE extra_id = $1 ORDER BY lower(name), id",
   "describe": {
     "columns": [
       {
@@ -206,5 +206,5 @@
       false
     ]
   },
-  "hash": "aff672486dd901558c73a9adb1aa74172e310118ce95bbf2f14735851517d16c"
+  "hash": "7cd065ee1e63a170721737af0d80b94d984916bf20c1e26c3f74a9e1b4c57a91"
 }
