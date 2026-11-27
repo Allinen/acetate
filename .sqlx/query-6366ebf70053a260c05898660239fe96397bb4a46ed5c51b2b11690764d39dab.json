@@ -1,0 +1,111 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT t.id, t.title, t.artist_display, t.release_date, t.status, f.duration_ms, f.sha256,\n               GREATEST(CASE WHEN t.title ILIKE $2 THEN 1 ELSE 0 END, word_similarity($1, t.title))::real AS \"score!\"\n        FROM tracks t JOIN files f ON f.id = t.file_id\n        WHERE ($1 <% t.title OR t.title ILIKE $2) AND t.merged_into IS NULL\n          AND ($3::text IS NULL OR $3 <% t.artist_display OR t.artist_display ILIKE $4)\n        ORDER BY 8 DESC, t.title, t.id\n        LIMIT $5\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tracks",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "title",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tracks",
+            "name": "title"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "artist_display",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tracks",
+            "name": "artist_display"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "release_date",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tracks",
+            "name": "release_date"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "status",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tracks",
+            "name": "status"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "duration_ms",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "files",
+            "name": "duration_ms"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "sha256",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "files",
+            "name": "sha256"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "score!",
+        "type_info": "Float4",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false,
+      true,
+      false,
+      null
+    ]
+  },
+  "hash": "6366ebf70053a260c05898660239fe96397bb4a46ed5c51b2b11690764d39dab"
+}

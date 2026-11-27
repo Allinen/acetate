@@ -44,6 +44,7 @@ pub mod uploads;
 pub mod upload_limits;
 mod ingest;
 mod library;
+mod lookup;
 mod users;
 
 use axum::extract::DefaultBodyLimit;
@@ -204,7 +205,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/vocab", require(&[Browse], get(catalog::vocab)))
         .route("/api/vocabulary", require(&[Browse], get(vocabulary::list)).merge(require(&[Admin], post(vocabulary::add))))
         .route("/api/vocabulary/{list}/{word}", require(&[Admin], put(vocabulary::change)).merge(require(&[Admin], delete(vocabulary::remove))))
+        .route("/api/tracks/search", require(&[Browse], get(lookup::search_tracks)))
         .route("/api/tracks/{id}", require(&[Browse], get(tracks::get)))
+        .route("/api/lookup/files", require(&[Browse], post(lookup::files)))
+        .route("/api/lookup/sources", require(&[Browse], post(lookup::sources)))
         .route("/api/tracks/{id}/access", require(&[ManageAccess], get(access::get).put(access::set)))
         .route("/api/albums/{id}/access", require(&[ManageAccess], put(access::set_album)))
         // Editing. Changing relations also needs `edit_relations` (checked in the handler).

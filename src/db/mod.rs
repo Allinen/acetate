@@ -16,6 +16,7 @@ pub mod groupings;
 pub mod groups;
 pub mod ingest;
 pub mod library;
+pub mod lookup;
 pub mod playlists;
 pub mod review;
 pub mod review_bulk;
@@ -81,6 +82,8 @@ mod notes_tests;
 mod extras_tests;
 #[cfg(test)]
 mod changes_tests;
+#[cfg(test)]
+mod lookup_tests;
 
 use std::time::Duration;
 

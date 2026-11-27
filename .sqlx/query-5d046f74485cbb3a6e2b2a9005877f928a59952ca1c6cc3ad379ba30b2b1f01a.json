@@ -1,0 +1,37 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT h.n AS \"n!\",\n               (EXISTS (SELECT 1 FROM files f WHERE f.sha256 = h.sha256 AND f.purged_at IS NULL)\n                OR EXISTS (SELECT 1 FROM extra_files x WHERE x.sha256 = h.sha256)\n                OR EXISTS (SELECT 1 FROM covers c WHERE c.blob_sha256 = h.sha256 AND c.trashed_at IS NULL)) AS \"in_library!\",\n               EXISTS (SELECT 1 FROM ingest_problems p\n                       WHERE p.sha256 = h.sha256 AND p.resolved_at IS NULL) AS \"for_review!\"\n        FROM unnest($1::text[]) WITH ORDINALITY AS h(sha256, n)\n        ORDER BY h.n\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "n!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "in_library!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "for_review!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "5d046f74485cbb3a6e2b2a9005877f928a59952ca1c6cc3ad379ba30b2b1f01a"
+}

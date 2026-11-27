@@ -1,0 +1,51 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT h.sha256 AS \"sha256!\",\n               COALESCE((\n                   SELECT jsonb_agg(jsonb_build_object(\n                       'track_id', final_track(o.track_id), 'file_id', f.id, 'current', o.current,\n                       'trashed', f.trashed_at IS NOT NULL, 'purged', f.purged_at IS NOT NULL) ORDER BY f.id, o.current DESC)\n                   FROM files f\n                   CROSS JOIN LATERAL (\n                       SELECT t.id AS track_id, true AS current FROM tracks t WHERE t.file_id = f.id\n                       UNION\n                       SELECT fh.track_id, false FROM track_file_history fh WHERE fh.old_file_id = f.id\n                   ) o\n                   WHERE f.sha256 = h.sha256\n               ), '[]') AS \"tracks!\",\n               COALESCE((\n                   SELECT jsonb_agg(jsonb_build_object(\n                       'extra_id', e.id, 'file_id', x.id, 'extra_name', e.name, 'file_name', x.name,\n                       'hidden', e.hidden_at IS NOT NULL OR x.hidden_at IS NOT NULL) ORDER BY x.id)\n                   FROM extra_files x JOIN extras e ON e.id = x.extra_id\n                   WHERE x.sha256 = h.sha256\n               ), '[]') AS \"extras!\",\n               COALESCE((\n                   SELECT jsonb_agg(jsonb_build_object('cover_id', c.id, 'track_id', c.track_id, 'album_id', c.album_id) ORDER BY c.id)\n                   FROM covers c\n                   WHERE c.blob_sha256 = h.sha256 AND c.trashed_at IS NULL\n               ), '[]') AS \"covers!\",\n               COALESCE((\n                   SELECT jsonb_agg(jsonb_build_object('id', p.id, 'kind', p.kind, 'uploaded_filename', p.uploaded_filename, 'reason', p.reason))\n                   FROM ingest_problems p\n                   WHERE p.sha256 = h.sha256 AND p.resolved_at IS NULL\n               ), '[]') AS \"problems!\"\n        FROM unnest($1::text[]) WITH ORDINALITY AS h(sha256, n)\n        ORDER BY h.n\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "sha256!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "tracks!",
+        "type_info": "Jsonb",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "extras!",
+        "type_info": "Jsonb",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "covers!",
+        "type_info": "Jsonb",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 4,
+        "name": "problems!",
+        "type_info": "Jsonb",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "16abc840d3f449cf20b17ac93371fecba75b04722321410337edd15f905f3eb9"
+}

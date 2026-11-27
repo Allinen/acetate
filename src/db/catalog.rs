@@ -337,7 +337,7 @@ pub struct AlbumHit {
 }
 
 /// `%query%` for ILIKE, with LIKE's special characters escaped so they match literally.
-fn like_pattern(query: &str) -> String {
+pub(crate) fn like_pattern(query: &str) -> String {
     let escaped = query
         .replace('\\', "\\\\")
         .replace('%', "\\%")

@@ -24,7 +24,7 @@ const LOOKUP_BATCH: usize = 1000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Status {
-    /// Stored as a track's file (current or previous), and its blob is there.
+    /// Stored as a track's file (current or previous), an extra's file or a cover, and its blob is there.
     InLibrary,
     /// Kept for the Review page (it didn't import), and its blob is there.
     ForReview,
@@ -99,25 +99,10 @@ pub async fn verify_dir(pool: &PgPool, store: &BlobStore, dir: &Path, options: O
     Ok(())
 }
 
-/// For each hash: (stored as a track's file, kept for review). As the owner (the CLI's
-/// pool), so everything counts, hidden tracks too.
+/// As the owner (the CLI's pool), so everything counts, hidden tracks too.
 async fn lookup(pool: &PgPool, shas: &[String]) -> anyhow::Result<Vec<(bool, bool)>> {
-    let rows = sqlx::query!(
-        r#"
-        SELECT h.n AS "n!",
-               (EXISTS (SELECT 1 FROM files f WHERE f.sha256 = h.sha256 AND f.purged_at IS NULL)
-                -- An extra's file (a stem, a sample…) is stored too.
-                OR EXISTS (SELECT 1 FROM extra_files x WHERE x.sha256 = h.sha256)) AS "in_library!",
-               EXISTS (SELECT 1 FROM ingest_problems p
-                       WHERE p.sha256 = h.sha256 AND p.resolved_at IS NULL) AS "for_review!"
-        FROM unnest($1::text[]) WITH ORDINALITY AS h(sha256, n)
-        ORDER BY h.n
-        "#,
-        shas
-    )
-    .fetch_all(pool)
-    .await?;
-    Ok(rows.into_iter().map(|r| (r.in_library, r.for_review)).collect())
+    let mut conn = pool.acquire().await?;
+    Ok(crate::db::lookup::stored(&mut conn, shas).await?)
 }
 
 fn report(root: &Path, results: &[(PathBuf, Status)], unreadable: &[(PathBuf, String)], unreadable_dirs: &[(PathBuf, String)]) {
