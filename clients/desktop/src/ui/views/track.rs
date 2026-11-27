@@ -255,6 +255,13 @@ impl TrackPage {
                 ui.label(RichText::new(format!("Showing the copy kept here: couldn't refresh it ({err})")).color(P.faint).small());
             }
 
+            // Images in its extras (photos from a shoot, scans…): a strip, each opens them all.
+            let images = crate::ui::edit::extras::images(&d.extras);
+            if !images.is_empty() {
+                crate::ui::edit::extras::image_grid(ui, shell, &images, 56.0, Some(crate::ui::edit::extras::STRIP_IMAGES));
+                ui.add_space(10.0);
+            }
+
             // ---- Sections ----
             if shell.edit_mode && self.merge_with(ui, shell, catalog, &d, player) {
                 return;

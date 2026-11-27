@@ -199,7 +199,7 @@ impl NotesView {
         // Text files given: read, and listed to be made notes.
         if can {
             let mut paths = std::mem::take(&mut *self.chosen.lock().unwrap());
-            if take_files && !shell.palette_open && !shell.modal_open {
+            if take_files && !shell.palette_open && !shell.modal_open && !shell.extra_form_takes_files(ui.ctx()) {
                 paths.extend(crate::ui::files::given(ui.ctx()));
             }
             for path in paths.into_iter().filter(|p| TEXT.contains(&crate::ui::files::extension(p).as_str())) {

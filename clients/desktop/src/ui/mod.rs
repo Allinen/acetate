@@ -36,7 +36,7 @@ use uuid::Uuid;
 
 use crate::api::Api;
 use crate::catalog::marks::{Kind, Mark, Marks};
-use crate::catalog::model::Cover;
+use crate::catalog::model::{Cover, CoverKey};
 use crate::catalog::store::{self, Store, Update};
 use crate::catalog::{Cached, Catalog};
 use crate::playback::spectrum::Spectrum;
@@ -154,6 +154,15 @@ pub enum Action {
     LogOut,
 }
 
+/// Images the original's popup steps through (see `Shell::open_gallery`).
+pub struct Gallery {
+    /// Each one's key and name.
+    pub images: Vec<(CoverKey, String)>,
+    pub at: usize,
+    /// The one after, fetched while this one is looked at.
+    next: Option<covers::Original>,
+}
+
 /// What every page uses.
 pub struct Shell {
     /// For waking the UI from background work.
@@ -218,6 +227,10 @@ pub struct Shell {
     pub modal_was_open: bool,
     /// The palette is open (it takes Esc, before the page's form could).
     pub palette_open: bool,
+    /// The pass in which an "Attach extra…" form was last drawn. While one is open it takes
+    /// every file dropped or pasted (a folder of photos is an extra's), so the page's covers
+    /// and notes leave them. Kept a pass on, as they may be drawn before it.
+    pub extra_form_pass: Option<u64>,
     /// The toasts so far, to read again.
     pub messages: messages::Messages,
     pub runtime: Runtime,
@@ -228,6 +241,11 @@ pub struct Shell {
     pub covers: Covers,
     /// A cover's original, shown on its own in a popup (a click on a big cover).
     pub original: Option<covers::Original>,
+    /// The images the original's popup steps through with ←/→ (an extra's), when it was
+    /// opened on one of several.
+    pub gallery: Option<Gallery>,
+    /// ←/→ pressed this frame while the gallery is open (taken before the page sees them).
+    gallery_step: isize,
     /// A video being watched (over everything).
     pub watching: Option<watch::Watch>,
     pub catalog: Cached<Catalog>,
@@ -276,6 +294,11 @@ pub struct Shell {
 }
 
 impl Shell {
+    /// Whether an "Attach extra…" form takes the files given this pass (see `extra_form_pass`).
+    pub fn extra_form_takes_files(&self, ctx: &egui::Context) -> bool {
+        self.extra_form_pass.is_some_and(|pass| pass + 1 >= ctx.cumulative_pass_nr())
+    }
+
     /// What the track editor's engine works with.
     pub fn env(&self) -> edit::editor::engine::Env {
         edit::editor::engine::Env { api: self.api.clone(), runtime: self.runtime.handle().clone(), waker: self.waker.clone(), generation: self.generation }
@@ -524,7 +547,39 @@ impl Shell {
     /// Shows a cover's original (unchanged, full size) in a popup. It's fetched now, and
     /// let go when the popup closes.
     pub fn open_original(&mut self, ctx: &egui::Context, cover: Cover) {
+        self.gallery = None;
         self.original = Some(covers::Original::open(&self.api, self.runtime.handle(), ctx, cover.key, self.covers.here()));
+    }
+
+    /// Shows `images` (their keys and names) one at a time in the original's popup, from
+    /// the one at `at`; ←/→ (or a click on either half) go through them, round. The next one
+    /// is fetched while one is looked at.
+    pub fn open_gallery(&mut self, ctx: &egui::Context, images: Vec<(CoverKey, String)>, at: usize) {
+        let Some((key, _)) = images.get(at) else { return };
+        self.original = Some(covers::Original::open(&self.api, self.runtime.handle(), ctx, *key, self.covers.here()));
+        self.gallery = Some(Gallery { images, at, next: None });
+        self.gallery_step = 0;
+        self.fetch_next_image(ctx);
+    }
+
+    fn fetch_next_image(&mut self, ctx: &egui::Context) {
+        let Some(g) = self.gallery.as_mut() else { return };
+        let next = g.images[(g.at + 1) % g.images.len()].0;
+        if g.images.len() > 1 && g.next.as_ref().is_none_or(|o| o.key != next) {
+            g.next = Some(covers::Original::open(&self.api, self.runtime.handle(), ctx, next, self.covers.here()));
+        }
+    }
+
+    /// The gallery moved by `step` (±1): that image shown (the one fetched ahead, if it is).
+    fn step_gallery(&mut self, ctx: &egui::Context, step: isize) {
+        let Some(g) = self.gallery.as_mut().filter(|g| g.images.len() > 1) else { return };
+        g.at = (g.at as isize + step).rem_euclid(g.images.len() as isize) as usize;
+        let key = g.images[g.at].0;
+        self.original = Some(match g.next.take() {
+            Some(ahead) if ahead.key == key => ahead,
+            _ => covers::Original::open(&self.api, self.runtime.handle(), ctx, key, self.covers.here()),
+        });
+        self.fetch_next_image(ctx);
     }
 
     /// The original's popup, while one is open: as big as fits (never bigger than it is),
@@ -549,13 +604,24 @@ impl Shell {
     }
 
     fn show_original(&mut self, ctx: &egui::Context) {
+        let step = std::mem::take(&mut self.gallery_step);
+        if step != 0 {
+            self.step_gallery(ctx, step);
+        }
         let Some(original) = self.original.as_mut() else { return };
         self.modal_open = true;
         original.poll(ctx);
-        let title = match &original.loaded {
-            Some(Ok((_, [w, h], bytes))) => format!("Original · {w}×{h} · {:.1} MB · Ctrl+C: copy", *bytes as f64 / 1_000_000.0),
-            _ => "Original".to_string(),
+        let (what, many) = match &self.gallery {
+            Some(g) if g.images.len() > 1 => (format!("{} / {} · {}", g.at + 1, g.images.len(), g.images[g.at].1), true),
+            Some(g) => (g.images[g.at].1.clone(), false),
+            None => ("Original".to_string(), false),
         };
+        let keys = if many { " · ←/→: the others" } else { "" };
+        let title = match &original.loaded {
+            Some(Ok((_, [w, h], bytes))) => format!("{what} · {w}×{h} · {:.1} MB · Ctrl+C: copy{keys}", *bytes as f64 / 1_000_000.0),
+            _ => what,
+        };
+        let mut clicked_at: Option<f32> = None;
         let screen = ctx.content_rect().size();
         // Ctrl+C (egui makes it a copy event) or the button: the image to the clipboard.
         let mut copy = ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Copy)));
@@ -574,6 +640,9 @@ impl Shell {
                 let size = egui::vec2(*w as f32, *h as f32) * scale;
                 ui.centered_and_justified(|ui| {
                     let image = ui.add(egui::Image::from_texture(texture).fit_to_exact_size(size).sense(egui::Sense::click()));
+                    if many && image.clicked() {
+                        clicked_at = image.interact_pointer_pos().map(|p| (p.x - image.rect.left()) / image.rect.width());
+                    }
                     image.context_menu(|ui| {
                         if ui.button("Copy image").clicked() {
                             copy = true;
@@ -589,6 +658,9 @@ impl Shell {
         }
         if closed {
             self.original = None;
+            self.gallery = None;
+        } else if let Some(x) = clicked_at {
+            self.step_gallery(ctx, if x < 0.5 { -1 } else { 1 });
         }
     }
 
@@ -981,6 +1053,7 @@ impl App {
             page_takes_space: false,
             modal_open: false,
             modal_was_open: false,
+            extra_form_pass: None,
             field_back: false,
             page_takes_back: false,
             page_takes_keys: false,
@@ -994,6 +1067,8 @@ impl App {
             together,
             covers,
             original: None,
+            gallery: None,
+            gallery_step: 0,
             watching: None,
             catalog: Cached::default(),
             generation: 0,
@@ -1453,6 +1528,14 @@ impl App {
 
     /// Keys that work everywhere (outside text fields).
     fn keys(&mut self, ctx: &egui::Context) {
+        // The gallery's ←/→, before the page underneath could move its own list with them.
+        if self.shell.original.is_some() && self.shell.gallery.as_ref().is_some_and(|g| g.images.len() > 1) {
+            if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::ArrowRight)) {
+                self.shell.gallery_step += 1;
+            } else if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::ArrowLeft)) {
+                self.shell.gallery_step -= 1;
+            }
+        }
         // A key an empty field passed on (Backspace on nothing, or a commandline's first
         // digit): the page keys, as if outside a text field (see `field::keys`).
         let nav: Option<Key> = ctx.data_mut(|d| d.remove_temp::<Option<Key>>(egui::Id::unique(field::NAV))).flatten();

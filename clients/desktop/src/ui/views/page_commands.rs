@@ -377,6 +377,8 @@ pub async fn send(api: &crate::api::Api, ctx: &egui::Context, whose: Whose, chan
         Change::UnlinkExtra(extra) => call(Method::POST, format!("/api/extras/{extra}/links"), Some(json!({ "link": link, "undo": true }))).await.map(|_| None),
         Change::HideNote(note) => call(Method::POST, format!("/api/notes/{note}/hidden"), Some(json!({ "hidden": true }))).await.map(|_| None),
         Change::Extra(c) => {
+            // A folder given is read first: nothing is made if it can't be.
+            let files = crate::ui::files::expand(&c.files).map_err(|e| format!("Couldn't read the folder: {e}"))?;
             let access = |seen: &Seen| match seen {
                 Seen::Everyone => Some(json!({ "restricted": false })),
                 Seen::Groups(groups) => Some(json!({ "restricted": true, "groups": groups })),
@@ -405,12 +407,12 @@ pub async fn send(api: &crate::api::Api, ctx: &egui::Context, whose: Whose, chan
                     made["id"].as_str().unwrap_or_default().to_string()
                 }
             };
-            if c.files.is_empty() {
+            if files.is_empty() {
                 return Ok(None);
             }
             let progress = std::sync::atomic::AtomicUsize::new(0);
             let name = c.name.clone();
-            crate::ui::edit::extras::upload_all(api, &id, &c.files, &progress, ctx, |n| format!("“{name}”: {} added.", crate::ui::edit::extras::files_text(n))).await.map(Some)
+            crate::ui::edit::extras::upload_all(api, &id, &files, &progress, ctx, |n| format!("“{name}”: {} added.", crate::ui::edit::extras::files_text(n))).await.map(Some)
         }
     }
 }

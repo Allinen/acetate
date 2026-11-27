@@ -81,6 +81,55 @@ pub fn extension(path: &std::path::Path) -> String {
 /// Image files covers are made from.
 pub const IMAGES: &[&str] = &["jpg", "jpeg", "png", "webp", "gif"];
 
+/// A file to send, with the name it's kept under: its path under the folder that was given
+/// (`day 1/a.png`, `/` between folders), or its own name when it was given itself.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Named {
+    pub path: PathBuf,
+    pub name: String,
+}
+
+/// What's left out of a folder: what file managers and operating systems put there.
+fn left_out(name: &str) -> bool {
+    name.starts_with('.') || ["thumbs.db", "desktop.ini"].contains(&name.to_lowercase().as_str())
+}
+
+/// The files given, with every file in a folder given (in its subfolders too, but not
+/// through links), by path; a folder's files are named by where they are in it. Fails on a
+/// folder that can't be read, before anything is sent.
+pub fn expand(given: &[PathBuf]) -> std::io::Result<Vec<Named>> {
+    fn walk(root: &std::path::Path, folder: &std::path::Path, into: &mut Vec<Named>) -> std::io::Result<()> {
+        let mut entries: Vec<_> = std::fs::read_dir(folder)?.collect::<Result<_, _>>()?;
+        entries.sort_by_key(|e| e.file_name());
+        for entry in entries {
+            let name = entry.file_name().to_string_lossy().to_string();
+            let kind = entry.file_type()?;
+            if left_out(&name) || kind.is_symlink() {
+                continue;
+            }
+            if kind.is_dir() {
+                walk(root, &entry.path(), into)?;
+            } else if kind.is_file() {
+                let path = entry.path();
+                let relative = path.strip_prefix(root).unwrap_or(&path);
+                let name = relative.components().map(|c| c.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/");
+                into.push(Named { path, name });
+            }
+        }
+        Ok(())
+    }
+    let mut files = Vec::new();
+    for path in given {
+        if path.is_dir() {
+            walk(path, path, &mut files)?;
+        } else {
+            let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            files.push(Named { path: path.clone(), name });
+        }
+    }
+    Ok(files)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -94,6 +143,20 @@ mod tests {
     /// Reads a file list copied to this desktop's clipboard (copy files in a file manager,
     /// or `printf 'file:///tmp/x.wav\r\n' | wl-copy -t text/uri-list`), as Ctrl+V does:
     /// `ACETATE_TEST_CLIPBOARD=1 cargo test copied_files -- --ignored --nocapture`.
+    #[test]
+    fn folders_are_given_with_their_files_by_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let shoot = dir.path().join("Shoot");
+        std::fs::create_dir_all(shoot.join("day 1/raw")).unwrap();
+        for file in ["b.png", "a.mp4", ".DS_Store", "Thumbs.db", "day 1/c.jpg", "day 1/raw/d.jpg"] {
+            std::fs::write(shoot.join(file), b"x").unwrap();
+        }
+        let loose = dir.path().join("loose.txt");
+        std::fs::write(&loose, b"x").unwrap();
+        let names: Vec<String> = expand(&[shoot, loose]).unwrap().into_iter().map(|f| f.name).collect();
+        assert_eq!(names, ["a.mp4", "b.png", "day 1/c.jpg", "day 1/raw/d.jpg", "loose.txt"]);
+    }
+
     #[test]
     #[ignore]
     fn copied_files_are_read_from_the_clipboard() {

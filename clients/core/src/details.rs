@@ -205,7 +205,7 @@ pub struct ExtraFile {
     pub sample_rate: Option<i32>,
     pub bit_depth: Option<i16>,
     pub duration_ms: Option<i64>,
-    /// A video's (else None).
+    /// A video's or an image's (else None).
     #[serde(default)]
     pub width: Option<i32>,
     #[serde(default)]
@@ -214,7 +214,7 @@ pub struct ExtraFile {
     pub frame_rate: Option<f32>,
     #[serde(default)]
     pub video_codec: Option<String>,
-    /// A video's thumbnail (its image's key).
+    /// A video's thumbnail, or an image itself (its key).
     #[serde(default)]
     pub thumb: Option<String>,
     #[serde(default)]
@@ -223,7 +223,12 @@ pub struct ExtraFile {
 
 impl ExtraFile {
     pub fn is_video(&self) -> bool {
-        self.width.is_some()
+        self.video_codec.is_some()
+    }
+
+    /// An image (a size but no video in it): `thumb` is the image itself.
+    pub fn is_image(&self) -> bool {
+        self.width.is_some() && self.video_codec.is_none()
     }
 
     pub fn thumb(&self) -> Option<crate::catalog::model::Cover> {

@@ -25,6 +25,11 @@ the editor in either mode, for a quick fix.)
   or grouping, with their own page. A file an extra has already (the same bytes) isn't added
   again, by any route (an upload, an import, turning a track into an extra): the server
   says which extra has it. (Duplicates from before that are merged, below.)
+  A folder dropped on the *Attach extra…* form (or chosen with *Choose a folder…*) becomes
+  one extra named after it, each file keeping its place in it (`day 1/IMG_0001.jpg`); while
+  the form is open it takes every file dropped or pasted, images and text files too.
+  An extra's images are shown as a grid on its page, and as a strip on the pages of the
+  artists and tracks it's linked to; a click shows one full size, and ←/→ go through the rest.
   An extra that is a YouTube video (its name ends with the video's id, `Title [id].mp4`) can
   become a track: in edit mode, *Make it a track from its YouTube video…* on its page (type
   the video's link if the name has no id), then *Look*. The server asks YouTube (with yt-dlp,

@@ -151,8 +151,9 @@ pub const GROUPS: &[(&str, &[Binding])] = &[
             ("Ctrl+Enter in a note", "save it"),
             ("Esc  /  Esc again", "leave the note's text  /  throw it away (asked first)"),
             ("↑ ↓  or  j k  (an extra)", "what it belongs to, then its files"),
-            ("Enter  /  d", "open the link or play the file  /  save the file"),
+            ("Enter  /  d", "open the link, play the file or show the image  /  save the file"),
             ("Delete (edit mode)", "take the file off, or unlink (both kept)"),
+            ("← →  (an image shown)", "the extra's other images (a click on either half too)"),
         ],
     ),
     (

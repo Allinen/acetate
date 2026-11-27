@@ -226,7 +226,8 @@ impl ExtraPage {
         let ctx = ui.ctx().clone();
         let shown_files: Vec<&crate::details::ExtraFile> = extra.files.iter().filter(|f| !f.hidden).collect();
         let rows = extra.links.len() + shown_files.len();
-        let moved = widgets::move_selection(&ctx, &mut self.selected, rows, 1, 10);
+        // (Not under a popup: the gallery's Enter and arrows aren't the list's.)
+        let moved = if shell.modal_was_open { widgets::Moved::default() } else { widgets::move_selection(&ctx, &mut self.selected, rows, 1, 10) };
         self.selected = self.selected.min(rows.saturating_sub(1));
         let free = !ctx.egui_wants_keyboard_input() && !shell.palette_open && !shell.modal_was_open;
         let link_at = |n: usize| extra.links.get(n);
@@ -237,6 +238,10 @@ impl ExtraPage {
             } else if let Some(f) = file_at(self.selected) {
                 if f.is_video() {
                     shell.watch(f.id, &extra.name);
+                } else if f.is_image() {
+                    let all = crate::ui::edit::extras::images([&extra]);
+                    let at = all.iter().position(|(c, _)| c.id == f.id).unwrap_or(0);
+                    crate::ui::edit::extras::open_images(ui, shell, &all, at);
                 } else {
                     crate::ui::edit::extras::play_file(shell, &extra.name, f.id, f.sha256.clone(), &f.name, f.duration_ms);
                 }
@@ -349,7 +354,12 @@ impl ExtraPage {
                 ui.add_space(8.0);
             }
 
-            // ---- Its files ----
+            // ---- Its images, then all its files ----
+            let images = crate::ui::edit::extras::images([&extra]);
+            if !images.is_empty() {
+                crate::ui::edit::extras::image_grid(ui, shell, &images, 128.0, None);
+                ui.add_space(10.0);
+            }
             ui.label(RichText::new("Files").font(font(17.0, bold())));
             let saved = self.saved.clone();
             let mut take_off = None;
@@ -368,7 +378,7 @@ impl ExtraPage {
                 self.send(shell, format!("/api/extra-files/{file}/hidden"), serde_json::json!({ "hidden": true }), "Taken off (kept).".into());
             }
             if rows > 0 {
-                let text = if can { "↑/↓ choose · Enter opens or plays · d saves the file · Delete takes it off (or unlinks)" } else { "↑/↓ choose · Enter opens or plays · d saves the file" };
+                let text = if can { "↑/↓ choose · Enter opens, plays or shows · d saves the file · Delete takes it off (or unlinks)" } else { "↑/↓ choose · Enter opens, plays or shows · d saves the file" };
                 ui.label(RichText::new(text).color(P.faint).small());
             }
             if can {
@@ -376,7 +386,7 @@ impl ExtraPage {
                     if ui.add_enabled(!self.sending, egui::Button::new("Add files…")).clicked() {
                         crate::ui::files::choose(shell, "Files to add", ("Any file", &[]), true, &self.chosen);
                     }
-                    ui.label(RichText::new("or paste copied files (Ctrl+V), or drop them on the window").color(P.faint).small());
+                    ui.label(RichText::new("or paste copied files (Ctrl+V), or drop files or a folder on the window (its files keep their folders)").color(P.faint).small());
                 });
                 let taken_off: Vec<_> = extra.files.iter().filter(|f| f.hidden).collect();
                 if !taken_off.is_empty() {
@@ -650,7 +660,14 @@ impl ExtraPage {
         }
     }
 
-    fn upload(&mut self, shell: &Shell, id: Uuid, files: Vec<PathBuf>) {
+    fn upload(&mut self, shell: &Shell, id: Uuid, given: Vec<PathBuf>) {
+        let files = match crate::ui::files::expand(&given) {
+            Ok(files) => files,
+            Err(err) => {
+                self.result = Some(Err(format!("Couldn't read the folder: {err}")));
+                return;
+            }
+        };
         self.sending = true;
         self.result = None;
         let (ctx, progress) = (shell.ctx.clone(), self.progress.clone());

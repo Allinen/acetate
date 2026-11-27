@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex};
 use eframe::egui::{self, RichText};
 use uuid::Uuid;
 
+use crate::catalog::model::Cover;
 use crate::catalog::search::Part;
 use crate::details::{Extra, ExtraFile};
 use crate::playback::{AudioSource, QueueItem};
@@ -103,11 +104,59 @@ pub fn save_file(shell: &Shell, file: Uuid, name: &str, said: &Arc<Mutex<Option<
     });
 }
 
-/// A file's line: ▶ (audio) or its thumbnail and "Watch" (video), its name, what it is,
-/// and "Save…".
+/// How many of their extras' images artist and track pages show (then "+N").
+pub const STRIP_IMAGES: usize = 8;
+
+/// The images in `extras` (not taken off), in order: each one to draw and its name.
+pub fn images<'a>(extras: impl IntoIterator<Item = &'a Extra>) -> Vec<(Cover, String)> {
+    extras
+        .into_iter()
+        .filter(|e| !e.hidden)
+        .flat_map(|e| e.files.iter().filter(|f| !f.hidden && f.is_image()).filter_map(|f| Some((f.thumb()?, f.name.clone()))))
+        .collect()
+}
+
+/// Opens the gallery over `images` at the one at `at`.
+pub fn open_images(ui: &egui::Ui, shell: &mut Shell, images: &[(Cover, String)], at: usize) {
+    shell.open_gallery(ui.ctx(), images.iter().map(|(c, name)| (c.key, name.clone())).collect(), at);
+}
+
+/// `images` as square thumbnails, `size` across, in rows; at most `max` (then "+N", which
+/// opens the next). A click opens the gallery over all of them, there.
+pub fn image_grid(ui: &mut egui::Ui, shell: &mut Shell, images: &[(Cover, String)], size: f32, max: Option<usize>) {
+    let shown = max.map_or(images.len(), |m| m.min(images.len()));
+    let mut open = None;
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
+        for (n, (cover, name)) in images[..shown].iter().enumerate() {
+            let (rect, response) = ui.allocate_exact_size(egui::Vec2::splat(size), egui::Sense::click());
+            shell.cover(ui, Some(*cover), cover.id, rect, 4, 0.0);
+            if response.on_hover_cursor(egui::CursorIcon::ZoomIn).on_hover_text(name).clicked() {
+                open = Some(n);
+            }
+        }
+        if shown < images.len() && ui.link(RichText::new(format!("+{}", images.len() - shown)).color(P.muted)).clicked() {
+            open = Some(shown);
+        }
+    });
+    if let Some(n) = open {
+        open_images(ui, shell, images, n);
+    }
+}
+
+/// A file's line: ▶ (audio), its thumbnail and "Watch" (video) or its thumbnail (an image,
+/// a click shows it with the extra's others), its name, what it is, and "Save…".
 pub fn file_line(ui: &mut egui::Ui, shell: &mut Shell, extra: &Extra, f: &ExtraFile, said: &Arc<Mutex<Option<Result<String, String>>>>) {
     ui.horizontal(|ui| {
-        if f.is_video() {
+        if f.is_image() {
+            let (rect, response) = ui.allocate_exact_size(egui::Vec2::new(54.0, 54.0), egui::Sense::click());
+            shell.cover(ui, f.thumb(), f.id, rect, 4, 0.0);
+            if response.on_hover_cursor(egui::CursorIcon::ZoomIn).clicked() {
+                let all = images([extra]);
+                let at = all.iter().position(|(c, _)| c.id == f.id).unwrap_or(0);
+                open_images(ui, shell, &all, at);
+            }
+        } else if f.is_video() {
             let (rect, response) = ui.allocate_exact_size(egui::Vec2::new(96.0, 54.0), egui::Sense::click());
             shell.cover(ui, f.thumb(), f.id, rect, 4, 0.0);
             let watch = ui.button("▶ Watch").clicked();
@@ -117,7 +166,18 @@ pub fn file_line(ui: &mut egui::Ui, shell: &mut Shell, extra: &Extra, f: &ExtraF
         } else if (f.duration_ms.is_some() || f.codec.is_some()) && ui.small_button("▶").on_hover_text("Play it").clicked() {
             play_file(shell, &extra.name, f.id, f.sha256.clone(), &f.name, f.duration_ms);
         }
-        ui.label(RichText::new(&f.name).font(font(13.5, medium())));
+        // A folder's file: where it is in it, fainter.
+        match f.name.rsplit_once('/') {
+            Some((folder, file)) => {
+                let gap = std::mem::replace(&mut ui.spacing_mut().item_spacing.x, 0.0);
+                ui.label(RichText::new(format!("{folder}/")).font(font(13.5, medium())).color(P.faint));
+                ui.label(RichText::new(file).font(font(13.5, medium())));
+                ui.spacing_mut().item_spacing.x = gap;
+            }
+            None => {
+                ui.label(RichText::new(&f.name).font(font(13.5, medium())));
+            }
+        }
         let mut facts = Vec::new();
         if let (Some(w), Some(h)) = (f.width, f.height) {
             let fps = f.frame_rate.map(|r| format!(" {r:.0} fps")).unwrap_or_default();
@@ -138,7 +198,7 @@ pub fn file_line(ui: &mut egui::Ui, shell: &mut Shell, extra: &Extra, f: &ExtraF
         facts.push(format!("{:.1} MB", f.size_bytes as f64 / 1_000_000.0));
         ui.label(RichText::new(facts.join(" · ")).color(P.faint).small());
         if ui.small_button("Save…").on_hover_text("Save a copy of the file").clicked() {
-            save_file(shell, f.id, &f.name, said);
+            save_file(shell, f.id, f.name.rsplit('/').next().unwrap_or(&f.name), said);
         }
     });
 }
@@ -168,8 +228,42 @@ struct Attaching {
     kind: String,
     description: String,
     source: String,
-    files: Vec<PathBuf>,
+    files: Vec<Given>,
     seen: Seen,
+}
+
+/// A file or folder given for a new extra, and its line in the form (worked out once).
+struct Given {
+    path: PathBuf,
+    line: String,
+}
+
+impl Given {
+    fn new(path: PathBuf) -> Given {
+        let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        let mb = |bytes: u64| format!("{:.1} MB", bytes as f64 / 1_000_000.0);
+        let line = if path.is_dir() {
+            match crate::ui::files::expand(std::slice::from_ref(&path)) {
+                Ok(files) => {
+                    let bytes: u64 = files.iter().filter_map(|f| std::fs::metadata(&f.path).ok()).map(|m| m.len()).sum();
+                    format!("{name}/  ·  {}, {}", files_text(files.len()), mb(bytes))
+                }
+                Err(err) => format!("{name}/  ·  can't be read ({err})"),
+            }
+        } else {
+            let size = std::fs::metadata(&path).map(|m| mb(m.len())).unwrap_or_else(|_| "can't be read".into());
+            format!("{name}  ·  {size}")
+        };
+        Given { path, line }
+    }
+}
+
+/// A new extra's name when none is typed: the folder's, when one was given, else the first
+/// file's (without its extension).
+fn default_name(files: &[Given]) -> Option<String> {
+    let first = &files.first()?.path;
+    let name = if first.is_dir() { first.file_name() } else { first.file_stem() };
+    name.map(|n| n.to_string_lossy().to_string())
 }
 
 /// A group, to choose who sees an extra.
@@ -264,20 +358,17 @@ impl ExtrasView {
         if !chosen.is_empty() {
             match (self.chosen_for.take(), self.attaching.as_mut()) {
                 (Some(extra), _) => self.upload(shell, extra, chosen, "Files added."),
-                (None, Some(a)) => a.files.extend(chosen),
+                (None, Some(a)) => a.files.extend(chosen.into_iter().map(Given::new)),
                 (None, None) => {}
             }
         }
         if can && take_files && self.attaching.is_some() && !shell.palette_open && !shell.modal_open {
+            // Everything given while the form is open is the new extra's, images and text
+            // files too (the page's covers and notes leave them, see `extra_form_pass`).
+            shell.extra_form_pass = Some(ui.ctx().cumulative_pass_nr());
             let given = crate::ui::files::given(ui.ctx());
-            // Images are covers' and text files notes' (on the same page); the rest is audio,
-            // archives, project files.
-            let mine = given.into_iter().filter(|p| {
-                let ext = crate::ui::files::extension(p);
-                !crate::ui::files::IMAGES.contains(&ext.as_str()) && !["txt", "md", "text", "nfo"].contains(&ext.as_str())
-            });
             if let Some(a) = self.attaching.as_mut() {
-                a.files.extend(mine);
+                a.files.extend(given.into_iter().map(Given::new));
             }
         }
 
@@ -403,11 +494,12 @@ impl ExtrasView {
         let mut make = false;
         let mut cancel = false;
         let mut choose = false;
+        let mut choose_folder = false;
         egui::Frame::NONE.fill(P.surface).corner_radius(8).inner_margin(egui::Margin::same(10)).show(ui, |ui| {
             ui.label(RichText::new("A new extra").font(font(14.0, semibold())));
             ui.horizontal(|ui| {
                 ui.label("Name");
-                let hint = a.files.first().and_then(|f| f.file_stem()).map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "e.g. “Glass Harbor (vocals)”".into());
+                let hint = default_name(&a.files).unwrap_or_else(|| "e.g. “Glass Harbor (vocals)”".into());
                 ui.add(egui::TextEdit::singleline(&mut a.name).hint_text(hint).desired_width(360.0));
             });
             ui.horizontal_wrapped(|ui| {
@@ -421,13 +513,13 @@ impl ExtrasView {
             });
             ui.horizontal_wrapped(|ui| {
                 choose = ui.button("Choose files…").clicked();
-                ui.label(RichText::new("or paste copied files (Ctrl+V), or drop them on the window").color(P.faint).small());
+                choose_folder = ui.button("Choose a folder…").clicked();
+                ui.label(RichText::new("or paste copied files (Ctrl+V), or drop files or a folder on the window").color(P.faint).small());
             });
             let mut drop_file = None;
             for (n, f) in a.files.iter().enumerate() {
                 ui.horizontal(|ui| {
-                    let size = std::fs::metadata(f).map(|m| format!("{:.1} MB", m.len() as f64 / 1_000_000.0)).unwrap_or_else(|_| "can't be read".into());
-                    ui.label(format!("{}  ·  {size}", f.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()));
+                    ui.label(&f.line);
                     if ui.small_button("×").clicked() {
                         drop_file = Some(n);
                     }
@@ -494,11 +586,15 @@ impl ExtrasView {
             self.chosen_for = None;
             crate::ui::files::choose(shell, "Files for the extra", ("Any file", &[]), true, &self.chosen);
         }
+        if choose_folder {
+            self.chosen_for = None;
+            crate::ui::files::choose_folder(shell, "A folder for the extra (its files, with their folders)", &self.chosen);
+        }
         if cancel {
             self.attaching = None;
         }
         if make && let Some(a) = self.attaching.as_ref() {
-            let name = if a.name.trim().is_empty() { a.files.first().and_then(|f| f.file_stem()).map(|s| s.to_string_lossy().to_string()).unwrap_or_default() } else { a.name.trim().to_string() };
+            let name = if a.name.trim().is_empty() { default_name(&a.files).unwrap_or_default() } else { a.name.trim().to_string() };
             let mut body = serde_json::json!({
                 "name": name, "kind": a.kind.trim(), "links": [owner.link()],
                 "description": a.description.trim(), "source": a.source.trim(),
@@ -508,7 +604,14 @@ impl ExtrasView {
                 Seen::Everyone => body["access"] = serde_json::json!({ "restricted": false }),
                 Seen::Groups(groups) => body["access"] = serde_json::json!({ "restricted": true, "groups": groups }),
             }
-            let files = a.files.clone();
+            let given: Vec<PathBuf> = a.files.iter().map(|f| f.path.clone()).collect();
+            let files = match crate::ui::files::expand(&given) {
+                Ok(files) => files,
+                Err(err) => {
+                    self.result = Some(Err(format!("Couldn't read the folder: {err}")));
+                    return;
+                }
+            };
             self.sending = true;
             self.result = None;
             self.uploading = files.len();
@@ -528,7 +631,14 @@ impl ExtrasView {
     }
 
     /// More files for an extra there already.
-    fn upload(&mut self, shell: &Shell, extra: Uuid, files: Vec<PathBuf>, text: &str) {
+    fn upload(&mut self, shell: &Shell, extra: Uuid, given: Vec<PathBuf>, text: &str) {
+        let files = match crate::ui::files::expand(&given) {
+            Ok(files) => files,
+            Err(err) => {
+                self.result = Some(Err(format!("Couldn't read the folder: {err}")));
+                return;
+            }
+        };
         self.sending = true;
         self.result = None;
         self.uploading = files.len();
@@ -554,15 +664,15 @@ impl ExtrasView {
     }
 }
 
-/// Uploads files to an extra, one after another (a big one in chunks, see `Api::upload`).
-/// Returns `done` (given how many were added) and the files left out: ones an extra has
-/// already (the same bytes).
-pub async fn upload_all(api: &crate::api::Api, extra: &str, files: &[PathBuf], progress: &AtomicUsize, ctx: &egui::Context, done: impl FnOnce(usize) -> String) -> Result<String, String> {
+/// Uploads files to an extra, one after another (a big one in chunks, see `Api::upload`),
+/// each under its name (a folder's: its path in it, see `files::expand`). Returns `done`
+/// (given how many were added) and the files left out: ones an extra has already (the same
+/// bytes).
+pub async fn upload_all(api: &crate::api::Api, extra: &str, files: &[crate::ui::files::Named], progress: &AtomicUsize, ctx: &egui::Context, done: impl FnOnce(usize) -> String) -> Result<String, String> {
     let mut left_out = Vec::new();
-    for (n, path) in files.iter().enumerate() {
-        let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "file".into());
+    for (n, crate::ui::files::Named { path, name }) in files.iter().enumerate() {
         let bytes = tokio::fs::read(path).await.map_err(|e| format!("Couldn't read “{name}”: {e}"))?;
-        let answer: serde_json::Value = api.upload(&format!("/api/extras/{extra}/files"), bytes, &name).await.map_err(|e| format!("“{name}”: {}", e.message))?;
+        let answer: serde_json::Value = api.upload(&format!("/api/extras/{extra}/files"), bytes, name).await.map_err(|e| format!("“{name}”: {}", e.message))?;
         for already in answer["already"].as_array().into_iter().flatten() {
             let taken_off = if already["hidden"].as_bool() == Some(true) { " (taken off)" } else { "" };
             left_out.push(format!("“{name}” (the extra “{}”{taken_off} has it already)", already["name"].as_str().unwrap_or("?")));

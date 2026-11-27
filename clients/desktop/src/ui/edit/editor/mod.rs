@@ -1630,7 +1630,7 @@ impl TrackEditor {
     fn images(&mut self, ctx: &egui::Context, shell: &mut Shell, targets: usize) {
         let chosen = std::mem::take(&mut *self.chosen.lock().unwrap());
         let from_file = !chosen.is_empty();
-        let taking = !shell.palette_open && !shell.modal_open;
+        let taking = !shell.palette_open && !shell.modal_open && !shell.extra_form_takes_files(ctx);
         if taking || from_file {
             let at = if from_file { self.chosen_at } else { None };
             match crate::ui::edit::cover_list::take_image(ctx, taking, chosen) {

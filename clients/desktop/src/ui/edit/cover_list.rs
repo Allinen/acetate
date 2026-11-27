@@ -130,7 +130,7 @@ impl CoverList {
         // A pasted, dropped or chosen image: a new cover in the draft. (Chosen ones are this
         // list's; pasted and dropped ones go to the one list that takes them.)
         let chosen = std::mem::take(&mut *self.chosen.lock().unwrap());
-        let taking = paste && !shell.palette_open && !shell.modal_open;
+        let taking = paste && !shell.palette_open && !shell.modal_open && !shell.extra_form_takes_files(ui.ctx());
         if can && (taking || !chosen.is_empty()) {
             match take_image(ui.ctx(), taking, chosen) {
                 Some(Ok((bytes, name))) => {

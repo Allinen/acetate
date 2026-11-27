@@ -587,6 +587,13 @@ impl ArtistPage {
             }
             self.folds = folds;
 
+            // Images in its extras (photos from a shoot, scans…): a strip, each opens them all.
+            let images = crate::ui::edit::extras::images(&extras);
+            if !images.is_empty() {
+                crate::ui::edit::extras::image_grid(ui, shell, &images, 56.0, Some(crate::ui::edit::extras::STRIP_IMAGES));
+                ui.add_space(12.0);
+            }
+
             // Its notes, folded under their titles.
             if let Some(d) = shell.artist_details.get(id).value.clone()
                 && crate::ui::edit::notes::NotesView::worth_showing(shell, &d.notes)
