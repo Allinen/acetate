@@ -6,6 +6,7 @@ so use a test server, never a real library:
     ACETATE_TEST_URL=http://127.0.0.1:3001 ACETATE_TEST_USER=... ACETATE_TEST_PASSWORD=... python -m unittest
 """
 
+import hashlib
 import os
 import struct
 import unittest
@@ -141,6 +142,55 @@ class AgainstAServer(unittest.TestCase):
                 dry_run=True,
             )
         self.assertTrue(caught.exception.message)
+
+
+    def test_lookups_then_a_proposal_adopted_and_one_rejected(self):
+        song_id = uuid.uuid4().int % 10**12
+        description = Description(origin=NetEaseTrack(song_id=song_id), flag="from the Python library's tests")
+        path = os.path.join(AUDIO, "lantern demo.mp3")
+        report = self.acetate.ingest(path, description)
+        with open(path, "rb") as f:
+            sha256 = hashlib.sha256(f.read()).hexdigest()
+        track_id = report.track_id or self.acetate.lookup_files([sha256])[0]["tracks"][0]["track_id"]
+
+        [hit] = self.acetate.lookup_files([sha256])
+        self.assertIn(track_id, [t["track_id"] for t in hit["tracks"]])
+        self.assertEqual(self.acetate.lookup_files(["0" * 64])[0]["tracks"], [])
+        if report.created:
+            [owners] = self.acetate.lookup_sources([("netease", str(song_id))])
+            self.assertEqual(owners["owners"], [{"kind": "track", "id": track_id}])
+        title = self.acetate.track(track_id)["title"]
+        self.assertIn(track_id, [t["id"] for t in self.acetate.search_tracks(title)])
+
+        variant = next(v for v in self.acetate.track(track_id)["variants"])
+        key = f"date:{song_id}"
+        proposal = {
+            "key": key,
+            "agent": "python tests",
+            "base_revision_id": variant["revision_id"],
+            "patch": {"release_date": "2001-02-03"},
+            "evidence": [{"label": "a page", "url": "https://example.com", "quote": "Feb 3, 2001"}],
+        }
+        self.assertIsNone(self.acetate.propose(track_id, proposal)["tracks"][0].get("error"))
+        self.acetate.propose(track_id, proposal)  # the same again: nothing more
+        open_flags = [f for f in self.acetate.review_flags(kind="proposal", track_id=track_id) if f["related"]["key"] == key]
+        self.assertEqual(len(open_flags), 1)
+        self.assertEqual(open_flags[0]["related"]["fields"], ["release_date"])
+
+        answer = self.acetate._request("POST", f"/api/review/{open_flags[0]['id']}/adopt", json_body={})
+        self.assertIsNone(answer["tracks"][0].get("error"))
+        self.assertEqual(self.acetate.track(track_id)["release_date"], "2001-02-03")
+
+        # Against the revision before the date: refused now.
+        stale = {**proposal, "key": f"title:{song_id}", "patch": {"title": "Changed"}}
+        self.acetate.propose(track_id, stale)
+        [flag] = [f for f in self.acetate.review_flags(kind="proposal", track_id=track_id) if f["related"]["key"] == stale["key"]]
+        with self.assertRaises(ServerError) as refused:
+            self.acetate._request("POST", f"/api/review/{flag['id']}/adopt", json_body={})
+        self.assertEqual(refused.exception.status, 409)
+        self.acetate._request("POST", f"/api/review/{flag['id']}/resolve", json_body={"resolution": "rejected: tests"})
+        settled = [f for f in self.acetate.review_flags(kind="proposal", resolved=True, track_id=track_id) if f["id"] == flag["id"]]
+        self.assertEqual(settled[0]["resolution"], "rejected: tests")
 
 
 if __name__ == "__main__":

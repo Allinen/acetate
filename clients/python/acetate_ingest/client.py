@@ -45,6 +45,12 @@ CHUNK = 1024 * 1024
 #: a file's bytes.
 UPLOAD_PART_TYPE = "application/vnd.acetate.upload"
 
+#: Hashes or platform ids per lookup request (the server's limit).
+LOOKUP_BATCH = 1000
+
+#: Review flags per page.
+REVIEW_PAGE = 500
+
 T = TypeVar("T")
 C = TypeVar("C", bound="_Client")
 
@@ -87,6 +93,40 @@ class _Client:
         return cls(url, token, **kwargs)
 
     # ---- The operations ----
+
+    def _lookup_files(self, sha256s: list[str]) -> _Operation[list[dict[str, Any]]]:
+        found: list[dict[str, Any]] = []
+        for start in range(0, len(sha256s), LOOKUP_BATCH):
+            found += yield _Call("POST", "/api/lookup/files", json_body={"sha256": sha256s[start : start + LOOKUP_BATCH]})
+        return found
+
+    def _lookup_sources(self, ids: list[tuple[str, str]]) -> _Operation[list[dict[str, Any]]]:
+        found: list[dict[str, Any]] = []
+        for start in range(0, len(ids), LOOKUP_BATCH):
+            items = [{"platform": p, "external_id": str(i)} for p, i in ids[start : start + LOOKUP_BATCH]]
+            found += yield _Call("POST", "/api/lookup/sources", json_body={"items": items})
+        return found
+
+    def _search(self, path: str, **params: Any) -> _Operation[list[dict[str, Any]]]:
+        query = urllib.parse.urlencode({k: v for k, v in params.items() if v is not None})
+        return (yield _Call("GET", f"{path}?{query}"))
+
+    def _track(self, track_id: str) -> _Operation[dict[str, Any]]:
+        return (yield _Call("GET", f"/api/tracks/{track_id}"))
+
+    def _edit_tracks(self, edit: dict[str, Any], preview: bool) -> _Operation[dict[str, Any]]:
+        return (yield _Call("POST", "/api/tracks/edit", json_body={**edit, "preview": preview}))
+
+    def _review_flags(self, kind: str | None, resolved: bool, track_id: str | None) -> _Operation[list[dict[str, Any]]]:
+        flags: list[dict[str, Any]] = []
+        before = None
+        while True:
+            params = {"kind": kind, "resolved": "true" if resolved else None, "track": track_id, "before": before, "limit": REVIEW_PAGE}
+            page = yield from self._search("/api/review", **params)
+            flags += page
+            if len(page) < REVIEW_PAGE:
+                return flags
+            before = page[-1]["id"]
 
     def _login(self, username: str, password: str) -> _Operation[None]:
         answer = yield _Call("POST", "/api/auth/login", json_body={"username": username, "password": password})
@@ -279,6 +319,58 @@ class Acetate(_Client):
         Anything listed means one of the two is older than the other."""
         return self._run(self._shape_differences())
 
+    # ---- Looking things up ----
+
+    def lookup_files(self, sha256s: list[str]) -> list[dict[str, Any]]:
+        """What has these bytes, per sha256 in the order given: `{"sha256", "tracks",
+        "extras", "covers", "problems"}`, each list empty if nothing has them. `tracks`
+        has the files tracks play now (`current`) and played before."""
+        return self._run(self._lookup_files(sha256s))
+
+    def lookup_sources(self, ids: list[tuple[str, str]]) -> list[dict[str, Any]]:
+        """What has a source with each `(platform, external_id)` (e.g. `("soundcloud",
+        "123")`), in the order given: `{"platform", "external_id", "owners": [{"kind", "id"}]}`."""
+        return self._run(self._lookup_sources(ids))
+
+    def search_tracks(self, q: str, *, artist: str | None = None, limit: int = 20) -> list[dict[str, Any]]:
+        """Tracks by title (and by the artist as shown, if given), best match first:
+        `{"id", "title", "artist_display", "release_date", "status", "duration_ms", "sha256", "score"}`."""
+        return self._run(self._search("/api/tracks/search", q=q, artist=artist, limit=limit))
+
+    def search_artists(self, q: str, *, limit: int = 20) -> list[dict[str, Any]]:
+        """Artists by name or alias, best match first."""
+        return self._run(self._search("/api/artists", q=q, limit=limit))
+
+    def search_albums(self, q: str, *, limit: int = 20) -> list[dict[str, Any]]:
+        """Albums by title, best match first."""
+        return self._run(self._search("/api/albums", q=q, limit=limit))
+
+    def track(self, track_id: str) -> dict[str, Any]:
+        """A track's details (`GET /api/tracks/{id}`): its versions (`variants`, each with
+        the `revision_id` to make a patch against), sources, files…"""
+        return self._run(self._track(track_id))
+
+    # ---- Changing things ----
+
+    def edit_tracks(self, edit: dict[str, Any], *, preview: bool = False) -> dict[str, Any]:
+        """`POST /api/tracks/edit` as it is: `edit` is `{"tracks": [...], "reason": ...}`.
+        Each track's outcome is in the answer's `tracks` (`error` if it wasn't written).
+        `preview`: what would happen, nothing kept."""
+        return self._run(self._edit_tracks(edit, preview))
+
+    def propose(self, track_id: str, proposal: dict[str, Any], *, preview: bool = False) -> dict[str, Any]:
+        """Proposes changes to a track for a person to adopt or reject on the Review page,
+        instead of making them. `proposal`: `{"key", "agent", "job_id"?, "base_revision_id"?,
+        "patch"?, "new_variant"?, "sources"?, "evidence"?}` (see the server's
+        `db::review::Proposal`). The same `key` again while it's open adds nothing. Answers
+        as `edit_tracks`."""
+        return self.edit_tracks({"tracks": [{"track_id": track_id, "flags": {"add": [{"proposal": proposal}]}}]}, preview=preview)
+
+    def review_flags(self, *, kind: str | None = None, resolved: bool = False, track_id: str | None = None) -> list[dict[str, Any]]:
+        """Review flags, newest first: open ones, or settled ones (`resolved`, with their
+        `resolution`: a rejected proposal's says why). E.g. `kind="proposal"`."""
+        return self._run(self._review_flags(kind, resolved, track_id))
+
     # ---- Ingesting ----
 
     def ingest(
@@ -403,6 +495,42 @@ class AsyncAcetate(_Client):
     async def shape_differences(self) -> list[str]:
         """As `Acetate.shape_differences`."""
         return await self._run(self._shape_differences())
+
+    async def lookup_files(self, sha256s: list[str]) -> list[dict[str, Any]]:
+        """As `Acetate.lookup_files`."""
+        return await self._run(self._lookup_files(sha256s))
+
+    async def lookup_sources(self, ids: list[tuple[str, str]]) -> list[dict[str, Any]]:
+        """As `Acetate.lookup_sources`."""
+        return await self._run(self._lookup_sources(ids))
+
+    async def search_tracks(self, q: str, *, artist: str | None = None, limit: int = 20) -> list[dict[str, Any]]:
+        """As `Acetate.search_tracks`."""
+        return await self._run(self._search("/api/tracks/search", q=q, artist=artist, limit=limit))
+
+    async def search_artists(self, q: str, *, limit: int = 20) -> list[dict[str, Any]]:
+        """As `Acetate.search_artists`."""
+        return await self._run(self._search("/api/artists", q=q, limit=limit))
+
+    async def search_albums(self, q: str, *, limit: int = 20) -> list[dict[str, Any]]:
+        """As `Acetate.search_albums`."""
+        return await self._run(self._search("/api/albums", q=q, limit=limit))
+
+    async def track(self, track_id: str) -> dict[str, Any]:
+        """As `Acetate.track`."""
+        return await self._run(self._track(track_id))
+
+    async def edit_tracks(self, edit: dict[str, Any], *, preview: bool = False) -> dict[str, Any]:
+        """As `Acetate.edit_tracks`."""
+        return await self._run(self._edit_tracks(edit, preview))
+
+    async def propose(self, track_id: str, proposal: dict[str, Any], *, preview: bool = False) -> dict[str, Any]:
+        """As `Acetate.propose`."""
+        return await self.edit_tracks({"tracks": [{"track_id": track_id, "flags": {"add": [{"proposal": proposal}]}}]}, preview=preview)
+
+    async def review_flags(self, *, kind: str | None = None, resolved: bool = False, track_id: str | None = None) -> list[dict[str, Any]]:
+        """As `Acetate.review_flags`."""
+        return await self._run(self._review_flags(kind, resolved, track_id))
 
     async def ingest(
         self,
