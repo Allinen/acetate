@@ -4,7 +4,7 @@
 //! they did).
 
 use chrono::{DateTime, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use super::revisions::EditRejected;
@@ -495,6 +495,152 @@ pub async fn flag_by_hand(conn: &mut PgConnection, track_id: Uuid, kind: &str) -
     .execute(conn)
     .await?;
     Ok(made.rows_affected() > 0)
+}
+
+/// What a tool proposes for a track (a `proposal` flag's `related`, as sent): at least one
+/// of `patch`, `new_variant` and `sources`. Adopting it is an ordinary track edit made by
+/// a person on the Review page; nothing here changes the track.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Proposal {
+    /// Picked by the proposer: a track has at most one open proposal per key, so proposing
+    /// the same thing again is a no-op (e.g. "release_date:soundcloud:123").
+    pub key: String,
+    /// Who proposed it: the tool, and the model if any ("enrich/qwen3.8-27b").
+    pub agent: String,
+    /// The proposer's own id for the run, to find its proposals again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job_id: Option<String>,
+    /// The revision `patch` was made against. If the version has a newer one by the time
+    /// it's adopted, the edit is refused as stale and a person merges it by hand.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_revision_id: Option<Uuid>,
+    /// Metadata fields to change in that version (`TrackMetadata`'s: title, release_date,
+    /// genres, comment, credits), as they're to be.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub patch: Option<serde_json::Map<String, serde_json::Value>>,
+    /// A whole new version instead, e.g. everything one platform says about the track.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub new_variant: Option<ProposedVariant>,
+    /// Sources to add to the track, as `POST /api/tracks/edit` takes them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<ProposedSource>,
+    /// Why: where each thing was found.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub evidence: Vec<Evidence>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProposedVariant {
+    pub label: String,
+    pub data: crate::model::TrackMetadata,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProposedSource {
+    pub platform: String,
+    pub data: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Evidence {
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// The proposer's record of the check this came from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finding_id: Option<String>,
+    /// The words on the page that say it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quote: Option<String>,
+}
+
+/// The metadata fields a proposal's `patch` may change.
+const PATCHABLE: &[&str] = &["title", "release_date", "genres", "comment", "credits"];
+
+/// Flags `track_id` with a proposal, unless it has an open one with the same key. Checked
+/// first: the patch applies to its base revision (which is the track's), the new version
+/// and the sources are well formed. Stored with `variant_id` (the base revision's) and
+/// `fields` (what it changes) filled in, for the Review page. Returns whether it was added.
+pub async fn propose(conn: &mut PgConnection, track_id: Uuid, proposal: &Proposal) -> anyhow::Result<bool> {
+    let invalid = |msg: String| -> anyhow::Error { EditRejected::Invalid(format!("proposal: {msg}")).into() };
+    if proposal.key.trim().is_empty() || proposal.key.len() > 200 {
+        return Err(invalid("`key` is 1–200 characters".into()));
+    }
+    if proposal.agent.trim().is_empty() {
+        return Err(invalid("`agent` names who proposed it".into()));
+    }
+    if proposal.patch.is_none() && proposal.new_variant.is_none() && proposal.sources.is_empty() {
+        return Err(invalid("it proposes nothing: give a `patch`, a `new_variant` or `sources`".into()));
+    }
+    let mut fields: Vec<String> = Vec::new();
+    let mut variant_id = None;
+    if let Some(patch) = &proposal.patch {
+        if let Some(bad) = patch.keys().find(|k| !PATCHABLE.contains(&k.as_str())) {
+            return Err(invalid(format!("`patch` can't change `{bad}` (only {PATCHABLE:?})")));
+        }
+        if patch.is_empty() {
+            return Err(invalid("`patch` is empty".into()));
+        }
+        let base = proposal.base_revision_id.ok_or_else(|| invalid("a `patch` needs the `base_revision_id` it was made against".into()))?;
+        let row = sqlx::query!("SELECT variant_id, data FROM track_revisions WHERE id = $1 AND track_id = $2 AND kind = 'internal'", base, track_id)
+            .fetch_optional(&mut *conn)
+            .await?
+            .ok_or_else(|| invalid("`base_revision_id` isn't one of this track's revisions".into()))?;
+        let mut data = row.data;
+        let object = data.as_object_mut().ok_or_else(|| anyhow::anyhow!("revision {base} isn't a JSON object"))?;
+        for (key, value) in patch {
+            object.insert(key.clone(), value.clone());
+        }
+        serde_json::from_value::<crate::model::TrackMetadata>(data).map_err(|e| invalid(format!("`patch` doesn't make valid metadata: {e}")))?;
+        variant_id = Some(row.variant_id);
+        fields.extend(patch.keys().cloned());
+    }
+    if let Some(variant) = &proposal.new_variant {
+        if variant.label.trim().is_empty() {
+            return Err(invalid("`new_variant` needs a `label`".into()));
+        }
+        fields.push("new_variant".into());
+    }
+    for source in &proposal.sources {
+        let new = crate::model::sources::NewSource { platform: source.platform.clone(), source_id: None, captured_at: None, data: source.data.clone() };
+        crate::model::sources::validate(crate::model::sources::Kind::Track, new).map_err(|e| invalid(e.to_string()))?;
+    }
+    if !proposal.sources.is_empty() {
+        fields.push("sources".into());
+    }
+    let mut related = serde_json::to_value(proposal)?;
+    related["fields"] = json!(fields);
+    if let Some(variant_id) = variant_id {
+        related["variant_id"] = json!(variant_id);
+    }
+    let made = sqlx::query!(
+        "INSERT INTO review_flags (kind, track_id, related) VALUES ('proposal', $1, $2)
+         ON CONFLICT (track_id, (related ->> 'key')) WHERE kind = 'proposal' AND resolved_at IS NULL DO NOTHING",
+        track_id,
+        related
+    )
+    .execute(conn)
+    .await?;
+    Ok(made.rows_affected() > 0)
+}
+
+/// Settles open flags by their ids, if they're the track's (a track editor settling one
+/// proposal of several). Returns how many.
+pub async fn settle_ids(conn: &mut PgConnection, track_id: Uuid, ids: &[Uuid], resolution: &str) -> sqlx::Result<u64> {
+    let result = sqlx::query!(
+        "UPDATE review_flags SET resolved_at = now(), resolved_by = current_app_user(), resolution = $3
+         WHERE track_id = $1 AND id = ANY($2) AND resolved_at IS NULL",
+        track_id,
+        ids,
+        resolution
+    )
+    .execute(conn)
+    .await?;
+    Ok(result.rows_affected())
 }
 
 /// Settles a track's open flags of `kind` (any kind), with `resolution`. Returns how many.

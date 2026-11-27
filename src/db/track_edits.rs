@@ -142,12 +142,23 @@ pub struct TrackEdit {
 
 #[derive(Debug, Default, Deserialize)]
 pub struct FlagsEdit {
-    /// Kinds it's flagged with ("fix_later", one people made, or a new one's name).
+    /// Flags it gets: a kind ("fix_later", one people made, or a new one's name), or a
+    /// proposal.
     #[serde(default)]
-    pub add: Vec<String>,
+    pub add: Vec<NewFlag>,
     /// Kinds whose open flags on it are settled (any kind).
     #[serde(default)]
     pub settle: Vec<String>,
+    /// Open flags of its settled by id: one proposal adopted, leaving its others open.
+    #[serde(default)]
+    pub settle_ids: Vec<Uuid>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub enum NewFlag {
+    Kind(String),
+    Proposal { proposal: super::review::Proposal },
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -503,13 +514,23 @@ async fn edit_track(conn: &mut PgConnection, edit: &TrackEdit, made: &Made<'_>, 
         }
     }
     if let Some(flags) = &edit.flags {
-        for kind in &flags.add {
-            let kind = made.review_kinds.get(kind).unwrap_or(kind);
-            super::review::flag_by_hand(conn, track, kind).await?;
+        for flag in &flags.add {
+            match flag {
+                NewFlag::Kind(kind) => {
+                    let kind = made.review_kinds.get(kind).unwrap_or(kind);
+                    super::review::flag_by_hand(conn, track, kind).await?;
+                }
+                NewFlag::Proposal { proposal } => {
+                    super::review::propose(conn, track, proposal).await?;
+                }
+            }
         }
         let settled = if reason.is_empty() { "settled in the track editor" } else { reason };
         for kind in &flags.settle {
             super::review::settle_kind(conn, track, kind, settled).await?;
+        }
+        if !flags.settle_ids.is_empty() {
+            super::review::settle_ids(conn, track, &flags.settle_ids, settled).await?;
         }
     }
     Ok(done)

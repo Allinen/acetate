@@ -647,7 +647,7 @@ async fn artists_get_their_accounts_with_the_edit(_: PgPoolOptions, connect: PgC
 
 #[sqlx::test]
 async fn flags_by_hand_of_kinds_people_make(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
-    use crate::db::track_edits::FlagsEdit;
+    use crate::db::track_edits::{FlagsEdit, NewFlag};
     let lib = setup(connect).await?;
     let flagged = |add: &[&str], settle: &[&str]| TrackEdit {
         track_id: lib.o,
@@ -659,7 +659,7 @@ async fn flags_by_hand_of_kinds_people_make(_: PgPoolOptions, connect: PgConnect
         sources: None,
         single: false,
         groups: None,
-        flags: Some(FlagsEdit { add: add.iter().map(|s| s.to_string()).collect(), settle: settle.iter().map(|s| s.to_string()).collect() }),
+        flags: Some(FlagsEdit { add: add.iter().map(|s| NewFlag::Kind(s.to_string())).collect(), settle: settle.iter().map(|s| s.to_string()).collect(), settle_ids: Vec::new() }),
     };
     let open = |kind: &'static str| {
         let pool = lib.owner.clone();
@@ -737,5 +737,94 @@ async fn tracks_moved_on_an_album_change_only_their_place(_: PgPoolOptions, conn
     assert!(refused(lib.carol, &[place(lib.h, 2)]).await?);
     assert!(refused(lib.bob, &[place(lib.v, 1), place(lib.v, 2)]).await?);
     assert_eq!(places(&lib).await?, [(lib.h, Some(1), Some(1)), (lib.v, Some(1), Some(2))]);
+    Ok(())
+}
+
+#[sqlx::test]
+async fn proposals_are_flags_a_track_can_have_several_of(_: PgPoolOptions, connect: PgConnectOptions) -> anyhow::Result<()> {
+    use crate::db::review::Proposal;
+    use crate::db::track_edits::{FlagsEdit, NewFlag};
+    use serde_json::json;
+    let lib = setup(connect).await?;
+    let mut conn = lib.owner.acquire().await?;
+    let (_, base, _, _, _) = state(&mut conn, lib.o).await?;
+    let proposing = |related: serde_json::Value| -> anyhow::Result<TrackEdit> {
+        let proposal: Proposal = serde_json::from_value(related)?;
+        Ok(TrackEdit {
+            track_id: lib.o,
+            meta: None,
+            facts: None,
+            along: true,
+            sync: false,
+            covers: None,
+            sources: None,
+            single: false,
+            groups: None,
+            flags: Some(FlagsEdit { add: vec![NewFlag::Proposal { proposal }], settle: vec![], settle_ids: vec![] }),
+        })
+    };
+    let open = || {
+        let pool = lib.owner.clone();
+        async move {
+            sqlx::query_as::<_, (Uuid, serde_json::Value)>("SELECT id, related FROM review_flags WHERE track_id = $1 AND kind = 'proposal' AND resolved_at IS NULL ORDER BY id")
+                .bind(lib.o)
+                .fetch_all(&pool)
+                .await
+        }
+    };
+    let date = json!({ "key": "date:sc:1", "agent": "test", "base_revision_id": base, "patch": { "release_date": "2021-03-04" },
+                       "evidence": [{ "label": "SoundCloud", "url": "https://soundcloud.com/x/y", "quote": "Mar 4, 2021" }] });
+    let source = json!({ "key": "source:custom", "agent": "test", "sources": [{ "platform": "custom", "data": { "label": "seen", "description": "on a forum" } }] });
+
+    // Two proposals, the same one again: two open flags.
+    for related in [&date, &source, &date] {
+        let done = run(&lib, lib.bob, &edit(vec![proposing(related.clone())?]), true).await?;
+        assert!(done.tracks[0].error.is_none(), "{:?}", done.tracks[0].error);
+    }
+    let flags = open().await?;
+    assert_eq!(flags.len(), 2);
+    assert_eq!(flags[0].1["fields"], json!(["release_date"]));
+    assert!(flags[0].1["variant_id"].is_string(), "the base revision's version is noted");
+    assert_eq!(flags[1].1["fields"], json!(["sources"]));
+
+    // Refused: nothing proposed, a field that isn't metadata, a patch with no base, a base
+    // that isn't the track's, a patch that doesn't make metadata, a source of no shape.
+    let (_, other_base, _, _, _) = state(&mut conn, lib.v).await?;
+    for bad in [
+        json!({ "key": "k", "agent": "test" }),
+        json!({ "key": "k", "agent": "test", "base_revision_id": base, "patch": { "status": "deleted" } }),
+        json!({ "key": "k", "agent": "test", "patch": { "title": "T" } }),
+        json!({ "key": "k", "agent": "test", "base_revision_id": other_base, "patch": { "title": "T" } }),
+        json!({ "key": "k", "agent": "test", "base_revision_id": base, "patch": { "genres": "not a list" } }),
+        json!({ "key": "k", "agent": "test", "sources": [{ "platform": "custom", "data": { "nonsense": 1 } }] }),
+    ] {
+        let done = run(&lib, lib.bob, &edit(vec![proposing(bad.clone())?]), false).await?;
+        assert_eq!(done.tracks[0].error.as_ref().map(|e| e.code.as_str()), Some("invalid"), "{bad}");
+    }
+    assert!(serde_json::from_value::<Proposal>(json!({ "key": "k", "agent": "a", "surprise": 1 })).is_err(), "unknown fields refused");
+
+    // Not by its kind's name, as a plain flag.
+    let plain = TrackEdit { flags: Some(FlagsEdit { add: vec![NewFlag::Kind("proposal".into())], settle: vec![], settle_ids: vec![] }), ..proposing(source.clone())? };
+    let done = run(&lib, lib.bob, &edit(vec![plain]), false).await?;
+    assert_eq!(done.tracks[0].error.as_ref().map(|e| e.code.as_str()), Some("invalid"));
+
+    // Adopted: the date written against its base, only that flag settled.
+    let mut adopt = meta_edit(&mut conn, lib.o, |m| m.release_date = Some("2021-03-04".into())).await?;
+    adopt.flags = Some(FlagsEdit { add: vec![], settle: vec![], settle_ids: vec![flags[0].0] });
+    let done = run(&lib, lib.bob, &edit(vec![adopt]), true).await?;
+    assert!(done.tracks[0].error.is_none(), "{:?}", done.tracks[0].error);
+    let left = open().await?;
+    assert_eq!(left.iter().map(|f| f.0).collect::<Vec<_>>(), [flags[1].0]);
+    let resolution: String = sqlx::query_scalar("SELECT resolution FROM review_flags WHERE id = $1").bind(flags[0].0).fetch_one(&lib.owner).await?;
+    assert_eq!(resolution, "test");
+
+    // Proposed against the old revision again: the base is stale now, so adopting it from
+    // that base is refused.
+    run(&lib, lib.bob, &edit(vec![proposing(json!({ "key": "title:x", "agent": "test", "base_revision_id": base, "patch": { "title": "Other!" } }))?]), true).await?;
+    let (variant, _, mut data, _, _) = state(&mut conn, lib.o).await?;
+    data.title = "Other!".into();
+    let stale = TrackEdit { meta: Some(MetaEdit { variant_id: Some(variant), base_revision_id: Some(base), new_variant: None, label: None, data }), ..meta_edit(&mut conn, lib.o, |_| {}).await? };
+    let done = run(&lib, lib.bob, &edit(vec![stale]), false).await?;
+    assert_eq!(done.tracks[0].error.as_ref().map(|e| e.code.as_str()), Some("stale"));
     Ok(())
 }
