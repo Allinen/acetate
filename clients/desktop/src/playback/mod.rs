@@ -35,6 +35,11 @@ struct State {
     appended: Option<queue::Upcoming>,
     /// Changes with every track started, so downloads for an older one are dropped.
     generation: u64,
+    /// The generation whose track the audio thread was last handed. While it's behind
+    /// `generation`, a track is still on its way (downloading), and nothing is fetched for
+    /// the "next" slot: it would go into the slot of the track about to be replaced, and
+    /// be thought ready when it's gone with it.
+    handed: u64,
     fetching: bool,
     /// Numbers each fetch of a next track, so one that's no longer wanted (what comes
     /// next changed meanwhile) is dropped.
@@ -268,17 +273,21 @@ impl Controller {
             state.generation
         };
         let (mine, theirs) = (self.fetch(item.file_id, self.path_of(&item)).await, self.fetch(other.file_id, self.path_of(&other)).await);
-        match (mine, theirs) {
-            (Ok(mine), Ok(theirs)) => {
-                if self.state.lock().await.generation == generation {
+        let mut state = self.state.lock().await;
+        if state.generation == generation {
+            match (mine, theirs) {
+                (Ok(mine), Ok(theirs)) => {
                     // Ordered by file id, so a switch back and forth is the same pair.
                     let side_b = item.file_id > other.file_id;
                     let (a, b) = if side_b { ((other.file_id, theirs), (item.file_id, mine)) } else { ((item.file_id, mine), (other.file_id, theirs)) };
                     self.send(Command::Compare { a, b, side_b, at, follow });
                 }
+                // What played goes on, and what comes next is fetched to follow it.
+                (Err(err), _) | (_, Err(err)) => self.report(format!("{err:#}")),
             }
-            (Err(err), _) | (_, Err(err)) => self.report(format!("{err:#}")),
+            state.handed = generation;
         }
+        drop(state);
         self.ctx.request_repaint();
     }
 
@@ -343,14 +352,21 @@ impl Controller {
             let fetched = if self.playable(&item) { Some(self.fetch(item.file_id, self.path_of(&item)).await) } else { None };
             match fetched {
                 Some(Ok(file)) => {
-                    if self.state.lock().await.generation == generation {
+                    let mut state = self.state.lock().await;
+                    if state.generation == generation {
                         self.send(Command::Replace { file, paused, at, fade, follow: false });
+                        state.handed = generation;
                     }
                     break;
                 }
-                // Online, a failure is a failure.
+                // Online, a failure is a failure: what played goes on, and what comes next
+                // is fetched to follow it.
                 Some(Err(err)) if !self.api.connection().is_offline() => {
                     self.report(format!("{err:#}"));
+                    let mut state = self.state.lock().await;
+                    if state.generation == generation {
+                        state.handed = generation;
+                    }
                     break;
                 }
                 Some(Err(_)) => {
@@ -513,6 +529,7 @@ impl Controller {
         let mut state = self.state.lock().await;
         state.queue = queue::Queue::default();
         state.generation += 1;
+        state.handed = state.generation;
         state.appended = None;
         state.fetching = false;
         state.next_asked += 1;
@@ -522,16 +539,15 @@ impl Controller {
         self.ctx.request_repaint();
     }
 
+    /// The next track, started like any other (a file already fetched for the "next" slot
+    /// is used again, see `fetch`). Not by telling the audio thread to go on to its slot:
+    /// by the time it acts, the slot may have been used up (the track ended by itself, or
+    /// Next was pressed twice), and going on from an empty one stops playback.
     pub async fn next(self: &Arc<Self>) {
         let item = {
             let mut state = self.state.lock().await;
             // Next means the next track, even when looping this one.
             let Some(upcoming) = state.queue.upcoming_where(false, |i| self.playable(i)) else { return };
-            // Already in the audio thread's "next" slot: go on to it.
-            if state.appended == Some(upcoming) {
-                self.send(Command::Skip);
-                return;
-            }
             let item = state.queue.item(upcoming).cloned();
             state.queue.advance(upcoming);
             item
@@ -725,8 +741,13 @@ impl Controller {
             }
 
             // The next track goes into the audio thread's "next" slot as soon as the
-            // current one plays (for gapless playback; it can still be changed later).
-            let wanted = status.playing && state.appended.is_none() && !state.fetching && state.next_failed != Some(state.next_asked);
+            // current one plays (for gapless playback; it can still be changed later). Not
+            // while a new track is on its way: `status` is still the old one's.
+            let wanted = status.playing
+                && state.handed == state.generation
+                && state.appended.is_none()
+                && !state.fetching
+                && state.next_failed != Some(state.next_asked);
             if let Some((next, file_id)) = wanted.then(|| self.upcoming(&state)).flatten() {
                 state.fetching = true;
                 let asked = state.next_asked;

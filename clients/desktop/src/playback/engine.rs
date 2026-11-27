@@ -48,8 +48,6 @@ pub enum Command {
     SetNext(Option<RemoteFile>),
     Pause,
     Resume,
-    /// Go on with the next track now.
-    Skip,
     /// Jump to this point of the current track.
     Seek(Duration),
     /// Loudness, as an amplitude factor (0: silent, 1: as the file is).
@@ -96,7 +94,6 @@ const FADE_STEPS: u32 = 3;
 #[derive(Default)]
 struct Control {
     next: Mutex<Option<Track>>,
-    skip: AtomicBool,
     ended: AtomicBool,
     switches: AtomicU64,
     /// Samples (all channels) played of the current track, and its rate × channels,
@@ -229,11 +226,6 @@ pub fn start(
                     }
                     Command::Pause => player.pause(),
                     Command::Resume => player.play(),
-                    Command::Skip => {
-                        if let Some(c) = &control {
-                            c.skip.store(true, Relaxed);
-                        }
-                    }
                     Command::Seek(position) => {
                         if let Err(err) = player.try_seek(position) {
                             errors(format!("Couldn't jump there in the track: {err}"));
@@ -486,8 +478,6 @@ struct Chain {
     /// Samples of the current span given out so far.
     in_span: usize,
     padding: usize,
-    /// Skipping: the rest of the current track isn't played (after the padding).
-    skipping: bool,
     /// Samples played of the current track, published every so often.
     played: u64,
 }
@@ -496,7 +486,7 @@ impl Chain {
     fn new(track: Track, control: Arc<Control>) -> Chain {
         control.per_second.store(per_second(&track), Relaxed);
         control.played.store(0, Relaxed);
-        Chain { current: track, control, in_span: 0, padding: 0, skipping: false, played: 0 }
+        Chain { current: track, control, in_span: 0, padding: 0, played: 0 }
     }
 
     /// The track is at `position` already (seeked before it was handed over): the position
@@ -531,10 +521,7 @@ impl Iterator for Chain {
                 self.padding -= 1;
                 return Some(0.0);
             }
-            let skip = self.skipping || self.control.skip.swap(false, Relaxed);
-            if !skip
-                && let Some(sample) = self.current.next()
-            {
+            if let Some(sample) = self.current.next() {
                 self.in_span += 1;
                 self.played += 1;
                 if self.played.is_multiple_of(1024) {
@@ -542,16 +529,14 @@ impl Iterator for Chain {
                 }
                 return Some(sample);
             }
-            // The track ended (or is skipped): finish the frame, then the next one.
+            // The track ended: finish the frame, then the next one.
             let channels = self.current.channels().get() as usize;
             let partial = self.in_span % channels;
             self.in_span = 0;
             if partial > 0 {
                 self.padding = channels - partial;
-                self.skipping = skip;
                 continue;
             }
-            self.skipping = false;
             if !self.go_next() {
                 self.control.ended.store(true, Relaxed);
                 return None;
@@ -716,19 +701,13 @@ mod tests {
     }
 
     #[test]
-    fn skipping_goes_on_at_once_and_a_cut_off_frame_is_padded() {
+    fn a_track_cut_off_mid_frame_is_padded() {
         let control = Arc::new(Control::default());
         // Stereo, but ends mid-frame (3 samples): one silent sample completes the frame.
-        let mut chain = Chain::new(track(2, &[1.0, 1.0, 1.0]), control.clone());
-        *control.next.lock().unwrap() = Some(track(2, &[2.0, 2.0, 2.0, 2.0]));
-        let first: Vec<f32> = (0..6).map(|_| chain.next().unwrap()).collect();
-        assert_eq!(first, [1.0, 1.0, 1.0, 0.0, 2.0, 2.0]);
-        // A skip mid-frame: the frame is completed with silence first.
-        assert_eq!(chain.next(), Some(2.0));
-        *control.next.lock().unwrap() = Some(track(2, &[5.0, 5.0]));
-        control.skip.store(true, Relaxed);
-        assert_eq!(chain.next(), Some(0.0), "the frame's other channel");
-        assert_eq!(chain.next(), Some(5.0), "then the next track");
-        assert_eq!(control.switches.load(Relaxed), 2);
+        let chain = Chain::new(track(2, &[1.0, 1.0, 1.0]), control.clone());
+        *control.next.lock().unwrap() = Some(track(2, &[2.0, 2.0]));
+        assert_eq!(chain.collect::<Vec<f32>>(), [1.0, 1.0, 1.0, 0.0, 2.0, 2.0]);
+        assert_eq!(control.switches.load(Relaxed), 1);
+        assert!(control.ended.load(Relaxed));
     }
 }
