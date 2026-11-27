@@ -158,7 +158,7 @@ pub struct FlagsEdit {
 #[serde(untagged)]
 pub enum NewFlag {
     Kind(String),
-    Proposal { proposal: super::review::Proposal },
+    Proposal { proposal: Box<super::review::Proposal> },
 }
 
 #[derive(Debug, Default, Deserialize)]

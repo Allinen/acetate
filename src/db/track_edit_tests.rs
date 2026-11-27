@@ -760,7 +760,7 @@ async fn proposals_are_flags_a_track_can_have_several_of(_: PgPoolOptions, conne
             sources: None,
             single: false,
             groups: None,
-            flags: Some(FlagsEdit { add: vec![NewFlag::Proposal { proposal }], settle: vec![], settle_ids: vec![] }),
+            flags: Some(FlagsEdit { add: vec![NewFlag::Proposal { proposal: Box::new(proposal) }], settle: vec![], settle_ids: vec![] }),
         })
     };
     let open = || {
