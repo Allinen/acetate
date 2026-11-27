@@ -633,6 +633,7 @@ async fn new_track(
         && tags.date != options.hints.release_date;
     if dated_by_hint {
         tags.date = options.hints.release_date.clone();
+        tags.date_from = None;
     }
     // Values given with the description (see `describe::GivenValues`): a title where the
     // tags have none; artists where they have none, or always if they're meant to win.
@@ -734,6 +735,9 @@ async fn new_track(
     }
     if shared_file.is_some() {
         revision_reason += "; the same file as a track already in the library (plays that file)";
+    }
+    if let Some(from) = tags.date_from.as_ref().filter(|_| described_metadata.is_none()) {
+        revision_reason += &format!("; release date read from {from}");
     }
     if dated_by_hint {
         revision_reason += &match &tag_date {
@@ -1124,6 +1128,7 @@ async fn create_track_rows(
 ) -> anyhow::Result<Report> {
     let tags = file.tags;
     let mut resolver = Resolver::default();
+    resolver.warnings.extend(tags.warnings.iter().cloned());
     // With `lax_artist_names`, a hint for a name the tags don't have may go to the one tag
     // artist without a hint (see `describe::lax_artist_names`).
     // Ids for the first ARTIST, whatever its name (see `Hints::first_artist_sources`).

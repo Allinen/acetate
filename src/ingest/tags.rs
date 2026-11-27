@@ -9,6 +9,8 @@
 //!   which knows e.g. that TIT2, TITLE and ©nam all mean "title".
 //!
 //! Values are never parsed, trimmed or normalized. What the tags say is what we store.
+//! One exception: an ID3v2.3 date given as a year (TYER) and a day and month (TDAT) is put
+//! together into one date, as ID3v2.4 does in TDRC (see `resolve_date`).
 
 use std::fs::File;
 use std::path::Path;
@@ -16,12 +18,13 @@ use std::path::Path;
 use lofty::config::ParseOptions;
 use lofty::file::{AudioFile, FileType, TaggedFileExt};
 use lofty::id3::v2::{Frame, Id3v2Tag};
+use lofty::iff::wav::RiffInfoList;
 use lofty::mp4::{AtomData, AtomIdent, Ilst};
 use lofty::ogg::tag::VorbisComments;
 use lofty::picture::PictureType;
 use lofty::probe::Probe;
 use lofty::tag::{Accessor, ItemKey, ItemValue, Tag, TagType};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 mod id3_repeated;
@@ -45,6 +48,9 @@ pub struct TagInfo {
     pub track_total: Option<u32>,
     pub disc_number: Option<u32>,
     pub date: Option<String>,
+    /// Where `date` was read from, when it isn't one of the usual date tags as it is (e.g.
+    /// "TYER+TDAT", "ICRD"; see `resolve_date`).
+    pub date_from: Option<String>,
     pub genres: Vec<String>,
     pub comment: Option<String>,
     pub lyrics: Vec<String>,
@@ -57,25 +63,32 @@ pub struct TagInfo {
     /// From the audio properties lofty reads alongside the tags.
     pub bitrate_kbps: Option<u32>,
     pub duration_ms: Option<u64>,
+
+    /// What the uploader should hear about the tags (e.g. two dates that disagree).
+    pub warnings: Vec<String>,
 }
 
 /// One tag block in the file (a file can have several, e.g. ID3v2 and APE on an MP3).
 #[derive(Debug, Clone, Serialize)]
 pub struct RawTag {
-    /// "vorbis_comments", "id3v2", "mp4_ilst", "ape" or "generic".
+    /// One of `RAW_FORMATS`.
     pub format: &'static str,
     pub items: Vec<RawItem>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+/// The names of the tag formats in `RawTag::format`. "riff_info" is a WAV file's RIFF INFO
+/// list; WAV files imported before it was read have only their ID3v2 chunk in the dump.
+const RAW_FORMATS: [&str; 6] = ["vorbis_comments", "id3v2", "mp4_ilst", "ape", "riff_info", "generic"];
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RawItem {
     /// The key exactly as in the file: "TITLE", "TPE1", "TXXX", "©nam", "----:com.apple.iTunes:FOO"...
     pub key: String,
     /// Usually a string; numbers, booleans, lists and binary data are kept in their own shape.
     pub value: serde_json::Value,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
 }
 
@@ -183,7 +196,17 @@ pub fn read_tags(path: &Path, extension: Option<&str>) -> anyhow::Result<TagInfo
     info.disc_number = tag.disk();
     // Dates come from the raw tags: lofty's generic view of ID3v2 dates is re-rendered
     // from a parsed timestamp and not verbatim.
-    info.date = find_date(&info.raw, primary_format).or_else(|| {
+    let resolved = resolve_date(&info.raw, primary_format);
+    info.date_from = resolved.from;
+    if !resolved.conflicts.is_empty()
+        && let Some(date) = &resolved.date
+    {
+        info.warnings.push(format!(
+            "the tags' release date is {date}, but {}; {date} was kept",
+            resolved.conflicts.join(", ")
+        ));
+    }
+    info.date = resolved.date.or_else(|| {
         [ItemKey::ReleaseDate, ItemKey::RecordingDate, ItemKey::Year]
             .into_iter()
             .filter_map(|key| tag.get_string(key))
@@ -306,7 +329,8 @@ const DATE_KEYS: [(&str, &[&str]); 4] = [
 ];
 
 /// Finds the date verbatim in the raw tags, looking at the file's primary tag format first.
-fn find_date(raw: &[RawTag], primary_format: Option<&str>) -> Option<String> {
+/// The first of the `DATE_KEYS` there is, as it is (`resolve_date` builds on it).
+pub(crate) fn find_date(raw: &[RawTag], primary_format: Option<&str>) -> Option<String> {
     // Primary format first, then the rest in file order.
     let ordered = raw
         .iter()
@@ -329,6 +353,158 @@ fn find_date(raw: &[RawTag], primary_format: Option<&str>) -> Option<String> {
         }
     }
     None
+}
+
+/// What `resolve_date` found.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct ResolvedDate {
+    pub date: Option<String>,
+    /// Where it was read from, when it isn't one of the `DATE_KEYS` as it is.
+    pub from: Option<String>,
+    /// Full dates elsewhere in the tags that are in another year than `date` (e.g.
+    /// "ICRD says 2020-08-01"). Not used.
+    pub conflicts: Vec<String>,
+}
+
+/// The file's release date: the first of the `DATE_KEYS` as it is (`find_date`). Some
+/// writers put only the year there and the rest of the date elsewhere, so when that's just
+/// a year, the first of these that gives the same year more precisely is taken instead:
+/// * TDAT, ID3v2.3's day and month ("DDMM"), with the year: TYER "2021" + TDAT "2512" is
+///   2021-12-25. ID3v2.4 merged the two into TDRC; this is the one date that's put
+///   together rather than taken as it is. (Some writers put a whole date in TDAT: as it is.)
+/// * A RELEASETIME or RELEASEDATE field (an ID3v2 TXXX, a Vorbis comment, an MP4 freeform
+///   atom), e.g. "2021-12-25" next to TYER "2021".
+/// * A WAV file's RIFF INFO ICRD.
+///
+/// With none of the `DATE_KEYS` at all: a RELEASETIME/RELEASEDATE field, ICRD, then the
+/// original release date (TDOR, TORY, ORIGINALDATE, ORIGINALYEAR), as they are.
+pub(crate) fn resolve_date(raw: &[RawTag], primary_format: Option<&str>) -> ResolvedDate {
+    let Some(date) = find_date(raw, primary_format) else {
+        let from_elsewhere = release_date_fields(raw)
+            .chain(raw_items(raw, "riff_info", &["ICRD"]))
+            .chain(raw_items(raw, "id3v2", &["TDOR", "TORY"]))
+            .chain(raw_items(raw, "vorbis_comments", &["ORIGINALDATE", "ORIGINALYEAR"]))
+            .next();
+        return match from_elsewhere {
+            Some((value, from)) => ResolvedDate { date: Some(value), from: Some(from), conflicts: Vec::new() },
+            None => ResolvedDate::default(),
+        };
+    };
+    if !is_year(&date) {
+        return ResolvedDate { date: Some(date), from: None, conflicts: Vec::new() };
+    }
+
+    let mut candidates: Vec<(String, String)> = Vec::new();
+    for (tdat, _) in raw_items(raw, "id3v2", &["TDAT"]) {
+        if let Some(composed) = compose_tdat(&date, &tdat) {
+            candidates.push((composed, "TYER+TDAT".to_string()));
+        } else if date_precision(&tdat) > 1 {
+            candidates.push((tdat, "TDAT".to_string()));
+        }
+    }
+    candidates.extend(release_date_fields(raw));
+    candidates.extend(raw_items(raw, "riff_info", &["ICRD"]));
+
+    let mut conflicts = Vec::new();
+    for (value, from) in candidates.into_iter().filter(|(value, _)| date_precision(value) > 1) {
+        if value.starts_with(date.as_str()) {
+            return ResolvedDate { date: Some(value), from: Some(from), conflicts };
+        }
+        conflicts.push(format!("{from} says {value}"));
+    }
+    ResolvedDate { date: Some(date), from: None, conflicts }
+}
+
+/// For checking that TDAT is read the right way round (day first): what `year` and TDAT
+/// make, and the first whole date the file has in a RELEASETIME/RELEASEDATE field or ICRD
+/// (with where), when it has both.
+pub(crate) fn tdat_and_other_date(raw: &[RawTag], year: &str) -> Option<(String, String, String)> {
+    let composed = raw_items(raw, "id3v2", &["TDAT"]).find_map(|(tdat, _)| compose_tdat(year, &tdat))?;
+    let (other, from) = release_date_fields(raw)
+        .chain(raw_items(raw, "riff_info", &["ICRD"]))
+        .find(|(value, _)| date_precision(value) == 3)?;
+    Some((composed, other, from))
+}
+
+/// The day a date with all three parts is (`date_precision` 3), as `YYYY-MM-DD`.
+pub(crate) fn day_of(text: &str) -> Option<String> {
+    if date_precision(text) < 3 {
+        return None;
+    }
+    let digits: String = text.chars().filter(char::is_ascii_digit).take(8).collect();
+    Some(format!("{}-{}-{}", &digits[..4], &digits[4..6], &digits[6..8]))
+}
+
+/// The non-blank values of these keys (case-insensitive) in the tags of `format`, with
+/// the key for messages.
+fn raw_items<'a>(raw: &'a [RawTag], format: &'a str, keys: &'a [&'a str]) -> impl Iterator<Item = (String, String)> + 'a {
+    raw.iter()
+        .filter(move |t| t.format == format)
+        .flat_map(|t| &t.items)
+        .filter(move |item| keys.iter().any(|k| item.key.eq_ignore_ascii_case(k)))
+        .filter_map(|item| Some((first_text(&item.value)?.to_string(), item.key.to_ascii_uppercase())))
+}
+
+/// The non-blank values of fields named RELEASETIME or RELEASEDATE (in any spelling, e.g.
+/// RELEASE_DATE): ID3v2 TXXX frames by their description, MP4 freeform atoms by their
+/// name, other formats by their key. With the field's name for messages.
+fn release_date_fields(raw: &[RawTag]) -> impl Iterator<Item = (String, String)> + '_ {
+    fn is_release_date_name(name: &str) -> bool {
+        let letters: String = name.chars().filter(|c| c.is_ascii_alphanumeric()).map(|c| c.to_ascii_lowercase()).collect();
+        letters == "releasetime" || letters == "releasedate"
+    }
+    raw.iter().filter(|t| t.format != "generic").flat_map(|t| &t.items).filter_map(|item| {
+        let name = match (item.key.as_str(), &item.description) {
+            ("TXXX", Some(desc)) => format!("TXXX:{desc}"),
+            (key, _) if key.starts_with("----:") => key.rsplit(':').next().unwrap_or_default().to_string(),
+            (key, _) => key.to_string(),
+        };
+        let field = name.strip_prefix("TXXX:").unwrap_or(&name);
+        if !is_release_date_name(field) {
+            return None;
+        }
+        Some((first_text(&item.value)?.to_string(), name))
+    })
+}
+
+/// Exactly four digits: a year and nothing else.
+fn is_year(text: &str) -> bool {
+    text.len() == 4 && text.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// `year` (four digits) with an ID3v2.3 TDAT ("DDMM"), as `YYYY-MM-DD`, if that's a real
+/// day.
+fn compose_tdat(year: &str, tdat: &str) -> Option<String> {
+    if tdat.len() != 4 || !tdat.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let (day, month) = (tdat[..2].parse().ok()?, tdat[2..].parse().ok()?);
+    chrono::NaiveDate::from_ymd_opt(year.parse().ok()?, month, day)?;
+    Some(format!("{year}-{month:02}-{day:02}"))
+}
+
+/// How much of a date `text` starts with: 0 = none, 1 = a year, 2 = a month, 3 = a day.
+/// The parts may be separated by "-", "/" or "." or not at all ("20211225").
+fn date_precision(text: &str) -> u8 {
+    let bytes = text.as_bytes();
+    let digits = |at: usize, n: usize| bytes.get(at..at + n).is_some_and(|d| d.iter().all(u8::is_ascii_digit));
+    if !digits(0, 4) {
+        return 0;
+    }
+    let mut at = 4;
+    let mut precision = 1;
+    for range in [1..=12u32, 1..=31] {
+        if matches!(bytes.get(at), Some(b'-' | b'/' | b'.')) {
+            at += 1;
+        }
+        let in_range = digits(at, 2) && text[at..at + 2].parse::<u32>().is_ok_and(|n| range.contains(&n));
+        if !in_range {
+            break;
+        }
+        at += 2;
+        precision += 1;
+    }
+    precision
 }
 
 /// The text of a value; for multi-value arrays, the first entry. Blank text counts as none.
@@ -448,6 +624,7 @@ fn read_raw_tags(path: &Path, file_type: FileType) -> anyhow::Result<Option<Vec<
         FileType::Wav => {
             let f = lofty::iff::wav::WavFile::read_from(&mut file, options)?;
             tags.extend(f.id3v2().map(|t| id3v2_raw(path, t)));
+            tags.extend(f.riff_info().map(riff_info_dump));
         }
         FileType::Aiff => {
             let f = lofty::iff::aiff::AiffFile::read_from(&mut file, options)?;
@@ -465,6 +642,57 @@ fn read_raw_tags(path: &Path, file_type: FileType) -> anyhow::Result<Option<Vec<
         _ => return Ok(None),
     }
     Ok(Some(tags))
+}
+
+/// A WAV file's RIFF INFO list (INAM, IART, ICRD...). Many writers fill it alongside an
+/// ID3v2 chunk, and some put the whole date only here.
+fn riff_info_dump(tag: &RiffInfoList) -> RawTag {
+    RawTag {
+        format: "riff_info",
+        items: tag.into_iter().map(|(key, value)| RawItem::new(key.clone(), text_value(value))).collect(),
+    }
+}
+
+/// A WAV file's RIFF INFO list as `read_tags` dumps it, for files stored before it was
+/// read. Blocking.
+pub(crate) fn read_riff_info(path: &Path) -> anyhow::Result<Option<RawTag>> {
+    let mut file = File::open(path)?;
+    let f = lofty::iff::wav::WavFile::read_from(&mut file, ParseOptions::new().read_properties(false))?;
+    Ok(f.riff_info().map(riff_info_dump))
+}
+
+/// The raw tags as kept in `files.embedded_tags` (`{"tags": [...]}`), for looking at files
+/// already stored. Tags of a format this version doesn't know are left out.
+pub(crate) fn raw_from_stored(embedded_tags: &serde_json::Value) -> Vec<RawTag> {
+    #[derive(Deserialize)]
+    struct Stored {
+        format: String,
+        #[serde(default)]
+        items: Vec<RawItem>,
+    }
+    let Some(tags) = embedded_tags.get("tags") else {
+        return Vec::new();
+    };
+    let stored: Vec<Stored> = serde_json::from_value(tags.clone()).unwrap_or_default();
+    stored
+        .into_iter()
+        .filter_map(|t| {
+            let format = RAW_FORMATS.iter().find(|f| **f == t.format)?;
+            Some(RawTag { format, items: t.items })
+        })
+        .collect()
+}
+
+/// The primary tag format a file was read with (see `raw_format_name`), from its container
+/// as stored in `files.container` (symphonia's name for it). The same choice lofty's
+/// `FileType::primary_tag_type` makes at import.
+pub(crate) fn primary_format_of_container(container: &str) -> Option<&'static str> {
+    match container {
+        "wave" | "aiff" | "mp1" | "mp2" | "mp3" | "adts" | "aac" => Some("id3v2"),
+        "flac" | "ogg" => Some("vorbis_comments"),
+        "isomp4" => Some("mp4_ilst"),
+        _ => None,
+    }
 }
 
 fn vorbis_dump(tag: &VorbisComments) -> RawTag {
@@ -797,6 +1025,146 @@ mod tests {
         );
     }
 
+    fn txxx(description: &str, value: &str) -> RawItem {
+        RawItem { description: Some(description.into()), ..RawItem::new("TXXX", json!(value)) }
+    }
+
+    fn resolved(raw: &[RawTag]) -> (Option<String>, Option<String>) {
+        let r = resolve_date(raw, Some("id3v2"));
+        (r.date, r.from)
+    }
+
+    #[test]
+    fn a_year_is_completed_from_tdat() {
+        let raw = vec![tag("id3v2", vec![RawItem::new("TYER", json!("2021")), RawItem::new("TDAT", json!("2512"))])];
+        assert_eq!(resolved(&raw), (Some("2021-12-25".into()), Some("TYER+TDAT".into())));
+
+        // DDMM that isn't a day (31 February, month 13) isn't used.
+        for tdat in ["3102", "0113", "25", "x512"] {
+            let raw = vec![tag("id3v2", vec![RawItem::new("TYER", json!("2021")), RawItem::new("TDAT", json!(tdat))])];
+            assert_eq!(resolved(&raw), (Some("2021".into()), None), "{tdat}");
+        }
+        // 29 February only in leap years.
+        let raw = vec![tag("id3v2", vec![RawItem::new("TYER", json!("2020")), RawItem::new("TDAT", json!("2902"))])];
+        assert_eq!(resolved(&raw).0.as_deref(), Some("2020-02-29"));
+
+        // A whole date in TDAT is taken as it is.
+        let raw = vec![tag("id3v2", vec![RawItem::new("TYER", json!("2021")), RawItem::new("TDAT", json!("2021-12-25"))])];
+        assert_eq!(resolved(&raw), (Some("2021-12-25".into()), Some("TDAT".into())));
+    }
+
+    #[test]
+    fn a_year_is_completed_from_release_time_fields_and_icrd() {
+        let raw = vec![tag("id3v2", vec![RawItem::new("TYER", json!("2021")), txxx("RELEASETIME", "2021-11-01T10:15:37Z")])];
+        assert_eq!(resolved(&raw), (Some("2021-11-01T10:15:37Z".into()), Some("TXXX:RELEASETIME".into())));
+        let raw = vec![tag("id3v2", vec![RawItem::new("TDRC", json!("2021")), txxx("release_date", "2021-11")])];
+        assert_eq!(resolved(&raw), (Some("2021-11".into()), Some("TXXX:release_date".into())));
+
+        let raw = vec![
+            tag("id3v2", vec![RawItem::new("TYER", json!("2020"))]),
+            tag("riff_info", vec![RawItem::new("INAM", json!("Song")), RawItem::new("ICRD", json!("20200801"))]),
+        ];
+        assert_eq!(resolved(&raw), (Some("20200801".into()), Some("ICRD".into())));
+
+        // A year-only ICRD adds nothing.
+        let raw = vec![
+            tag("id3v2", vec![RawItem::new("TYER", json!("2019"))]),
+            tag("riff_info", vec![RawItem::new("ICRD", json!("2019"))]),
+        ];
+        assert_eq!(resolved(&raw), (Some("2019".into()), None));
+
+        // TDAT first, then the release time fields, then ICRD.
+        let raw = vec![
+            tag("id3v2", vec![RawItem::new("TYER", json!("2021")), txxx("RELEASETIME", "2021-12-24"), RawItem::new("TDAT", json!("2512"))]),
+            tag("riff_info", vec![RawItem::new("ICRD", json!("2021-12-23"))]),
+        ];
+        assert_eq!(resolved(&raw).0.as_deref(), Some("2021-12-25"));
+    }
+
+    #[test]
+    fn dates_of_another_year_are_not_used() {
+        let raw = vec![
+            tag("id3v2", vec![RawItem::new("TYER", json!("2021")), txxx("RELEASETIME", "2020-08-01")]),
+            tag("riff_info", vec![RawItem::new("ICRD", json!("2021-03-04"))]),
+        ];
+        let r = resolve_date(&raw, Some("id3v2"));
+        assert_eq!(r.date.as_deref(), Some("2021-03-04"));
+        assert_eq!(r.conflicts, ["TXXX:RELEASETIME says 2020-08-01"]);
+
+        let raw = vec![tag("id3v2", vec![RawItem::new("TYER", json!("2021")), txxx("RELEASETIME", "2020-08-01")])];
+        let r = resolve_date(&raw, Some("id3v2"));
+        assert_eq!((r.date.as_deref(), r.from), (Some("2021"), None));
+        assert_eq!(r.conflicts.len(), 1);
+    }
+
+    #[test]
+    fn dates_that_are_more_than_a_year_are_kept_as_they_are() {
+        // A whole date in TYER (where ID3v2.3 wants four digits) is still the date.
+        let raw = vec![
+            tag("id3v2", vec![RawItem::new("TYER", json!("2024-11-15T18:01:53.000Z")), RawItem::new("TDAT", json!("1511"))]),
+            tag("riff_info", vec![RawItem::new("ICRD", json!("2024-11-16"))]),
+        ];
+        assert_eq!(resolved(&raw), (Some("2024-11-15T18:01:53.000Z".into()), None));
+    }
+
+    #[test]
+    fn without_a_date_tag_other_fields_are_used() {
+        let raw = vec![
+            tag("id3v2", vec![RawItem::new("TIT2", json!("Song"))]),
+            tag("riff_info", vec![RawItem::new("ICRD", json!("2019"))]),
+        ];
+        assert_eq!(resolved(&raw), (Some("2019".into()), Some("ICRD".into())));
+
+        let raw = vec![tag("id3v2", vec![RawItem::new("TORY", json!("1999")), txxx("RELEASEDATE", "2001-02-03")])];
+        assert_eq!(resolved(&raw), (Some("2001-02-03".into()), Some("TXXX:RELEASEDATE".into())));
+
+        let raw = vec![tag("vorbis_comments", vec![RawItem::new("originaldate", json!("1998-07"))])];
+        assert_eq!(
+            resolve_date(&raw, Some("vorbis_comments")),
+            ResolvedDate { date: Some("1998-07".into()), from: Some("ORIGINALDATE".into()), conflicts: Vec::new() }
+        );
+
+        assert_eq!(resolved(&[tag("id3v2", vec![RawItem::new("TDAT", json!("2512"))])]), (None, None));
+    }
+
+    #[test]
+    fn date_precision_counts_the_parts() {
+        for (text, precision) in [
+            ("2021", 1), ("2021-12", 2), ("2021-12-25", 3), ("2021-12-25T10:00:00Z", 3), ("20211225", 3),
+            ("2021/12/25", 3), ("2021.12", 2), ("2021-13-01", 1), ("2021-12-32", 2), ("21-12-25", 0), ("", 0),
+        ] {
+            assert_eq!(super::date_precision(text), precision, "{text}");
+        }
+    }
+
+    #[test]
+    fn tdat_is_checked_against_other_dates() {
+        let raw = vec![
+            tag("id3v2", vec![RawItem::new("TYER", json!("2021")), RawItem::new("TDAT", json!("0302")), txxx("RELEASETIME", "2021-03-02T00:00:00Z")]),
+        ];
+        let (composed, other, from) = tdat_and_other_date(&raw, "2021").unwrap();
+        assert_eq!((composed.as_str(), from.as_str()), ("2021-02-03", "TXXX:RELEASETIME"));
+        assert_eq!(day_of(&other).as_deref(), Some("2021-03-02"));
+        assert_eq!(day_of("20210302").as_deref(), Some("2021-03-02"));
+        assert_eq!(day_of("2021-03"), None);
+        assert!(tdat_and_other_date(&raw[..0], "2021").is_none());
+    }
+
+    #[test]
+    fn stored_tags_read_back() {
+        let raw = vec![
+            tag("id3v2", vec![txxx("RELEASETIME", "2021-12-25"), RawItem::new("TYER", json!("2021"))]),
+            tag("riff_info", vec![RawItem::new("ICRD", json!("2021"))]),
+        ];
+        let mut stored = json!({ "tags": raw });
+        stored["tags"].as_array_mut().unwrap().push(json!({ "format": "some_future_format", "items": [] }));
+        let back = raw_from_stored(&stored);
+        assert_eq!(back.iter().map(|t| t.format).collect::<Vec<_>>(), ["id3v2", "riff_info"]);
+        assert_eq!(back[0].items[0].description.as_deref(), Some("RELEASETIME"));
+        assert_eq!(resolved(&back).0.as_deref(), Some("2021-12-25"));
+        assert!(raw_from_stored(&json!({})).is_empty());
+    }
+
     #[test]
     fn nul_separated_values_become_arrays() {
         assert_eq!(text_value("A\0B"), json!(["A", "B"]));
@@ -830,4 +1198,3 @@ mod tests {
         assert_eq!(fourcc_to_string(b"trkn"), "trkn");
     }
 }
-

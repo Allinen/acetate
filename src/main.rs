@@ -9,6 +9,7 @@ mod ingest_client;
 mod ingest_command;
 mod model;
 mod navidrome;
+mod reread_dates_command;
 mod storage;
 mod user_commands;
 mod verify_command;
@@ -87,6 +88,15 @@ enum Command {
         /// Write the paths of the files that aren't to this file.
         #[arg(long)]
         list_missing: Option<PathBuf>,
+    },
+    /// Read the release dates of tracks dated only with a year (or not at all) again from
+    /// their files' tags, which may have the whole date elsewhere (ID3v2.3's TDAT, a
+    /// RELEASETIME field, a WAV file's RIFF INFO). Only dates still as the import took them
+    /// are changed, as a new revision; the rest is reported.
+    RereadDates {
+        /// Work out and print what would change, without changing anything.
+        #[arg(long)]
+        dry_run: bool,
     },
     /// The checks the server runs on every track (no title, no artists, no album, no cover,
     /// no release date): each raises a review flag when a track starts missing that, and
@@ -365,6 +375,9 @@ async fn main() -> anyhow::Result<()> {
             }
             _ => anyhow::bail!("give either a folder to check, or --blobs"),
         },
+        Command::RereadDates { dry_run } => {
+            reread_dates_command::run(&pool, &store, reread_dates_command::Options { dry_run }).await
+        }
         Command::ReviewChecks { on, off } => {
             let mut tx = db::begin(&pool, None).await?;
             for (kind, checked) in on.iter().map(|k| (k, true)).chain(off.iter().map(|k| (k, false))) {

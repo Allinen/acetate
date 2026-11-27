@@ -14,4 +14,5 @@ act as the system with no login. Many one-off tools list what they would do unle
 | `replace-file <track> <path> --origin …` | swap in a better file; the old one stays |
 | `import-navidrome --db …` | [users, plays, stars, ratings from Navidrome](../library/navidrome.md) |
 | `verify [dir] [--blobs]` | check files are safely stored (read-only) |
+| `reread-dates [--dry-run]` | complete release dates that are only a year from the rest of the date in the file's tags (ID3v2.3 TDAT, RELEASETIME, a WAV's RIFF INFO); only dates nobody changed since the import |
 | `review-checks [--on x\|--off x]` | list or toggle the [review checks](../review.md) |

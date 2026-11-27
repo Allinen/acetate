@@ -1,0 +1,122 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT t.id AS \"track_id!\", v.id AS \"variant_id!\",\n               first_rev.data AS \"first_data!\", first_rev.reason AS \"first_reason!\",\n               latest.id AS \"latest_id!\", latest.data AS \"latest_data!\",\n               f.sha256 AS \"sha256!\", f.container, f.embedded_tags AS \"embedded_tags!\"\n        FROM tracks t\n        JOIN track_variants v ON v.track_id = t.id AND v.label = 'File tags'\n        CROSS JOIN LATERAL (\n            SELECT r.data, r.reason FROM track_revisions r WHERE r.variant_id = v.id ORDER BY r.id LIMIT 1\n        ) first_rev\n        CROSS JOIN LATERAL (\n            SELECT r.id, r.data FROM track_revisions r WHERE r.variant_id = v.id ORDER BY r.id DESC LIMIT 1\n        ) latest\n        JOIN files f ON f.id = COALESCE(\n            (SELECT h.old_file_id FROM track_file_history h WHERE h.track_id = t.id ORDER BY h.id LIMIT 1),\n            t.file_id\n        )\n        WHERE t.merged_into IS NULL\n          AND (latest.data->>'release_date' IS NULL OR latest.data->>'release_date' ~ '^\\d{4}$')\n        ORDER BY t.id\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "track_id!",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tracks",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "variant_id!",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "track_variants",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "first_data!",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "track_revisions",
+            "name": "data"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "first_reason!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "track_revisions",
+            "name": "reason"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "latest_id!",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "track_revisions",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "latest_data!",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "track_revisions",
+            "name": "data"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "sha256!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "files",
+            "name": "sha256"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "container",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "files",
+            "name": "container"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "embedded_tags!",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "files",
+            "name": "embedded_tags"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "4d4f79befb24ec26d5dd110b495ab10b6709fe563518b91bad84e316721fbfd6"
+}
