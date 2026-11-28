@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.8 - 2026-11-28
+
+### Features
+
+- Proposals adopted in bulk: POST /api/review/adopt takes up to 1,000 flags and adopts each as one adopted by itself (a track edited since stays open as stale), answering what was adopted, stale, refused or missing, with a preview; the Review page's bulk tools for proposals list them by tool and run, to preview, adopt or reject a run at a time; the bulk tools act on the marked tracks when there are any; Python catalog() (gzip, rows as dicts) and adopt_many (API_VERSION 11)
+
+### Fixes
+
+- Next no longer stops playback. A track started while another played could get the next track fetched into the old track's slot, so Next and the track's end went on to nothing until a track was started again; the next track is now fetched only once the new one is handed over. Next starts the next track like any other (reusing the file fetched ahead) instead of telling the audio thread to go on to its slot, which stopped playback when the slot had just been used up (Next pressed twice, or the track ending at that moment)
+
 ## 0.4.7 - 2026-11-27
 
 ### Features
