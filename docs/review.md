@@ -95,7 +95,9 @@ extra's own page; unlinking is done there.
 ## Bulk tools
 
 With a chip chosen, `b` (or "Bulk…") acts on the marked tracks, or if none are marked, on
-exactly what's shown. It lists everything first; nothing happens before the button.
+exactly what's shown. It lists everything first; nothing happens before the button. A
+marked track it settles (adopted, rejected or marked done) is unmarked; one left open (a
+stale proposal) stays marked.
 
 - Any kind but proposals: mark the flags done, with one note.
 - Ambiguous artist: credit each name to one of its candidates, on all its tracks at once.

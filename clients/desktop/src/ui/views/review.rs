@@ -31,7 +31,9 @@
 //! Ctrl+Enter is its own then); Ctrl+M merges the two marked. Marking doesn't change
 //! which track is selected (a plain click does): unmarking them all brings its form back.
 //! A marked track that leaves the list for good (fixed, marked done, merged away) leaves
-//! the marks too; one only hidden by a chip or the filter stays marked.
+//! the marks too, and so does one the bulk tools settled (its flags of the chip's kind),
+//! though other flags keep it in the list; one only hidden by a chip or the filter stays
+//! marked.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -128,6 +130,10 @@ pub struct Review {
     fresh: Option<(Uuid, Vec<String>, u64)>,
     /// The bulk tools, open.
     bulk: Option<super::review_bulk::ReviewBulk>,
+    /// The kind and the marked tracks the bulk tools were last opened on. One left with no
+    /// open flag of the kind (adopted, rejected, marked done) leaves the marks: the chip
+    /// hides it now, and another kind's flag would keep it marked out of sight.
+    bulk_ran_on: Option<(String, std::collections::HashSet<Uuid>)>,
     /// Marked tracks, and the tools for them (as in a track table).
     marking: super::marking::Marking,
     /// Files that didn't import, and whether they're shown (in place of the list).
@@ -364,6 +370,9 @@ impl Review {
         // Marked tracks that left the list for good aren't marked anymore.
         let still: std::collections::HashSet<u32> = flagged.iter().map(|f| f.1).collect();
         self.marking.retain(|id| catalog.track_index(*id).is_some_and(|i| still.contains(&i)));
+        if let Some((kind, ran_on)) = &self.bulk_ran_on {
+            self.marking.retain(|id| !ran_on.contains(id) || has_open(&catalog.issues, done, kind, id));
+        }
 
         // Words (in the title, artists, album or the file's path) and `key:value` parts.
         let query = crate::catalog::query::Query::parse(&self.filter);
@@ -551,6 +560,7 @@ impl Review {
         let id_at = |n: usize| entries.get(n).map(|e| (catalog.track_at(e.track).id(), 0));
         let marked = self.marking.marked_rows(entries.len(), id_at);
         let tracks: Vec<u32> = if marked.is_empty() { entries.iter().map(|e| e.track).collect() } else { marked.iter().map(|&n| entries[n].track).collect() };
+        self.bulk_ran_on = (!marked.is_empty()).then(|| (kind.clone(), tracks.iter().map(|&i| catalog.track_at(i).id()).collect()));
         self.bulk = Some(super::review_bulk::ReviewBulk::open(shell, catalog, &kind, tracks, !marked.is_empty(), &self.filter));
     }
 
@@ -1091,9 +1101,29 @@ fn folder(path: &str) -> &str {
     path.rfind(['/', '\\']).map_or("", |i| &path[..i])
 }
 
+/// Whether the track has a flag of `kind` still open (not done here).
+fn has_open(issues: &HashMap<Uuid, Vec<(Uuid, String)>>, done: &std::collections::HashSet<Uuid>, kind: &str, track: &Uuid) -> bool {
+    issues.get(track).is_some_and(|open| open.iter().any(|(flag, k)| k == kind && !done.contains(flag)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_track_whose_proposal_was_adopted_has_none_open_though_another_flag_is() {
+        let (adopted, stale, weak) = (Uuid::from_u128(1), Uuid::from_u128(2), Uuid::from_u128(3));
+        let (a, b) = (Uuid::from_u128(10), Uuid::from_u128(11));
+        let issues = HashMap::from([
+            (a, vec![(adopted, "proposal".to_string()), (weak, "weak_source".to_string())]),
+            (b, vec![(stale, "proposal".to_string())]),
+        ]);
+        let done = std::collections::HashSet::from([adopted]);
+        assert!(!has_open(&issues, &done, "proposal", &a));
+        assert!(has_open(&issues, &done, "weak_source", &a));
+        assert!(has_open(&issues, &done, "proposal", &b), "left open (stale): still marked, to try again");
+        assert!(!has_open(&issues, &done, "proposal", &Uuid::from_u128(12)));
+    }
 
     #[test]
     fn paths() {
