@@ -52,6 +52,8 @@ LOOKUP_BATCH = 1000
 
 #: Review flags per page.
 REVIEW_PAGE = 500
+#: The most `GET /api/artists/{id}/tracks` gives at once.
+ARTIST_TRACKS_PAGE = 500
 #: Proposals adopted per request (the server takes up to 1,000: each is an edit).
 ADOPT_BATCH = 500
 
@@ -117,6 +119,25 @@ class _Client:
 
     def _track(self, track_id: str) -> _Operation[dict[str, Any]]:
         return (yield _Call("GET", f"/api/tracks/{track_id}"))
+
+    def _artist(self, artist_id: str) -> _Operation[dict[str, Any]]:
+        return (yield _Call("GET", f"/api/artists/{artist_id}"))
+
+    def _artist_tracks(self, artist_id: str) -> _Operation[list[dict[str, Any]]]:
+        tracks: list[dict[str, Any]] = []
+        before = None
+        while True:
+            page = yield from self._search(f"/api/artists/{artist_id}/tracks", before=before, limit=ARTIST_TRACKS_PAGE)
+            tracks += page
+            if len(page) < ARTIST_TRACKS_PAGE:
+                return tracks
+            before = page[-1]["id"]
+
+    def _accounts(self, platform: str, ids: list[str]) -> _Operation[list[dict[str, Any]]]:
+        found: list[dict[str, Any]] = []
+        for start in range(0, len(ids), LOOKUP_BATCH):
+            found += yield _Call("POST", "/api/sources/accounts", json_body={"platform": platform, "ids": [str(i) for i in ids[start : start + LOOKUP_BATCH]]})
+        return found
 
     def _edit_tracks(self, edit: dict[str, Any], preview: bool) -> _Operation[dict[str, Any]]:
         return (yield _Call("POST", "/api/tracks/edit", json_body={**edit, "preview": preview}))
@@ -389,6 +410,24 @@ class Acetate(_Client):
         the `revision_id` to make a patch against), sources, files…"""
         return self._run(self._track(track_id))
 
+    def artist(self, artist_id: str) -> dict[str, Any]:
+        """An artist's details (`GET /api/artists/{id}`): `name`, `disambiguation`,
+        `aliases`, its accounts on platforms (`sources`, each with its `snapshots`), its
+        first tracks, notes and extras."""
+        return self._run(self._artist(artist_id))
+
+    def artist_tracks(self, artist_id: str) -> list[dict[str, Any]]:
+        """Every track crediting the artist (in any role), newest first, as many requests
+        as it takes: `{"id", "title", "artist_display", "status", "release_date",
+        "duration_ms", "codec", "file_id"}`."""
+        return self._run(self._artist_tracks(artist_id))
+
+    def accounts(self, platform: str, ids: list[str]) -> list[dict[str, Any]]:
+        """The artists and groupings with one of these accounts on `platform` (by the
+        id field of their source, e.g. SoundCloud's `artist_id`): `{"kind": "artist" |
+        "grouping", "id", "name", "account"}`."""
+        return self._run(self._accounts(platform, ids))
+
     # ---- Changing things ----
 
     def edit_tracks(self, edit: dict[str, Any], *, preview: bool = False) -> dict[str, Any]:
@@ -604,6 +643,18 @@ class AsyncAcetate(_Client):
     async def track(self, track_id: str) -> dict[str, Any]:
         """As `Acetate.track`."""
         return await self._run(self._track(track_id))
+
+    async def artist(self, artist_id: str) -> dict[str, Any]:
+        """As `Acetate.artist`."""
+        return await self._run(self._artist(artist_id))
+
+    async def artist_tracks(self, artist_id: str) -> list[dict[str, Any]]:
+        """As `Acetate.artist_tracks`."""
+        return await self._run(self._artist_tracks(artist_id))
+
+    async def accounts(self, platform: str, ids: list[str]) -> list[dict[str, Any]]:
+        """As `Acetate.accounts`."""
+        return await self._run(self._accounts(platform, ids))
 
     async def edit_tracks(self, edit: dict[str, Any], *, preview: bool = False) -> dict[str, Any]:
         """As `Acetate.edit_tracks`."""

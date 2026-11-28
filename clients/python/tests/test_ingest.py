@@ -198,6 +198,8 @@ class StandIn(http.server.BaseHTTPRequestHandler):
     """Answers like Acetate would; keeps what it got."""
 
     answer = (200, {}, {})
+    #: Answers for the next requests, in turn, before `answer`.
+    answers = []
     got = []
 
     def do_POST(self):
@@ -210,7 +212,7 @@ class StandIn(http.server.BaseHTTPRequestHandler):
         self.reply()
 
     def reply(self):
-        status, headers, body = StandIn.answer
+        status, headers, body = StandIn.answers.pop(0) if StandIn.answers else StandIn.answer
         data = json.dumps(body).encode()
         if headers.get("Content-Encoding") == "gzip":
             data = gzip.compress(data)
@@ -239,6 +241,7 @@ class Sending(unittest.TestCase):
 
     def setUp(self):
         StandIn.got.clear()
+        StandIn.answers.clear()
 
     def test_a_file_its_description_and_covers(self):
         StandIn.answer = (200, {}, {
@@ -304,6 +307,29 @@ class Sending(unittest.TestCase):
         self.assertEqual([len(b["flag_ids"]) for b in sent], [500, 100])
         self.assertTrue(all(b["preview"] for b in sent))
         self.assertEqual({path for path, _, _ in StandIn.got}, {"/api/review/adopt"})
+
+    def test_an_artist_and_all_its_tracks(self):
+        StandIn.answer = (200, {}, {"id": "a1", "name": "kynlary", "sources": [{"platform": "soundcloud", "external_id": "1"}]})
+        for acetate in (Acetate(self.url, "tok"), AsyncAcetate(self.url, "tok")):
+            artist = acetate.artist("a1")
+            artist = asyncio.run(artist) if asyncio.iscoroutine(artist) else artist
+            self.assertEqual(artist["sources"][0]["external_id"], "1")
+        self.assertEqual({path for path, _, _ in StandIn.got}, {"/api/artists/a1"})
+
+        StandIn.got.clear()
+        full = [{"id": f"t{n:04}"} for n in range(500)]
+        StandIn.answers = [(200, {}, full), (200, {}, [{"id": "last"}])]
+        tracks = Acetate(self.url, "tok").artist_tracks("a1")
+        self.assertEqual(len(tracks), 501)
+        self.assertEqual([path for path, _, _ in StandIn.got],
+                         ["/api/artists/a1/tracks?limit=500", "/api/artists/a1/tracks?before=t0499&limit=500"])
+
+    def test_who_has_these_accounts(self):
+        StandIn.answer = (200, {}, [{"kind": "artist", "id": "a1", "name": "kynlary", "account": "1"}])
+        found = asyncio.run(AsyncAcetate(self.url, "tok").accounts("soundcloud", [1, 2]))
+        self.assertEqual(found[0]["id"], "a1")
+        path, _, body = StandIn.got[0]
+        self.assertEqual((path, json.loads(body)), ("/api/sources/accounts", {"platform": "soundcloud", "ids": ["1", "2"]}))
 
     def test_bytes_need_a_name(self):
         acetate = Acetate(self.url, "tok")
